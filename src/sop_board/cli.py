@@ -14,10 +14,6 @@ from .http import Handler
 from .network import local_ipv4_addresses
 
 
-class Stopped(BaseException):
-    """让主线程退出监听循环，并等待已接收的请求结束。"""
-
-
 def prepare_store(data):
     created_directories = []
     parent = data
@@ -61,6 +57,7 @@ def main():
     except OSError as error:
         print(f"启动失败：无法监听端口 {args.port}：{error}", file=sys.stderr)
         return 1
+    stopping = False
     try:
         try:
             store = prepare_store(args.data)
@@ -69,9 +66,11 @@ def main():
             return 1
         server.service = Service(store)
         server.token = token
+        server.timeout = 0.1
 
         def stop(signum, frame):
-            raise Stopped()
+            nonlocal stopping
+            stopping = True
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
@@ -80,9 +79,9 @@ def main():
         if args.host == "0.0.0.0":
             for address in local_ipv4_addresses():
                 print(f"内网地址：http://{address}:{server.server_port}/", flush=True)
-        server.serve_forever(poll_interval=0.1)
-    except Stopped:
-        pass
+        while not stopping:
+            server.handle_request()
     finally:
+        stopping = True
         server.server_close()
     return 0
