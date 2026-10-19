@@ -4,15 +4,18 @@
 # 版本 2（2026-10-19）：随方案修订 2 修改 SOP-01-P01、SOP-01-N01 的预期，新增 SOP-06-P03；AdolphKevin 同日要求本期修复。
 # 2026-10-19：第 1、2 轮验收通过后写回各场景的 regression（不改变场景内容指纹）；SOP-06-P01 为人工回归，由 AdolphKevin 负责。
 # 版本 3（2026-10-19）：导入测试代理 sop-board-1-tester 的 51 条用例后核对覆盖，补充 18 条场景（含新节点 SOP-07 项目设置）；预期依据方案修订 3，经 AdolphKevin 授权由 Claude 代批。
+# 版本 4（2026-10-19）：测试代理复核配对后，补充 14 条场景并改写 SOP-07-N01 的核对方式；经 AdolphKevin 授权由 Claude 代批。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
 # SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
 # 推送时项目身份为 github.com/demo-org/demo-app，项目键为 github-com-demo-org-demo-app，缺省缺陷链接前缀为 https://github.com/demo-org/demo-app/issues/。
+# 登记 Agent 轮次时，product.digest 取推送场景文件时的 product_digest，场景另有说明的除外。向看板发信号时发给运行看板服务的 Python 进程。
+# 写入接口的请求正文除场景要求的错误外都合法；'不给 implementer'指省略该字段。
 
 metadata:
   requirement: "sop-board 核心：启动与持久化、推送场景文件、证据与 Agent 轮次、人工复核、场景变更、总览与导出"
   batch: "sop-board-1"
-  version: 3
+  version: 4
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节"
@@ -89,6 +92,46 @@ sops:
         expected: ["journal_mode 为 wal", "两次收到信号后进程都退出，端口不再接受连接", "重新启动后第 1 轮的数据完整保留", "新登记的轮次号为 2"]
         forbidden_effects: ["PRAGMA integrity_check 的结果不是 ok"]
         evidence_hints: ["命令原文与完整输出", "信号前后的连接测试输出", "SQLite 查询与输出"]
+
+      - id: SOP-01-P04
+        polarity: positive
+        title: 缺省端口与内网访问的输出格式
+        actor: 启动看板的成员
+        priority: P1
+        refs: ["I1"]
+        verify: cli
+        initial_state: ["clone 的检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，8787 端口空闲"]
+        steps: ["不带 --host 与 --port 用新的数据目录启动，记录标准输出后停止", "加 --host 0.0.0.0 --port <空闲端口> 启动，记录标准输出", "对照 ifconfig 列出的 IPv4 地址，用输出中的内网地址访问"]
+        expected: ["第一次标准输出有一行 看板地址：http://127.0.0.1:8787/，没有 内网地址： 行", "第二次标准输出有一行 看板地址：http://127.0.0.1:<端口>/", "第二次每个内网地址各占一行 内网地址：http://<地址>:<端口>/，其中包含本机主网卡的内网 IPv4 地址，用它访问返回 200", "输出中没有把 0.0.0.0 写成访问地址"]
+        forbidden_effects: []
+        evidence_hints: ["两次命令原文与完整输出", "ifconfig 输出", "连接测试输出"]
+
+      - id: SOP-01-P05
+        polarity: positive
+        title: 重启后证据与人工轮次保留
+        actor: 启动看板的成员
+        priority: P1
+        refs: ["I1", "D1"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，按 SOP-03-P01 登记第 1 轮，并对 N1-P01 登记了第 2 轮的人工标记"]
+        steps: ["下载第 1 轮的一份证据并计算 sha256，请求第 2 轮详情", "停止看板，用同一数据目录与端口重新启动", "再次下载同一证据并请求第 2 轮详情"]
+        expected: ["重启后证据字节的 sha256 与重启前相同", "重启后第 2 轮仍为 manual，结果与重启前相同"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "两次下载文件的 sha256"]
+
+      - id: SOP-01-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 令牌为空或数据目录无法创建时启动失败且不留文件
+        actor: 启动看板的成员
+        priority: P1
+        refs: ["I1"]
+        verify: cli
+        initial_state: ["clone 的检出目录已 uv sync", "一个只读的父目录 /tmp/<随机>/ro-parent，一个普通文件 /tmp/<随机>/plain-file，一个已存在的空目录 /tmp/<随机>/empty-data"]
+        steps: ["SOP_BOARD_TOKEN 设为空字符串，以新的数据目录启动", "设置令牌，以 ro-parent 下尚不存在的 data 目录启动", "设置令牌，以 plain-file 为数据目录启动", "设置令牌并占用一个端口，以 empty-data 为数据目录、该端口启动"]
+        expected: ["四次都以退出码 1 结束，没有输出 看板地址 行", "第一次的错误输出说明令牌缺失", "第二、三次的错误输出含对应路径；ro-parent 下的 data 仍不存在，plain-file 的内容不变", "第四次的错误输出含端口号，empty-data 仍为空目录"]
+        forbidden_effects: []
+        evidence_hints: ["四次命令原文与完整输出", "各路径在命令前后的清单与 sha256"]
 
   - id: SOP-02
     title: 推送场景文件
@@ -181,8 +224,8 @@ sops:
         refs: ["I1", "I2", "D1"]
         verify: api
         initial_state: ["测试看板尚未推送任何场景文件"]
-        steps: ["以 project.id 为 GitHub.com/Demo_Org/Demo.App 把演示场景文件推送到 /api/v1/projects/github-com-demo-org-demo-app/batches/demo/scenario-file", "请求项目列表", "把演示场景文件中 N1-P01 的一条 expected 改为含 \\r\\n 的两行文本，按方案先把 \\r\\n 换成 \\n 再计算指纹后推送"]
-        expected: ["第一次推送返回 200", "项目列表中该项目的键为 github-com-demo-org-demo-app，身份为推送时的 GitHub.com/Demo_Org/Demo.App", "第二次推送返回 200，没有 fingerprint-mismatch"]
+        steps: ["以 project.id 为 GitHub.com/Demo_Org/Demo.App 把演示场景文件推送到 /api/v1/projects/github-com-demo-org-demo-app/batches/demo/scenario-file", "请求项目列表", "把演示场景文件中 N1-P01 的一条 expected 写成双引号字符串并用转义 \\r\\n 分成两行，按方案先把 \\r\\n 换成 \\n 再计算指纹后推送"]
+        expected: ["第一次推送返回 200", "项目列表中该项目的键为 github-com-demo-org-demo-app，身份为推送时的 GitHub.com/Demo_Org/Demo.App", "第二次推送返回 200，没有 fingerprint-mismatch，场景列表中 N1-P01 的指纹等于换行统一后计算的值"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）", "本地指纹计算脚本与输出"]
 
@@ -199,6 +242,33 @@ sops:
         expected: ["十个写入请求都返回 401，error_code 为 unauthorized", "被拒绝的请求没有留下数据：场景版本号、轮次表、项目缺陷前缀与 evidence 目录都不变", "六个读取请求都返回 200"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）", "请求前后的版本号、轮次表、前缀与 evidence 目录清单"]
+
+      - id: SOP-02-P03
+        polarity: positive
+        title: 入口名只要求为非空字符串
+        actor: 开发岗代理
+        priority: P2
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板尚未推送任何场景文件"]
+        steps: ["把演示场景文件中各场景的 verify 改为 浏览器-结账，按新指纹推送", "请求场景列表"]
+        expected: ["推送返回 200", "场景列表中各场景的入口为 浏览器-结账"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文（令牌脱敏）"]
+
+      - id: SOP-02-N06
+        polarity: negative
+        negative_type: invalid-input
+        title: YAML 语法错误、空入口名与项目身份不一致被拒绝
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板尚未推送任何场景文件"]
+        steps: ["推送一份在第 7 行有缩进错误的演示场景文件", "推送一份 N1-P01 的 verify 为空字符串的演示场景文件", "把演示场景文件以 project.id github.com/other/app 推送到 github-com-demo-org-demo-app 的地址", "请求项目列表"]
+        expected: ["第一次返回 422，error_code 为 scenario-file-invalid，问题的 line 为 7", "第二次返回 422，error_code 为 scenario-file-invalid，问题指出 N1-P01 的 verify", "第三次返回 422，error_code 为 project-mismatch，问题指出 project.id", "项目列表仍为空"]
+        forbidden_effects: []
+        evidence_hints: ["三份请求正文与响应原文"]
 
   - id: SOP-03
     title: 证据与 Agent 轮次
@@ -361,6 +431,46 @@ sops:
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）", "请求前后的轮次表"]
 
+      - id: SOP-03-P07
+        polarity: positive
+        title: 执行时间晚于服务端时间不超过五分钟时接受
+        actor: 开发岗代理
+        priority: P2
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，所需证据已上传"]
+        steps: ["登记一轮：N1-P01 为 pass 附证据，executed_at 为服务端当前时间加 4 分钟（带时区）"]
+        expected: ["返回 200，登记成功", "轮次接口中该结果的 executed_at 为提交的原值"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文与请求时刻"]
+
+      - id: SOP-03-N06
+        polarity: negative
+        negative_type: invalid-input
+        title: 状态取值非法、跳过缺 finding、晚于五分钟被拒绝
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，所需证据已上传"]
+        steps: ["登记一轮：N1-P01 的 status 为 passed 并附证据，N2-N01 的 status 为 skip 且没有 finding", "登记一轮：N1-P01 为 pass 附证据，executed_at 为服务端当前时间加 6 分钟（带时区）"]
+        expected: ["第一次返回 422，error_code 为 round-invalid，problems 指向 results[0].status 与 results[1].finding", "第二次返回 422，error_code 为 round-invalid，问题指向 results[0].executed_at", "两次都没有产生轮次"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文与请求时刻", "请求前后的轮次表"]
+
+      - id: SOP-03-P08
+        polarity: positive
+        title: 一次通过率按每条场景的首个 Agent 结果计
+        actor: 开发岗代理
+        priority: P1
+        refs: ["D2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，所需证据已上传"]
+        steps: ["登记第 1 轮：只含 N1-P01，为 fail 附证据", "登记第 2 轮：只含 N1-P01，为 pass 附证据", "请求批次摘要"]
+        expected: ["Agent 验收通过率为 1/1", "一次通过率为 0/1", "第 1 轮通过率 0/1，第 2 轮通过率 1/1"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
   - id: SOP-04
     title: 人工复核
     actor: "测试同事"
@@ -479,6 +589,20 @@ sops:
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
+      - id: SOP-05-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 对已移除场景的人工标记被拒绝
+        actor: 测试岗
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，随后推送了删除 N2-N01 并给 N2 加 negative_exempt 的版本 2"]
+        steps: ["用 N2-N01 的原指纹对它登记一条人工 pass 标记（按当前接口要求填写其余字段）"]
+        expected: ["返回 409，error_code 为 scenario-stale，点名 N2-N01", "没有产生轮次"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "请求前后的轮次表"]
+
   - id: SOP-06
     title: 总览与导出
     actor: "团队成员"
@@ -560,7 +684,7 @@ sops:
 
       - id: SOP-06-P05
         polarity: positive
-        title: 没有样本时比率显示无数据，受阻与跳过不计入通过率分母
+        title: 没有样本时比率显示无数据，受阻与跳过不计入 Agent 验收通过率与一次通过率的分母
         actor: 测试岗
         priority: P1
         refs: ["D2", "I1"]
@@ -598,6 +722,71 @@ sops:
         forbidden_effects: []
         evidence_hints: ["请求与响应原文"]
 
+      - id: SOP-06-P07
+        polarity: positive
+        title: 首页与总览页列出项目、批次、队列场景、轮次与误判明细
+        actor: 测试岗
+        priority: P1
+        refs: ["I1", "D2"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件，按 SOP-03-P01 登记第 1 轮，并对 N2-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/5，标记人 Tester A"]
+        steps: ["在浏览器打开首页，点项目下的批次 demo", "查看总览页的三个队列、轮次表与误判明细"]
+        expected: ["首页列出项目与批次 demo，点击后进入 /p/github-com-demo-org-demo-app/b/demo", "复测队列列出 N1-P01；问题队列列出 N1-N01、N2-N01、N2-P01；待执行队列为空", "轮次表有第 1 轮（Agent，通过率 2/4）与第 2 轮（人工，通过率 0/1）", "误判明细有一项：N2-P01、该缺陷链接、Agent 执行者 Li Si、标记人 Tester A"]
+        forbidden_effects: ["页面加载外网资源"]
+        evidence_hints: ["截图", "页面文本", "请求记录"]
+
+      - id: SOP-06-P08
+        polarity: positive
+        title: 页面时间按看板主机时区换算且不带微秒，与浏览器时区无关
+        actor: 测试岗
+        priority: P1
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板以环境变量 TZ=Asia/Shanghai 启动并推送了演示场景文件", "登记一轮：N1-P01 为 pass，executed_at 为 2026-10-18T16:30:05.123456+00:00；N2-P01 为 pass，executed_at 为 2026-10-18T20:00:00-05:00"]
+        steps: ["用时区为 UTC 的浏览器打开 N1-P01 与 N2-P01 的详情页", "用时区为 America/New_York 的浏览器打开同样两页", "请求该轮的轮次接口并下载导出"]
+        expected: ["两个浏览器中 N1-P01 的执行时间都显示为 2026-10-19 00:30:05 +08:00，N2-P01 都显示为 2026-10-19 09:00:00 +08:00", "页面上的时间都不带微秒", "轮次接口与导出的 executed_at 为提交的原值"]
+        forbidden_effects: []
+        evidence_hints: ["两个浏览器的截图与页面文本", "接口响应", "导出的 results.jsonl"]
+
+      - id: SOP-06-P09
+        polarity: positive
+        title: 人工受阻进入问题队列，计入复测覆盖率，不计入人工复测通过率与误判
+        actor: 测试岗
+        priority: P1
+        refs: ["D2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件并按 SOP-03-P01 登记第 1 轮"]
+        steps: ["对 N1-P01 登记一条人工 blocked 标记（按当前接口要求填写受阻原因）", "请求批次摘要与场景列表"]
+        expected: ["N1-P01 在问题队列", "复测覆盖率为 1/2", "人工复测通过率为无数据", "误判明细为空"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-06-P10
+        polarity: positive
+        title: 导出行只写有值的可选字段，证据与执行时间保持原样
+        actor: 开发岗
+        priority: P1
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，所需证据已上传"]
+        steps: ["登记一轮：N1-P01 为 pass，带 session 与 note、不带 finding；N2-N01 为 blocked，带 finding、不带 session 与 note", "下载该轮导出并解压"]
+        expected: ["N1-P01 一行有 session 与 note，没有 finding 键", "N2-N01 一行有 finding，没有 session 与 note 键", "任何一行都没有值为 null 的键", "每个 evidence 路径都在 ZIP 内，文件字节与上传时相同", "executed_at 为提交的原值"]
+        forbidden_effects: []
+        evidence_hints: ["导出的 ZIP 清单与 results.jsonl", "文件 sha256 对照"]
+
+      - id: SOP-06-P11
+        polarity: positive
+        title: 项目列表含键、身份、名称与批次摘要
+        actor: 开发岗
+        priority: P2
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，project.name 为 演示应用"]
+        steps: ["不带令牌请求项目列表"]
+        expected: ["返回 200，列表中该项目的键为 github-com-demo-org-demo-app，身份为 github.com/demo-org/demo-app，名称为 演示应用", "该项目的批次摘要中有批次 demo"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
   - id: SOP-07
     title: 项目设置
     actor: "开发者"
@@ -629,7 +818,7 @@ sops:
         refs: ["I2"]
         verify: api
         initial_state: ["测试看板推送了演示场景文件，另以项目身份 gitlab.example.com/team/app 把同一内容推送到项目键 gitlab-example-com-team-app 的批次 demo"]
-        steps: ["对 github-com-demo-org-demo-app 依次 PUT defect_prefix 为 http://jira.example.com/browse/、jira.example.com/browse/ 与空字符串", "请求项目列表", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/1"]
-        expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "项目前缀保持为 https://github.com/demo-org/demo-app/issues/", "标记返回 422，error_code 为 defect-prefix-unset"]
+        steps: ["对 github-com-demo-org-demo-app 依次 PUT defect_prefix 为 http://jira.example.com/browse/、jira.example.com/browse/ 与空字符串", "对 github-com-demo-org-demo-app 的 N1-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/9", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/1"]
+        expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "GitHub 链接的标记成功，说明项目前缀仍为缺省的 https://github.com/demo-org/demo-app/issues/", "标记返回 422，error_code 为 defect-prefix-unset"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
