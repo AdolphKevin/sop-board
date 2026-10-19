@@ -3,7 +3,11 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import mimetypes
+from itertools import islice
+from io import BytesIO
 import re
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from .errors import APIError, reject
 from .scenario_file import load_scenarios
@@ -153,6 +157,63 @@ class Service:
                         product=dict(commit=row["product_commit"], digest=row["product_digest"], dirty=bool(row["product_dirty"])),
                         implementer=row["implementer"], submitted_by=row["submitted_by"], submitted_at=row["submitted_at"],
                         results=results)
+
+    def read_scenario(self, key, name, scenario):
+        """详情保留当前与历史内容，不受 calculate 的当前版本过滤影响。"""
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            batch = self.batch(db, key, name)
+            records = [dict(row) for row in db.execute(
+                "SELECT * FROM scenarios WHERE batch=? AND scenario=? ORDER BY current DESC,id DESC",
+                (batch["id"], scenario))]
+            if not records:
+                reject(404, "scenario-not-found", "scenario", "场景不存在")
+            results = [dict(row) for row in db.execute(
+                "SELECT r.*,t.number,t.kind,t.submitted_by,t.submitted_at FROM results r JOIN rounds t ON t.id=r.round_id "
+                "WHERE t.batch=? AND r.scenario=? ORDER BY t.number,r.id", (batch["id"], scenario))]
+            for row in results:
+                row["evidence"] = [dict(item) for item in db.execute(
+                    "SELECT r.name,r.sha256,e.name AS stored_name FROM result_evidence r JOIN evidence e ON e.sha256=r.sha256 "
+                    "WHERE r.result_id=? ORDER BY r.ordinal", (row["id"],))]
+                for evidence in row["evidence"]:
+                    evidence["content_type"] = mimetypes.guess_type(evidence.pop("stored_name"))[0] or "application/octet-stream"
+                    if evidence["content_type"].startswith("text/") or evidence["content_type"] in ("application/json", "application/xml", "application/yaml", "application/x-yaml"):
+                        sha = evidence["sha256"]
+                        with (self.store.data / "evidence" / sha[:2] / sha).open(encoding="utf-8", errors="replace") as source:
+                            evidence["preview"] = "".join(islice(source, 200))
+            groups = []
+            for record in records:
+                groups.append(dict(fingerprint=record["fingerprint"], current=bool(record["current"]),
+                                   body=json.loads(record["body"]), results=[r for r in results if r["fingerprint"] == record["fingerprint"]]))
+            latest = records[0]
+            return dict(project=key, batch=name, scenario=scenario, node=latest["node"], title=latest["title"],
+                        polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
+                        fingerprint=latest["fingerprint"], current=bool(latest["current"]), groups=groups)
+
+    def export_round(self, key, name, number):
+        round_data = self.read_round(key, name, number)
+        output = BytesIO()
+        rows, ordinal = [], 0
+        with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+            for result in round_data["results"]:
+                row = {field: result[field] for field in ("scenario", "status", "actual", "executed_at", "executor")}
+                row["evidence"] = []
+                for evidence in result["evidence"]:
+                    ordinal += 1
+                    filename = evidence["name"].replace("\\", "/").rsplit("/", 1)[-1]
+                    filename = "".join(char for char in filename if ord(char) >= 32 and ord(char) != 127)
+                    if filename in ("", ".", ".."):
+                        filename = "evidence.bin"
+                    path = f"evidence/{ordinal}-{filename}"
+                    raw, _ = self.evidence(evidence["sha256"])
+                    archive.writestr(path, raw)
+                    row["evidence"].append(path)
+                for field in ("session", "finding", "note"):
+                    if field in result:
+                        row[field] = result[field]
+                rows.append(canonical(row))
+            archive.writestr("results.jsonl", "\n".join(rows) + "\n")
+        return output.getvalue()
 
     def settings(self, key, body):
         p = Problems("project-invalid")

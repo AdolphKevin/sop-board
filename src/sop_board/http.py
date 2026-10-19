@@ -2,6 +2,7 @@
 
 import hmac
 from http.server import BaseHTTPRequestHandler
+from importlib.resources import files
 import json
 import mimetypes
 import re
@@ -9,6 +10,7 @@ import sqlite3
 from urllib.parse import quote, unquote, urlsplit
 
 from .errors import APIError, reject
+from . import pages
 
 
 def invalid_constant(value):
@@ -38,6 +40,12 @@ class Handler(BaseHTTPRequestHandler):
             service = self.server.service
             path = urlsplit(self.path).path
             method = self.command
+            assets = {"/assets/board.css": ("board.css", "text/css; charset=utf-8"),
+                      "/assets/board.js": ("board.js", "text/javascript; charset=utf-8")}
+            if method == "GET" and path in assets:
+                name, content_type = assets[path]
+                self.respond(200, files("sop_board").joinpath("assets", name).read_bytes(), content_type)
+                return
             if method in ("POST", "PUT"):
                 authorization = self.headers.get("Authorization", "")
                 if not hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
@@ -62,16 +70,30 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, UnicodeError):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
-                self.respond(200, "<!doctype html><html lang='zh'><meta charset='utf-8'><title>sop-board</title><h1>sop-board</h1></html>".encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.home(service.projects()).encode(), "text/html; charset=utf-8")
+                return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                self.respond(200, pages.batch(key, service.read_batch(key, batch)).encode(), "text/html; charset=utf-8")
+                return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
+                key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
+                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario)).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and path == "/api/v1/projects":
                 result = service.projects()
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):
+                key, batch, number = unquote(match[1]), unquote(match[2]), int(match[3])
+                self.respond(200, service.export_round(key, batch, number), "application/zip",
+                             [("Content-Disposition", f"attachment; filename=round-{number}.zip")])
+                return
             elif method == "PUT" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)", path)):
                 result = service.settings(unquote(match[1]), body)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/evidence/([^/]+)", path)):
                 raw, name = service.evidence(unquote(match[1]))
                 self.respond(200, raw, mimetypes.guess_type(name)[0] or "application/octet-stream",
-                             [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe=""))])
+                             [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
+                              ("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
             elif match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]

@@ -13,7 +13,7 @@ SOP 验证协作看板。开发岗的代理用 [praxis-skills](https://github.co
 - [praxis-skills](https://github.com/AdolphKevin/praxis-skills)：`sop-verify` 技能，从业务 SOP 写场景、派独立会话执行、登记结果。
 - [team-workflow](https://github.com/AdolphKevin/team-workflow)：团队流程；看板按轮次导出的结果可直接用 `tw team scenarios submit` 登记。
 
-## 启动
+## 启动与内网访问
 
 需要 Python 3.10 或以上版本与 uv。在仓库目录安装依赖：
 
@@ -27,6 +27,24 @@ uv sync
 uv run sop-board --data ./board-data --port 8787
 ```
 
-看到 `看板地址：http://127.0.0.1:8787/` 后即可访问。默认只允许本机连接；需要内网共用时，追加 `--host 0.0.0.0`，其他成员用启动者的内网地址访问。读取接口无需令牌，写入请求须带 `Authorization: Bearer <令牌>`。
+`--data <目录>` 指定数据目录，不存在时自动创建。看到 `看板地址：http://127.0.0.1:8787/` 后即可访问首页，选择项目与批次，查看队列、指标、场景历史及证据，并按轮次导出 ZIP。
 
-按 Ctrl+C 或发送终止信号可停止服务；下次使用同一数据目录启动，数据会保留。当前首页为启动核对用的最小页面，业务页面与轮次导出将在 T2 提供。
+默认只允许本机连接。需要内网共用时，监听本机的全部网络接口：
+
+```sh
+uv run sop-board --data ./board-data --host 0.0.0.0 --port 8787
+```
+
+其他成员用启动者的内网地址访问，例如 `http://<内网地址>:8787/`。所有能连接该地址的人都能读取场景、证据和导出；写入接口依靠 `SOP_BOARD_TOKEN` 校验权限。服务使用 HTTP，没有传输加密，因此只应在可信内网使用，不要把端口直接暴露到公网。
+
+人工复核表单首次使用时填写标记人与写入令牌，二者保存在当前浏览器的本地存储中，可在页面上更换。共享电脑使用后应清除该站点的本地存储。接口写入请求使用 `Authorization: Bearer <令牌>`。
+
+按 Ctrl+C 或发送终止信号停止服务；下次用同一数据目录启动，数据会保留。
+
+## 运行测试
+
+```sh
+uv run --frozen pytest -q -p no:cacheprovider tests
+```
+
+表单脚本的隔离逻辑测试还需要本机安装 Node.js 18 或以上版本，不需要安装 npm 包。其余测试通过临时目录中的真实 HTTP 服务与 SQLite 核对结果；浏览器操作和内网另一台机器的访问仍需另行验收。
