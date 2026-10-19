@@ -1,7 +1,7 @@
 ---
 design: "D-sop-board-1"
 task: "SOP-BOARD-1"
-revision: 1
+revision: 2
 assessment: {"complexity":"complex","risks":["persistence","public-contract"],"effort":"约两个工作日代理时长","drivers":["新建服务：启动、存储、写入与读取接口、页面","接口与导出格式被 sop-verify 与 team-workflow 使用","测试岗与开发岗在同一份数据上协作，人工标记不得改写 Agent 结果"],"uncertainties":[],"required_skills":["Python","SQLite","HTTP","HTML 与原生 JavaScript"]}
 roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner":"AdolphKevin"}
 ---
@@ -10,7 +10,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 > 本文件是 tw 任务 SOP-BOARD-1 的方案原文。总体设计与决定见 team-workflow 仓库的 `docs/proposals/2026-10-19-standalone-sop-verification.md`（v7），本需求对应其第 8 节第二行。验收场景见 [docs/sop/sop-board.yaml](../sop/sop-board.yaml)。
 >
-> 状态：修订 1，AdolphKevin 于 2026-10-19 批准方案与场景文件。
+> 状态：修订 2。修订 1 由 AdolphKevin 于 2026-10-19 批准；修订 2 按第 1 轮验收的三条观察补充启动与时间显示要求，AdolphKevin 同日要求本期修复。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -30,7 +30,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 ## 启动与页面
 <!-- tw-section id=I1 type=interface depends=scope-global -->
-启动：`uv run sop-board --data <目录> [--host 127.0.0.1] [--port 8787]`。环境变量 `SOP_BOARD_TOKEN` 必须非空。数据目录不存在时创建。成功时在标准输出写一行 `看板地址：http://<host>:<port>/`；`--host 0.0.0.0` 时另写一行提示其他成员用本机内网地址访问。以下情况以退出码 1 结束并在错误输出说明：缺少 `SOP_BOARD_TOKEN`；端口已被占用（含端口号）；数据目录无法创建或不可写（含路径）。收到中断或终止信号时关闭监听与数据库后退出。
+启动：`uv run sop-board --data <目录> [--host 127.0.0.1] [--port 8787]`。环境变量 `SOP_BOARD_TOKEN` 必须非空。先核对令牌并占用端口，成功后再准备数据目录；数据目录不存在时创建。成功时在标准输出写一行 `看板地址：http://<host>:<port>/`；`--host 0.0.0.0` 时这一行写 `127.0.0.1`，并逐行写出本机每个内网 IPv4 地址对应的 `内网地址：http://<地址>:<port>/`。以下情况以退出码 1 结束并在错误输出说明：缺少 `SOP_BOARD_TOKEN`；端口已被占用（含端口号）；数据目录无法创建或不可写（含路径）。启动失败时数据目录中不留下新文件；数据目录原本不存在时，失败后仍不存在。收到中断或终止信号时关闭监听与数据库后退出。
 
 项目键：项目身份转小写，每段 `[a-z0-9]` 以外的连续字符换成一个 `-`，去掉首尾的 `-`。例如 `github.com/demo-org/demo-app` 的键是 `github-com-demo-org-demo-app`。
 
@@ -42,7 +42,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 | `/p/<项目键>/b/<批次>` | 批次总览：数据 D2 的各项指标、三个队列的场景列表、进度、轮次表、误判明细 |
 | `/p/<项目键>/b/<批次>/s/<场景编号>` | 场景详情：场景内容与入口、按内容指纹分组的结果历史（旧指纹标"场景已变更"，已移除的场景标"已从场景文件移除"）、证据预览（图片直接显示，文本显示前 200 行，其他提供下载）、标记表单 |
 
-标记表单首次使用时请填写标记人与令牌，二者保存在浏览器 `localStorage`，可在页面上更换。表单提交到写入接口的人工标记；状态为 `fail` 时必须填写缺陷链接，接口拒绝时页面显示原因并保留已填内容。比率写成"分子/分母"，分母为零时写"无数据"。
+标记表单首次使用时请填写标记人与令牌，二者保存在浏览器 `localStorage`，可在页面上更换。表单提交到写入接口的人工标记；状态为 `fail` 时必须填写缺陷链接，接口拒绝时页面显示原因并保留已填内容。比率写成"分子/分母"，分母为零时写"无数据"。页面上的所有时间统一换算到看板所在机器的本地时区，写成 `YYYY-MM-DD HH:MM:SS ±HH:MM`，不带微秒；接口与导出保留原始的 ISO 8601 值。
 
 ## 写入接口
 <!-- tw-section id=I2 type=interface depends=scope-global,D1 -->
@@ -124,7 +124,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 SOP-01 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-01
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -133,7 +133,7 @@ SOP-01 节点全部场景通过。
 SOP-02 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-02
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -142,7 +142,7 @@ SOP-02 节点全部场景通过。
 SOP-03 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-03
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -151,7 +151,7 @@ SOP-03 节点全部场景通过。
 SOP-04 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-04
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -160,7 +160,7 @@ SOP-04 节点全部场景通过。
 SOP-05 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-05
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -169,7 +169,7 @@ SOP-05 节点全部场景通过。
 SOP-06 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-06
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -186,5 +186,13 @@ SOP-06 节点全部场景通过。
 在 T1 交回并通过审核之后实施。实现三个页面、标记表单与浏览器端的标记人和令牌保存、场景变更与移除的显示、轮次导出 ZIP。测试核对页面文本中的数值与接口一致、标记表单的拒绝提示、导出文件的字段；先写失败测试再实现。README 补充启动与内网访问说明。
 
 - 验收：A4、A5、A6
+- 范围：src、tests、README.md
+- 前置任务：无
+
+## 任务 T3：启动与时间显示修正
+<!-- tw-section id=T3 type=task depends=scope-global,I1 -->
+在 T2 之后实施。按修订 2 的 I1：调整启动顺序，失败时不在数据目录留下新文件；`--host 0.0.0.0` 时写出可直接打开的内网地址；页面时间统一为本地时区、不带微秒。先写失败测试再实现。
+
+- 验收：A1、A6
 - 范围：src、tests、README.md
 - 前置任务：无

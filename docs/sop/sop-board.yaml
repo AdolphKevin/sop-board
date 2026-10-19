@@ -1,6 +1,7 @@
 # SOP-BOARD-1：看板核心的验收场景
 # 预期只依据 team-workflow 仓库的 SOP 验证独立化方案 v7 与 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2，不依据当前实现的输出。
 # 版本 1（2026-10-19）：Claude 依据上述两份原文编写，AdolphKevin 2026-10-19 确认。
+# 版本 2（2026-10-19）：随方案修订 2 修改 SOP-01-P01、SOP-01-N01 的预期，新增 SOP-06-P03；AdolphKevin 同日要求本期修复。
 # 2026-10-19：第 1、2 轮验收通过后写回各场景的 regression（不改变场景内容指纹）；SOP-06-P01 为人工回归，由 AdolphKevin 负责。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
@@ -10,14 +11,14 @@
 metadata:
   requirement: "sop-board 核心：启动与持久化、推送场景文件、证据与 Agent 轮次、人工复核、场景变更、总览与导出"
   batch: "sop-board-1"
-  version: 1
+  version: 2
   owner: "AdolphKevin"
   sources:
     - ref: "AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节"
       version: "v7（2026-10-19）"
       confirmed_by: "AdolphKevin"
     - ref: "docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节"
-      version: "修订 1"
+      version: "修订 2"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "看板核心"]
 
@@ -42,7 +43,7 @@ sops:
         verify: cli
         initial_state: ["clone 的检出目录已 uv sync，SOP_BOARD_TOKEN 已设置", "一个尚不存在的临时数据目录路径与一个空闲端口"]
         steps: ["运行 uv run sop-board --data <数据目录> --port <端口>", "用 curl 访问 http://127.0.0.1:<端口>/", "用本机的内网地址访问同一端口", "停止后加 --host 0.0.0.0 重新启动，再用内网地址访问"]
-        expected: ["启动后标准输出写出看板地址", "本机地址返回 200 与项目列表页", "未加 --host 时内网地址的连接被拒绝", "加 --host 0.0.0.0 后内网地址返回 200", "数据目录被创建并含 board.sqlite3"]
+        expected: ["启动后标准输出写出看板地址", "本机地址返回 200 与项目列表页", "未加 --host 时内网地址的连接被拒绝", "加 --host 0.0.0.0 后标准输出写出本机内网地址对应的可访问地址，用该地址访问返回 200", "数据目录被创建并含 board.sqlite3"]
         forbidden_effects: ["检出目录中出现未被忽略的新文件"]
         evidence_hints: ["命令原文与完整输出", "三次连接的输出", "数据目录清单", "启动前后的 git status"]
 
@@ -71,7 +72,7 @@ sops:
         verify: cli
         initial_state: ["clone 的检出目录已 uv sync"]
         steps: ["不设置 SOP_BOARD_TOKEN 启动", "设置令牌后用一个已被占用的端口启动", "用一个没有写权限的目录作为数据目录启动"]
-        expected: ["三次都以退出码 1 结束", "错误输出分别说明缺少 SOP_BOARD_TOKEN、端口被占用并给出端口号、数据目录不可写并给出路径"]
+        expected: ["三次都以退出码 1 结束", "错误输出分别说明缺少 SOP_BOARD_TOKEN、端口被占用并给出端口号、数据目录不可写并给出路径", "前两次使用的数据目录原本不存在，失败后仍不存在"]
         forbidden_effects: ["看板进程在后台继续运行"]
         evidence_hints: ["三次命令原文、输出与退出码", "进程列表"]
 
@@ -353,6 +354,19 @@ sops:
         expected: ["导出为 ZIP，含 results.jsonl 与 evidence/ 下四份证据", "results.jsonl 每行只有 tw 结果契约的字段", "tw 登记成功，四条结果的状态与看板相同"]
         forbidden_effects: []
         evidence_hints: ["导出与解压的命令与输出", "results.jsonl 原文", "tw 命令原文与完整输出"]
+
+      - id: SOP-06-P03
+        polarity: positive
+        title: 页面上的时间写法统一
+        actor: 团队成员
+        priority: P1
+        refs: ["I1"]
+        verify: web
+        initial_state: ["SOP-04-P01 完成后的测试看板：第 1 轮 Agent 结果的 executed_at 带 +08:00，Tester A 的人工标记由看板记录服务端时间"]
+        steps: ["用浏览器打开批次总览页与 N1-P01 的详情页", "请求第 1 轮与第 2 轮的读取接口"]
+        expected: ["页面上的执行时间与提交时间都写成看板所在机器本地时区的 YYYY-MM-DD HH:MM:SS ±HH:MM，不带微秒", "接口返回的时间保持原始 ISO 8601 值"]
+        forbidden_effects: ["同一页面混用两种时区或时间格式"]
+        evidence_hints: ["两个页面的截图与文本", "接口响应原文"]
 
       - id: SOP-06-N01
         regression: {"check": "unit", "cases": ["tests.test_export::test_export_missing_resources_returns_specific_404[/api/v1/projects/github-com-demo-org-demo-app/batches/demo/rounds/99/export-round-not-found]"]}
