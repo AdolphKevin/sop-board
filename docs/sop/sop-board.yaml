@@ -1,6 +1,7 @@
 # SOP-BOARD-1：看板核心的验收场景
 # 预期只依据 team-workflow 仓库的 SOP 验证独立化方案 v7 与 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2，不依据当前实现的输出。
 # 版本 1（2026-10-19）：Claude 依据上述两份原文编写，AdolphKevin 2026-10-19 确认。
+# 2026-10-19：第 1、2 轮验收通过后写回各场景的 regression（不改变场景内容指纹）；SOP-06-P01 为人工回归，由 AdolphKevin 负责。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
 # SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
@@ -32,6 +33,7 @@ sops:
     scenarios:
 
       - id: SOP-01-P01
+        regression: {"check": "unit", "cases": ["tests.test_startup::test_startup_home_wal_and_shutdown", "tests.test_startup::test_default_binding_refuses_other_local_interface", "tests.test_startup::test_explicit_network_binding_and_interrupt"]}
         polarity: positive
         title: 启动后页面可访问，缺省只监听本机
         actor: 启动看板的成员
@@ -45,6 +47,7 @@ sops:
         evidence_hints: ["命令原文与完整输出", "三次连接的输出", "数据目录清单", "启动前后的 git status"]
 
       - id: SOP-01-P02
+        regression: {"check": "unit", "cases": ["tests.test_reads::test_read_round_and_restart_preserve_all_data"]}
         polarity: positive
         title: 用同一数据目录重启后数据完整保留
         actor: 启动看板的成员
@@ -58,6 +61,7 @@ sops:
         evidence_hints: ["两次响应原文与对比", "重启命令与输出"]
 
       - id: SOP-01-N01
+        regression: {"check": "unit", "cases": ["tests.test_startup::test_startup_failure_exits_one_with_reason[token]", "tests.test_startup::test_startup_failure_exits_one_with_reason[port]", "tests.test_startup::test_startup_failure_exits_one_with_reason[unwritable]"]}
         polarity: negative
         negative_type: invalid-input
         title: 启动条件不满足时说明原因并退出
@@ -81,6 +85,7 @@ sops:
     scenarios:
 
       - id: SOP-02-P01
+        regression: {"check": "unit", "cases": ["tests.test_scenario_file::test_push_persists_version_and_independent_fingerprints", "tests.test_pages::test_batch_page_matches_all_metrics_queues_rounds_and_misjudgments[new]"]}
         polarity: positive
         title: 推送合格的场景文件后批次出现，四条场景待执行
         actor: 开发岗代理
@@ -94,6 +99,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）", "总览页截图", "SQLite 中场景版本与场景的查询结果"]
 
       - id: SOP-02-N01
+        regression: {"check": "unit", "cases": ["tests.test_scenario_file::test_all_write_endpoints_require_token[None]", "tests.test_scenario_file::test_all_write_endpoints_require_token[Bearer REDACTED]"]}
         polarity: negative
         negative_type: permission
         title: 没有令牌或令牌错误时拒绝
@@ -108,6 +114,7 @@ sops:
         evidence_hints: ["三次请求与响应原文", "SQLite 查询结果"]
 
       - id: SOP-02-N02
+        regression: {"check": "unit", "cases": ["tests.test_scenario_file::test_push_rejects_wrong_identity_or_fingerprints[fingerprint]"]}
         polarity: negative
         negative_type: tampered-input
         title: 客户端指纹与看板计算不一致时拒绝
@@ -122,6 +129,7 @@ sops:
         evidence_hints: ["请求与响应原文", "SQLite 查询结果"]
 
       - id: SOP-02-N03
+        regression: {"check": "unit", "cases": ["tests.test_scenario_file::test_invalid_scenario_files_have_lines_and_no_writes[negative]", "tests.test_scenario_file::test_push_rejects_wrong_identity_or_fingerprints[batch]"]}
         polarity: negative
         negative_type: invalid-input
         title: 场景文件不合格或批次不一致时拒绝
@@ -136,6 +144,7 @@ sops:
         evidence_hints: ["两次请求与响应原文"]
 
       - id: SOP-02-N04
+        regression: {"check": "unit", "cases": ["tests.test_scenario_file::test_duplicate_push_updates_product_without_new_version"]}
         polarity: negative
         negative_type: duplicate
         title: 重复推送相同内容不产生新版本
@@ -159,6 +168,7 @@ sops:
     scenarios:
 
       - id: SOP-03-P01
+        regression: {"check": "unit", "cases": ["tests.test_evidence::test_evidence_content_addressing_dedup_download_and_first_filename", "tests.test_rounds::test_agent_round_stores_results_evidence_and_statistics", "tests.test_pages::test_batch_page_matches_all_metrics_queues_rounds_and_misjudgments[agent]"]}
         polarity: positive
         title: 登记一轮后队列与统计按口径更新
         actor: 开发岗代理
@@ -172,6 +182,7 @@ sops:
         evidence_hints: ["上传与登记的请求与响应原文", "本地 sha256 计算输出", "批次摘要响应", "SQLite 查询结果"]
 
       - id: SOP-03-N01
+        regression: {"check": "unit", "cases": ["tests.test_rounds::test_round_reports_all_result_problems_and_rolls_back"]}
         polarity: negative
         negative_type: invalid-input
         title: 逐条指出结果的问题
@@ -186,6 +197,7 @@ sops:
         evidence_hints: ["请求与响应原文", "SQLite 查询结果"]
 
       - id: SOP-03-N02
+        regression: {"check": "unit", "cases": ["tests.test_rounds::test_round_rejects_stale_file_or_scenario[file]", "tests.test_rounds::test_round_rejects_stale_file_or_scenario[fingerprint]"]}
         polarity: negative
         negative_type: stale-input
         title: 场景内容不是当前版本时拒绝
@@ -200,6 +212,7 @@ sops:
         evidence_hints: ["两次请求与响应原文"]
 
       - id: SOP-03-N03
+        regression: {"check": "unit", "cases": ["tests.test_rounds::test_idempotency_replay_conflict_and_replay_after_new_version"]}
         polarity: negative
         negative_type: duplicate
         title: 同一幂等键只登记一次
@@ -223,6 +236,7 @@ sops:
     scenarios:
 
       - id: SOP-04-P01
+        regression: {"check": "unit", "cases": ["tests.test_pages::test_mark_form_http_rejection_then_success_updates_page_without_rewriting_agent", "tests.test_client::test_client_restores_identity_and_saves_changes_without_network", "tests.test_marks::test_manual_mark_creates_observation_and_keeps_agent_result"]}
         polarity: positive
         title: 复核通过后离开复测队列
         actor: 测试同事
@@ -236,6 +250,7 @@ sops:
         evidence_hints: ["各步骤截图", "浏览器请求记录", "SQLite 中两条结果的查询结果"]
 
       - id: SOP-04-N01
+        regression: {"check": "unit", "cases": ["tests.test_client::test_client_empty_fail_defect_shows_reason_without_request[native]", "tests.test_client::test_client_empty_fail_defect_shows_reason_without_request[programmatic]", "tests.test_marks::test_project_defect_prefix_default_custom_and_unset", "tests.test_statistics::test_manual_rates_progress_misjudgments_and_submission_order", "tests.test_pages::test_batch_page_matches_all_metrics_queues_rounds_and_misjudgments[manual-fail]"]}
         polarity: negative
         negative_type: invalid-input
         title: 判为失败必须填写本项目的缺陷链接
@@ -250,6 +265,7 @@ sops:
         evidence_hints: ["各步骤截图", "接口拒绝的响应原文", "SQLite 查询结果"]
 
       - id: SOP-04-N02
+        regression: {"check": "unit", "cases": ["tests.test_client::test_client_preserves_input_and_allows_retry_after_rejection[unauthorized]", "tests.test_scenario_file::test_all_write_endpoints_require_token[Bearer REDACTED]"]}
         polarity: negative
         negative_type: permission
         title: 令牌错误时不保存标记
@@ -273,6 +289,7 @@ sops:
     scenarios:
 
       - id: SOP-05-P01
+        regression: {"check": "unit", "cases": ["tests.test_statistics::test_changed_and_removed_scenarios_exclude_old_results_keep_history", "tests.test_pages::test_scenario_history_groups_fingerprints_and_preserves_removed_scenarios"]}
         polarity: positive
         title: 修改一条场景后只有它回到待执行
         actor: 开发岗代理
@@ -286,6 +303,7 @@ sops:
         evidence_hints: ["推送请求与响应原文", "批次摘要响应", "详情页截图", "SQLite 查询结果"]
 
       - id: SOP-05-N01
+        regression: {"check": "unit", "cases": ["tests.test_statistics::test_changed_and_removed_scenarios_exclude_old_results_keep_history", "tests.test_pages::test_scenario_history_groups_fingerprints_and_preserves_removed_scenarios", "tests.test_pages::test_removed_scenario_has_no_form_for_obsolete_content"]}
         polarity: negative
         negative_type: archived
         title: 从场景文件删除一条场景
@@ -309,6 +327,7 @@ sops:
     scenarios:
 
       - id: SOP-06-P01
+        regression: {"manual": "需要内网另一台机器上的浏览器打开总览页", "owner": "AdolphKevin", "trigger": "页面、统计口径或启动方式变化时"}
         polarity: positive
         title: 内网另一台机器打开总览页
         actor: 团队成员
@@ -322,6 +341,7 @@ sops:
         evidence_hints: ["另一台机器上的截图", "浏览器请求记录", "摘要响应原文"]
 
       - id: SOP-06-P02
+        regression: {"check": "unit", "cases": ["tests.test_export::test_agent_round_export_contains_only_contract_fields_and_relative_evidence"]}
         polarity: positive
         title: 导出的一轮被 team-workflow 登记
         actor: 团队成员
@@ -335,6 +355,7 @@ sops:
         evidence_hints: ["导出与解压的命令与输出", "results.jsonl 原文", "tw 命令原文与完整输出"]
 
       - id: SOP-06-N01
+        regression: {"check": "unit", "cases": ["tests.test_export::test_export_missing_resources_returns_specific_404[/api/v1/projects/github-com-demo-org-demo-app/batches/demo/rounds/99/export-round-not-found]"]}
         polarity: negative
         negative_type: not-found
         title: 导出不存在的轮次
