@@ -187,7 +187,7 @@ SOP-07 节点全部场景通过。
 建立 uv 项目（`pyproject.toml`、`uv.lock`、命令入口 `sop-board`、`src/sop_board/`），实现启动、存储、写入与读取接口和统计计算。测试放在 `tests/`，每个测试在临时数据目录与空闲端口以子进程启动真实服务，经 HTTP 核对响应、SQLite 行与证据文件；先写失败测试再实现。本任务一并提交本仓的 tw 接入文件。
 
 - 验收：A1、A2、A3、A7
-- 范围：pyproject.toml、uv.lock、src、tests、.gitignore、README.md、.tw/config.json、AGENTS.md、CLAUDE.md、docs/verification.md
+- 范围：pyproject.toml、uv.lock、src、tests、.gitignore、README.md、.tw/config.json、AGENTS.md、CLAUDE.md、docs/verification.md、docs/proposals
 - 前置任务：无
 
 ## 任务 T2：页面、复核与导出
