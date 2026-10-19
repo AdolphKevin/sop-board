@@ -64,6 +64,9 @@
     ],
     "authorization": [
       "unit"
+    ],
+    "cross-service": [
+      "unit"
     ]
   },
   "inputs": [],

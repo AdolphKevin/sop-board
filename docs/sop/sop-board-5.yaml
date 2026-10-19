@@ -1,0 +1,1239 @@
+# SOP-BOARD-5：修复闭环的验收场景
+# 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v8）的 D7、D20、D21、D24、D25、D26、D27、D28 与 docs/designs/SOP-BOARD-5.md（修订 2）的全局范围、I1–I8、D1；所引用的既有行为依据 docs/designs/SOP-BOARD-1.md 至 SOP-BOARD-4.md 的相应节，不依据当前实现的输出。
+# 版本 1（2026-10-20）：Claude 依据上述原文与测试代理 sop-board-5-tester 的 85 条用例编写，经 AdolphKevin 授权由 Claude 代批。 同日按测试代理复核补充 SOP-51-N13、SOP-54-P05，改写 SOP-58-P08，依据方案修订 2 的 I1、I4、I8 最新文字。
+# 真实 Jira 站点的接入验证按 AdolphKevin 2026-10-19 的决定延到外部接入阶段，本文件一律以模拟 Jira 验证；初始状态写明“本机已登录的 Codex”的场景用真实 Codex，其余用假 codex。
+#
+# 下文"测试看板"同 SOP-BOARD-1、2 的约定；"开发者令牌"指 SOP_BOARD_ADMIN_TOKEN（与写入令牌不同）；"修复页"指 /p/<项目键>/fixes；"attention"指 GET /api/v1/projects/<项目键>/attention。
+# "修复演示仓库"指执行者新建的临时 Git 仓库 /tmp/<随机>/fix-repo：主工作区在分支 main 且干净，git config user.name 为 Dev One、user.email 为 dev1@example.com；已提交的文件有
+# src/calc.py（植入缺陷）、tests/test_calc.py、scripts/check.sh（运行测试，按仓库外开关文件 /tmp/<随机>/chk-a.fail 中列出的用例名报告失败，在 {output}/results.xml 写 JUnit 报告）、
+# scripts/reload.sh（向仓库外的 /tmp/<随机>/reload.log 追加运行目录与环境变量名）、docs/sop/entries.yaml 与两个批次的场景文件：
+# docs/sop/b1.yaml（批次 b1）：节点 F1 含 F1-P01、F1-P02、F1-P03、F1-P04、F1-N01、F1-N02；节点 F2 含 F2-P01、F2-N01，二者的 regression 为 {check: chk-a, cases: [...]}。docs/sop/b2.yaml（批次 b2）：节点 G1 含 G1-P01、G1-N01。
+# entries.yaml 声明入口 app（surface http，address_env APP_URL）与顶层检查 chk-a（argv 为 sh scripts/check.sh {output}，format junit，report {output}/results.xml），全部场景的 verify 为 app。
+# "checkout 变体""start 变体""in-place 变体"分别把 app 的 candidate 设为 checkout；start（start 为 python3 -m demo_server，监听 SOP_PORT）；in-place（reload 为 sh scripts/reload.sh），随初始提交提交；场景未注明时用 checkout 变体。
+# "授权看板"指以 --writable-repo github.com/demo-org/fix-app=<修复演示仓库路径> 与开发者令牌启动的测试看板，项目键 github-com-demo-org-fix-app（下文记 P），缺陷链接前缀为缺省的 https://github.com/demo-org/fix-app/issues/。
+# "模拟 Jira"指执行者在本机启动的 HTTP 服务：GET /rest/api/3/issue/<单号> 对 ABC-1、ABC-2 返回标题、描述、状态、两条评论与一个附件名；POST …/comment 返回 201；GET …/transitions 返回按场景预设的流转（缺省为 id 31 目标状态名“待部署”与 id 41“已关闭”）；
+# POST …/transitions 返回 204；可按单号与请求预设返回 500 或直接断开连接；记录每个请求的方法、路径、请求头与正文。
+# "配 Jira"指授权看板另以 JIRA_URL=<模拟 Jira 地址>、JIRA_EMAIL=a@example.com、JIRA_API_TOKEN=tok-SECRET-5 启动；"配 Jira 与流转"另加 JIRA_FIXED_STATUS=待部署。配 Jira 时缺陷链接填 ABC-1 即规范化为 <模拟 Jira 地址>/browse/ABC-1。
+# "假 codex"指执行者写的可执行脚本，放在 PATH 最前：记录每次调用的参数、工作目录、环境变量名与标准输入；每个新会话在 --json 事件中写出 thread.started，修复会话的 thread_id 为 TH-1，复测会话依次为 TH-R1、TH-R2…；
+# 修复会话（新会话带 --output-schema 修复模式，或续接 TH-1）按预设在工作目录中改文件并写出最终输出；复测会话按预设在任务目录写 results.jsonl 与证据；可按预设等待、以非零码退出、在写出 thread.started 前退出或不写最终输出。
+# "预设一次通过"指：修复会话把全部问题判为 product、修改 src/calc.py 并在 tests 中列出运行结果；复测全部 pass；chk-a 通过。
+# "预置问题"指：先以同一数据目录（与同样的 Jira 配置）不带 --writable-repo 启动测试看板，以项目身份 github.com/demo-org/fix-app 推送修复演示仓库的 b1.yaml 与 b2.yaml，
+# 登记一轮全部场景 Agent pass，再按场景登记 Agent 结果与人工标记（回归检查结果按 SOP-BOARD-4 I5 的登记形式登记，执行者为“回归检查 chk-a”），停止后以授权看板的参数启动。
+# 任务进行中出现的问题经 SOP-BOARD-2 的标记接口（写入令牌）或 SOP-BOARD-1 的轮次接口登记。"运行环境服务"指执行者在本机启动的最小 HTTP 服务，按修复演示仓库主工作区 src/calc.py 的当前内容响应，授权看板以 APP_URL=<其地址> 启动。
+# 场景未注明时：修复任务编号记为 #N，修复会话编号为 TH-1，主工作区在 main。
+
+metadata:
+  requirement: "sop-board 修复闭环：问题触发与范围、修复会话与转开发者、提交与尝试计数、复测与合入保护、原地替换、候选提升、Jira 回写、状态记录与报告"
+  batch: "sop-board-5"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 的 D7、D20、D21、D24、D25、D26、D27、D28"
+      version: "v8（2026-10-19）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-5.md 的全局范围、I1–I8、D1 节"
+      version: "修订 2"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "修复闭环", "合入保护", "本机模拟 Jira"]
+
+sops:
+
+  - id: SOP-51
+    title: 触发、范围与准备
+    actor: "看板"
+    entry: "看板每 5 秒的修复调度、修复页与 GET /api/v1/projects/<项目键>/fixes"
+    must:
+      - "每个授权仓库同一时间只有一个进行中的修复任务"
+      - "未授权项目的仓库保持原样"
+    scenarios:
+
+      - id: SOP-51-P01
+        polarity: positive
+        title: "四类未解决的问题跨两个批次纳入同一个修复任务"
+        actor: "看板"
+        priority: P0
+        refs: ["I1", "D1"]
+        verify: api
+        initial_state: ["预置问题（配 Jira）：b1 的 F1-P01 人工 fail（缺陷 ABC-1）、F1-P02 人工 blocked（缺陷 https://github.com/demo-org/fix-app/issues/2）、F1-P03 Agent fail、F2-P01 的检查结果 fail；b2 的 G1-P01 Agent fail；其余场景最新为 Agent pass", "授权看板（配 Jira）启动，假 codex 的修复会话启动后等待 60 秒"]
+        steps: ["启动后等待 10 秒", "请求 GET /api/v1/projects/P/fixes", "打开首页与修复页", "读取该任务目录的 problems.json"]
+        expected: ["只有一个修复任务，种类为 fix，仓库为修复演示仓库", "问题为 b1 的 F1-P01、F1-P02、F1-P03、F2-P01 与 b2 的 G1-P01，修复页显示问题数 5", "problems.json 中每个问题带所属批次：四个为 b1，G1-P01 为 b2", "首页项目 P 显示该进行中的修复任务及其状态"]
+        forbidden_effects: ["最新为 pass 的场景被纳入", "为同一仓库建第二个修复任务"]
+        evidence_hints: ["接口响应", "首页与修复页截图", "problems.json"]
+
+      - id: SOP-51-N01
+        polarity: negative
+        negative_type: other
+        title: "Agent 的 blocked、skip 与受阻的回归检查不触发修复"
+        actor: "看板"
+        priority: P0
+        refs: ["I1"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 Agent blocked（finding 为环境未就绪）、F1-P02 Agent skip（finding 为依赖未部署）、F2-P01 的检查结果 blocked（finding 为受阻：缺少环境变量 CHK_DB）；其余场景最新为 Agent pass", "授权看板启动"]
+        steps: ["等待 15 秒", "请求 GET /api/v1/projects/P/fixes", "打开 b1 总览查看问题队列", "在修复演示仓库运行 git worktree list 与 git branch"]
+        expected: ["fixes 返回空列表", "F1-P01、F1-P02、F2-P01 仍在 b1 的问题队列", "worktree 列表只有主工作区，没有 sop-board/fix/ 分支"]
+        forbidden_effects: ["建立修复任务或调用 Codex"]
+        evidence_hints: ["接口响应", "总览截图", "Git 命令输出"]
+
+      - id: SOP-51-N02
+        polarity: negative
+        negative_type: stale-input
+        title: "只看当前内容指纹的最新结果：内容已变更或已被通过覆盖的不算问题"
+        actor: "看板"
+        priority: P1
+        refs: ["I1"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 曾有 Agent fail，随后推送的 b1 新版本修改了 F1-P01 的 expected，新指纹尚无结果，修复演示仓库的 b1.yaml 已同步为该版本并提交", "F1-P03 曾有 Agent fail，同一指纹之后又有一轮 Agent pass", "其余场景最新为 Agent pass", "授权看板启动"]
+        steps: ["等待 15 秒", "请求 GET /api/v1/projects/P/fixes", "打开 b1 总览"]
+        expected: ["fixes 返回空列表", "F1-P03 在复测队列，不在问题队列"]
+        forbidden_effects: ["建立修复任务"]
+        evidence_hints: ["接口响应", "总览截图"]
+
+      - id: SOP-51-N03
+        polarity: negative
+        negative_type: permission
+        title: "未授权项目的问题留在问题队列，仓库保持原样"
+        actor: "看板"
+        priority: P0
+        refs: ["I1", "I8"]
+        verify: api
+        initial_state: ["授权看板只授权修复演示仓库（项目 P），假 codex 在 PATH 最前", "修复演示仓库的副本 /tmp/<随机>/q-repo 以项目身份 github.com/demo-org/q-app 推送了 b1.yaml（项目 Q，未授权）：F1-P03 为 Agent fail，F1-P01 被标为失败并带缺陷链接 https://github.com/demo-org/q-app/issues/1", "已记录 q-repo 的 git status、git branch 与 git worktree list"]
+        steps: ["等待 15 秒", "不带令牌请求 GET /api/v1/projects/github-com-demo-org-q-app/fixes 并打开 /p/github-com-demo-org-q-app/fixes", "打开首页与项目 Q 的 b1 总览", "在 q-repo 再次运行三条 Git 命令并读取假 codex 记录"]
+        expected: ["项目 Q 的 fixes 接口返回 200 与空列表，修复页列表为空", "首页项目 Q 不显示修复任务", "F1-P01、F1-P03 留在项目 Q 的问题队列", "q-repo 三条命令的输出与之前相同，假 codex 没有被调用"]
+        forbidden_effects: ["为项目 Q 建修复任务", "q-repo 出现 worktree、分支或文件变化"]
+        evidence_hints: ["接口响应", "首页截图", "Git 命令前后输出"]
+
+      - id: SOP-51-N04
+        polarity: negative
+        negative_type: concurrency
+        title: "任务进行中出现的新问题在下一次尝试开始时纳入"
+        actor: "看板"
+        priority: P0
+        refs: ["I1", "I2", "D1"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail（缺陷 https://github.com/demo-org/fix-app/issues/1）", "授权看板，假 codex 预设第 1 次修复会话运行 20 秒、第 1 次复测 F1-P01 为 fail，第 2 次尝试一次通过", "修复任务 #N 已开始第 1 次尝试"]
+        steps: ["第 1 次修复会话运行中，把 b1 的 F1-N01 标为失败，缺陷链接填 https://github.com/demo-org/fix-app/issues/3", "等待 10 秒后请求 GET /api/v1/projects/P/fixes", "第 2 次尝试开始后读取 GET /api/v1/tasks/N、第 2 次尝试的输入文件与尝试记录"]
+        expected: ["仓库只有任务 #N 一个修复任务", "第 1 次尝试的复测范围不含 F1-N01", "任务 #N 的问题包含 F1-N01，纳入的尝试序号为 2", "第 2 次尝试的输入中“本次尝试新增的问题”列出 F1-N01", "第 2 次尝试的尝试记录写明新纳入 F1-N01"]
+        forbidden_effects: ["为 F1-N01 另建修复任务"]
+        evidence_hints: ["接口响应", "第 2 次尝试的输入文件"]
+
+      - id: SOP-51-P02
+        polarity: positive
+        title: "已合入的任务不算进行中，新问题建新任务"
+        actor: "看板"
+        priority: P1
+        refs: ["I1", "I8"]
+        verify: api
+        initial_state: ["授权看板，假 codex 预设一次通过", "修复任务 #N 已合入，此后没有未解决的问题"]
+        steps: ["把 b1 的 F1-N02 标为失败，缺陷链接填 https://github.com/demo-org/fix-app/issues/4", "等待 10 秒后请求 GET /api/v1/projects/P/fixes"]
+        expected: ["出现新的修复任务 #M，M 不同于 N，问题包含 F1-N02", "任务 #N 仍为已合入"]
+        forbidden_effects: ["F1-N02 并入任务 #N"]
+        evidence_hints: ["接口响应"]
+
+      - id: SOP-51-N05
+        polarity: negative
+        negative_type: duplicate
+        title: "已转开发者或所在任务被放弃的问题在出现新结果前不再纳入"
+        actor: "看板"
+        priority: P1
+        refs: ["I1", "I2", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail（缺陷 https://github.com/demo-org/fix-app/issues/1）、F1-P02 Agent fail", "授权看板，假 codex 预设：任务 #N 中 F1-P01 判为 product 并修复、F1-P02 判为 environment 并附理由与方案，复测与检查通过；之后的修复会话启动后等待 60 秒", "任务 #N 已合入，F1-P02 记为待开发者处理事项"]
+        steps: ["等待 15 秒后请求 fixes", "把 F1-P03 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/5），等新任务 #M 进入分析中后以开发者令牌放弃 #M", "等待 15 秒后请求 fixes", "登记一轮 Agent 结果 F1-P02 为 fail，等待 10 秒后请求 fixes"]
+        expected: ["#N 合入后 15 秒内没有为 F1-P02 建新任务", "#M 为已放弃，此后 15 秒内没有新任务", "F1-P02 有新结果后出现新任务 #K，问题只有 F1-P02，不含 F1-P03"]
+        forbidden_effects: ["同一批问题被反复建任务"]
+        evidence_hints: ["按时间记录的 fixes 响应"]
+
+      - id: SOP-51-N06
+        polarity: negative
+        negative_type: concurrency
+        title: "修复任务进行中时同一仓库的执行任务排队等修复结束"
+        actor: "开发者"
+        priority: P0
+        refs: ["I1"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；b2 的 G1-N01 没有结果", "授权看板，假 codex 预设修复会话运行 20 秒、一次通过", "修复任务 #N 处于分析中"]
+        steps: ["开发者以开发者令牌 POST /api/v1/projects/P/batches/b2/executions", "在 #N 已合入之前每秒读取该执行任务与假 codex 记录", "#N 已合入后继续读取执行任务"]
+        expected: ["请求返回执行任务", "#N 已合入之前该执行任务没有开始运行，没有启动执行会话", "#N 已合入之后该执行任务开始运行"]
+        forbidden_effects: ["执行会话与同一仓库的修复或复测会话同时运行"]
+        evidence_hints: ["按时间记录的任务状态", "假 codex 调用时间"]
+
+      - id: SOP-51-N07
+        polarity: negative
+        negative_type: concurrency
+        title: "已开始的执行任务运行到结束，修复任务排队等待"
+        actor: "看板"
+        priority: P1
+        refs: ["I1", "I8"]
+        verify: api
+        initial_state: ["授权看板，假 codex 预设执行会话运行 20 秒、修复一次通过", "b2 的 G1-N01 没有结果，开发者已发起 b2 的执行任务 #E 且正在运行"]
+        steps: ["#E 运行中把 b1 的 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1）", "修复任务建立后每秒读取修复任务、#E 与假 codex 记录", "#E 结束后继续读取修复任务"]
+        expected: ["#E 运行到已完成，没有被中止", "#E 结束前修复任务为排队中并附原因，没有启动修复会话", "#E 结束后修复任务开始，状态为分析中"]
+        forbidden_effects: ["修复会话与 #E 的执行会话同时运行"]
+        evidence_hints: ["按时间记录的任务状态", "假 codex 调用时间"]
+
+      - id: SOP-51-N08
+        polarity: negative
+        negative_type: other
+        title: "暂停自动任务时修复任务不开始，也不开始新的尝试"
+        actor: "开发者"
+        priority: P1
+        refs: ["I1"]
+        verify: api
+        initial_state: ["授权看板，假 codex 预设修复会话运行 10 秒、第 1 次复测运行 20 秒且 F1-P01 为 fail，第 2 次尝试一次通过", "开发者已以开发者令牌 POST /api/v1/automation/pause"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待 15 秒后读取修复任务与假 codex 记录", "POST /api/v1/automation/resume，等第 1 次复测运行时再次 pause", "第 1 次尝试结束后等待 15 秒，读取任务与假 codex 记录", "再次 resume 并等待任务结束"]
+        expected: ["第一次暂停期间修复任务为排队中，假 codex 没有被调用", "恢复后修复任务开始，状态为分析中", "第二次暂停时运行中的复测继续到结束，第 1 次尝试未通过后没有开始第 2 次尝试，没有新的修复会话调用", "再次恢复后开始第 2 次尝试，任务最终已合入"]
+        forbidden_effects: ["暂停期间启动修复会话"]
+        evidence_hints: ["按时间记录的任务状态", "假 codex 调用时间"]
+
+      - id: SOP-51-N09
+        polarity: negative
+        negative_type: other
+        title: "工作区有未提交的产品改动时任务为待提交，提交后以新提交开始"
+        actor: "开发者"
+        priority: P0
+        refs: ["I1"]
+        verify: api
+        initial_state: ["授权看板（数据目录 D），假 codex 预设一次通过", "修复演示仓库工作区未提交地修改了 src/calc.py"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待 10 秒", "读取修复页、假 codex 记录与 D/worktrees/", "在修复演示仓库提交该修改（提交 C1），等待 10 秒", "读取任务、git worktree list 与 sop-board/fix/N 的起点"]
+        expected: ["提交前任务为待提交，原因写明工作区有未提交的产品改动", "提交前假 codex 没有被调用，D/worktrees/ 下没有该任务的目录", "提交后任务开始，worktree 与修复分支以 C1 为起点"]
+        forbidden_effects: ["看板暂存、还原或提交开发者的改动"]
+        evidence_hints: ["修复页截图", "Git 命令输出"]
+
+      - id: SOP-51-N13
+        polarity: negative
+        negative_type: concurrency
+        title: "待提交期间出现的新问题在首次尝试的范围内"
+        actor: "开发者"
+        priority: P1
+        refs: ["I1", "I2", "D1"]
+        verify: api
+        initial_state: ["授权看板，假 codex 预设一次通过，修复会话运行 20 秒", "修复演示仓库工作区未提交地修改了 src/calc.py"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待任务 #N 为待提交", "登记一轮 Agent 结果 F1-P03 为 fail，等待 10 秒后请求 fixes", "在修复演示仓库提交该修改，等待修复会话启动", "读取 GET /api/v1/tasks/N 与第 1 次尝试的 problems.json"]
+        expected: ["F1-P03 出现后仍只有任务 #N，仍为待提交", "提交后第 1 次尝试的 problems.json 同时含 F1-P01 与 F1-P03", "任务 #N 中两个问题纳入的尝试序号都为 1", "第 1 次复测范围含 F1-P01 与 F1-P03"]
+        forbidden_effects: ["为 F1-P03 另建修复任务", "F1-P03 推迟到第 2 次尝试才纳入"]
+        evidence_hints: ["任务接口响应", "problems.json", "复测任务目录"]
+
+      - id: SOP-51-P03
+        polarity: positive
+        title: "只改了 docs/sop/ 时任务照常开始"
+        actor: "看板"
+        priority: P2
+        refs: ["I1"]
+        verify: api
+        initial_state: ["授权看板，假 codex 修复会话运行 20 秒", "修复演示仓库工作区只有新增未提交的 docs/sop/notes.md"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待 10 秒", "读取修复任务状态"]
+        expected: ["任务没有进入待提交，状态为分析中"]
+        forbidden_effects: []
+        evidence_hints: ["任务接口响应"]
+
+      - id: SOP-51-P04
+        polarity: positive
+        title: "以主工作区当前分支为基线建 worktree、修复分支与快照"
+        actor: "看板"
+        priority: P0
+        refs: ["I1", "D1"]
+        verify: api
+        initial_state: ["授权看板（数据目录 D），假 codex 修复会话运行 20 秒", "修复演示仓库主工作区在分支 feature-x（比 main 多一个提交 FX），工作区干净"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待任务 #N 进入分析中", "在修复演示仓库运行 git worktree list、git branch -v 与 git status", "读取 GET /api/v1/tasks/N 与任务目录清单"]
+        expected: ["D/worktrees/fix-N/ 是修复演示仓库的一个 worktree", "分支 sop-board/fix/N 存在，起点为 FX", "任务记录基线分支 feature-x、修复分支 sop-board/fix/N 与 worktree 路径", "任务目录有场景、入口与用例并集的快照", "主工作区仍在 feature-x 且干净"]
+        forbidden_effects: ["主工作区的分支或文件发生变化"]
+        evidence_hints: ["Git 命令输出", "任务接口响应", "任务目录清单"]
+
+      - id: SOP-51-N10
+        polarity: negative
+        negative_type: other
+        title: "主工作区处于分离头指针时转待开发者处理，切回分支后重试"
+        actor: "开发者"
+        priority: P1
+        refs: ["I1", "I8"]
+        verify: api
+        initial_state: ["授权看板，假 codex 预设一次通过", "修复演示仓库主工作区已执行 git checkout --detach，工作区干净"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待 10 秒", "读取修复页、假 codex 记录、git worktree list 与 git branch", "在主工作区 git checkout main，以开发者令牌 POST /api/v1/tasks/N/retry", "等待任务结束"]
+        expected: ["任务为待开发者处理，原因为“主工作区不在分支上”", "假 codex 没有被调用，没有 worktrees/fix-N/ 与 sop-board/fix/N", "重试成功后任务重新准备，以 main 为基线建 worktree 并进入分析中", "任务最终已合入"]
+        forbidden_effects: ["看板切换主工作区的分支"]
+        evidence_hints: ["修复页截图", "Git 命令输出", "重试请求与响应"]
+
+      - id: SOP-51-P05
+        polarity: positive
+        title: "配置 Jira 时读取缺陷单内容供修复会话使用"
+        actor: "看板"
+        priority: P0
+        refs: ["I1", "I2"]
+        verify: api
+        initial_state: ["授权看板（配 Jira），假 codex 修复会话运行 20 秒", "模拟 Jira 中 ABC-1 有标题、描述、状态、两条评论与一个附件"]
+        steps: ["把 F1-P01 标为失败，缺陷链接填 ABC-1", "等待修复会话启动", "读取模拟 Jira 的请求记录与任务目录 problems.json"]
+        expected: ["模拟 Jira 收到读取 ABC-1 的请求，带 HTTP Basic 认证（a@example.com 与令牌）", "problems.json 中 F1-P01 的 Jira 单内容含标题、描述、状态、两条评论与附件名"]
+        forbidden_effects: []
+        evidence_hints: ["模拟 Jira 请求记录（认证头脱敏）", "problems.json"]
+
+      - id: SOP-51-N11
+        polarity: negative
+        negative_type: other
+        title: "Jira 读取失败时记下原因并以标记内容继续"
+        actor: "看板"
+        priority: P0
+        refs: ["I1"]
+        verify: api
+        initial_state: ["授权看板（配 Jira），模拟 Jira 对 ABC-2 的读取返回 500，假 codex 修复会话运行 20 秒"]
+        steps: ["把 F1-P01 标为失败，缺陷链接填 ABC-2，备注填“点击结算无响应”", "等待修复会话启动，读取修复页、任务接口与 problems.json"]
+        expected: ["任务记下 ABC-2 读取失败及原因", "修复会话照常启动，任务为分析中", "problems.json 中 F1-P01 带缺陷链接与备注“点击结算无响应”"]
+        forbidden_effects: ["因 Jira 读取失败而不开始修复"]
+        evidence_hints: ["修复页截图", "任务接口响应", "problems.json"]
+
+      - id: SOP-51-N12
+        polarity: negative
+        negative_type: incomplete-input
+        title: "未配置 Jira 或缺陷链接不是 Jira 链接时不读取 Jira"
+        actor: "看板"
+        priority: P2
+        refs: ["I1"]
+        verify: api
+        initial_state: ["模拟 Jira 已启动并记录请求", "假 codex 修复会话运行 20 秒"]
+        steps: ["以授权看板（配 Jira）启动，把 F1-P01 标为失败并填 https://github.com/demo-org/fix-app/issues/1，登记 F1-P03 的 Agent fail（无缺陷链接），等待修复会话启动", "读取模拟 Jira 的请求记录后停止看板", "以新的数据目录与不配 Jira 的授权看板重复同样的问题，等待修复会话启动", "再次读取模拟 Jira 的请求记录与任务状态"]
+        expected: ["两次运行模拟 Jira 都没有收到请求", "两次的修复任务都进入分析中"]
+        forbidden_effects: []
+        evidence_hints: ["模拟 Jira 请求记录", "任务接口响应"]
+
+  - id: SOP-52
+    title: 修复会话与转开发者
+    actor: "看板与修复会话"
+    entry: "修复会话（假 codex 或本机已登录的 Codex）与 POST /api/v1/tasks/<任务编号>/approve"
+    must:
+      - "同一任务的各次尝试用同一个修复会话"
+      - "不为 product 以外的问题改代码"
+    scenarios:
+
+      - id: SOP-52-P01
+        polarity: positive
+        title: "首个尝试用新会话命令、workspace-write、可联网，工作目录为 worktree"
+        actor: "看板"
+        priority: P0
+        refs: ["I2", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail（缺陷 ABC-1）", "授权看板（配 Jira，环境另含 SOP_BOARD_TOKEN 与 SOP_BOARD_ADMIN_TOKEN），假 codex 修复会话运行 10 秒后写出最终输出"]
+        steps: ["等待修复会话启动，运行中读取任务状态", "会话结束后读取假 codex 记录的参数、工作目录、环境变量名与标准输入", "读取修复页与 GET /api/v1/tasks/N"]
+        expected: ["运行中任务为分析中", "参数含 exec、--json、-s workspace-write、-c sandbox_workspace_write.network_access=true、-C <数据目录>/worktrees/fix-N、--output-schema 与 -o", "--output-schema 指向的文件与随看板发行的 fix.schema.json 内容相同", "标准输入为空设备；环境变量名只在白名单内，没有 SOP_BOARD_TOKEN、SOP_BOARD_ADMIN_TOKEN 与任何 JIRA_ 开头的变量", "修复页与任务接口显示会话编号 TH-1"]
+        forbidden_effects: []
+        evidence_hints: ["假 codex 记录", "任务接口响应", "修复页截图"]
+
+      - id: SOP-52-P02
+        polarity: positive
+        title: "修复会话的输入文件与提示词"
+        actor: "看板"
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["预置问题（配 Jira）：F1-P01 先有 Agent fail（证据 evidence/f1p01.png），后被人工标为失败并带 ABC-1", "授权看板（配 Jira），假 codex 修复会话运行 20 秒"]
+        steps: ["等待修复会话启动", "读取任务目录的 problems.json、entries.json 与提示词"]
+        expected: ["problems.json 中 F1-P01 含批次 b1、场景快照、最新结果的实际结果、证据路径、缺陷链接与 ABC-1 的 Jira 单内容、此前的 Agent 结果 fail", "entries.json 的内容为修复演示仓库的入口声明", "提示词由随看板发行的 fix.md 生成，输入文件以绝对路径写出", "提示词要求对全部问题做一份根因分析，并把每个问题判为 product、execution、environment、scenario、requirement、unfixable 之一", "提示词要求只修 product 问题并从根因修复：直接替换错误的逻辑，不加兼容层，不保留新旧两套实现，不做只让个别场景通过的局部修补", "提示词要求按仓库的 AGENTS.md、CLAUDE.md 与已装技能修复，仓库约定 TDD 时先写能复现缺陷的失败测试", "提示词要求 docs/sop/ 下的场景文件与入口声明保持原样，改动留在 worktree 不提交", "提示词要求最终输出符合 fix.schema.json：root_cause、problems（batch、scenario、category、handling、reason）、changed_files、tests（command、result）、plan"]
+        forbidden_effects: []
+        evidence_hints: ["problems.json", "entries.json", "提示词全文"]
+
+      - id: SOP-52-P03
+        polarity: positive
+        title: "后续尝试用续接命令继续同一会话"
+        actor: "看板"
+        priority: P0
+        refs: ["I2", "I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设第 1 次复测 F1-P01 为 fail，第 2 次修复会话运行 10 秒，之后一次通过"]
+        steps: ["等第 2 次尝试开始，会话运行中读取任务状态", "读取假 codex 记录的第 2 次修复调用与第 2 次尝试的输入文件"]
+        expected: ["第 2 次修复调用为续接命令：根命令层 -s workspace-write，exec resume TH-1、--json、-o，带 -c sandbox_workspace_write.network_access=true，进程工作目录为 worktrees/fix-N", "会话编号仍为 TH-1", "第 2 次会话运行中任务为修复中", "第 2 次尝试的输入含第 1 次验证的证据"]
+        forbidden_effects: ["第 2 次尝试新开修复会话或使用 --last"]
+        evidence_hints: ["假 codex 记录", "任务接口响应", "输入文件"]
+
+      - id: SOP-52-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: "最终输出不符合 fix.schema.json 时本次尝试未通过"
+        actor: "看板"
+        priority: P1
+        refs: ["I2", "I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设第 1 次最终输出缺少 root_cause，第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 1 次尝试结束与第 2 次开始", "读取修复页的尝试记录与尝试次数、假 codex 记录"]
+        expected: ["第 1 次尝试为未通过，尝试记录写明输出不符合模式的原因", "第 1 次尝试结束时尝试次数为 1，没有启动复测会话", "第 2 次尝试以续接命令 exec resume TH-1 开始"]
+        forbidden_effects: ["不合模式的输出被当作通过"]
+        evidence_hints: ["修复页截图", "假 codex 记录"]
+
+      - id: SOP-52-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: "最终输出遗漏某个问题时本次尝试未通过"
+        actor: "看板"
+        priority: P1
+        refs: ["I2", "I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail、F1-P03 Agent fail", "授权看板，假 codex 预设第 1 次最终输出的 problems 只列 F1-P01 并修改了 src/calc.py，第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 1 次尝试结束", "读取尝试记录、尝试次数与假 codex 记录"]
+        expected: ["第 1 次尝试为未通过，尝试记录写明遗漏 F1-P03", "尝试次数为 1，没有启动复测会话"]
+        forbidden_effects: []
+        evidence_hints: ["尝试记录", "假 codex 记录"]
+
+      - id: SOP-52-P04
+        polarity: positive
+        title: "非 product 问题记为待开发者处理事项，product 问题照常修复"
+        actor: "看板"
+        priority: P0
+        refs: ["I2", "I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail、F1-P03 Agent fail", "授权看板，假 codex 预设第 1 次 F1-P01 为 product 并修改 src/calc.py，F1-P03 为 environment 并附理由与方案；复测会话运行 20 秒"]
+        steps: ["等待第 1 次修复会话结束", "读取修复页的待开发者处理事项、修复分支提交与任务状态", "读取复测会话的范围"]
+        expected: ["F1-P03 记为待开发者处理事项，显示判定 environment、理由与方案", "修复分支有一个新提交，只含 src/calc.py 的改动", "任务进入复测中，没有因 F1-P03 转为待开发者处理", "复测范围只有 F1-P01"]
+        forbidden_effects: ["为 F1-P03 修改代码"]
+        evidence_hints: ["修复页截图", "git show 输出", "复测任务目录"]
+
+      - id: SOP-52-N03
+        polarity: negative
+        negative_type: other
+        title: "全部问题都不是 product 时任务转待开发者处理且不改代码"
+        actor: "看板"
+        priority: P0
+        refs: ["I2", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01、F1-P02、F1-P03、F1-N01、F1-N02 均为 Agent fail", "授权看板，假 codex 预设依次判为 execution、environment、scenario、requirement、unfixable，各附理由与方案，没有改动文件"]
+        steps: ["等待修复会话结束", "读取修复页、修复分支与假 codex 记录", "不带令牌请求 attention"]
+        expected: ["任务为待开发者处理", "五个问题都列为待开发者处理事项，各带判定、理由与方案", "修复分支没有新提交，没有启动复测会话", "attention 中有该任务的 developer-action 项"]
+        forbidden_effects: ["修改 worktree 中的文件"]
+        evidence_hints: ["修复页截图", "Git 命令输出", "attention 响应"]
+
+      - id: SOP-52-P05
+        polarity: positive
+        title: "开发者批准方案后同一会话以续接命令继续"
+        actor: "开发者"
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["按 SOP-52-N03 得到的任务 #N 为待开发者处理，会话 TH-1，已完成 1 次尝试", "假 codex 预设续接后把 F1-P01 改判为 product 并修改 src/calc.py，复测会话运行 20 秒且通过"]
+        steps: ["开发者 POST /api/v1/tasks/N/approve，Authorization: Bearer <开发者令牌>，正文 note 为“按方案改用新的计费规则”", "读取响应、假 codex 的调用记录与提示词、任务 #N"]
+        expected: ["请求成功", "看板以续接命令 exec resume TH-1 继续同一会话，本次提示词附上“按方案改用新的计费规则”", "任务开始第 2 次尝试，状态离开待开发者处理"]
+        forbidden_effects: ["新开修复会话"]
+        evidence_hints: ["请求与响应原文（令牌脱敏）", "假 codex 记录", "任务接口响应"]
+
+      - id: SOP-52-N04
+        polarity: negative
+        negative_type: other
+        title: "任务不在待开发者处理时批准方案返回 409"
+        actor: "开发者"
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["授权看板，同一项目此前的任务 #M 已合入", "当前任务 #N 为复测中，假 codex 复测会话等待 60 秒"]
+        steps: ["以开发者令牌 POST /api/v1/tasks/N/approve，note 为 x", "对 #M 发同一请求", "读取两个任务与假 codex 记录"]
+        expected: ["两次都返回 409，error_code 为 task-state-invalid", "两个任务的状态与会话编号不变，没有新的 Codex 调用"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "假 codex 记录"]
+
+      - id: SOP-52-N05
+        polarity: negative
+        negative_type: permission
+        title: "批准、重试与放弃只接受开发者令牌"
+        actor: "测试岗"
+        priority: P0
+        refs: ["I2", "I8"]
+        verify: api
+        initial_state: ["任务 #N 为待开发者处理"]
+        steps: ["以写入令牌 POST /api/v1/tasks/N/approve", "不带令牌 POST /api/v1/tasks/N/retry", "以写入令牌 POST /api/v1/tasks/N/cancel", "以开发者令牌 POST /api/v1/tasks/999999/approve", "读取任务 #N"]
+        expected: ["两次写入令牌请求返回 403，error_code 为 admin-required", "不带令牌的请求返回 401，error_code 为 unauthorized", "不存在的任务返回 404，error_code 为 task-not-found", "任务 #N 仍为待开发者处理"]
+        forbidden_effects: ["任务状态改变或调用 Codex"]
+        evidence_hints: ["请求与响应原文（令牌脱敏）"]
+
+      - id: SOP-52-P06
+        polarity: positive
+        title: "本机已登录的 Codex 做一份根因分析，先写失败测试再从根因修复"
+        actor: "看板与修复会话"
+        priority: P1
+        refs: ["I2", "I3", "I4"]
+        verify: cli
+        initial_state: ["本机已登录的 Codex", "修复演示仓库（checkout 变体）的 AGENTS.md 约定 TDD；src/calc.py 中一处折扣计算错误同时导致 F1-P01 与 F1-P03 不符合预期", "预置问题（配 Jira）：F1-P01 人工 fail（缺陷 ABC-1）、F1-P03 Agent fail，F1-N01 Agent fail 且实际结果为连接 127.0.0.1:5432 被拒绝"]
+        steps: ["以授权看板（配 Jira，PATH 中为真实 codex）启动，等待任务停止", "读取任务目录的 final.json、修复分支的提交与 diff、修复页", "在基线提交与修复提交上分别运行修复新增或修改的测试"]
+        expected: ["final.json 符合 fix.schema.json，root_cause 把 F1-P01 与 F1-P03 归为同一根因并判为 product，F1-N01 判为 environment 并附方案", "修复新增或修改的测试在基线提交上失败、在修复提交上通过", "diff 直接改正 src/calc.py 的错误逻辑，没有新增兼容分支或保留旧实现", "复测会话为新会话，只复测 F1-P01 与 F1-P03，任务最终已合入，F1-N01 列为待开发者处理事项"]
+        forbidden_effects: ["修改 docs/sop/ 下的文件或入口声明", "推送远端"]
+        evidence_hints: ["final.json", "git log 与 diff", "测试运行输出", "修复页截图"]
+
+  - id: SOP-53
+    title: 提交与尝试计数
+    actor: "看板"
+    entry: "修复分支的提交、尝试记录与修复页"
+    must:
+      - "场景文件与入口声明的改动不进入修复分支"
+      - "修复任务没有“失败”状态"
+    scenarios:
+
+      - id: SOP-53-P01
+        polarity: positive
+        title: "核对通过后在修复分支提交，提交信息与作者符合约定"
+        actor: "看板"
+        priority: P0
+        refs: ["I3"]
+        verify: api
+        initial_state: ["预置问题（配 Jira）：F1-P01 人工 fail（ABC-1）、F1-P02 人工 fail（ABC-2）、F1-N01 人工 fail（https://github.com/demo-org/fix-app/issues/7）、F1-P03 Agent fail、F2-P01 的检查结果 fail", "授权看板（配 Jira），假 codex 预设全部为 product 并修改 src/calc.py，复测会话等待 60 秒"]
+        steps: ["等待第 1 次修复会话结束", "运行 git log -1 --format='%an <%ae>%n%B' sop-board/fix/N 与 git rev-list --count <起点>..sop-board/fix/N"]
+        expected: ["修复分支在起点之上新增一个提交", "提交信息首行为“sop-board 修复 #N 第 1 次尝试”", "正文各行为 b1 F1-P01 ABC-1、b1 F1-P02 ABC-2、b1 F1-N01 https://github.com/demo-org/fix-app/issues/7、b1 F1-P03 Agent 失败、b1 F2-P01 回归检查失败（顺序不限）", "作者为 Dev One <dev1@example.com>"]
+        forbidden_effects: []
+        evidence_hints: ["git log 输出"]
+
+      - id: SOP-53-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: "修复改动涉及场景文件或入口声明时本次尝试未通过并恢复 worktree"
+        actor: "看板"
+        priority: P0
+        refs: ["I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；第 1 次尝试开始时 worktree 位于提交 C0", "情形甲：假 codex 修改 src/calc.py 与 docs/sop/b1.yaml", "情形乙：修复演示仓库另有已提交的 .tw/config.json（其 acceptance_entries 与 checks 为入口声明），假 codex 修改 src/calc.py 与 .tw/config.json", "情形丙：假 codex 修改 src/calc.py 与 docs/sop/entries.yaml"]
+        steps: ["三种情形分别以新的数据目录运行，等待第 1 次修复会话结束", "读取尝试记录、修复分支与 worktree 的 git status 和 HEAD、假 codex 记录"]
+        expected: ["三种情形第 1 次尝试都为未通过，原因为“修复改动涉及场景文件或入口声明”", "worktree 的 HEAD 为 C0，git status 没有改动", "修复分支没有新增提交，没有启动复测会话"]
+        forbidden_effects: ["场景文件或入口声明的改动进入任何提交"]
+        evidence_hints: ["尝试记录", "Git 命令输出"]
+
+      - id: SOP-53-N02
+        polarity: negative
+        negative_type: empty-input
+        title: "没有改动而仍有 product 问题时本次尝试未通过"
+        actor: "看板"
+        priority: P1
+        refs: ["I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设把 F1-P01 判为 product 但不改任何文件，第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 1 次修复会话结束", "读取尝试记录、修复分支与假 codex 记录"]
+        expected: ["本次尝试为未通过，原因为“修复会话没有改动文件”", "修复分支没有新增提交，没有启动复测会话"]
+        forbidden_effects: []
+        evidence_hints: ["尝试记录", "Git 命令输出"]
+
+      - id: SOP-53-P02
+        polarity: positive
+        title: "验证未通过时把证据交回同一会话，第二次通过后尝试次数为 2"
+        actor: "看板"
+        priority: P0
+        refs: ["I3", "I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设第 1 次复测 F1-P01 为 fail 并附证据，第 2 次修复后复测 pass，chk-a 均通过"]
+        steps: ["等待任务已合入", "读取修复页的尝试记录、修复会话编号与各次复测会话编号", "读取假 codex 第 2 次修复调用的参数与第 2 次尝试的输入"]
+        expected: ["第 1 次尝试为未通过，第 2 次为通过", "第 2 次修复为续接命令，会话编号 TH-1", "第 2 次输入含第 1 次的复测结果与证据", "修复页显示尝试次数 2", "两次复测的会话编号互不相同，且都不同于 TH-1"]
+        forbidden_effects: ["复用之前的复测会话"]
+        evidence_hints: ["修复页截图", "假 codex 记录", "输入文件"]
+
+      - id: SOP-53-N03
+        polarity: negative
+        negative_type: other
+        title: "连续三次未通过转待开发者处理并附每次的记录"
+        actor: "看板"
+        priority: P0
+        refs: ["I3", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设三次复测 F1-P01 都为 fail"]
+        steps: ["等待任务停止", "读取修复页、GET /api/v1/tasks/N、假 codex 记录与 main 的最新提交"]
+        expected: ["任务为待开发者处理", "三次尝试各附根因、改动文件、提交与复测证据", "记录修复会话编号 TH-1", "没有第 4 次修复调用，main 的最新提交与任务开始前相同"]
+        forbidden_effects: ["合入任何未通过验证的提交"]
+        evidence_hints: ["修复页截图", "任务接口响应", "Git 命令输出"]
+
+      - id: SOP-53-N04
+        polarity: negative
+        negative_type: interrupted
+        title: "会话异常中断不计次数，看板重试一次"
+        actor: "看板"
+        priority: P1
+        refs: ["I3"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "情形甲：假 codex 第 1 次修复会话写出 thread.started（TH-1）后以退出码 2 结束，重试时正常完成", "情形乙：假 codex 第 1 次修复会话在写出 thread.started 之前以退出码 2 结束，重试时正常完成"]
+        steps: ["两种情形分别以新的数据目录运行，等待任务进入复测中", "读取假 codex 调用记录与修复页的尝试次数"]
+        expected: ["情形甲的第 2 次调用为续接命令 exec resume TH-1", "情形乙的第 2 次调用为新会话命令（-C worktrees/fix-N）", "两种情形尝试次数都为 1，任务进入复测中"]
+        forbidden_effects: ["中断计入尝试次数"]
+        evidence_hints: ["假 codex 记录", "修复页截图"]
+
+      - id: SOP-53-N05
+        polarity: negative
+        negative_type: timeout
+        title: "重试后仍中断时转待开发者处理并写明中断"
+        actor: "看板"
+        priority: P1
+        refs: ["I3", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板以 SOP_BOARD_CODEX_TIMEOUT=5 启动，假 codex 修复会话写出 thread.started 后一直等待"]
+        steps: ["等待任务停止", "读取修复页、任务接口与假 codex 调用记录"]
+        expected: ["假 codex 共被调用两次：首次与一次重试", "任务为待开发者处理，原因写明会话中断（超时）", "尝试次数没有因两次中断增加", "任务从未处于“失败”状态"]
+        forbidden_effects: ["第三次调用 Codex"]
+        evidence_hints: ["修复页截图", "假 codex 记录"]
+
+  - id: SOP-54
+    title: 复测与合入保护
+    actor: "看板"
+    entry: "复测会话、回归检查与基线分支（checkout 与 start 入口）"
+    must:
+      - "验证未通过时基线分支保持原样"
+      - "看板不暂存、不还原、不强制移动分支、不推送"
+    scenarios:
+
+      - id: SOP-54-P01
+        polarity: positive
+        title: "新会话在 worktree 候选上复测 product 问题并运行全部回归检查"
+        actor: "看板"
+        priority: P0
+        refs: ["I4", "I6"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail、F1-P02 人工 fail、F1-P03 Agent fail；F1-P04 最新为 Agent pass，没有回归声明", "授权看板（checkout 变体），假 codex 预设 F1-P01、F1-P02 为 product，F1-P03 为 environment；复测会话运行 10 秒且 F1-P01、F1-P02 pass；chk-a 通过"]
+        steps: ["等待第 1 次提交完成，复测运行中读取任务状态", "读取复测会话的调用参数、任务目录中的复测范围与 chk-a 的运行目录", "读取尝试记录与候选记录"]
+        expected: ["复测运行中任务为复测中", "复测会话为新会话命令，编号不同于 TH-1", "复测范围为 F1-P01 与 F1-P02，不含已转开发者的 F1-P03 与未出问题的 F1-P04", "复测在 worktrees/fix-N 的候选提交上进行，chk-a 在同一候选上运行一次，覆盖 F2-P01 与 F2-N01", "本次验证通过，复测与检查结果存为第 1 次尝试的候选记录"]
+        forbidden_effects: ["重跑 F1-P04 等其余场景"]
+        evidence_hints: ["任务接口响应", "假 codex 记录", "checks 目录"]
+
+      - id: SOP-54-N01
+        polarity: negative
+        negative_type: other
+        title: "问题场景复测未全部通过时验证未通过，结果不进入批次统计"
+        actor: "看板"
+        priority: P0
+        refs: ["I4", "I6"]
+        verify: api
+        initial_state: ["预置问题：F1-P01、F1-P02 均为人工 fail", "授权看板，假 codex 预设第 1 次复测 F1-P01 pass、F1-P02 fail，chk-a 通过，第 2 次修复会话等待 60 秒", "已记录 b1 的轮次表与 Agent 验收通过率"]
+        steps: ["等待第 1 次尝试结束", "读取尝试记录与候选记录", "读取 b1 总览的轮次表与 Agent 验收通过率、main 的最新提交"]
+        expected: ["第 1 次尝试为未通过", "复测结果存为第 1 次尝试的候选记录", "b1 的轮次表与 Agent 验收通过率与之前相同", "main 没有变化"]
+        forbidden_effects: ["候选结果登记为批次轮次"]
+        evidence_hints: ["任务接口响应", "总览截图"]
+
+      - id: SOP-54-N02
+        polarity: negative
+        negative_type: other
+        title: "回归检查失败时即使问题场景通过也算验证未通过"
+        actor: "看板"
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "chk-a 的开关文件使 F2-P01 声明的一个用例失败", "授权看板，假 codex 预设第 1 次复测 F1-P01 pass，第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 2 次尝试开始", "读取尝试记录、main 的最新提交与第 2 次尝试的输入"]
+        expected: ["第 1 次尝试为未通过，原因写明 chk-a 失败", "main 没有合入修复", "第 2 次尝试的输入含 chk-a 的失败证据"]
+        forbidden_effects: []
+        evidence_hints: ["尝试记录", "输入文件", "Git 命令输出"]
+
+      - id: SOP-54-N03
+        polarity: negative
+        negative_type: other
+        title: "start 入口候选启动失败算一次未通过并把日志交回"
+        actor: "看板"
+        priority: P1
+        refs: ["I3", "I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板（start 变体），start 命令在第 1 次尝试中输出 port in use 并以退出码 1 结束，之后正常启动", "假 codex 第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 2 次尝试开始", "读取尝试记录、假 codex 记录与第 2 次尝试的输入"]
+        expected: ["第 1 次尝试为未通过，原因为候选启动失败并附退出码与输出末行", "第 1 次没有启动复测会话", "第 2 次尝试的输入含候选启动日志 start.log", "尝试次数为 2"]
+        forbidden_effects: []
+        evidence_hints: ["尝试记录", "输入文件"]
+
+      - id: SOP-54-P02
+        polarity: positive
+        title: "基线检出在干净的开发者工作区时以 --ff-only 合入"
+        actor: "看板"
+        priority: P0
+        refs: ["I4", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，主工作区在 main 且干净，验证期间 main 不前进，假 codex 预设一次通过"]
+        steps: ["每秒读取任务状态直到已合入", "在修复演示仓库运行 git log -1 main、git status 与 git reflog -1 main"]
+        expected: ["验证通过后任务为待合入，随后为已合入", "main 的最新提交等于候选提交", "主工作区的文件含修复改动，git status 干净", "main 的 reflog 最新一条为快进合入 sop-board/fix/N"]
+        forbidden_effects: ["产生新的合并提交"]
+        evidence_hints: ["按时间记录的任务状态", "Git 命令输出"]
+
+      - id: SOP-54-P03
+        polarity: positive
+        title: "基线无冲突前进时先在 worktree 合入基线再验证一次"
+        actor: "看板"
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设一次通过，第 1 次复测会话运行 20 秒", "第 1 次复测运行中开发者在主工作区 main 提交只改 README.md 的提交 C1"]
+        steps: ["等待任务已合入", "读取尝试记录、假 codex 的复测调用与 main 的历史"]
+        expected: ["worktree 中生成合入 C1 的合并提交", "对合并提交再复测并运行检查一次，计入第 1 次尝试，尝试次数为 1", "main 含 C1 与修复改动，最新提交为该合并提交", "任务为已合入"]
+        forbidden_effects: ["改写 C1"]
+        evidence_hints: ["尝试记录", "git log --graph 输出", "假 codex 记录"]
+
+      - id: SOP-54-N04
+        polarity: negative
+        negative_type: concurrency
+        title: "基线前进且冲突时中止合入并转待开发者合入"
+        actor: "看板"
+        priority: P0
+        refs: ["I4", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设修改 src/calc.py 第 3 行且复测通过，第 1 次复测会话运行 20 秒", "复测运行中开发者在 main 提交对 src/calc.py 第 3 行的不同修改 C2"]
+        steps: ["等待任务停止", "读取修复页、main 的最新提交与 worktree 的 git status"]
+        expected: ["任务为待开发者合入，原因写明合入基线时冲突", "main 的最新提交为 C2，不含修复改动", "worktree 中没有进行中的合并，git status 干净"]
+        forbidden_effects: ["自动解决冲突或修改 main"]
+        evidence_hints: ["修复页截图", "Git 命令输出"]
+
+      - id: SOP-54-N05
+        polarity: negative
+        negative_type: concurrency
+        title: "基线前进后的追加验证失败算本次尝试未通过"
+        actor: "看板"
+        priority: P1
+        refs: ["I3", "I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设第 1 次复测 pass、对合并提交的追加复测 F1-P01 为 fail，第 2 次修复会话等待 60 秒", "第 1 次复测运行中开发者在 main 提交只改 README.md 的 C1"]
+        steps: ["等待第 2 次尝试开始", "读取尝试记录、main 的最新提交与假 codex 记录"]
+        expected: ["第 1 次尝试为未通过，原因写明合入基线后的追加验证未通过", "main 的最新提交为 C1，不含修复改动", "第 2 次尝试以续接命令 exec resume TH-1 开始"]
+        forbidden_effects: []
+        evidence_hints: ["尝试记录", "Git 命令输出", "假 codex 记录"]
+
+      - id: SOP-54-N06
+        polarity: negative
+        negative_type: concurrency
+        title: "工作区有冲突的未提交修改时 Git 拒绝合入，工作区保持原样"
+        actor: "看板"
+        priority: P0
+        refs: ["I4", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设修改 src/calc.py 且一次通过，复测会话运行 20 秒", "复测运行中开发者在主工作区未提交地修改 src/calc.py"]
+        steps: ["复测运行中记录主工作区的 git diff 与 git stash list", "等待任务停止后再次运行 git diff、git stash list 与 git log -1 main"]
+        expected: ["任务为待开发者合入，原因写明 Git 因未提交修改拒绝快进", "git diff 与之前完全相同，git stash list 没有新增", "main 的最新提交未变"]
+        forbidden_effects: ["暂存、还原或覆盖开发者的未提交修改"]
+        evidence_hints: ["前后两次 Git 命令输出", "修复页截图"]
+
+      - id: SOP-54-P04
+        polarity: positive
+        title: "合入成功而工作区另有未提交修改时记录并保留该修改"
+        actor: "看板"
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 预设修改 src/calc.py 且一次通过，复测会话运行 20 秒", "复测运行中开发者在主工作区未提交地修改 README.md"]
+        steps: ["等待任务结束", "读取修复页、主工作区 git diff 与 main 的最新提交"]
+        expected: ["任务为已合入", "任务记录“工作区含未经验收的修改”", "README.md 的未提交修改仍在，main 的最新提交为候选提交"]
+        forbidden_effects: ["丢失或提交开发者的未提交修改"]
+        evidence_hints: ["修复页截图", "Git 命令输出"]
+
+      - id: SOP-54-P05
+        polarity: positive
+        title: "基线分支检出在其他 linked worktree 时在该目录快进合入"
+        actor: "看板"
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；修复演示仓库另有分支 feature-y", "授权看板，任务以 main 为基线，假 codex 预设一次通过，复测会话运行 20 秒", "复测运行中开发者在主工作区 git switch feature-y，再运行 git worktree add /tmp/<随机>/main-wt main"]
+        steps: ["记录主工作区的分支、git status 与 feature-y 的最新提交", "等待任务结束", "读取修复页、/tmp/<随机>/main-wt 的 git log -1 与 git status、main 的 reflog，并再次读取主工作区与 feature-y"]
+        expected: ["快进合入在 /tmp/<随机>/main-wt 中运行（main 的 reflog 最新一条为快进合入 sop-board/fix/N）", "main 的最新提交等于候选提交，/tmp/<随机>/main-wt 的文件含修复改动且 git status 干净", "任务为已合入", "主工作区仍在 feature-y，文件与 git status 不变，feature-y 的最新提交不变"]
+        forbidden_effects: ["看板切换主工作区的分支或修改 feature-y"]
+        evidence_hints: ["Git 命令输出", "修复页截图"]
+
+      - id: SOP-54-N07
+        polarity: negative
+        negative_type: concurrency
+        title: "开发者已把主工作区切到别的分支时转待开发者合入"
+        actor: "看板"
+        priority: P0
+        refs: ["I4", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；修复演示仓库另有分支 feature-y", "授权看板，任务以 main 为基线，假 codex 预设一次通过，复测会话运行 20 秒", "复测运行中开发者在主工作区 git switch feature-y"]
+        steps: ["记录 main 与 feature-y 的最新提交", "等待任务停止", "读取修复页与两个分支的最新提交"]
+        expected: ["任务为待开发者合入，原因写明主工作区当前分支为 feature-y", "main 与 feature-y 的最新提交都没有变化"]
+        forbidden_effects: ["看板在其他目录检出 main 或以 fetch、update-ref 等方式更新 main"]
+        evidence_hints: ["修复页截图", "Git 命令输出"]
+
+      - id: SOP-54-N08
+        polarity: negative
+        negative_type: other
+        title: "合入的各种情形中看板都不暂存、不还原、不强制移动分支、不推送"
+        actor: "看板"
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["修复演示仓库配置了本机裸仓库 origin，已推送 main 与 feature-y，已记录 origin 的全部引用"]
+        steps: ["依次按 SOP-54-P02、SOP-54-P03、SOP-54-N04、SOP-54-N06、SOP-54-P04、SOP-54-N07 的情形运行", "每个情形结束后运行 git stash list、git reflog main、git reflog feature-y 与 git ls-remote origin"]
+        expected: ["git stash list 始终为空", "main 与 feature-y 的 reflog 中没有看板产生的 reset 或强制更新", "origin 的引用与开始前完全相同"]
+        forbidden_effects: ["git push", "git stash", "git reset 或 git branch -f 作用于基线与开发者分支"]
+        evidence_hints: ["每个情形后的 Git 命令输出"]
+
+  - id: SOP-55
+    title: 原地替换
+    actor: "看板"
+    entry: "in-place 入口的回归检查、快进合入、reload 与运行环境复测"
+    must:
+      - "回归检查未通过时不替换"
+      - "看板不自动回退已替换的代码"
+    scenarios:
+
+      - id: SOP-55-P01
+        polarity: positive
+        title: "检查先行，通过后直接替换、运行 reload、在运行环境复测并直接登记"
+        actor: "看板"
+        priority: P0
+        refs: ["I5", "I6"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板（in-place 变体，环境含 APP_URL、SOP_BOARD_TOKEN、SOP_BOARD_ADMIN_TOKEN、JIRA_URL、JIRA_EMAIL 与 JIRA_API_TOKEN），运行环境服务已启动", "主工作区在 main 且干净，假 codex 预设一次通过"]
+        steps: ["等待任务已合入", "按时间读取 chk-a 的运行目录、main 的 reflog、reload.log 与复测调用记录", "读取 b1 的轮次表与最新轮次", "读取假 codex 记录的修复与复测会话的环境变量名"]
+        expected: ["chk-a 先在 worktrees/fix-N 上运行并通过", "随后 main 快进到修复提交", "然后 reload 在修复演示仓库目录运行一次", "最后新的执行会话（编号不同于 TH-1）复测 F1-P01，其环境含 APP_URL", "复测结果直接登记为 b1 的 Agent 轮次，note 为“运行环境按 HEAD 记录，未经核实”", "任务为已合入", "修复会话、复测会话与 reload 的环境中没有 SOP_BOARD_TOKEN、SOP_BOARD_ADMIN_TOKEN 与任何 JIRA_ 开头的变量"]
+        forbidden_effects: ["看板启动或停止运行环境服务"]
+        evidence_hints: ["reload.log", "Git reflog", "假 codex 记录", "轮次接口响应"]
+
+      - id: SOP-55-P02
+        polarity: positive
+        title: "未声明 reload 时跳过并直接复测"
+        actor: "看板"
+        priority: P2
+        refs: ["I5"]
+        verify: api
+        initial_state: ["in-place 变体去掉 reload 后已提交，运行环境服务已启动", "预置问题：F1-P01 人工 fail；假 codex 预设一次通过"]
+        steps: ["等待任务结束", "读取 reload.log、尝试记录与 b1 的轮次表"]
+        expected: ["reload.log 没有新记录", "合入后照常复测 F1-P01 并登记为 Agent 轮次", "任务为已合入"]
+        forbidden_effects: []
+        evidence_hints: ["reload.log", "尝试记录"]
+
+      - id: SOP-55-N01
+        polarity: negative
+        negative_type: other
+        title: "回归检查失败时不替换并交回修复会话"
+        actor: "看板"
+        priority: P0
+        refs: ["I5"]
+        verify: api
+        initial_state: ["授权看板（in-place 变体），运行环境服务已启动", "预置问题：F1-P01 人工 fail；chk-a 的开关文件使 F2-P01 声明的一个用例失败；假 codex 第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 2 次尝试开始", "读取 main 的最新提交、reload.log、假 codex 调用记录与尝试记录"]
+        expected: ["第 1 次尝试为未通过，原因写明 chk-a 失败", "main 没有变化", "reload 没有运行，没有启动运行环境复测会话", "第 2 次尝试以续接命令 exec resume TH-1 开始"]
+        forbidden_effects: ["替换开发者的代码"]
+        evidence_hints: ["Git 命令输出", "reload.log", "假 codex 记录"]
+
+      - id: SOP-55-N02
+        polarity: negative
+        negative_type: other
+        title: "reload 退出码非零时本次尝试未通过，已合入的代码保留"
+        actor: "看板"
+        priority: P1
+        refs: ["I5"]
+        verify: api
+        initial_state: ["授权看板（in-place 变体），reload.sh 第 1 次输出 reload failed 并以退出码 3 结束，之后正常；chk-a 通过", "预置问题：F1-P01 人工 fail；假 codex 第 2 次修复会话等待 60 秒"]
+        steps: ["等待第 2 次尝试开始", "读取尝试记录、main 的历史、假 codex 记录与第 2 次尝试 worktree 的起点"]
+        expected: ["第 1 次尝试为未通过，原因附 reload 的输出 reload failed", "第 1 次没有启动运行环境复测", "main 保留第 1 次的修复提交", "第 2 次尝试的 worktree 以 main 的最新提交为起点"]
+        forbidden_effects: ["回退 main"]
+        evidence_hints: ["尝试记录", "Git 命令输出"]
+
+      - id: SOP-55-N03
+        polarity: negative
+        negative_type: other
+        title: "运行环境复测未通过时在已替换的代码上继续下一次尝试"
+        actor: "看板"
+        priority: P1
+        refs: ["I5"]
+        verify: api
+        initial_state: ["授权看板（in-place 变体），运行环境服务已启动", "预置问题：F1-P01 人工 fail；假 codex 预设第 1 次运行环境复测 F1-P01 为 fail，第 2 次为 pass"]
+        steps: ["第 1 次尝试结束后记录 main 的最新提交 H1", "等待任务已合入", "读取第 2 次尝试 worktree 与修复分支的起点、分支名与 b1 的轮次表"]
+        expected: ["H1 含第 1 次的修复提交", "第 2 次尝试的修复分支仍名为 sop-board/fix/N，worktree 与该分支以 H1 为起点", "两次复测都登记为 b1 的 Agent 轮次，note 都为“运行环境按 HEAD 记录，未经核实”", "任务为已合入"]
+        forbidden_effects: ["回退第 1 次已替换的代码"]
+        evidence_hints: ["Git 命令输出", "轮次接口响应"]
+
+      - id: SOP-55-N04
+        polarity: negative
+        negative_type: other
+        title: "三次未通过时保留已替换的代码并列出合入的全部提交"
+        actor: "看板"
+        priority: P0
+        refs: ["I5", "I8"]
+        verify: api
+        initial_state: ["授权看板（in-place 变体），运行环境服务已启动", "预置问题：F1-P01 人工 fail；假 codex 预设三次运行环境复测 F1-P01 都为 fail"]
+        steps: ["等待任务停止", "读取修复页与 main 的历史"]
+        expected: ["任务为待开发者处理", "main 保留三次合入的修复提交，没有回退提交", "修复页列出本任务合入 main 的三个提交与每次的证据"]
+        forbidden_effects: ["git revert 或 reset main"]
+        evidence_hints: ["修复页截图", "git log 输出"]
+
+      - id: SOP-55-P03
+        polarity: positive
+        title: "问题既有 in-place 入口又有其他入口时整个任务按 in-place 处理"
+        actor: "看板"
+        priority: P1
+        refs: ["I5"]
+        verify: api
+        initial_state: ["修复演示仓库的入口声明改为 web（candidate in-place，address_env APP_URL，reload 为 sh scripts/reload.sh）与 api（candidate checkout），F1-P01 的 verify 为 web，F1-P03 的 verify 为 api，已提交", "运行环境服务已启动", "预置问题：F1-P01 人工 fail、F1-P03 Agent fail；假 codex 预设一次通过"]
+        steps: ["等待任务结束", "按时间读取 chk-a 运行、main 的 reflog、reload.log 与复测调用记录", "读取 b1 的轮次表"]
+        expected: ["提交后先在 worktree 运行 chk-a，通过后快进合入 main 并运行 reload", "F1-P01 与 F1-P03 都在合入之后复测，结果直接登记为 b1 的 Agent 轮次", "任务为已合入"]
+        forbidden_effects: ["F1-P03 在合入前于 worktree 上复测"]
+        evidence_hints: ["按时间排列的记录", "轮次接口响应"]
+
+      - id: SOP-55-P04
+        polarity: positive
+        title: "本机已登录的 Codex 完成 in-place 项目的修复"
+        actor: "看板与修复会话"
+        priority: P1
+        refs: ["I2", "I5"]
+        verify: cli
+        initial_state: ["本机已登录的 Codex", "修复演示仓库（in-place 变体，AGENTS.md 不约定 TDD），运行环境服务已启动，src/calc.py 的缺陷使 F1-P01 不符合预期", "预置问题：F1-P01 Agent fail"]
+        steps: ["以授权看板（PATH 中为真实 codex，环境含 APP_URL）启动，等待任务停止", "读取 final.json、main 的历史、reload.log 与 b1 的轮次表"]
+        expected: ["final.json 符合 fix.schema.json，F1-P01 判为 product", "chk-a 通过后 main 快进到修复提交，reload 运行一次", "新的执行会话在运行环境中复测 F1-P01 为 pass，登记为 Agent 轮次并附 note“运行环境按 HEAD 记录，未经核实”", "任务为已合入"]
+        forbidden_effects: ["修改 docs/sop/ 下的文件或入口声明", "推送远端"]
+        evidence_hints: ["final.json", "git log 输出", "reload.log", "轮次接口响应"]
+
+  - id: SOP-56
+    title: 登记与提升
+    actor: "看板"
+    entry: "候选记录、批次轮次表与看板重启"
+    must:
+      - "提升以任务、尝试与批次为幂等键"
+      - "未通过的候选只计入修复统计"
+    scenarios:
+
+      - id: SOP-56-P01
+        polarity: positive
+        title: "合入后最后一次通过的候选记录提升为各批次的 Agent 轮次"
+        actor: "看板"
+        priority: P0
+        refs: ["I6", "I4", "D1"]
+        verify: api
+        initial_state: ["预置问题：b1 的 F1-P01 人工 fail、b2 的 G1-P01 Agent fail；b1 的 F1-P04 最新为 Agent pass，没有回归声明", "授权看板，假 codex 预设第 1 次复测 fail，第 2 次复测（会话 TH-R2，执行时间 T2）全部 pass"]
+        steps: ["等待任务已合入", "读取 b1、b2 的轮次表、新轮次的结果行与批次产品指纹", "读取 b1 的复测队列与待执行队列"]
+        expected: ["b1 与 b2 各新增一个 Agent 轮次，结果行来自第 2 次尝试的候选记录", "新轮次的执行者为 TH-R2，实现者为 TH-1，执行时间为 T2", "新轮次的产品为合入后 main 的提交号与产品指纹，批次产品指纹随之更新", "第 1 次未通过的候选没有登记为轮次", "F1-P01、G1-P01 在复测队列", "F1-P04 没有被重跑，出现在待执行队列"]
+        forbidden_effects: []
+        evidence_hints: ["轮次接口响应", "批次总览截图"]
+
+      - id: SOP-56-P02
+        polarity: positive
+        title: "重启后重复提升结果不变"
+        actor: "看板"
+        priority: P1
+        refs: ["I6"]
+        verify: api
+        initial_state: ["任务 #N 已合入并已提升，b1 有对应轮次"]
+        steps: ["记录 b1 的轮次表与统计", "以同一数据目录重启看板，等待 10 秒", "再次读取 b1 的轮次表与统计"]
+        expected: ["b1 没有新增轮次，轮次表与统计与重启前相同"]
+        forbidden_effects: ["同一候选记录登记两次"]
+        evidence_hints: ["重启前后的接口响应"]
+
+      - id: SOP-56-N01
+        polarity: negative
+        negative_type: interrupted
+        title: "合入后、提升前中断时重启补做提升"
+        actor: "看板"
+        priority: P0
+        refs: ["I6"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；授权看板，假 codex 预设一次通过", "执行者在 main 快进到候选提交后、提升之前以 SIGKILL 终止看板进程"]
+        steps: ["确认 main 含候选提交而 b1 尚无对应轮次", "以同一数据目录重启看板，等待 10 秒", "读取 b1 的轮次表与任务 #N"]
+        expected: ["重启后 b1 出现由该候选记录提升的 Agent 轮次", "该轮次只有一个"]
+        forbidden_effects: []
+        evidence_hints: ["Git 命令输出", "重启前后的轮次接口响应"]
+
+      - id: SOP-56-N02
+        polarity: negative
+        negative_type: other
+        title: "未通过的候选记录只计入修复统计"
+        actor: "看板"
+        priority: P1
+        refs: ["I6", "I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；已记录 b1 的轮次表与 Agent 验收通过率", "授权看板，假 codex 预设三次复测都为 fail"]
+        steps: ["等待任务转待开发者处理", "读取 b1 的轮次表、Agent 验收通过率与 report.md 的自动修复统计"]
+        expected: ["b1 的轮次表与 Agent 验收通过率与任务开始前相同", "自动修复统计的总尝试次数计入这 3 次，转开发者数为 1"]
+        forbidden_effects: ["候选记录登记为批次轮次"]
+        evidence_hints: ["接口响应", "report.md"]
+
+  - id: SOP-57
+    title: 收尾与 Jira 回写
+    actor: "看板"
+    entry: "已合入任务的收尾与模拟 Jira 的 REST API v3"
+    must:
+      - "Jira 回写失败不影响任务已合入"
+      - "令牌不出现在任务目录、页面、接口响应与日志中"
+    scenarios:
+
+      - id: SOP-57-P01
+        polarity: positive
+        title: "已合入后删除 worktree 与已合入的修复分支，问题场景回到复测队列"
+        actor: "看板"
+        priority: P0
+        refs: ["I7"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail；授权看板，假 codex 预设一次通过", "任务 #N 已合入"]
+        steps: ["在修复演示仓库运行 git worktree list 与 git branch --list 'sop-board/fix/*'", "查看数据目录 worktrees/ 与 b1 的复测队列"]
+        expected: ["worktrees/fix-N/ 已删除，不在 git worktree list 中", "分支 sop-board/fix/N 已删除", "F1-P01 在 b1 的复测队列等测试岗复核"]
+        forbidden_effects: ["删除 main 或其他非 sop-board/ 分支"]
+        evidence_hints: ["Git 命令输出", "总览截图"]
+
+      - id: SOP-57-P02
+        polarity: positive
+        title: "为每张 Jira 单写文档格式的评论并选同名流转"
+        actor: "看板"
+        priority: P0
+        refs: ["I7"]
+        verify: api
+        initial_state: ["授权看板（配 Jira 与流转），ABC-1 与 ABC-2 的可用流转为 id 31（待部署）与 id 41（已关闭）", "预置问题：F1-P01 人工 fail（ABC-1）、F1-P02 人工 fail（ABC-2）；假 codex 预设一次通过"]
+        steps: ["等待任务已合入", "读取模拟 Jira 的请求记录", "读取修复页的 Jira 回写结果"]
+        expected: ["ABC-1 与 ABC-2 各收到一次 POST /rest/api/3/issue/<单号>/comment，带 HTTP Basic 认证，正文为 Atlassian 文档格式", "评论含根因摘要、改动文件、修复提交号与合入的本机基线分支名 main、复测场景与结果，并注明“尚未部署到测试环境”", "每张单先收到 GET /rest/api/3/issue/<单号>/transitions，再收到以 id 31 的 POST /rest/api/3/issue/<单号>/transitions", "修复页对两张单分别显示评论成功、流转成功"]
+        forbidden_effects: ["以 id 41 流转", "建新的 Jira 单"]
+        evidence_hints: ["模拟 Jira 请求记录（认证头脱敏）", "修复页截图"]
+
+      - id: SOP-57-N01
+        polarity: negative
+        negative_type: not-found
+        title: "没有同名流转时不流转，记 Jira 状态待人工更新"
+        actor: "看板"
+        priority: P1
+        refs: ["I7", "I8"]
+        verify: api
+        initial_state: ["授权看板（配 Jira 与流转），ABC-1 的可用流转只有 id 41（已关闭）", "预置问题：F1-P01 人工 fail（ABC-1）；假 codex 预设一次通过"]
+        steps: ["等待任务已合入", "读取模拟 Jira 的请求记录、修复页与 attention"]
+        expected: ["收到评论请求与 GET …/transitions，没有 POST …/transitions", "ABC-1 记为“Jira 状态待人工更新”", "attention 中有该任务的 jira-manual 项", "任务为已合入"]
+        forbidden_effects: ["流转到其他状态"]
+        evidence_hints: ["模拟 Jira 请求记录", "修复页截图", "attention 响应"]
+
+      - id: SOP-57-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: "未设置 JIRA_FIXED_STATUS 时只写评论"
+        actor: "看板"
+        priority: P1
+        refs: ["I7"]
+        verify: api
+        initial_state: ["授权看板（配 Jira，不设 JIRA_FIXED_STATUS）", "预置问题：F1-P01 人工 fail（ABC-1）；假 codex 预设一次通过"]
+        steps: ["等待任务已合入", "读取模拟 Jira 的请求记录与修复页"]
+        expected: ["只有评论请求，没有任何 transitions 请求", "ABC-1 记为“Jira 状态待人工更新”"]
+        forbidden_effects: []
+        evidence_hints: ["模拟 Jira 请求记录", "修复页截图"]
+
+      - id: SOP-57-N03
+        polarity: negative
+        negative_type: disconnect
+        title: "评论失败时记录原因、照常流转，任务仍为已合入"
+        actor: "看板"
+        priority: P0
+        refs: ["I7", "I8"]
+        verify: api
+        initial_state: ["授权看板（配 Jira 与流转），模拟 Jira 对 ABC-1 的评论请求返回 500，对 ABC-2 的评论请求直接断开连接，两张单都有 id 31 的同名流转", "预置问题：F1-P01 人工 fail（ABC-1）、F1-P02 人工 fail（ABC-2）；假 codex 预设一次通过"]
+        steps: ["等待任务已合入后再等待 30 秒", "读取修复页、GET /api/v1/tasks/N、attention 与模拟 Jira 的请求记录", "读取 b1 的复测队列"]
+        expected: ["任务为已合入", "ABC-1 与 ABC-2 都记为评论失败并附原因", "两张单照常流转并记为流转成功", "每张单只收到一次评论请求，没有自动重试", "attention 列出该任务的 jira-manual 项", "F1-P01、F1-P02 在复测队列"]
+        forbidden_effects: ["任务因回写失败离开已合入"]
+        evidence_hints: ["修复页截图", "任务接口响应", "模拟 Jira 请求记录"]
+
+      - id: SOP-57-N04
+        polarity: negative
+        negative_type: incomplete-input
+        title: "非 Jira 链接或 Jira 变量未配齐时不回写"
+        actor: "看板"
+        priority: P1
+        refs: ["I7"]
+        verify: api
+        initial_state: ["模拟 Jira 已启动并记录请求", "情形甲：授权看板（配 Jira），问题为 F1-P01（缺陷 https://github.com/demo-org/fix-app/issues/1）与 F1-P03（Agent fail，无缺陷链接）", "情形乙：授权看板只配 JIRA_URL 与 JIRA_EMAIL、缺 JIRA_API_TOKEN，问题为 F1-P01（缺陷 ABC-1）", "两种情形假 codex 都预设一次通过"]
+        steps: ["两种情形分别以新的数据目录运行，等待任务已合入", "读取模拟 Jira 的请求记录与修复页"]
+        expected: ["两种情形模拟 Jira 都没有收到评论或流转请求", "两种情形任务都为已合入", "情形乙中 ABC-1 记为“Jira 未配置，未回写”"]
+        forbidden_effects: []
+        evidence_hints: ["模拟 Jira 请求记录", "修复页截图"]
+
+      - id: SOP-57-N05
+        polarity: negative
+        negative_type: other
+        title: "Jira 令牌不出现在任务目录、页面、接口响应与日志中"
+        actor: "看板"
+        priority: P0
+        refs: ["I7"]
+        verify: api
+        initial_state: ["授权看板（配 Jira 与流转），标准输出与错误输出重定向到文件；模拟 Jira 对 ABC-1 的评论返回 500 并在响应正文中回显收到的 Authorization 头，读取与流转正常", "预置问题：F1-P01 人工 fail（ABC-1）；假 codex 预设一次通过"]
+        steps: ["等待任务已合入", "在任务目录与数据目录全部文件中搜索 tok-SECRET-5 与 a@example.com:tok-SECRET-5 的 Base64 值", "在修复页 HTML、GET /api/v1/projects/P/fixes 与 GET /api/v1/tasks/N 的响应中搜索同样内容", "在看板输出文件中搜索同样内容"]
+        expected: ["所有位置都找不到 tok-SECRET-5 与对应的 Basic 认证值", "ABC-1 的评论失败及原因已记录"]
+        forbidden_effects: ["令牌或认证值写入任何文件、页面、响应或日志"]
+        evidence_hints: ["搜索命令与输出"]
+
+  - id: SOP-58
+    title: 状态、记录与报告
+    actor: "开发者与测试岗"
+    entry: "修复页 /p/<项目键>/fixes、首页、SOP 场景页、任务与 attention 接口、批次报告"
+    must:
+      - "读取接口不需要令牌"
+      - "未授权项目的修复列表为空"
+    scenarios:
+
+      - id: SOP-58-P01
+        polarity: positive
+        title: "修复任务状态依次为分析中、复测中、待合入、已合入并附原因"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["预置问题：F1-P01 人工 fail", "授权看板，假 codex 修复与复测会话各运行 10 秒，预设一次通过"]
+        steps: ["每秒不带令牌请求 GET /api/v1/tasks/N，记录状态与原因，直到已合入"]
+        expected: ["状态依次出现分析中、复测中、待合入、已合入", "每次读取的状态都附非空原因"]
+        forbidden_effects: []
+        evidence_hints: ["按时间记录的响应"]
+
+      - id: SOP-58-N01
+        polarity: negative
+        negative_type: interrupted
+        title: "重启后运行中的任务为已中断，等待中的状态保持，重试续接同一会话"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["授权看板另以 --writable-repo github.com/demo-org/fix-app-2=<修复演示仓库的副本 fix-repo-2> 授权第二个仓库", "项目 P 的任务 #N 处于修复中，会话 TH-1，假 codex 修复会话等待 60 秒", "fix-repo-2 的任务 #W 按 SOP-52-N03 的预设为待开发者处理"]
+        steps: ["终止看板进程，以同样的参数与数据目录重启", "读取 #N、#W 与项目 P 的 attention", "以开发者令牌 POST /api/v1/tasks/N/retry", "读取假 codex 调用记录"]
+        expected: ["重启后 #N 为已中断，#W 仍为待开发者处理", "重试前项目 P 的 attention 有 #N 的 interrupted 项", "重试后看板以续接命令 exec resume TH-1 继续同一会话"]
+        forbidden_effects: ["重启后自动续跑已中断的任务"]
+        evidence_hints: ["任务接口响应", "attention 响应", "假 codex 记录"]
+
+      - id: SOP-58-N02
+        polarity: negative
+        negative_type: other
+        title: "任务不在可重试状态时重试返回 409"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["同一项目此前的任务 #M 已合入", "当前任务 #N 为复测中，假 codex 复测会话等待 60 秒"]
+        steps: ["以开发者令牌 POST /api/v1/tasks/N/retry 与 POST /api/v1/tasks/M/retry", "读取两个任务与假 codex 记录"]
+        expected: ["两次都返回 409，error_code 为 task-state-invalid", "两个任务的状态不变，没有新的 Codex 调用"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-58-N03
+        polarity: negative
+        negative_type: not-found
+        title: "本机没有可用的 Codex 时为 Codex 不可用，恢复后重试"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["授权看板启动时 PATH 中的 codex 执行 --version 以非零码退出"]
+        steps: ["把 F1-P01 标为失败（缺陷 https://github.com/demo-org/fix-app/issues/1），等待 10 秒，读取修复页", "把 PATH 中的 codex 换回预设一次通过的假 codex，以开发者令牌 POST /api/v1/tasks/N/retry", "等待任务结束"]
+        expected: ["修复任务为 Codex 不可用，附原因", "重试后任务开始并最终已合入"]
+        forbidden_effects: []
+        evidence_hints: ["修复页截图", "任务接口响应"]
+
+      - id: SOP-58-N04
+        polarity: negative
+        negative_type: other
+        title: "放弃任务删除 worktree 与未合入的修复分支，已合入的提交保留"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8", "I5"]
+        verify: api
+        initial_state: ["授权看板（in-place 变体），同一项目此前的任务 #M 已合入", "按 SOP-55-N04 得到的任务 #N 为待开发者处理，main 含本任务合入的三个提交"]
+        steps: ["以开发者令牌 POST /api/v1/tasks/N/cancel", "读取 #N、git worktree list、git branch --list 'sop-board/fix/*' 与 main 的历史", "以开发者令牌 POST /api/v1/tasks/M/cancel"]
+        expected: ["#N 为已放弃", "worktrees/fix-N 与未合入的修复分支已删除", "main 中本任务合入的三个提交仍在", "对 #M 的放弃返回 409，error_code 为 task-state-invalid"]
+        forbidden_effects: ["回退 main 中已合入的提交"]
+        evidence_hints: ["请求与响应原文", "Git 命令输出"]
+
+      - id: SOP-58-P02
+        polarity: positive
+        title: "修复页列出任务并显示所选任务的完整记录与操作按钮"
+        actor: "开发者"
+        priority: P0
+        refs: ["I8"]
+        verify: web
+        initial_state: ["授权看板（配 Jira 与流转）：任务 #N 已合入（两次尝试、一个 environment 转开发者事项、ABC-1 评论与流转成功），之后的任务 #M 为待开发者处理"]
+        steps: ["在浏览器打开 /p/P/fixes", "选择 #N，点击一个复测证据链接"]
+        expected: ["列表显示 #N 与 #M 的编号、问题数、状态与原因、尝试次数、会话编号", "#N 详情显示根因分析、每个问题的判定与处理、每次尝试的提交、复测结果与证据链接、合入提交、待开发者处理事项与 Jira 回写结果", "页面有“批准方案”“重试”“放弃”按钮", "证据链接打开对应的证据文件"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "页面请求记录"]
+
+      - id: SOP-58-P03
+        polarity: positive
+        title: "首页显示授权项目进行中的修复任务"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: web
+        initial_state: ["授权项目 P 的任务 #N 处于修复中", "未授权项目 Q（按 SOP-51-N03 登记）有 Agent fail 的场景"]
+        steps: ["在浏览器打开首页"]
+        expected: ["项目 P 显示修复任务 #N 与状态“修复中”", "项目 Q 不显示修复任务"]
+        forbidden_effects: []
+        evidence_hints: ["截图"]
+
+      - id: SOP-58-P04
+        polarity: positive
+        title: "SOP 场景页与场景详情页标出修复中与待开发者处理的问题场景"
+        actor: "测试岗"
+        priority: P1
+        refs: ["I8"]
+        verify: web
+        initial_state: ["任务 #N 处于修复中（第 2 次尝试）：F1-P01 判为 product，F1-P03 判为 environment 已转开发者", "F1-N01 最新为 Agent blocked，不在任何修复任务中"]
+        steps: ["打开 /p/P/b/b1/scenarios", "点击 F1-P01 上的标记", "等 #N 已合入后再次打开 /p/P/b/b1/scenarios 与 F1-P01 的场景详情页"]
+        expected: ["F1-P01 标“修复中 #N”，F1-P03 标“待开发者处理 #N”", "点击标记打开项目 P 的修复页 /p/P/fixes", "F1-N01 没有修复标记", "#N 已合入后 F1-P01 与 F1-P03 不再标记，F1-P01 的场景详情历史中有“所属修复任务 #N”"]
+        forbidden_effects: []
+        evidence_hints: ["截图"]
+
+      - id: SOP-58-P05
+        polarity: positive
+        title: "修复列表接口与任务接口返回与修复页相同的内容"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["按 SOP-58-P02 的数据，任务 #N 已合入"]
+        steps: ["不带令牌请求 GET /api/v1/projects/P/fixes 与 GET /api/v1/tasks/N", "与修复页 #N 显示的各项对照"]
+        expected: ["两个接口不带令牌返回 200", "fixes 中 #N 的条目与 GET /api/v1/tasks/N 的内容相同", "内容包含编号、问题数、状态与原因、尝试次数、会话编号、根因分析、判定与处理、各次提交、复测结果与证据、合入提交、待开发者处理事项与 Jira 回写结果，与修复页一致"]
+        forbidden_effects: []
+        evidence_hints: ["接口响应", "修复页截图"]
+
+      - id: SOP-58-N05
+        polarity: negative
+        negative_type: permission
+        title: "身份栏未填开发者令牌时修复页按钮不发送请求"
+        actor: "开发者"
+        priority: P2
+        refs: ["I8"]
+        verify: web
+        initial_state: ["浏览器 localStorage 中没有 sop-board.admin-token", "任务 #N 为待开发者处理"]
+        steps: ["打开 /p/P/fixes，选择 #N，点击“批准方案”", "在浏览器开发者工具查看网络请求并读取任务 #N"]
+        expected: ["页面提示“请先在身份栏填写开发者令牌”", "没有发出 approve 请求，任务仍为待开发者处理"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "网络请求记录"]
+
+      - id: SOP-58-N06
+        polarity: negative
+        negative_type: not-found
+        title: "读取不存在的任务返回 404"
+        actor: "开发者"
+        priority: P2
+        refs: ["I8"]
+        verify: api
+        initial_state: ["授权看板已启动，任务 999999 不存在"]
+        steps: ["请求 GET /api/v1/tasks/999999"]
+        expected: ["返回 404，error_code 为 task-not-found"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-58-P06
+        polarity: positive
+        title: "attention 接口列出待开发者处理的事项与接续命令"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["授权看板（配 Jira 与流转）另授权 github.com/demo-org/fix-app-2=<修复演示仓库的副本 fix-repo-2>", "项目 P：任务 #A 已合入且 ABC-1 没有同名流转（Jira 状态待人工更新），之后的任务 #B 按 SOP-54-N04 为待开发者合入", "fix-repo-2 的主工作区处于分离头指针，其任务 #C 为待开发者处理且没有会话编号"]
+        steps: ["不带令牌、以 Host 头 board.local:<端口> 请求 GET /api/v1/projects/P/attention 与 GET /api/v1/projects/github-com-demo-org-fix-app-2/attention"]
+        expected: ["两次都返回 200，ok 为 true，items 每项含 kind、task、batch、reason、url、resume", "项目 P 的 items 含任务 #A 的 jira-manual 项与任务 #B 的 developer-merge 项", "url 是以 http://board.local:<端口> 开头的看板页面完整地址", "#A、#B 的 resume 为 codex resume TH-1 形式的命令（取各自的会话编号）", "fix-app-2 的 items 含任务 #C 的 developer-action 项，resume 为空字符串"]
+        forbidden_effects: []
+        evidence_hints: ["接口响应"]
+
+      - id: SOP-58-P07
+        polarity: positive
+        title: "报告的修复记录区块与自动修复统计"
+        actor: "开发者"
+        priority: P0
+        refs: ["I8"]
+        verify: api
+        initial_state: ["授权看板（配 Jira 与流转），b1 依次经历三个修复任务：#1 问题 F1-P01（ABC-1），一次通过已合入，评论与流转成功；#2 问题 F1-P02，第 1 次复测 fail、第 2 次通过已合入；#3 问题 F1-P03，三次复测 fail 转待开发者处理"]
+        steps: ["请求 GET /api/v1/projects/P/batches/b1/report.md", "按任务数据独立计算统计后与报告对照", "打开 b1 总览查看自动修复统计"]
+        expected: ["“修复记录”区块列出 #1、#2、#3 各自的问题场景、根因摘要、尝试次数（1、2、3）、结果（已合入、已合入、待开发者处理）、合入提交与 Jira 回写结果", "自动修复统计为任务数 3、问题数 3、已合入数 2、转开发者数 1、首次尝试即通过的任务数 1、总尝试次数 6", "b1 总览的自动修复统计与报告相同"]
+        forbidden_effects: []
+        evidence_hints: ["report.md", "独立计算脚本与输出", "总览截图"]
+
+      - id: SOP-58-P08
+        polarity: positive
+        title: "跨批次的修复任务出现在每个涉及批次的报告中"
+        actor: "开发者"
+        priority: P2
+        refs: ["I8"]
+        verify: api
+        initial_state: ["任务 #N 含 b1 的 F1-P01 与 b2 的 G1-P01：第 1 次复测 fail、第 2 次通过后已合入；b1、b2 没有涉及其他修复任务"]
+        steps: ["分别请求 b1 与 b2 的 report.md"]
+        expected: ["两份报告的“修复记录”区块都列出任务 #N", "b1 报告中 #N 的问题场景为 F1-P01，b2 报告中为 G1-P01", "两份报告中 #N 的问题数都为 1，尝试次数都为整个任务的 2", "两份报告的自动修复统计按本批次计问题：问题数都为 1"]
+        forbidden_effects: []
+        evidence_hints: ["两份 report.md"]
+
+      - id: SOP-58-N07
+        polarity: negative
+        negative_type: empty-input
+        title: "没有修复任务的批次在修复记录区块写暂无记录"
+        actor: "开发者"
+        priority: P1
+        refs: ["I8"]
+        verify: api
+        initial_state: ["b2 没有涉及任何修复任务，同项目的 b1 有已合入的任务 #N"]
+        steps: ["请求 GET /api/v1/projects/P/batches/b2/report.md"]
+        expected: ["“修复记录”区块写“暂无记录”", "不列出任务 #N"]
+        forbidden_effects: []
+        evidence_hints: ["report.md"]
