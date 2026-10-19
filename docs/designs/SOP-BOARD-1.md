@@ -1,16 +1,16 @@
 ---
 design: "D-sop-board-1"
 task: "SOP-BOARD-1"
-revision: 2
+revision: 3
 assessment: {"complexity":"complex","risks":["persistence","public-contract"],"effort":"约两个工作日代理时长","drivers":["新建服务：启动、存储、写入与读取接口、页面","接口与导出格式被 sop-verify 与 team-workflow 使用","测试岗与开发岗在同一份数据上协作，人工标记不得改写 Agent 结果"],"uncertainties":[],"required_skills":["Python","SQLite","HTTP","HTML 与原生 JavaScript"]}
 roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner":"AdolphKevin"}
 ---
 
 # SOP-BOARD-1：看板核心
 
-> 本文件是 tw 任务 SOP-BOARD-1 的方案原文。总体设计与决定见 team-workflow 仓库的 `docs/proposals/2026-10-19-standalone-sop-verification.md`（v7），本需求对应其第 8 节第二行。验收场景见 [docs/sop/sop-board.yaml](../sop/sop-board.yaml)。
+> 本文件是 tw 任务 SOP-BOARD-1 的方案原文。总体设计与决定见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v7 起草于 team-workflow，2026-10-19 随 v8 移入本仓），本需求对应其第 8 节 SOP-BOARD-1 一行。验收场景见 [docs/sop/sop-board.yaml](../sop/sop-board.yaml)。
 >
-> 状态：修订 2。修订 1 由 AdolphKevin 于 2026-10-19 批准；修订 2 按第 1 轮验收的三条观察补充启动与时间显示要求，AdolphKevin 同日要求本期修复。
+> 状态：修订 3。修订 1 由 AdolphKevin 于 2026-10-19 批准；修订 2 按第 1 轮验收的三条观察补充启动与时间显示要求，AdolphKevin 同日要求本期修复；修订 3 导入测试代理的 51 条用例核对覆盖后，补充场景并新增验收 A7（项目设置），经 AdolphKevin 授权由 Claude 代批。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -20,12 +20,12 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 技术选择：uv 管理的 Python 3.10 以上项目，命令入口 `sop-board`；Web 层用标准库 `http.server` 的多线程服务器；存储用标准库 `sqlite3`；运行依赖只有 PyYAML，开发依赖 pytest。页面由服务端渲染 HTML，交互用原生 JavaScript，不加载外网资源。
 
-- 需求级验收：A1、A2、A3、A4、A5、A6
+- 需求级验收：A1、A2、A3、A4、A5、A6、A7
 
 | 仓库 | 入口 | 操作 | 产生方 | 使用方 | 提交负责方 | 验收 |
 | --- | --- | --- | --- | --- | --- | --- |
 | self | uv run sop-board | 启动、停止、内网访问 | 启动看板的成员 | 团队成员 | sop-board | A1 |
-| self | /api/v1 写入接口 | 推送场景文件；上传证据；登记 Agent 轮次；登记人工标记 | sop-verify 与开发岗代理、测试岗页面 | 看板存储 | sop-board | A2、A3、A4、A5 |
+| self | /api/v1 写入接口 | 推送场景文件；上传证据；登记 Agent 轮次；登记人工标记；项目设置 | sop-verify 与开发岗代理、测试岗页面 | 看板存储 | sop-board | A2、A3、A4、A5、A7 |
 | self | 页面与 /api/v1 读取接口 | 查看队列、统计与场景历史；导出轮次 | 看板 | 测试岗、开发岗、team-workflow | sop-board | A4、A5、A6 |
 
 ## 启动与页面
@@ -124,7 +124,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 SOP-01 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-01
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -133,7 +133,7 @@ SOP-01 节点全部场景通过。
 SOP-02 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-02
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -142,7 +142,7 @@ SOP-02 节点全部场景通过。
 SOP-03 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-03
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -151,7 +151,7 @@ SOP-03 节点全部场景通过。
 SOP-04 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-04
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -160,7 +160,7 @@ SOP-04 节点全部场景通过。
 SOP-05 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-05
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -169,7 +169,16 @@ SOP-05 节点全部场景通过。
 SOP-06 节点全部场景通过。
 
 - 场景：docs/sop/sop-board.yaml#SOP-06
-- 依据：位置 AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin
+- 检查：unit
+- 验证：自动
+
+## 验收 A7：项目设置
+<!-- tw-section id=A7 type=acceptance depends=scope-global,I2 -->
+SOP-07 节点全部场景通过。
+
+- 场景：docs/sop/sop-board.yaml#SOP-07
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节；版本 v7（2026-10-19，现行 v8 保留其批准记录）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-1.md 的 I2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -177,7 +186,7 @@ SOP-06 节点全部场景通过。
 <!-- tw-section id=T1 type=task depends=scope-global,I1,I2,I3,D1,D2 -->
 建立 uv 项目（`pyproject.toml`、`uv.lock`、命令入口 `sop-board`、`src/sop_board/`），实现启动、存储、写入与读取接口和统计计算。测试放在 `tests/`，每个测试在临时数据目录与空闲端口以子进程启动真实服务，经 HTTP 核对响应、SQLite 行与证据文件；先写失败测试再实现。本任务一并提交本仓的 tw 接入文件。
 
-- 验收：A1、A2、A3
+- 验收：A1、A2、A3、A7
 - 范围：pyproject.toml、uv.lock、src、tests、.gitignore、README.md、.tw/config.json、AGENTS.md、CLAUDE.md、docs/verification.md
 - 前置任务：无
 
