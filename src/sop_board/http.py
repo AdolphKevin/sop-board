@@ -80,6 +80,12 @@ class Handler(BaseHTTPRequestHandler):
                 key, batch = unquote(match[1]), unquote(match[2])
                 self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True)).encode(), "text/html; charset=utf-8")
                 return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/cases", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                data = service.read_cases(key, batch)
+                scenarios = service.read_batch(key, batch, scenarios=True)["scenarios"]
+                self.respond(200, pages.cases(key, batch, data, scenarios).encode(), "text/html; charset=utf-8")
+                return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
                 self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario)).encode(), "text/html; charset=utf-8")
@@ -102,7 +108,7 @@ class Handler(BaseHTTPRequestHandler):
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
                               ("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
-            elif match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks)(?:/([0-9]+))?)?", path):
+            elif match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|cases|cases\.yaml)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]
                 if method == "PUT" and action == "scenario-file" and number is None:
                     result = service.push(key, batch, body)
@@ -110,6 +116,15 @@ class Handler(BaseHTTPRequestHandler):
                     result = service.round(key, batch, body)
                 elif method == "POST" and action == "marks" and number is None:
                     result = service.mark(key, batch, body)
+                elif method == "POST" and action == "cases" and number is None:
+                    result = service.upload_cases(key, batch, body)
+                elif method == "GET" and action == "cases" and number is None:
+                    result = service.read_cases(key, batch)
+                elif method == "GET" and action in ("cases.yaml", "scenario-file") and number is None:
+                    raw = service.cases_yaml(key, batch) if action == "cases.yaml" else service.scenario_file(key, batch)
+                    self.respond(200, raw, "text/yaml; charset=utf-8",
+                                 [("Content-Disposition", f"attachment; filename={action if action == 'cases.yaml' else 'scenarios.yaml'}")])
+                    return
                 elif method == "GET" and action in (None, "scenarios") and number is None:
                     result = service.read_batch(key, batch, scenarios=action == "scenarios")
                 elif method == "GET" and action == "rounds" and number is not None:

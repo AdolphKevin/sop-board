@@ -33,8 +33,8 @@ def layout(title, content):
 def home(data):
     projects = []
     for project in data["projects"]:
-        batches = "".join(f"<li><a href='{text(batch_url(project['key'], batch['name']))}'>"
-                          f"{text(batch['name'])}</a></li>" for batch in project["batches"])
+        batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
+                          f"{text(batch['name'])}</a>" + (" · 尚无场景" if batch["version"] is None else "") + "</li>" for batch in project["batches"])
         projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
                         f"<ul>{batches}</ul></section>")
     return layout("项目与批次", "<h1>项目与批次</h1>" + ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>"))
@@ -46,6 +46,10 @@ def ratio(value):
 
 def batch(project, data):
     base = batch_url(project, data["name"])
+    if data["version"] is None:
+        return layout("批次 " + data["name"], batch_nav(project, data["name"], "overview") +
+                      f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"
+                      f"<a href='{text(base + '/cases')}'>用例页</a>")
     api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
     metrics = "".join(f"<div id='metric-{key}'><dt>{label}</dt><dd>{ratio(data['statistics'][key])}</dd></div>"
                       for key, label in [("agent_pass_rate", "Agent 验收通过率"), ("manual_pass_rate", "人工复测通过率"),
@@ -172,7 +176,47 @@ def batch_nav(project, name, current):
     base = batch_url(project, name)
     return "<nav aria-label='批次导航'>" + "".join(
         f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
-        for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景")]) + "</nav>"
+        for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
+                                   ("cases", "/cases", "用例")]) + "</nav>"
+
+
+def cases(project, name, data, scenarios):
+    base = batch_url(project, name)
+    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}"
+    content = (batch_nav(project, name, "cases") + f"<h1>批次 {text(name)} · 用例</h1>" + identity_bar() +
+               f"<form id='cases-upload' action='{text(api + '/cases')}' method='post' novalidate>"
+               "<label>选择用例 YAML 文件<input name='file' type='file' accept='.yaml,.yml,text/yaml'></label>"
+               "<button type='submit'>上传用例</button><p data-cases-message='' role='status' aria-live='polite'></p>"
+               "<ul data-cases-problems='' role='alert'></ul><noscript>请启用 JavaScript 后上传。</noscript></form>"
+               f"<p>用例覆盖：{ratio(data['coverage'])}</p>" +
+               (f"<a href='{text(api + '/cases.yaml')}'>下载用例并集</a>" if data["uploads"] else ""))
+    rows = "".join(f"<tr data-upload='{u['upload']}'><th scope='row'>{u['upload']}</th>"
+                   f"<td>{text(u['filename'])}</td><td>{text(u['uploaded_by'])}</td><td>{time_tag(u['uploaded_at'])}</td>"
+                   f"<td>{u['case_count']}</td><td>{u['added']}</td><td>{u['updated']}</td></tr>" for u in data["uploads"])
+    content += ("<section><h2>上传记录</h2><div class='table-scroll'><table><thead><tr><th>序号</th><th>文件名</th>"
+                "<th>上传人</th><th>上传时间</th><th>条数</th><th>新增</th><th>更新</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table></div></section>")
+    current = {s["scenario"] for s in scenarios}
+    groups = {}
+    types = dict(functional="功能", ui="界面", security="安全", performance="性能", accessibility="无障碍")
+    for item in data["cases"]:
+        group = next((tag[len("section:"):] for tag in item["tags"] if tag.startswith("section:") and tag[len("section:"):].strip()), "未分组")
+        groups.setdefault(group, []).append(item)
+    for group in [g for g in groups if g != "未分组"] + (["未分组"] if "未分组" in groups else []):
+        content += f"<section class='case-group'><h2>{text(group)}</h2>"
+        for item in groups[group]:
+            content += (f"<article data-case='{text(item['id'])}'><h3>{text(item['id'])} · {text(item['title'])}</h3>"
+                        f"<p>优先级：{text(item['priority'])} · 类型：{types[item['type']]}</p>")
+            for field, label in [("preconditions", "前置条件"), ("steps", "步骤"), ("expected_results", "预期")]:
+                values = "".join(f"<li>{text(v)}</li>" for v in item.get(field, []))
+                content += f"<h4>{label}</h4><ul>{values}</ul>" if values else f"<h4>{label}</h4><p>未声明</p>"
+            content += (f"<a href='{text(base + '/s/' + quote(item['id'], safe=''))}'>已有对应场景</a>"
+                        if item["id"] in current else "<p>尚无对应场景</p>")
+            content += "</article>"
+        content += "</section>"
+    if not groups:
+        content += "<p>尚无用例，请选择文件上传。</p>"
+    return layout("用例 · " + name, content)
 
 
 def scenario_fields(body):

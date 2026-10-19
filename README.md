@@ -41,6 +41,12 @@ uv run sop-board --data ./board-data --host 0.0.0.0 --port 8787
 
 首次复核时在页面顶部的身份栏填写标记人与写入令牌，二者分别保存在当前浏览器的 `sop-board.marker`、`sop-board.token` 本地存储中，可随时更换。共享电脑使用后应清除该站点的本地存储。接口写入请求使用 `Authorization: Bearer <令牌>`。
 
+在批次导航点“用例”，选择 YAML 文件并点“上传用例”。上传人取身份栏中的标记人，写入令牌也沿用身份栏。页面会逐条显示不合规字段及文件行号；YAML 语法错误还会给出解析器原因与列号。上传失败不保存数据，也不会建立新批次。上传成功后刷新页面，显示上传记录及按 `section:` 标签分组的用例；没有该标签的归入“未分组”。每条用例标明是否已有同编号的当前场景，有对应场景时可直接打开。
+
+用例文件的顶层仅有 `metadata` 与非空的 `test_cases`。`metadata` 必填 `module`、`feature`、`owner` 和日期 `last_reviewed`（`YYYY-MM-DD`），可选字符串数组 `tags`。每条用例必填 `id`（如 `TC_DEMO_LOGIN_001`，格式为 `^TC_[A-Z0-9_]{3,}_[0-9]{3}$`）、`title`、`priority`（`P0`、`P1`、`P2`）、`type`（`functional`、`ui`、`security`、`performance`、`accessibility`），以及非空字符串数组 `steps`、`expected_results`、`tags`；可选 `description` 字符串、`preconditions` 字符串数组和 `auto` 布尔值。不接受其他字段，同一文件的用例编号不能重复。
+
+工具可向 `POST /api/v1/projects/<项目键>/batches/<批次>/cases` 提交 JSON 正文 `{"filename":"cases.yaml","content":"<YAML 原文>","uploaded_by":"<上传人>"}`。项目须先存在；成功上传可以建立尚无场景的新批次。历次上传取并集，同编号按最后一次上传的完整内容替换；与上一次原文完全相同的上传不会增加序号。`GET …/cases` 返回上传记录、当前并集和用例覆盖数；`GET …/cases.yaml` 下载并集，文件说明取最近一次上传的 `metadata`；`GET …/scenario-file` 下载最新场景原文，尚无场景时返回 404 `scenario-file-not-found`。已有数据目录启动时自动补建用例相关表，保留原有数据。
+
 人工标记接口只接受 `scenario`、`fingerprint`、`status`、`marker`、`defect_url`、`note`。状态只支持 `pass`、`fail`、`blocked`；通过不带缺陷链接，失败与受阻必须带链接。实际结果、问题记录与观察证据由看板生成，不再接收人工填写的 `actual`、`environment`、`finding`、`evidence`。观察记录使用 `marker`、`status`、`recorded_at`，有值时再写入 `defect_url` 与 `note`。按轮导出的 ZIP 保留原有 tw 结果格式，观察文件位于 `evidence/<序号>-observation-<轮次>.json`。
 
 缺陷链接去掉首尾空白后核对。启动前设置可选的 `JIRA_URL`（如 `https://example.atlassian.net`），即可填写 `ABC-1` 这样的 Jira 单号，或该站点的 `/browse/ABC-1` 完整链接；看板会去掉 Jira 链接中的查询参数与片段。也可填写符合项目缺陷链接前缀的完整链接，比较不区分大小写，内容保持原样。GitHub 项目默认前缀为该仓库的 Issues 地址；其他项目可通过项目设置接口登记 HTTPS 前缀。未配置 `JIRA_URL` 时，单号须改填完整链接；两种配置都没有时须先设置其中一种。已登记的旧链接保持原样。

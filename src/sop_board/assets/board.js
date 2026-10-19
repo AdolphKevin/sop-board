@@ -57,6 +57,60 @@
     if (value !== undefined) node.textContent = value;
     return node;
   };
+  const uploadForm = document.getElementById("cases-upload");
+  if (uploadForm) {
+    const fileInput = uploadForm.elements.namedItem("file");
+    const message = uploadForm.querySelector("[data-cases-message]");
+    const problems = uploadForm.querySelector("[data-cases-problems]");
+    const submit = uploadForm.querySelector("button[type='submit']");
+    let pending = false;
+    uploadForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      if (pending) return;
+      problems.replaceChildren();
+      if (!marker.value.trim()) {
+        show(message, "请先在身份栏填写标记人", "error");
+        marker.focus();
+        return;
+      }
+      if (!token.value.trim()) {
+        show(message, "请先在身份栏填写写入令牌", "error");
+        token.focus();
+        return;
+      }
+      const file = fileInput.files[0];
+      if (!file) {
+        show(message, "请选择用例 YAML 文件", "error");
+        fileInput.focus();
+        return;
+      }
+      pending = true;
+      submit.disabled = true;
+      saveIdentity();
+      try {
+        const content = await file.text();
+        const response = await fetch(uploadForm.action, {method: "POST",
+          headers: {"Content-Type": "application/json", Authorization: "Bearer " + token.value},
+          body: JSON.stringify({filename: file.name, content, uploaded_by: marker.value.trim()})});
+        const data = await response.json();
+        if (response.ok && data.ok) {
+          show(message, data.unchanged_upload ? "原文未变，保留已有上传。" : "用例上传成功。");
+          window.location.reload();
+        } else {
+          show(message, data.error_code || "上传失败", "error");
+          for (const problem of data.problems || []) {
+            const position = problem.line == null ? "文件" : "第 " + problem.line + " 行";
+            problems.appendChild(element("li", problem.field + " · " + position + "：" + problem.problem));
+          }
+        }
+      } catch {
+        show(message, "文件读取或网络请求失败，请核对上传记录后重试。", "error");
+      } finally {
+        pending = false;
+        submit.disabled = false;
+      }
+    });
+  }
   const resultTime = result => {
     const node = element("time", result.executed_at_display);
     node.setAttribute("datetime", result.executed_at);

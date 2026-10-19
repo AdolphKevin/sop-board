@@ -50,6 +50,19 @@ CREATE TABLE IF NOT EXISTS result_evidence (
     name TEXT NOT NULL, sha256 TEXT NOT NULL REFERENCES evidence(sha256),
     PRIMARY KEY(result_id,ordinal)
 );
+CREATE TABLE IF NOT EXISTS case_uploads (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
+    number INTEGER NOT NULL, filename TEXT NOT NULL, uploaded_by TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL, sha256 TEXT NOT NULL, metadata TEXT NOT NULL,
+    case_count INTEGER NOT NULL, added INTEGER NOT NULL, updated INTEGER NOT NULL,
+    UNIQUE(batch, number)
+);
+CREATE TABLE IF NOT EXISTS case_versions (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
+    case_id TEXT NOT NULL, upload INTEGER NOT NULL, body TEXT NOT NULL,
+    UNIQUE(batch, case_id, upload),
+    FOREIGN KEY(batch, upload) REFERENCES case_uploads(batch, number)
+);
 """
 
 
@@ -59,7 +72,12 @@ class Store:
         self.lock = threading.RLock()
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
-            db.executescript(SCHEMA)
+            # executescript 默认逐条提交；补表必须作为一个事务，失败时不留部分升级。
+            try:
+                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nCOMMIT;")
+            except BaseException:
+                db.rollback()
+                raise
 
     @contextmanager
     def connection(self):

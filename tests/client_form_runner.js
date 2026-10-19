@@ -68,8 +68,11 @@ const storage = {getItem: key => saved.get(key) ?? null, setItem: (key, value) =
 let currentUrl = new URL(input.location);
 const navigation = [];
 const windowHandlers = {};
+let reloads = 0;
 const location = {get href() {return currentUrl.href;}, get search() {return currentUrl.search;},
-  assign() {throw new Error("page navigation is forbidden");}, reload() {throw new Error("page reload is forbidden");}};
+  assign() {throw new Error("page navigation is forbidden");}, reload() {
+    assert.ok(input.case.startsWith("cases-"), "review must not reload"); reloads += 1;
+  }};
 const history = {pushState(_state, _title, url) {navigation.push(String(url)); currentUrl = new URL(url, currentUrl);},
   replaceState(_state, _title, url) {currentUrl = new URL(url, currentUrl);}};
 const window = {location, history, addEventListener(type, fn) {windowHandlers[type] = fn;}};
@@ -91,12 +94,12 @@ const q = s => document.querySelector(s);
 const qa = s => document.querySelectorAll(s);
 const identity = q("#review-identity");
 const marker = identity.querySelector("[name='marker']"), token = identity.querySelector("[name='token']");
-const form = q(".review-form"), card = form.closest(".scenario-card");
+const form = q(".review-form"), card = form?.closest(".scenario-card");
 const field = name => form.elements.namedItem(name);
 const button = status => form.querySelector(`[data-mark-status='${status}']`);
-const message = form.querySelector("[data-review-message]");
-const expanded = form.querySelector("[data-review-fields]");
-const submit = form.querySelector("button[type='submit']");
+const message = form?.querySelector("[data-review-message]");
+const expanded = form?.querySelector("[data-review-fields]");
+const submit = form?.querySelector("button[type='submit']");
 const click = element => element.dispatch("click");
 function fillIdentity() {marker.value = "Tester A"; token.value = "local-test-value";}
 function reply(status = "pass", round = 2) {
@@ -122,7 +125,9 @@ function assertSaved(status, round = 2) {
   assert.equal(currentUrl.href, input.location);
 }
 async function main() {
-  if (input.case.startsWith("real-") || input.case === "seven-filters") {
+  if (input.case.startsWith("cases-")) {
+    await runCasesUpload();
+  } else if (input.case.startsWith("real-") || input.case === "seven-filters") {
     await runBusinessCase();
   } else if (input.case === "identity-auto") {
     marker.value = "张三"; await marker.dispatch("input");
@@ -351,9 +356,10 @@ async function runBusinessCase() {
     else {await click(c.button("fail")); c.field("defect_url").value = "ABC-77"; await c.form.dispatch("submit");}
     assertResult(c, status);
     const result = q("[data-result-history]").querySelectorAll(".result").at(-1);
-    assert.equal(result.querySelector("h3").textContent, "第 2 轮 · 人工 · " + (status === "pass" ? "通过" : "不通过（失败）"));
+    const expectedRound = input.expectedRound || 2;
+    assert.equal(result.querySelector("h3").textContent, "第 " + expectedRound + " 轮 · 人工 · " + (status === "pass" ? "通过" : "不通过（失败）"));
     assert.ok(result.textContent.includes("张三"));
-    assert.ok(result.querySelector("a[download='observation-2.json']"));
+    assert.ok(result.querySelector("a[download='observation-" + expectedRound + ".json']"));
     assert.equal(q("[data-result-history]").querySelectorAll(".result").length, before + 1);
     assert.equal(requests.length, 1);
   } else if (input.case === "real-retry") {
@@ -408,5 +414,41 @@ async function runBusinessCase() {
     assert.equal(JSON.parse(requests[1].options.body).marker, "李四"); assert.equal(requests.length, 2);
   } else throw new Error("unknown real business case " + input.case);
   assert.equal(currentUrl.href, input.location);
+}
+async function runCasesUpload() {
+  const uploadForm = q("#cases-upload"), fileInput = uploadForm.elements.namedItem("file");
+  const status = q("[data-cases-message]"), problems = q("[data-cases-problems]");
+  let reads = 0;
+  fileInput.files = [{name: input.file?.filename || "cases.yaml", text: async () => {
+    reads += 1; return input.file?.content || "";
+  }}];
+  marker.value = input.case === "cases-missing-marker" ? "  " : " 李四 ";
+  token.value = input.case === "cases-missing-token" ? "" : "isolated-test";
+  const before = q("tr[data-upload='1']").textContent;
+  await uploadForm.dispatch("submit");
+  if (input.case.startsWith("cases-missing-")) {
+    assert.match(status.textContent, input.case.endsWith("marker") ? /请先在身份栏填写标记人/ : /写入令牌/);
+    assert.equal(reads, 0); assert.equal(requests.length, 0); assert.equal(reloads, 0);
+  } else {
+    assert.equal(reads, 1); assert.equal(requests.length, 1);
+    assert.deepEqual(JSON.parse(requests[0].options.body), {
+      filename: input.file.filename, content: input.file.content, uploaded_by: "李四"});
+    assert.equal(requests[0].options.method, "POST");
+    assert.equal(requests[0].options.headers.Authorization, "Bearer isolated-test");
+    if (input.case === "cases-success") {
+      assert.equal(reloads, 1);
+      assert.equal(saved.get("sop-board.marker"), "李四");
+    } else {
+      assert.equal(reloads, 0);
+      const items = problems.querySelectorAll("li");
+      assert.equal(items.length, 2);
+      assert.match(items[0].textContent, /test_cases.0.id.*第 12 行.*编号/);
+      assert.match(items[1].textContent, /test_cases.0.owner_note.*第 41 行.*owner_note/);
+      assert.match(status.textContent, /cases-invalid/);
+      assert.equal(q("tr[data-upload='1']").textContent, before);
+      assert.equal(qa("tr[data-upload]").length, 1);
+    }
+  }
+  assert.equal(uploadForm.querySelector("button[type='submit']").disabled, false);
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

@@ -11,10 +11,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import yaml
 
 from .errors import APIError, reject
+from .cases import load_cases
 from .defect_links import normalize
 from .evidence_types import content_type, is_text
 from .scenario_file import load_scenarios
-from .statistics import calculate
+from .statistics import calculate, ratio
 from .validation import Problems, validate_mark, validate_push, validate_round
 
 
@@ -62,6 +63,67 @@ class Service:
 
     def latest_version(self, db, batch):
         return db.execute("SELECT * FROM versions WHERE batch=? ORDER BY version DESC LIMIT 1", (batch["id"],)).fetchone()
+
+    def upload_cases(self, key, name, body):
+        document = load_cases(body)
+        with self.store.transaction() as db:
+            if not db.execute("SELECT 1 FROM projects WHERE key=?", (key,)).fetchone():
+                reject(404, "project-not-found", "project", "项目不存在")
+            db.execute("INSERT OR IGNORE INTO batches(project,name,path,product_digest) VALUES (?,?,'','')", (key, name))
+            batch = self.batch(db, key, name)
+            previous = db.execute("SELECT * FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1", (batch["id"],)).fetchone()
+            sha = hashlib.sha256(body["content"].encode()).hexdigest()
+            current = {item["id"]: item for item in self.case_union(db, batch)}
+            count = len(document["test_cases"])
+            if previous and previous["sha256"] == sha:
+                return dict(ok=True, upload=previous["number"], added=0, updated=0, unchanged=count,
+                            union_count=len(current), unchanged_upload=True)
+            number = previous["number"] + 1 if previous else 1
+            added = sum(item["id"] not in current for item in document["test_cases"])
+            updated = sum(item["id"] in current and item != current[item["id"]] for item in document["test_cases"])
+            db.execute("INSERT INTO case_uploads(batch,number,filename,uploaded_by,uploaded_at,sha256,metadata,case_count,added,updated) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?)", (batch["id"], number, body["filename"], body["uploaded_by"], now(),
+                       sha, canonical(document["metadata"]), count, added, updated))
+            for item in document["test_cases"]:
+                db.execute("INSERT INTO case_versions(batch,case_id,upload,body) VALUES (?,?,?,?)",
+                           (batch["id"], item["id"], number, canonical(item)))
+            return dict(ok=True, upload=number, added=added, updated=updated,
+                        unchanged=count - added - updated, union_count=len(current) + added)
+
+    def case_union(self, db, batch):
+        return [json.loads(row["body"]) for row in db.execute(
+            "SELECT v.body FROM case_versions v WHERE v.batch=? AND NOT EXISTS "
+            "(SELECT 1 FROM case_versions newer WHERE newer.batch=v.batch AND newer.case_id=v.case_id AND newer.upload>v.upload) "
+            "ORDER BY v.case_id", (batch["id"],))]
+
+    def read_cases(self, key, name):
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            batch = self.batch(db, key, name)
+            uploads = [dict(upload=row["number"], filename=row["filename"], uploaded_by=row["uploaded_by"],
+                            uploaded_at=row["uploaded_at"], case_count=row["case_count"], added=row["added"], updated=row["updated"])
+                       for row in db.execute("SELECT * FROM case_uploads WHERE batch=? ORDER BY number", (batch["id"],))]
+            cases = self.case_union(db, batch)
+            scenarios = {row[0] for row in db.execute("SELECT scenario FROM scenarios WHERE batch=? AND current=1", (batch["id"],))}
+            return dict(uploads=uploads, cases=cases, coverage=ratio(sum(item["id"] in scenarios for item in cases), len(cases)))
+
+    def cases_yaml(self, key, name):
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            batch = self.batch(db, key, name)
+            latest = db.execute("SELECT metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1", (batch["id"],)).fetchone()
+            if not latest:
+                reject(404, "cases-not-found", "cases", "尚无用例上传")
+            document = dict(metadata=json.loads(latest["metadata"]), test_cases=self.case_union(db, batch))
+            return yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode()
+
+    def scenario_file(self, key, name):
+        with self.store.connection() as db:
+            batch = self.batch(db, key, name)
+            version = self.latest_version(db, batch)
+            if not version:
+                reject(404, "scenario-file-not-found", "scenario-file", "尚无场景文件")
+            return version["content"].encode()
 
     def insert_round(self, db, batch, version, body, kind="agent"):
         number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
@@ -117,9 +179,9 @@ class Service:
         result = calculate(db, batch)
         result.pop("scenarios")
         version = self.latest_version(db, batch)
-        return dict(ok=True, name=batch["name"], version=version["version"],
-                    pushed_at=version["pushed_at"],
-                    scenario_file_sha256=version["sha256"], product_digest=batch["product_digest"], **result)
+        return dict(ok=True, name=batch["name"], version=version["version"] if version else None,
+                    pushed_at=version["pushed_at"] if version else None,
+                    scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
 
     def read_batch(self, key, name, scenarios=False):
         with self.store.connection() as db:

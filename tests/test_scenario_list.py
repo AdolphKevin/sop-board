@@ -23,7 +23,7 @@ def test_scenario_list_groups_all_current_scenarios_fields_results_and_navigatio
     assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
     listing = page(board, WEB + "/scenarios?filter=agent-pass")
     nav = listing.one("nav", **{"aria-label": "批次导航"})
-    assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", WEB), ("SOP 场景", WEB + "/scenarios")]
+    assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", WEB), ("SOP 场景", WEB + "/scenarios"), ("用例", WEB + "/cases")]
     assert nav.one("a", href=WEB + "/scenarios").attrs["aria-current"] == "page"
     assert page(board, WEB).one("nav", **{"aria-label": "批次导航"}).one("a", href=WEB).attrs["aria-current"] == "page"
     assert [s.attrs["data-node"] for s in listing.find_all("section", **{"class": "scenario-node"})] == ["N1", "N2"]
@@ -56,7 +56,8 @@ def test_scenario_page_without_version_explains_case_only_batch(board):
                    ("github-com-demo-org-demo-app", "cases-only", "", ""))
     doc = page(board, WEB.rsplit("/", 1)[0] + "/cases-only/scenarios")
     assert "尚无场景，测试岗上传用例后由合并生成" in doc.text
-    assert doc.one("a", href=WEB.rsplit("/", 1)[0] + "/cases-only/cases").text == "用例页"
+    links = doc.find_all("a", href=WEB.rsplit("/", 1)[0] + "/cases-only/cases")
+    assert [link.text for link in links] == ["用例", "用例页"]
     assert not doc.find_all("form")
 
 
@@ -89,7 +90,7 @@ def test_filters_count_current_fingerprints_and_latest_submission_order(board):
 
 
 def test_seven_scenario_fields_current_summaries_manual_labels_and_navigation(board_factory):
-    """SOP-21-P07/P08: complete fields, current-result columns, manual wording and two-item navigation."""
+    """SOP-21-P07/P08: complete fields, current-result columns, manual wording and batch navigation."""
     import re
     from review_helpers import F7_API, F7_IDS, F7_WEB, prepare_seven, seven_document, seven_mark
     board = board_factory(env={"TZ": "Asia/Shanghai", "JIRA_URL": "https://acme.atlassian.net"})
@@ -100,7 +101,7 @@ def test_seven_scenario_fields_current_summaries_manual_labels_and_navigation(bo
     for path, active in [(F7_WEB, F7_WEB), (F7_WEB + "/scenarios", F7_WEB + "/scenarios")]:
         doc = page(board, path)
         nav = doc.one("nav", **{"aria-label": "批次导航"})
-        assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", F7_WEB), ("SOP 场景", F7_WEB + "/scenarios")]
+        assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", F7_WEB), ("SOP 场景", F7_WEB + "/scenarios"), ("用例", F7_WEB + "/cases")]
         assert [a.attrs["href"] for a in nav.find_all("a") if "aria-current" in a.attrs] == [active]
         assert_same_origin_resources(board, doc)
     expected_queues = {"N1-P01": "待执行", "N1-P02": "问题", "N1-N01": "问题", "N1-N02": "问题",

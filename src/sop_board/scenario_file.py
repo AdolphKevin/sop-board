@@ -5,6 +5,7 @@ import math
 import yaml
 
 from .errors import APIError
+from .cases import syntax_problem
 
 
 NEGATIVE_TYPES = set("empty-input over-length not-found permission cross-tenant duplicate concurrency disconnect timeout archived invalid-input incomplete-input interrupted stale-input tampered-input other".split())
@@ -69,9 +70,7 @@ def load_scenarios(raw):
                     finite(child)
         finite(value)
     except yaml.YAMLError as error:
-        mark = getattr(error, "problem_mark", None)
-        raise APIError(422, "scenario-file-invalid", [dict(field="content", problem="YAML 语法不合法",
-                       line=mark.line + 1 if mark else 1)]) from error
+        raise APIError(422, "scenario-file-invalid", [syntax_problem(error)]) from error
 
     def shape(item, path, required, optional=()):
         if not isinstance(item, dict):
