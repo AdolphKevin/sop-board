@@ -360,8 +360,8 @@ sops:
         refs: ["I2"]
         verify: api
         initial_state: ["测试看板已推送演示场景文件"]
-        steps: ["发送 status: pass 并带 defect_url 的标记", "发送 status: skip 的标记", "发送 marker 为空字符串的标记", "直接调用接口发送 status: fail 且不带 defect_url 的标记", "直接调用接口发送 status: blocked 且不带 defect_url 的标记", "发送 status: pass 且 note 为数字 1 的标记", "发送 status: fail 且 defect_url 为空字符串的标记", "发送 status: blocked 且 defect_url 只有空格的标记"]
-        expected: ["前三次都返回 422，error_code 为 mark-invalid，并分别点名 defect_url、status、marker", "第四、五次都返回 422，error_code 为 mark-invalid，problems 点名 defect_url", "note 为数字时返回 422，error_code 为 mark-invalid，problems 点名 note", "defect_url 为空字符串或只有空格时都返回 422，error_code 为 mark-invalid，problems 点名 defect_url", "每次响应的 ok 为 false，含 error_code 与 problems"]
+        steps: ["发送 status: pass 并带 defect_url 的标记", "发送 status: skip 的标记", "发送 marker 为空字符串的标记", "发送 marker 只有空格的标记", "直接调用接口发送 status: fail 且不带 defect_url 的标记", "直接调用接口发送 status: blocked 且不带 defect_url 的标记", "发送 status: pass 且 note 为数字 1 的标记", "发送 status: fail 且 defect_url 为空字符串的标记", "发送 status: blocked 且 defect_url 只有空格的标记"]
+        expected: ["前三次都返回 422，error_code 为 mark-invalid，并分别点名 defect_url、status、marker；marker 只有空格时同样返回 422 mark-invalid 并点名 marker", "不带 defect_url 的 fail 与 blocked 都返回 422，error_code 为 mark-invalid，problems 点名 defect_url", "note 为数字时返回 422，error_code 为 mark-invalid，problems 点名 note", "defect_url 为空字符串或只有空格时都返回 422，error_code 为 mark-invalid，problems 点名 defect_url", "每次响应的 ok 为 false，含 error_code 与 problems"]
         forbidden_effects: ["SQLite 新增轮次", "生成观察记录证据"]
         evidence_hints: ["请求与响应原文"]
 
@@ -402,7 +402,7 @@ sops:
         verify: api
         initial_state: ["测试看板以 JIRA_URL=https://acme.atlassian.net 启动，已推送演示场景文件并登记演示轮次"]
         steps: ["对 N2-P01 发送 status: fail、marker: 张三、defect_url: ABC-123、note: 下单按钮无响应", "对 N1-P01 发送 status: blocked、marker: 张三、defect_url: https://acme.atlassian.net/browse/ABC-124，不给 note", "对 N1-N01 发送 status: blocked、marker: 张三、defect_url: ABC-10，不给 note", "请求三个新轮次的轮次接口并下载各自的观察记录", "下载 N2-P01 那一轮的导出 ZIP 并解压"]
-        expected: ["三次都返回 200，正文含 ok、round、scenario 与 filters", "N2-P01 的结果：实际结果为'人工复核不通过（失败），缺陷 https://acme.atlassian.net/browse/ABC-123'，finding 为 https://acme.atlassian.net/browse/ABC-123，note 为'下单按钮无响应'", "N1-P01 的结果：实际结果为'人工复核不通过（受阻），缺陷 https://acme.atlassian.net/browse/ABC-124'，finding 为该链接，没有 note", "N1-N01 的结果：实际结果为'人工复核不通过（受阻），缺陷 https://acme.atlassian.net/browse/ABC-10'，finding 为该链接", "N2-P01 的观察记录含 marker 张三、status fail、defect_url 为规范化链接、note 与 recorded_at；另两份含 marker、status blocked、规范化的 defect_url 与 recorded_at，没有 note 键", "ZIP 的 results.jsonl 只有一行，只含 tw 结果契约字段：scenario 为 N2-P01，status 为 fail，actual 与 finding 同上，note 为'下单按钮无响应'，executor 为张三，executed_at 与轮次接口相同；没有 marker、defect_url、environment 键", "该行的 evidence 指向 ZIP 内的 observation 文件，其内容与看板保存的观察记录相同"]
+        expected: ["三次都返回 200，正文含 ok、round、scenario 与 filters", "N2-P01 的结果：实际结果为'人工复核不通过（失败），缺陷 https://acme.atlassian.net/browse/ABC-123'，finding 为 https://acme.atlassian.net/browse/ABC-123，note 为'下单按钮无响应'", "N1-P01 的结果：实际结果为'人工复核不通过（受阻），缺陷 https://acme.atlassian.net/browse/ABC-124'，finding 为该链接，没有 note", "N1-N01 的结果：实际结果为'人工复核不通过（受阻），缺陷 https://acme.atlassian.net/browse/ABC-10'，finding 为该链接", "N2-P01 的观察记录含 marker 张三、status fail、defect_url 为规范化链接、note 与 recorded_at；另两份含 marker、status blocked、规范化的 defect_url 与 recorded_at，没有 note 键", "ZIP 的 results.jsonl 只有一行，只含 tw 结果契约字段：scenario 为 N2-P01，status 为 fail，actual 与 finding 同上，note 为'下单按钮无响应'，executor 为张三，executed_at 与轮次接口相同；没有 marker、defect_url、environment 键", "该行的 evidence 指向 ZIP 内 evidence/<序号>-observation-<该轮次号>.json 形式的文件，其内容与看板保存的观察记录相同"]
         forbidden_effects: ["演示轮次中 N2-P01、N1-P01、N1-N01 的 Agent 结果被改写"]
         evidence_hints: ["请求与响应原文（令牌脱敏）", "三份观察记录原文", "ZIP 文件清单与 results.jsonl"]
 
@@ -668,7 +668,7 @@ sops:
         initial_state: ["测试看板不带 JIRA_URL 启动，并推送了演示场景文件"]
         steps: ["对 N1-P01 发送 fail 标记，defect_url 为 ABC-1", "再发送 defect_url 为 https://github.com/demo-org/demo-app/issues/3"]
         expected: ["第一次返回 422，error_code 为 defect-link-invalid，说明需要填写完整链接", "第二次返回 200"]
-        forbidden_effects: []
+        forbidden_effects: ["第一次请求后 SQLite 新增人工轮次"]
         evidence_hints: ["请求与响应原文"]
 
       - id: SOP-24-N03
@@ -1004,9 +1004,9 @@ sops:
         priority: P0
         refs: ["I6"]
         verify: api
-        initial_state: ["测试看板已准备五场景数据，其中 p5.yaml 另含正向补充场景 SUP-P01（用例并集中没有同编号用例），第 1 轮另含 SUP-P01 pass"]
+        initial_state: ["测试看板以环境变量 TZ=Asia/Shanghai 启动，已准备五场景数据，其中 p5.yaml 另含正向补充场景 SUP-P01（用例并集中没有同编号用例），第 1 轮另含 SUP-P01 pass"]
         steps: ["记下请求前后的时刻，请求 GET …/batches/p5/results.yaml", "逐项核对"]
-        expected: ["顶层为 run_id、round、environment、results；run_id 为 p5- 加 14 位导出时间（YYYYMMDDHHMMSS），round 为 3，environment 为'sop-board 导出；产品提交 c0ffee1'", "results 只有三项：TC_DEMO_FLOW_001 为 passed、executor 张三、actual_result 为'人工复核通过'；TC_DEMO_FLOW_002 为 failed、executor 张三、jira_issue 为 ABC-1、notes 为'复现两次'；TC_DEMO_FLOW_003 为 passed、executor Li Si", "没有 TC_DEMO_FLOW_009 与 SUP-P01", "每项含 case_id、status、actual_result、executor、tested_at，tested_at 为 ISO 8601 且等于该场景当前指纹最新结果的执行时间"]
+        expected: ["顶层为 run_id、round、environment、results；run_id 为 p5- 加 14 位导出时间（YYYYMMDDHHMMSS），该时间按 Asia/Shanghai 本地时间写出，落在请求前后两个时刻之间，round 为 3，environment 为'sop-board 导出；产品提交 c0ffee1'", "results 只有三项：TC_DEMO_FLOW_001 为 passed、executor 张三、actual_result 为'人工复核通过'；TC_DEMO_FLOW_002 为 failed、executor 张三、jira_issue 为 ABC-1、notes 为'复现两次'；TC_DEMO_FLOW_003 为 passed、executor Li Si", "没有 TC_DEMO_FLOW_009 与 SUP-P01", "每项含 case_id、status、actual_result、executor、tested_at，tested_at 为 ISO 8601 且等于该场景当前指纹最新结果的执行时间"]
         forbidden_effects: []
         evidence_hints: ["下载的 results.yaml", "轮次接口响应"]
 

@@ -847,7 +847,7 @@ sops:
         initial_state: ["测试看板推送了演示场景文件，另以项目身份 gitlab.example.com/team/app 把同一内容推送到项目键 gitlab-example-com-team-app 的批次 demo"]
         steps: ["对 github-com-demo-org-demo-app 依次 PUT defect_prefix 为 http://jira.example.com/browse/、jira.example.com/browse/ 与空字符串", "对 github-com-demo-org-demo-app 的 N1-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/9", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/1", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 ABC-123"]
         expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "GitHub 链接的标记成功，说明项目前缀仍为缺省的 https://github.com/demo-org/demo-app/issues/", "gitlab 链接的标记返回 422，error_code 为 defect-link-invalid，说明需先设置项目的缺陷链接前缀或配置 JIRA_URL", "单号的标记返回 422，error_code 为 defect-link-invalid，说明需填写完整链接，并说明需先设置项目的缺陷链接前缀或配置 JIRA_URL"]
-        forbidden_effects: []
+        forbidden_effects: ["对 gitlab-example-com-team-app 的失败标记新增人工轮次"]
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
 
