@@ -1,6 +1,9 @@
 """把 Service 的读取结果呈现为服务端 HTML，不重新计算业务指标。"""
 
 from html import escape
+from datetime import datetime
+import json
+import re
 from urllib.parse import quote
 
 
@@ -10,6 +13,17 @@ def text(value):
 
 def batch_url(project, batch):
     return f"/p/{quote(project, safe='')}/b/{quote(batch, safe='')}"
+
+
+def local_time(value):
+    value = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+    offset = value.strftime("%z")
+    return value.strftime("%Y-%m-%d %H:%M:%S") + " " + offset[:3] + ":" + offset[3:5]
+
+
+def time_tag(value, element_id=None):
+    identifier = f" id='{text(element_id)}'" if element_id else ""
+    return f"<time{identifier} datetime='{text(value)}'>{local_time(value)}</time>"
 
 
 def layout(title, content):
@@ -50,7 +64,7 @@ def batch(project, data):
                       f"<ul>{links}</ul>" + ("" if links else "<p>暂无场景</p>") + "</section>")
     rounds = "".join(f"<tr data-round='{r['number']}'><th scope='row'>第 {r['number']} 轮</th>"
                      f"<td>{'Agent' if r['kind'] == 'agent' else '人工'}</td><td>{r['version']}</td>"
-                     f"<td>{text(r['submitted_by'])}</td><td>{text(r['submitted_at'])}</td>"
+                     f"<td>{text(r['submitted_by'])}</td><td>{time_tag(r['submitted_at'])}</td>"
                      f"<td data-field='pass-rate'>{ratio(r['pass_rate'])}</td>"
                      f"<td><a href='{text(api + '/rounds/' + str(r['number']) + '/export')}'>导出 ZIP</a></td></tr>" for r in data["rounds"])
     findings = "".join(f"<tr><td><a href='{text(base + '/s/' + quote(item['scenario'], safe=''))}'>{text(item['scenario'])}</a></td>"
@@ -59,6 +73,7 @@ def batch(project, data):
                        for item in data["misjudgments"])
     content = (f"<nav><a href='/'>全部项目</a></nav><h1>批次 {text(data['name'])}</h1>"
                f"<p>场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条</p>"
+               f"<p>场景文件推送时间：{time_tag(data['pushed_at'], 'pushed-at')}</p>"
                f"<dl class='metrics'>{metrics}</dl><div class='queues'>{''.join(queues)}</div>"
                "<section><h2>轮次记录</h2><div class='table-scroll'><table><thead><tr><th>轮次</th><th>种类</th>"
                "<th>场景版本</th><th>提交人</th><th>提交时间</th><th>每轮通过率</th><th>导出</th></tr></thead>"
@@ -77,7 +92,18 @@ def evidence_preview(evidence):
     if evidence["content_type"].startswith("image/"):
         return f"<figure><img src='{text(url)}' alt='{text(evidence['name'])}' loading='lazy'><figcaption>{text(evidence['name'])}</figcaption></figure>"
     if "preview" in evidence:
-        return f"<figure><figcaption>{text(evidence['name'])}（前 200 行）</figcaption><pre data-evidence='{text(evidence['sha256'])}'>{text(evidence['preview'])}</pre></figure>"
+        preview = evidence["preview"]
+        caption = evidence["name"] + "（前 200 行）"
+        if re.fullmatch(r"observation-[0-9]+\.json", evidence["name"]):
+            try:
+                observation = json.loads(preview)
+                if isinstance(observation, dict) and isinstance(observation.get("executed_at"), str):
+                    observation["executed_at"] = local_time(observation["executed_at"])
+                    preview = json.dumps(observation, ensure_ascii=False, indent=2)
+                    caption = evidence["name"] + "（观察记录，本地时间）"
+            except (ValueError, TypeError):
+                pass
+        return f"<figure><figcaption>{text(caption)}</figcaption><pre data-evidence='{text(evidence['sha256'])}'>{text(preview)}</pre></figure>"
     return f"<p><a href='{text(url)}' download='{text(evidence['name'])}'>下载 {text(evidence['name'])}</a></p>"
 
 
@@ -97,7 +123,8 @@ def scenario(data):
                              [("finding", "问题或缺陷"), ("note", "备注"), ("session", "会话")]
                              if result.get(field))
             results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {STATUS[result['status']]}</h3>"
-                           f"<p>执行者：{text(result['executor'])} · 执行时间：{text(result['executed_at'])}</p>"
+                           f"<p>执行者：{text(result['executor'])} · 执行时间：{time_tag(result['executed_at'])}</p>"
+                           f"<p>提交时间：{time_tag(result['submitted_at'])}</p>"
                            f"<p>实际结果：{text(result['actual'])}</p>{extras}"
                            f"{''.join(evidence_preview(e) for e in result['evidence'])}</article>")
         sections.append(f"<section data-fingerprint='{text(group['fingerprint'])}'><h2>{label}</h2>"
@@ -106,7 +133,8 @@ def scenario(data):
     removed = "<p class='notice'>已从场景文件移除</p>" if not data["current"] else ""
     body = (f"<nav><a href='{text(base)}'>返回批次总览</a></nav><h1>{text(data['scenario'])} · {text(data['title'])}</h1>"
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
-            f"<p>验证入口：{text(data['verify'])}</p>{mark_form(data)}{''.join(sections)}")
+            f"<p>验证入口：{text(data['verify'])}</p>"
+            f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{mark_form(data)}{''.join(sections)}")
     return layout(data["scenario"], body)
 
 

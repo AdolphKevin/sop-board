@@ -1,6 +1,7 @@
 import signal
 import socket
 import subprocess
+import sqlite3
 
 import pytest
 
@@ -39,6 +40,8 @@ def test_startup_failure_exits_one_with_reason(tmp_path, kind):
     else:
         data.mkdir(mode=0o500)
         reason = str(data)
+    existed = data.exists()
+    before = sorted(p.name for p in data.iterdir()) if data.is_dir() else None
     try:
         result = subprocess.run([str(ROOT / ".venv/bin/sop-board"), "--data",
                                  str(data), "--port", str(port)], env=env,
@@ -50,6 +53,61 @@ def test_startup_failure_exits_one_with_reason(tmp_path, kind):
     assert "Traceback" not in result.stderr
     assert result.returncode == 1
     assert reason in result.stderr
+    if not existed:
+        assert not data.exists()
+    elif data.is_dir():
+        assert sorted(p.name for p in data.iterdir()) == before
+
+
+@pytest.mark.parametrize("kind", ["token", "port", "database"])
+def test_startup_failure_preserves_existing_directory(tmp_path, kind):
+    """W1；SOP-01-N01：失败不新建文件，不改动既有数据，并释放监听。"""
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "keep.txt").write_bytes(b"existing user data")
+    env = dict(TEST_ENV)
+    port = free_port()
+    occupied = socket.socket()
+    if kind == "database":
+        # A real filesystem error after SQLite creates its main file.
+        (data / "board.sqlite3-wal").mkdir()
+    else:
+        with sqlite3.connect(data / "board.sqlite3") as db:
+            db.execute("CREATE TABLE keep(value TEXT)")
+            db.execute("INSERT INTO keep VALUES ('preserved')")
+    if kind == "token":
+        env.pop("SOP_BOARD_TOKEN")
+    elif kind == "port":
+        occupied.bind(("127.0.0.1", port))
+        occupied.listen()
+    before = {p.name: p.read_bytes() if p.is_file() else None for p in data.iterdir()}
+    try:
+        result = subprocess.run([str(ROOT / ".venv/bin/sop-board"), "--data", str(data),
+                                 "--port", str(port)], env=env, capture_output=True, text=True, timeout=5)
+    finally:
+        occupied.close()
+    assert result.returncode == 1 and "Traceback" not in result.stderr
+    assert {p.name: p.read_bytes() if p.is_file() else None for p in data.iterdir()} == before
+    with socket.socket() as released:
+        released.bind(("127.0.0.1", port))
+
+
+def test_startup_unwritable_new_directory_is_removed(tmp_path):
+    """W1；SOP-01-N01：新建目录因权限不可写时也恢复为不存在。"""
+    data = tmp_path / "data"
+    port = free_port()
+    try:
+        result = subprocess.run([str(ROOT / ".venv/bin/sop-board"), "--data", str(data),
+                                 "--port", str(port)], env=TEST_ENV, umask=0o777,
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 1 and str(data) in result.stderr
+        assert "Traceback" not in result.stderr
+        assert not data.exists()
+        with socket.socket() as released:
+            released.bind(("127.0.0.1", port))
+    finally:
+        if data.exists():
+            data.chmod(0o700)
 
 
 def test_explicit_network_binding_and_interrupt(board_factory):

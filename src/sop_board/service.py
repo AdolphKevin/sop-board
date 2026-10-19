@@ -114,6 +114,7 @@ class Service:
         result.pop("scenarios")
         version = self.latest_version(db, batch)
         return dict(ok=True, name=batch["name"], version=version["version"],
+                    pushed_at=version["pushed_at"],
                     scenario_file_sha256=version["sha256"], product_digest=batch["product_digest"], **result)
 
     def read_batch(self, key, name, scenarios=False):
@@ -188,7 +189,8 @@ class Service:
             latest = records[0]
             return dict(project=key, batch=name, scenario=scenario, node=latest["node"], title=latest["title"],
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
-                        fingerprint=latest["fingerprint"], current=bool(latest["current"]), groups=groups)
+                        fingerprint=latest["fingerprint"], current=bool(latest["current"]),
+                        pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups)
 
     def export_round(self, key, name, number):
         round_data = self.read_round(key, name, number)

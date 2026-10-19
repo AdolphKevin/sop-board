@@ -11,10 +11,38 @@ import sys
 from .service import Service
 from .storage import Store
 from .http import Handler
+from .network import local_ipv4_addresses
 
 
 class Stopped(BaseException):
     """让主线程退出监听循环，并等待已接收的请求结束。"""
+
+
+def prepare_store(data):
+    created_directories = []
+    parent = data
+    while not (parent.exists() or parent.is_symlink()):
+        created_directories.append(parent)
+        parent = parent.parent
+    sqlite_files = [data / ("board.sqlite3" + suffix) for suffix in ("", "-wal", "-shm", "-journal")]
+    new_files = [path for path in sqlite_files if not (path.exists() or path.is_symlink())]
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        if not os.access(data, os.W_OK):
+            raise PermissionError("目录不可写")
+        return Store(data)
+    except BaseException:
+        # A restrictive umask can make our own new directory inaccessible.
+        for directory in reversed(created_directories):
+            if directory.is_dir():
+                directory.chmod(0o700)
+        for path in new_files:
+            if path.is_file():
+                path.unlink()
+        for directory in created_directories:
+            if directory.is_dir():
+                directory.rmdir()
+        raise
 
 
 def main():
@@ -28,31 +56,30 @@ def main():
         print("启动失败：缺少非空 SOP_BOARD_TOKEN", file=sys.stderr)
         return 1
     try:
-        args.data.mkdir(parents=True, exist_ok=True)
-        if not os.access(args.data, os.W_OK):
-            raise PermissionError("目录不可写")
-        store = Store(args.data)
-    except (OSError, sqlite3.Error) as error:
-        print(f"启动失败：数据目录 {args.data} 无法创建或写入：{error}", file=sys.stderr)
-        return 1
-    try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
         server.daemon_threads = False
-        server.service = Service(store)
-        server.token = token
     except OSError as error:
         print(f"启动失败：无法监听端口 {args.port}：{error}", file=sys.stderr)
         return 1
-
-    def stop(signum, frame):
-        raise Stopped()
-
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    print(f"看板地址：http://{args.host}:{server.server_port}/", flush=True)
-    if args.host == "0.0.0.0":
-        print("其他成员可使用本机内网地址访问看板。", flush=True)
     try:
+        try:
+            store = prepare_store(args.data)
+        except (OSError, sqlite3.Error) as error:
+            print(f"启动失败：数据目录 {args.data} 无法创建或写入：{error}", file=sys.stderr)
+            return 1
+        server.service = Service(store)
+        server.token = token
+
+        def stop(signum, frame):
+            raise Stopped()
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+        print(f"看板地址：http://{display_host}:{server.server_port}/", flush=True)
+        if args.host == "0.0.0.0":
+            for address in local_ipv4_addresses():
+                print(f"内网地址：http://{address}:{server.server_port}/", flush=True)
         server.serve_forever(poll_interval=0.1)
     except Stopped:
         pass

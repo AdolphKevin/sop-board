@@ -26,19 +26,20 @@ def free_port():
 
 
 class Board:
-    def __init__(self, data, port, log, host=None):
+    def __init__(self, data, port, log, host=None, command=None, env=None):
         self.data, self.port, self.log = data, port, log
         self.host = host
+        self.command = command or [str(ROOT / ".venv/bin/sop-board")]
+        self.env = {**TEST_ENV, **(env or {})}
         self.process = None
         self.start()
 
     def start(self):
-        args = [str(ROOT / ".venv/bin/sop-board"), "--data", str(self.data),
-                "--port", str(self.port)]
+        args = [*self.command, "--data", str(self.data), "--port", str(self.port)]
         if self.host:
             args.extend(["--host", self.host])
         self.output = self.log.open("ab")
-        self.process = subprocess.Popen(args, env=TEST_ENV, stdout=self.output,
+        self.process = subprocess.Popen(args, env=self.env, stdout=self.output,
                                         stderr=subprocess.STDOUT, cwd=ROOT)
         until = time.monotonic() + 8
         while time.monotonic() < until:
@@ -92,10 +93,10 @@ class Board:
 def board_factory(tmp_path):
     boards = []
 
-    def make(host=None):
+    def make(host=None, command=None, env=None):
         index = len(boards)
         board = Board(tmp_path / f"data-{index}", free_port(),
-                      tmp_path / f"server-{index}.log", host)
+                      tmp_path / f"server-{index}.log", host, command, env)
         boards.append(board)
         return board
 
