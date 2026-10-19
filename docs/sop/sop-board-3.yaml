@@ -1,0 +1,405 @@
+# SOP-BOARD-3：Codex 任务、可写授权与以用例为准的合并的验收场景
+# 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v8）的 D15、D16、D17、D20、D21、S7 与 docs/designs/SOP-BOARD-3.md 的 I1–I5、D1、D2，不依据当前实现的输出。
+# 版本 1（2026-10-19）：Claude 依据上述两份原文编写，经 AdolphKevin 授权由 Claude 代批。
+#
+# 下文"测试看板"同 SOP-BOARD-1、2 的约定；"开发者令牌"指 SOP_BOARD_ADMIN_TOKEN（与写入令牌不同）。
+# "演示仓库"指执行者新建的临时 Git 仓库 /tmp/<随机>/demo-repo：已有一次提交，含 README.md、src/app.py、docs/sop/entries.yaml（入口 web、api），
+# 没有 docs/sop/<批次>.yaml。"授权看板"指以 --writable-repo github.com/demo-org/demo-app=<演示仓库路径> 与开发者令牌启动的测试看板。
+# "演示用例文件"同 SOP-BOARD-2：TC_DEMO_LOGIN_001（section:登录、happy-path）、TC_DEMO_LOGIN_002（section:登录、negative）、TC_DEMO_ORDER_001（section:订单、happy-path）。
+# "假 codex"指执行者写的可执行脚本，放在 PATH 最前：记录收到的参数、环境变量名与标准输入是否为空设备，按预设写出 --json 事件与 -o 指定的最终消息，可按设置等待或失败；用于运行器场景，替代真实 Codex。
+
+metadata:
+  requirement: "sop-board Codex 任务、可写授权与以用例为准的合并：授权与开发者令牌、Codex 运行器、合并规则、草稿与写入、SOP 原文与版本"
+  batch: "sop-board-3"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 的 D15、D16、D17、D20、D21 与第 4 节 S7"
+      version: "v8（2026-10-19）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-3.md 的 I1–I5、D1、D2 节"
+      version: "修订 1"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "Codex", "可写授权", "合并"]
+
+sops:
+
+  - id: SOP-31
+    title: 可写授权与开发者令牌
+    actor: "启动看板的开发者"
+    entry: "uv run sop-board --writable-repo 与开发者操作接口"
+    must:
+      - "未授权时项目仓库保持原样"
+      - "开发者操作只接受开发者令牌"
+    scenarios:
+
+      - id: SOP-31-P01
+        polarity: positive
+        title: 授权仓库登记为项目并发现其场景文件
+        actor: 启动看板的开发者
+        priority: P0
+        refs: ["I1", "D2"]
+        verify: cli
+        initial_state: ["演示仓库中另写了一份合格的 docs/sop/demo.yaml（批次 demo）并已提交"]
+        steps: ["以开发者令牌与 --writable-repo github.com/demo-org/demo-app=<演示仓库路径> 启动看板", "请求项目列表与批次 demo 的摘要", "在演示仓库修改 demo.yaml 中一条场景的 expected（不提交），等待 10 秒后再请求批次摘要", "用 sop-verify 对演示仓库计算产品指纹，与看板登记版本的产品指纹对照"]
+        expected: ["标准输出有一行 可写授权：github.com/demo-org/demo-app（<演示仓库路径>）", "项目列表中有该项目，名称为演示仓库的目录名，页面标为可写", "批次 demo 有版本 1，推送人为工作区", "修改后出现版本 2，推送人为工作区，dirty 为真，该场景回到待执行", "看板登记的产品指纹与 sop-verify 计算的相同"]
+        forbidden_effects: ["演示仓库中出现看板写入的文件或新提交"]
+        evidence_hints: ["命令原文与完整输出", "接口响应", "演示仓库的 git status 与 git log"]
+
+      - id: SOP-31-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 授权缺开发者令牌、令牌相同或路径不是仓库根目录时启动失败
+        actor: 启动看板的开发者
+        priority: P0
+        refs: ["I1"]
+        verify: cli
+        initial_state: ["演示仓库", "一个不是 Git 仓库的空目录"]
+        steps: ["带 --writable-repo 启动但不设开发者令牌", "开发者令牌与写入令牌设为相同值启动", "把 --writable-repo 指向演示仓库的子目录 src 启动", "把 --writable-repo 指向不是 Git 仓库的目录启动"]
+        expected: ["四次都以退出码 1 结束，没有输出 看板地址 行", "错误输出分别说明缺开发者令牌、两个令牌相同、路径不是 Git 工作区根目录（含路径）", "四次使用的数据目录原本不存在，失败后仍不存在"]
+        forbidden_effects: []
+        evidence_hints: ["四次命令原文与完整输出", "数据目录检查"]
+
+      - id: SOP-31-N02
+        polarity: negative
+        negative_type: permission
+        title: 开发者操作拒绝写入令牌与缺失令牌
+        actor: 测试岗
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["授权看板已从演示仓库登记批次 demo，并上传了演示用例文件"]
+        steps: ["不带令牌请求 POST …/batches/demo/merges", "用写入令牌请求同一接口", "用写入令牌请求 POST /api/v1/tasks/<任意任务编号>/cancel"]
+        expected: ["第一次返回 401，error_code 为 unauthorized", "后两次返回 403，error_code 为 admin-required", "任务列表与各任务状态不变"]
+        forbidden_effects: ["产生新的合并任务"]
+        evidence_hints: ["请求与响应原文（令牌脱敏）", "请求前后的任务列表"]
+
+      - id: SOP-31-N03
+        polarity: negative
+        negative_type: permission
+        title: 未授权的项目只生成草稿，项目仓库保持原样
+        actor: 开发者
+        priority: P0
+        refs: ["I1", "I4"]
+        verify: api
+        initial_state: ["不带 --writable-repo 启动的测试看板，开发者令牌已设置", "演示仓库的路径为人所知，但看板没有获得授权", "已向项目 github-com-demo-org-demo-app 推送演示仓库中的场景文件并附带入口声明"]
+        steps: ["上传演示用例文件，等待合并任务结束", "查看演示仓库的 git status、分支与 worktree 列表"]
+        expected: ["合并任务为已完成，结果是草稿", "页面上该项目标为只读", "演示仓库的 git status、分支与 worktree 列表与上传前相同"]
+        forbidden_effects: ["演示仓库出现任何变化"]
+        evidence_hints: ["任务接口响应", "演示仓库命令输出"]
+
+      - id: SOP-31-P02
+        polarity: positive
+        title: 页面保存开发者令牌并用于开发者操作
+        actor: 开发者
+        priority: P1
+        refs: ["I2"]
+        verify: web
+        initial_state: ["授权看板已从演示仓库登记批次 demo 并上传了演示用例文件"]
+        steps: ["打开合并页，不填开发者令牌点重新合并", "在身份栏填写开发者令牌后再点重新合并"]
+        expected: ["第一次页面提示先填写开发者令牌，没有发出请求", "第二次请求带开发者令牌，页面显示新的或已有的合并任务", "localStorage 中保存了 sop-board.admin-token"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "请求记录", "localStorage 内容（令牌脱敏）"]
+
+  - id: SOP-32
+    title: Codex 运行器
+    actor: "看板"
+    entry: "任务队列与任务读取接口"
+    must:
+      - "同时运行的 Codex 进程不超过三个"
+      - "每个任务保留原始输出"
+    scenarios:
+
+      - id: SOP-32-P01
+        polarity: positive
+        title: 用规定的参数、沙箱、空标准输入与环境白名单调用 Codex
+        actor: 看板
+        priority: P0
+        refs: ["I3"]
+        verify: cli
+        initial_state: ["假 codex 在 PATH 最前，立即写出合格的判断字段", "授权看板以含 SOP_BOARD_TOKEN、SOP_BOARD_ADMIN_TOKEN 与 JIRA_API_TOKEN 的环境启动"]
+        steps: ["上传演示用例文件触发一次合并", "查看假 codex 记录的参数、环境变量名与标准输入", "请求该任务的任务接口并下载任务目录中的文件"]
+        expected: ["参数含 exec、--json、-s read-only、--skip-git-repo-check、-C <任务目录>、--output-schema <任务目录>/schema.json、-o <任务目录>/final.json", "标准输入为空设备", "环境变量名只在白名单内，不含 SOP_BOARD_TOKEN、SOP_BOARD_ADMIN_TOKEN 与 JIRA_API_TOKEN", "任务目录有输入快照、prompt.md、schema.json、events.jsonl、stderr.txt、final.json 与 check.json", "任务记录的会话编号等于 events.jsonl 中 thread.started 的 thread_id"]
+        forbidden_effects: []
+        evidence_hints: ["假 codex 的记录", "任务接口响应", "任务目录清单"]
+
+      - id: SOP-32-P02
+        polarity: positive
+        title: 同时提交五个任务时最多三个运行，其余排队
+        actor: 看板
+        priority: P0
+        refs: ["I3"]
+        verify: api
+        initial_state: ["假 codex 在 PATH 最前，每次运行等待 20 秒", "授权看板中有五个批次，各有演示用例文件对应的场景文件"]
+        steps: ["向五个批次各上传一次演示用例文件", "每秒请求一次任务列表，持续到全部结束"]
+        expected: ["任何时刻状态为运行中的任务不超过三个", "其余任务为排队中，按创建顺序开始", "五个任务最终都离开排队中与运行中"]
+        forbidden_effects: []
+        evidence_hints: ["按时间记录的任务列表", "假 codex 的并发记录"]
+
+      - id: SOP-32-N01
+        polarity: negative
+        negative_type: timeout
+        title: 超过运行时限的任务被终止并标为失败
+        actor: 看板
+        priority: P2
+        refs: ["I3"]
+        verify: api
+        initial_state: ["假 codex 在 PATH 最前，启动后一直等待", "授权看板以 SOP_BOARD_CODEX_TIMEOUT=5 启动"]
+        steps: ["上传演示用例文件触发合并，等待 10 秒", "请求任务接口并查看进程"]
+        expected: ["任务为失败，错误说明写明超时", "假 codex 的进程组已被终止"]
+        forbidden_effects: []
+        evidence_hints: ["任务接口响应", "进程列表"]
+
+      - id: SOP-32-N02
+        polarity: negative
+        negative_type: interrupted
+        title: 重启后进行中的任务转已中断，开发者可重试
+        actor: 开发者
+        priority: P1
+        refs: ["I2", "I3"]
+        verify: api
+        initial_state: ["假 codex 在 PATH 最前，每次运行等待 60 秒", "授权看板已上传演示用例文件，合并任务运行中"]
+        steps: ["停止看板并以同样参数重新启动", "请求任务接口", "用开发者令牌请求该任务的 retry", "让假 codex 立即完成后再请求任务接口"]
+        expected: ["重启后该任务为已中断", "retry 后任务重新排队并最终完成"]
+        forbidden_effects: []
+        evidence_hints: ["任务接口响应", "请求与响应原文"]
+
+      - id: SOP-32-N03
+        polarity: negative
+        negative_type: not-found
+        title: 本机没有 Codex 时任务停在 Codex 不可用
+        actor: 开发者
+        priority: P1
+        refs: ["I3"]
+        verify: api
+        initial_state: ["PATH 中没有 codex 命令", "授权看板已从演示仓库登记批次 demo"]
+        steps: ["上传演示用例文件", "请求任务接口并打开合并页", "恢复 PATH 中的假 codex 后，用开发者令牌请求 retry"]
+        expected: ["任务为 Codex 不可用，页面写明原因", "retry 后任务完成"]
+        forbidden_effects: []
+        evidence_hints: ["任务接口响应", "截图"]
+
+      - id: SOP-32-P03
+        polarity: positive
+        title: 失败任务保留原始输出，开发者可放弃
+        actor: 开发者
+        priority: P1
+        refs: ["I2", "I3"]
+        verify: web
+        initial_state: ["假 codex 在 PATH 最前，最终消息为不符合模式的文本并以非零退出", "授权看板已上传演示用例文件，合并任务已失败"]
+        steps: ["打开合并页查看该任务", "下载 events.jsonl、stderr.txt 与 final.json", "用开发者令牌点放弃"]
+        expected: ["任务为失败，页面显示失败原因与原始输出的下载链接", "下载的文件与任务目录中的相同", "放弃后任务为已放弃"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "下载文件", "任务接口响应"]
+
+  - id: SOP-33
+    title: 合并规则
+    actor: "看板与 Codex"
+    entry: "合并任务与合并页"
+    must:
+      - "每条用例生成同编号的场景，前置条件、步骤与预期与用例原文一致"
+      - "原有 SOP 场景只有在完全被覆盖时才移除，并写明理由"
+    scenarios:
+
+      - id: SOP-33-P01
+        polarity: positive
+        title: 没有 SOP 场景时由用例生成合法场景文件
+        actor: 测试岗
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["真实 Codex 已登录且在 PATH 中", "授权看板已登记演示仓库，演示仓库没有 docs/sop/demo.yaml"]
+        steps: ["向项目 github-com-demo-org-demo-app 的新批次 demo 上传演示用例文件", "等待合并任务结束", "读取演示仓库的 docs/sop/demo.yaml，用 sop-verify 的 check 核对"]
+        expected: ["任务为已完成", "场景文件含 TC_DEMO_LOGIN_001、TC_DEMO_LOGIN_002、TC_DEMO_ORDER_001 三条场景，节点 S01（登录）与 S02（订单）", "每条场景的 initial_state、steps、expected 与用例的 preconditions、steps、expected_results 逐条相同，priority、tags、title 与用例相同，refs 为用例编号", "TC_DEMO_LOGIN_002 为反向场景，带枚举内的 negative_type", "sop-verify check 通过"]
+        forbidden_effects: ["用例文字被改写"]
+        evidence_hints: ["任务目录", "生成的场景文件", "check 输出"]
+
+      - id: SOP-33-P02
+        polarity: positive
+        title: 表述不同而内容相同的 SOP 场景被判为重复并移除
+        actor: 测试岗
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["真实 Codex 已登录且在 PATH 中", "演示仓库的 docs/sop/demo.yaml 含节点 N1：正向场景 N1-P01 与 TC_DEMO_LOGIN_001 的初始状态、操作、预期相同但用词不同，反向场景 N1-N01 与 TC_DEMO_LOGIN_002 角色与入口相同、预期相同但用词不同，另有正向场景 N1-P02 验证用例未涉及的登录次数限制", "授权看板已登记该批次"]
+        steps: ["上传演示用例文件，等待合并任务结束", "打开合并页并读取写入的场景文件"]
+        expected: ["N1-P01 与 N1-N01 被移除，去向分别为与 TC_DEMO_LOGIN_001、TC_DEMO_LOGIN_002 重复，并写有理由", "N1-P02 保留，编号与内容不变", "合并页列出对应关系、移除的场景与理由"]
+        forbidden_effects: ["N1-P02 被移除或改写"]
+        evidence_hints: ["合并页截图", "check.json 与 final.json", "写入的场景文件"]
+
+      - id: SOP-33-P03
+        polarity: positive
+        title: 角色、禁止副作用或适用条件不同的场景予以保留
+        actor: 测试岗
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["真实 Codex 已登录且在 PATH 中", "演示仓库的 demo.yaml 含：N1-P03 与 TC_DEMO_LOGIN_001 步骤相同但角色为管理员；N1-P04 与 TC_DEMO_LOGIN_001 相同但另有一条禁止副作用'不向其他租户发送通知'；N1-N02 与 TC_DEMO_LOGIN_002 预期相反但初始状态为账号已锁定", "授权看板已登记该批次"]
+        steps: ["上传演示用例文件，等待合并任务结束", "读取合并结果"]
+        expected: ["N1-P03、N1-N02 保留", "N1-P04 保留，或判为与 TC_DEMO_LOGIN_001 重复时其禁止副作用并入 TC_DEMO_LOGIN_001 场景", "三条都写有去向与理由"]
+        forbidden_effects: ["禁止副作用的断言丢失"]
+        evidence_hints: ["final.json", "合并结果"]
+
+      - id: SOP-33-P04
+        polarity: positive
+        title: 只有反向用例的分组并入正向节点，无正向依据时停在待补充
+        actor: 测试岗
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["真实 Codex 已登录且在 PATH 中", "授权看板已登记演示仓库（没有 demo.yaml）"]
+        steps: ["上传一份用例文件：section:登录 只有反向用例 TC_DEMO_LOGIN_002，section:订单 只有正向用例 TC_DEMO_ORDER_001", "等待任务结束；再向新批次 demo2 上传只含反向用例 TC_DEMO_PAY_001（section:支付）的用例文件并等待"]
+        expected: ["第一个任务完成，TC_DEMO_LOGIN_002 并入有正向场景的节点，或任务停在待补充并列出登录分组缺正向场景", "第二个任务为待补充，列出支付分组没有正向依据", "待补充的任务没有写入场景文件"]
+        forbidden_effects: ["为满足格式编造正向预期"]
+        evidence_hints: ["任务接口响应", "check.json"]
+
+      - id: SOP-33-P05
+        polarity: positive
+        title: 重新合并时编号不变，回归声明保留，相同输入不重复建任务
+        actor: 开发者
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["假 codex 在 PATH 最前，返回固定的判断字段", "授权看板已对批次 demo 完成一次合并，开发者在演示仓库的 demo.yaml 中给 TC_DEMO_LOGIN_001 加了 regression 声明（不改场景内容）"]
+        steps: ["等待看板发现文件变化", "再次上传原文相同的演示用例文件", "上传一份新增 TC_DEMO_ORDER_002（section:订单）的用例文件并等待合并结束"]
+        expected: ["看板自己写入的版本没有再触发合并", "相同用例原文的上传没有新建合并任务", "新的合并结果中节点编号 S01、S02 不变，TC_DEMO_LOGIN_001 的 regression 声明保留，新增场景 TC_DEMO_ORDER_002 在 S02"]
+        forbidden_effects: ["产生输入相同的重复任务"]
+        evidence_hints: ["任务列表", "两次合并结果"]
+
+      - id: SOP-33-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: Codex 的判断不合规时任务失败并列出问题
+        actor: 看板
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["假 codex 在 PATH 最前，返回的判断字段中：TC_DEMO_LOGIN_001 的 verify 为不存在的入口，原有场景 N1-P01 没有去向，duplicate 的 target 指向不存在的编号", "授权看板已登记演示仓库与含 N1-P01 的 demo.yaml"]
+        steps: ["上传演示用例文件，等待合并任务结束", "读取 check.json 与演示仓库的 demo.yaml"]
+        expected: ["任务为失败", "check.json 逐条列出入口不存在、N1-P01 没有去向、target 引用不存在的编号", "演示仓库的 demo.yaml 保持原样"]
+        forbidden_effects: ["写入不合规的场景文件"]
+        evidence_hints: ["check.json", "demo.yaml 前后的 sha256"]
+
+      - id: SOP-33-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 原有场景使用 TC_ 编号时报错
+        actor: 开发者
+        priority: P2
+        refs: ["I4"]
+        verify: api
+        initial_state: ["假 codex 在 PATH 最前", "演示仓库的 demo.yaml 中有一条非用例场景的编号为 TC_DEMO_OLD_001", "授权看板已登记该批次"]
+        steps: ["上传演示用例文件，等待合并任务结束"]
+        expected: ["任务为失败，check.json 指出 TC_DEMO_OLD_001 的编号与用例编号格式冲突"]
+        forbidden_effects: []
+        evidence_hints: ["check.json"]
+
+  - id: SOP-34
+    title: 草稿、写入与待同步
+    actor: "开发者"
+    entry: "合并任务的落地"
+    must:
+      - "授权仓库中只在磁盘文件与合并依据相同时写入，写入不提交"
+      - "推断的内容写待确认注释"
+    scenarios:
+
+      - id: SOP-34-P01
+        polarity: positive
+        title: 授权仓库写入合并结果与缺失的入口声明，推断内容带待确认注释
+        actor: 开发者
+        priority: P0
+        refs: ["I4", "D2"]
+        verify: cli
+        initial_state: ["假 codex 在 PATH 最前，返回的判断字段含为没有前置条件的用例补写的 initial_state、一条 inferred 的 negative_exempt 理由与推断的入口声明", "演示仓库删除了 docs/sop/entries.yaml 并已提交", "授权看板已登记演示仓库"]
+        steps: ["上传演示用例文件（其中 TC_DEMO_ORDER_001 没有 preconditions），等待合并结束", "查看演示仓库的 git status、git log 与写入的两个文件", "请求批次摘要"]
+        expected: ["写入 docs/sop/demo.yaml 与 docs/sop/entries.yaml，没有新提交", "补写的 initial_state 与 inferred 的豁免理由处各有一行 # 待确认 <编号>：<内容> 注释", "entries.yaml 的文件头注释写明待确认", "批次出现新版本，推送人为 看板合并 #<任务编号>"]
+        forbidden_effects: ["看板运行 git commit 或修改其他文件"]
+        evidence_hints: ["git status 与 git log", "两个文件的内容", "接口响应"]
+
+      - id: SOP-34-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 工作区场景文件与合并依据不同时停在待同步且文件不变
+        actor: 开发者
+        priority: P0
+        refs: ["I4"]
+        verify: cli
+        initial_state: ["假 codex 在 PATH 最前，每次运行等待 15 秒", "授权看板已登记演示仓库与 demo.yaml"]
+        steps: ["上传演示用例文件触发合并", "在合并运行期间修改演示仓库的 demo.yaml 并保存", "合并结束后查看任务与 demo.yaml"]
+        expected: ["任务为待同步", "demo.yaml 为开发者修改后的内容"]
+        forbidden_effects: ["看板覆盖开发者的修改"]
+        evidence_hints: ["任务接口响应", "demo.yaml 前后的 sha256"]
+
+      - id: SOP-34-P02
+        polarity: positive
+        title: 下载合并结果与配对文件供 sop-verify 使用
+        actor: 开发者
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["不带 --writable-repo 的测试看板已对批次 demo 完成一次合并草稿"]
+        steps: ["下载 …/merges/<任务编号>/scenario-file 与 …/pairs.json", "在演示仓库中用下载的场景文件替换 docs/sop/demo.yaml，运行 sop-verify 的 import-cases 与 coverage --pairs <下载的配对文件>"]
+        expected: ["场景文件可被 sop-verify check 接受", "配对文件的全部用例在 covered 中，coverage 结论为覆盖完整"]
+        forbidden_effects: []
+        evidence_hints: ["下载文件", "sop-verify 命令输出"]
+
+  - id: SOP-35
+    title: SOP 原文与版本
+    actor: "测试岗与开发者"
+    entry: "推送接口、授权仓库读取与 SOP 页"
+    must:
+      - "原文渲染 Markdown 与 mermaid，不加载外网资源"
+      - "保留历次版本并显示差异"
+    scenarios:
+
+      - id: SOP-35-P01
+        polarity: positive
+        title: 推送带 SOP 原文的场景文件后 SOP 页渲染原文与 mermaid
+        actor: 测试岗
+        priority: P0
+        refs: ["I5"]
+        verify: web
+        initial_state: ["测试看板已启动", "一份 Markdown 原文 docs/sop/sop-login.md，含二级标题'登录失败处理'、一个表格、一段代码与一个 mermaid 流程图，另含一段 <script>alert(1)</script>"]
+        steps: ["推送演示场景文件，sop_sources 带该原文", "在浏览器打开 SOP 页"]
+        expected: ["页面显示标题、表格与代码块，mermaid 代码块渲染为图", "<script> 片段作为文字显示，没有执行", "版本列表有一项，写明提交号、sha256 前 12 位与确认人"]
+        forbidden_effects: ["页面加载外网资源", "弹出 alert"]
+        evidence_hints: ["截图", "请求记录", "页面源码检索"]
+
+      - id: SOP-35-P02
+        polarity: positive
+        title: 第二版原文出现后显示两版差异，场景详情链接到原文段落
+        actor: 测试岗
+        priority: P1
+        refs: ["I5"]
+        verify: web
+        initial_state: ["SOP-35-P01 完成后的测试看板", "演示场景文件中 N1-P01 的 refs 含 登录失败处理"]
+        steps: ["修改原文的一段后再次推送", "在 SOP 页选择两个版本查看差异", "打开 N1-P01 的场景详情页，点 登录失败处理 的链接"]
+        expected: ["版本列表有两项", "差异只显示被修改的那一段", "链接跳到 SOP 页中该标题的锚点"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "页面文本"]
+
+      - id: SOP-35-P03
+        polarity: positive
+        title: 授权仓库从场景文件的来源读取原文
+        actor: 开发者
+        priority: P1
+        refs: ["I5"]
+        verify: api
+        initial_state: ["演示仓库的 demo.yaml 的 metadata.sources 中一项 ref 为 docs/sop/sop-login.md 第 2 节，该文件存在并已提交", "授权看板已登记演示仓库"]
+        steps: ["请求 SOP 页与批次摘要"]
+        expected: ["SOP 页显示 docs/sop/sop-login.md 的内容", "版本的提交号为演示仓库 HEAD"]
+        forbidden_effects: []
+        evidence_hints: ["页面文本", "接口响应"]
+
+      - id: SOP-35-N01
+        polarity: negative
+        negative_type: over-length
+        title: 原文超过 2 MiB 或字段不全时推送被拒绝
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I5"]
+        verify: api
+        initial_state: ["测试看板已启动"]
+        steps: ["推送演示场景文件，sop_sources 带一份 2 MiB 加 1 字节的原文", "推送 sop_sources 中缺少 sha256 的一项"]
+        expected: ["两次都返回 422，error_code 为 scenario-file-invalid，并点名相应字段", "没有产生场景版本或原文版本"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]

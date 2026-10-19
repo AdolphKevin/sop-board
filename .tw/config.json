@@ -61,6 +61,9 @@
     ],
     "concurrency": [
       "unit"
+    ],
+    "authorization": [
+      "unit"
     ]
   },
   "inputs": [],
