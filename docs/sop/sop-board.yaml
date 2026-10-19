@@ -34,7 +34,7 @@ sops:
     scenarios:
 
       - id: SOP-01-P01
-        regression: {"check": "unit", "cases": ["tests.test_startup::test_startup_home_wal_and_shutdown", "tests.test_startup::test_default_binding_refuses_other_local_interface", "tests.test_startup::test_explicit_network_binding_and_interrupt"]}
+        regression: {"check": "unit", "cases": ["tests.test_startup::test_startup_home_wal_and_shutdown", "tests.test_startup::test_default_binding_refuses_other_local_interface", "tests.test_startup::test_explicit_network_binding_and_interrupt", "tests.test_network_addresses::test_shared_startup_reports_each_ipv4_and_prints_loopback"]}
         polarity: positive
         title: 启动后页面可访问，缺省只监听本机
         actor: 启动看板的成员
@@ -62,7 +62,7 @@ sops:
         evidence_hints: ["两次响应原文与对比", "重启命令与输出"]
 
       - id: SOP-01-N01
-        regression: {"check": "unit", "cases": ["tests.test_startup::test_startup_failure_exits_one_with_reason[token]", "tests.test_startup::test_startup_failure_exits_one_with_reason[port]", "tests.test_startup::test_startup_failure_exits_one_with_reason[unwritable]"]}
+        regression: {"check": "unit", "cases": ["tests.test_startup::test_startup_failure_exits_one_with_reason[token]", "tests.test_startup::test_startup_failure_exits_one_with_reason[port]", "tests.test_startup::test_startup_failure_exits_one_with_reason[unwritable]", "tests.test_startup::test_startup_unwritable_new_directory_is_removed"]}
         polarity: negative
         negative_type: invalid-input
         title: 启动条件不满足时说明原因并退出
@@ -356,6 +356,7 @@ sops:
         evidence_hints: ["导出与解压的命令与输出", "results.jsonl 原文", "tw 命令原文与完整输出"]
 
       - id: SOP-06-P03
+        regression: {"check": "unit", "cases": ["tests.test_page_times::test_page_times_use_server_timezone_while_api_and_export_keep_iso[UTC-2020-01-15T08:09:10.123456+08:00-2020-01-15 00:09:10 +00:00]", "tests.test_page_times::test_page_times_use_server_timezone_while_api_and_export_keep_iso[America/New_York-2020-01-15T08:09:10.123456+08:00-2020-01-14 19:09:10 -05:00]"]}
         polarity: positive
         title: 页面上的时间写法统一
         actor: 团队成员
