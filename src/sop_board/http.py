@@ -78,7 +78,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/scenarios", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True)).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True), service.jira_url).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -88,10 +88,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
-                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario)).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario), service.jira_url).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and path == "/api/v1/projects":
                 result = service.projects()
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/jira/([^/]+)", path)):
+                result = self.server.jira.summary(unquote(match[1]))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):
                 key, batch, number = unquote(match[1]), unquote(match[2]), int(match[3])
                 self.respond(200, service.export_round(key, batch, number), "application/zip",

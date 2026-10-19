@@ -51,6 +51,10 @@ uv run sop-board --data ./board-data --host 0.0.0.0 --port 8787
 
 缺陷链接去掉首尾空白后核对。启动前设置可选的 `JIRA_URL`（如 `https://example.atlassian.net`），即可填写 `ABC-1` 这样的 Jira 单号，或该站点的 `/browse/ABC-1` 完整链接；看板会去掉 Jira 链接中的查询参数与片段。也可填写符合项目缺陷链接前缀的完整链接，比较不区分大小写，内容保持原样。GitHub 项目默认前缀为该仓库的 Issues 地址；其他项目可通过项目设置接口登记 HTTPS 前缀。未配置 `JIRA_URL` 时，单号须改填完整链接；两种配置都没有时须先设置其中一种。已登记的旧链接保持原样。
 
+如需显示 Jira 标题与状态，在启动看板前同时通过环境变量设置 `JIRA_URL`、`JIRA_EMAIL` 与 `JIRA_API_TOKEN`。看板用邮箱与令牌进行 HTTP Basic 认证，读取 `<JIRA_URL>/rest/api/3/issue/<单号>?fields=summary,status`。SOP 场景页和详情页在该站点的每个 Jira 链接旁显示“标题 · 状态”，就地提交新缺陷后也会加载；其他链接不请求摘要。读取失败时显示“Jira 读取失败”，筛选与人工复核仍可继续。邮箱、令牌和 Basic 认证值只用于看板进程向 Jira 发出的请求，不放入页面、接口响应或看板日志；上游回显的认证内容会被隐藏，重定向不会转发认证头。
+
+`GET /api/v1/jira/ABC-1` 无需写入令牌，成功返回 `ok`、`key`、`summary`、`status`、`url`。成功摘要只在内存中缓存五分钟，到期重新读取，重启清空；失败不缓存。单号格式不符返回 422 `jira-key-invalid`，三个变量未配齐返回 404 `jira-not-configured`，这两种情况都不访问 Jira；上游 HTTP 错误、连接失败、超时或响应无效返回 502 `jira-unavailable`，并给出不含认证内容的原因。默认超时十秒；本机模拟测试可设置 `JIRA_TIMEOUT_SECONDS` 为大于零且不超过 10 的秒数来缩短等待，其他值沿用十秒。测试和演示使用本机模拟 Jira，真实站点接入尚待另行验证。
+
 按 Ctrl+C 或发送终止信号停止服务；下次用同一数据目录启动，数据会保留。
 
 ## 运行测试

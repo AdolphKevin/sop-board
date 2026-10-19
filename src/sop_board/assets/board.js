@@ -1,5 +1,33 @@
 "use strict";
 (() => {
+  const jiraBase = document.querySelector("[data-jira-url]")?.dataset.jiraUrl || "";
+  const hydrateJira = root => {
+    if (!jiraBase) return;
+    const prefix = jiraBase + "/browse/";
+    root.querySelectorAll("a[href]").forEach(async link => {
+      const href = link.getAttribute("href");
+      if (!href.startsWith(prefix) || link.dataset.jiraLoaded) return;
+      const match = href.slice(prefix.length).match(/^([A-Z][A-Z0-9_]*-[0-9]+)(?:[?#].*)?$/);
+      if (!match) return;
+      link.dataset.jiraLoaded = "true";
+      const summary = document.createElement("span");
+      summary.setAttribute("data-jira-summary", match[1]);
+      summary.setAttribute("aria-live", "polite");
+      summary.dataset.state = "loading";
+      link.after(summary);
+      try {
+        const response = await fetch("/api/v1/jira/" + match[1], {headers: {Accept: "application/json"}});
+        const data = await response.json();
+        if (!response.ok || !data.ok || typeof data.summary !== "string" || typeof data.status !== "string") throw new Error();
+        summary.textContent = " " + data.summary + " · " + data.status;
+        summary.dataset.state = "success";
+      } catch {
+        summary.textContent = " Jira 读取失败";
+        summary.dataset.state = "error";
+      }
+    });
+  };
+  hydrateJira(document);
   const identity = document.getElementById("review-identity");
   if (!identity) return;
   const marker = identity.querySelector("[name='marker']");
@@ -157,7 +185,9 @@
       const empty = history.querySelector("[data-no-results]");
       if (empty) empty.remove();
       history.appendChild(article);
+      hydrateJira(history);
     }
+    hydrateJira(card);
   };
   document.querySelectorAll(".review-form").forEach(form => {
     const field = name => form.elements.namedItem(name);

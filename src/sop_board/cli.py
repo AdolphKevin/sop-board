@@ -11,6 +11,7 @@ import sys
 from .service import Service
 from .storage import Store
 from .http import Handler
+from .jira import Jira
 from .network import local_ipv4_addresses
 
 
@@ -67,6 +68,9 @@ def main():
             print(f"启动失败：数据目录 {args.data} 无法创建或写入：{error}", file=sys.stderr)
             return 1
         server.service = Service(store, jira_url=os.environ.get("JIRA_URL", ""))
+        server.jira = Jira(os.environ.get("JIRA_URL", ""), os.environ.get("JIRA_EMAIL", ""),
+                           os.environ.get("JIRA_API_TOKEN", ""),
+                           timeout=os.environ.get("JIRA_TIMEOUT_SECONDS", "10"))
         server.token = token
         server.timeout = 0.1
 

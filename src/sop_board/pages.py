@@ -5,6 +5,7 @@ import json
 import re
 from urllib.parse import quote
 
+from .defect_links import ISSUE_KEY
 from .time_format import local_time
 
 
@@ -21,13 +22,14 @@ def time_tag(value, element_id=None):
     return f"<time{identifier} datetime='{text(value)}'>{local_time(value)}</time>"
 
 
-def layout(title, content):
+def layout(title, content, jira_url=""):
+    jira = f" data-jira-url='{text(jira_url)}'" if jira_url else ""
     return ("<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>{text(title)} · sop-board</title>"
             "<link rel='stylesheet' href='/assets/board.css'><script src='/assets/board.js' defer></script></head><body>"
             "<header><a href='/'>sop-board</a><span>SOP 验证协作看板</span></header>"
-            f"<main>{content}</main></body></html>")
+            f"<main{jira}>{content}</main></body></html>")
 
 
 def home(data):
@@ -109,7 +111,7 @@ def evidence_preview(evidence):
     return f"<p>{download}</p>"
 
 
-def scenario(data):
+def scenario(data, jira_url=""):
     base = batch_url(data["project"], data["batch"])
     sections = []
     for group in data["groups"]:
@@ -121,14 +123,19 @@ def scenario(data):
         results = []
         for result in group["results"]:
             kind = "Agent" if result["kind"] == "agent" else "人工"
-            extras = "".join(f"<p>{name}：{text(result[field])}</p>" for field, name in
-                             [("finding", "问题或缺陷"), ("note", "备注"), ("session", "会话")]
-                             if result.get(field))
+            extras = []
+            for field, name in [("finding", "问题或缺陷"), ("note", "备注"), ("session", "会话")]:
+                if result.get(field):
+                    value = text(result[field])
+                    if (field == "finding" and result["kind"] == "manual" and jira_url
+                            and re.fullmatch(re.escape(jira_url) + r"/browse/" + ISSUE_KEY + r"(?:[?#].*)?", result[field])):
+                        value = f"<a href='{value}'>{value}</a>"
+                    extras.append(f"<p>{name}：{value}</p>")
             result_label = (MANUAL_STATUS if result["kind"] == "manual" else STATUS)[result["status"]]
             results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {result_label}</h3>"
                            f"<p>执行者：{text(result['executor'])} · 执行时间：{time_tag(result['executed_at'])}</p>"
                            f"<p>提交时间：{time_tag(result['submitted_at'])}</p>"
-                           f"<p>实际结果：{text(result['actual'])}</p>{extras}"
+                           f"<p>实际结果：{text(result['actual'])}</p>{''.join(extras)}"
                            f"{''.join(evidence_preview(e) for e in result['evidence'])}</article>")
         sections.append(f"<section data-fingerprint='{text(group['fingerprint'])}'><h2>{label}</h2>"
                         f"<p class='fingerprint'>内容指纹：{text(group['fingerprint'])}</p>{''.join(fields)}"
@@ -141,7 +148,7 @@ def scenario(data):
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
             f"<p>验证入口：{text(data['verify'])}</p>"
             f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}{review}{''.join(sections)}")
-    return layout(data["scenario"], body)
+    return layout(data["scenario"], body, jira_url)
 
 
 def identity_bar():
@@ -247,7 +254,7 @@ def scenario_summary(item):
             f"<p data-queue=''>所在队列：{QUEUE[item['queue']]}</p>")
 
 
-def scenarios(project, name, data):
+def scenarios(project, name, data, jira_url=""):
     base = batch_url(project, name)
     by_id = {item["scenario"]: item for item in data["scenarios"]}
     content = batch_nav(project, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
@@ -270,4 +277,4 @@ def scenarios(project, name, data):
                         f"<p>{'正向' if source['polarity'] == 'positive' else '反向'} · 优先级：{text(source['priority'])} · 角色：{text(source['actor'])} · 验证入口：{text(source['verify'])}</p>"
                         f"{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
         content += "</section>"
-    return layout("SOP 场景 · " + name, content)
+    return layout("SOP 场景 · " + name, content, jira_url)

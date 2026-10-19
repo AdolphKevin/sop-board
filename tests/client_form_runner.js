@@ -28,6 +28,11 @@ class Element {
   get className() { return this.attrs.class || ""; }
   appendChild(child) { this.children.push(child); if (typeof child !== "string") child.parentElement = this; return child; }
   append(...children) { children.forEach(c => this.appendChild(c)); }
+  after(node) {
+    const parent = this.parentElement;
+    parent.children.splice(parent.children.indexOf(this) + 1, 0, node);
+    node.parentElement = parent;
+  }
   replaceChildren(...children) { for (const c of this.children) if (typeof c !== "string") c.parentElement = null; this.children = []; this.append(...children); }
   remove() { this.parentElement.children = this.parentElement.children.filter(c => c !== this); this.parentElement = null; }
   setAttribute(key, value) { this.attrs[key] = String(value); }
@@ -76,8 +81,16 @@ const location = {get href() {return currentUrl.href;}, get search() {return cur
 const history = {pushState(_state, _title, url) {navigation.push(String(url)); currentUrl = new URL(url, currentUrl);},
   replaceState(_state, _title, url) {currentUrl = new URL(url, currentUrl);}};
 const window = {location, history, addEventListener(type, fn) {windowHandlers[type] = fn;}};
-const requests = [], responses = [];
+const requests = [], responses = [], jiraRequests = [];
 const fetch = async (url, options) => {
+  if (url.startsWith("/api/v1/jira/")) {
+    jiraRequests.push({url, options});
+    // Earlier review cases isolate summary reads from their write-request assertions.
+    if (!input.case.startsWith("jira-")) return {ok: false, status: 404, json: async () => ({ok: false})};
+    if (input.jiraFailure === "network") throw new Error("isolated network failure");
+    if (input.jiraFailure === "json") return {ok: true, json: async () => {throw new Error("invalid JSON");}};
+    return globalThis.fetch(new URL(url, input.serverOrigin), {...options, signal: AbortSignal.timeout(5000)});
+  }
   requests.push({url, options});
   if (input.serverOrigin) {
     const target = new URL(url, input.serverOrigin);
@@ -93,7 +106,7 @@ vm.runInNewContext(input.script, {document, localStorage: storage, fetch, window
 const q = s => document.querySelector(s);
 const qa = s => document.querySelectorAll(s);
 const identity = q("#review-identity");
-const marker = identity.querySelector("[name='marker']"), token = identity.querySelector("[name='token']");
+const marker = identity?.querySelector("[name='marker']"), token = identity?.querySelector("[name='token']");
 const form = q(".review-form"), card = form?.closest(".scenario-card");
 const field = name => form.elements.namedItem(name);
 const button = status => form.querySelector(`[data-mark-status='${status}']`);
@@ -125,7 +138,9 @@ function assertSaved(status, round = 2) {
   assert.equal(currentUrl.href, input.location);
 }
 async function main() {
-  if (input.case.startsWith("cases-")) {
+  if (input.case.startsWith("jira-")) {
+    await runJiraCase();
+  } else if (input.case.startsWith("cases-")) {
     await runCasesUpload();
   } else if (input.case.startsWith("real-") || input.case === "seven-filters") {
     await runBusinessCase();
@@ -450,5 +465,51 @@ async function runCasesUpload() {
     }
   }
   assert.equal(uploadForm.querySelector("button[type='submit']").disabled, false);
+}
+async function runJiraCase() {
+  if (input.case === "jira-live") {
+    readyIdentity();
+    const current = controls("N1-P01");
+    await click(current.button("fail"));
+    current.field("defect_url").value = "ABC-1";
+    await current.form.dispatch("submit");
+    assertResult(current, "fail");
+  }
+  const links = qa("a[href]").filter(link => link.getAttribute("href") === input.jiraBase + "/browse/ABC-1");
+  assert.equal(links.length, input.expectedJiraLinks);
+  assert.equal(qa("[data-jira-summary]").length, input.expectedJiraLinks);
+  for (let attempt = 0; attempt < 500 && qa("[data-jira-summary]").some(node => node.dataset.state === "loading"); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  for (const link of links) {
+    const siblings = link.parentElement.children;
+    const summary = siblings[siblings.indexOf(link) + 1];
+    assert.equal(summary.getAttribute("data-jira-summary"), "ABC-1");
+    assert.equal(summary.textContent.trim(), input.expectedLabel || "登录按钮无响应 · 待确认");
+    assert.ok(summary.children.every(child => typeof child === "string"), "Jira text must not become HTML");
+  }
+  assert.equal(jiraRequests.length, input.expectedJiraLinks);
+  for (const request of jiraRequests) {
+    assert.equal(request.url, "/api/v1/jira/ABC-1");
+    assert.equal(request.options?.headers?.Authorization, undefined);
+  }
+  if (input.case === "jira-failure-review") {
+    const originalText = controls("N1-P01").card.textContent;
+    await click(q("[data-filter='fail']"));
+    assert.deepEqual(qa(".scenario-card").filter(card => !card.hidden).map(card => card.dataset.scenario), ["N1-P01"]);
+    await click(q("[data-filter='all']"));
+    assert.equal(qa(".scenario-card").filter(card => !card.hidden).length, 4);
+    readyIdentity();
+    const current = controls("N2-P01");
+    await click(current.button("pass"));
+    assertResult(current, "pass");
+    assert.equal(controls("N1-P01").card.textContent, originalText);
+    assert.equal(counts().unreviewed, 2);
+    assert.equal(requests.length, 1);
+    assert.equal(reloads, 0);
+    return;
+  }
+  assert.equal(requests.length, input.case === "jira-live" ? 1 : 0);
+  assert.equal(currentUrl.href, input.location);
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});
