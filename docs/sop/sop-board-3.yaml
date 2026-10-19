@@ -18,7 +18,7 @@ metadata:
       version: "v8（2026-10-19）"
       confirmed_by: "AdolphKevin"
     - ref: "docs/designs/SOP-BOARD-3.md 的 I1–I5、D1、D2 节"
-      version: "修订 1"
+      version: "修订 2"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "Codex", "可写授权", "合并"]
 

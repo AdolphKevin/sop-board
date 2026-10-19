@@ -1,7 +1,7 @@
 ---
 design: "D-sop-board-3"
 task: "SOP-BOARD-3"
-revision: 1
+revision: 2
 assessment: {"complexity":"complex","risks":["persistence","public-contract","concurrency","authorization"],"effort":"约两个半工作日代理时长","drivers":["看板在本机启动 Codex 进程并管理队列、任务目录与原始输出","开发者授权后看板写入项目仓库工作区，授权与开发者令牌决定写操作的边界","以用例为准的合并由看板确定性生成用例场景，Codex 只回答需要判断的字段","SOP 原文与版本页渲染 Markdown 与 mermaid，不依赖外网"],"uncertainties":[],"required_skills":["Python","SQLite","HTTP","子进程与并发","Git","HTML 与原生 JavaScript"]}
 roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner":"AdolphKevin"}
 ---
@@ -10,7 +10,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 > 本文件是 tw 任务 SOP-BOARD-3 的方案原文。总体设计见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v8），本需求对应其第 8 节 SOP-BOARD-3 一行，以及 D15、D16、D17、D20、D21 与 S7 中属于本需求的部分。验收场景见 [docs/sop/sop-board-3.yaml](../sop/sop-board-3.yaml)。
 >
-> 状态：修订 1，2026-10-19 经 AdolphKevin 授权由 Claude 代批。
+> 状态：修订 2。修订 1 于 2026-10-19 经 AdolphKevin 授权由 Claude 代批；修订 2 按测试代理 sop-board-3-tester 的 25 个待确认问题与 8 处与总体方案的出入，以总体方案 v8 为准补写，2026-10-20 同样代批。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -31,21 +31,21 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 ## 启动与可写授权
 <!-- tw-section id=I1 type=interface depends=scope-global -->
-启动参数增加 `--writable-repo <项目身份>=<本机仓库路径>`，可重复。给出任意一项时，环境变量 `SOP_BOARD_ADMIN_TOKEN` 必须非空且不同于 `SOP_BOARD_TOKEN`；每个路径必须是 Git 工作区的根目录。不满足时以退出码 1 结束，错误输出写明原因（缺开发者令牌、两个令牌相同、路径不是 Git 工作区根目录并给出路径），并按 SOP-BOARD-1 的规则不留下新文件。
+启动参数增加 `--writable-repo <项目身份>=<本机仓库路径>`，可重复。给出任意一项时，环境变量 `SOP_BOARD_ADMIN_TOKEN` 必须非空且不同于 `SOP_BOARD_TOKEN`；每个路径必须是 Git 工作区的根目录。参数缺少等号、身份或路径为空，以及环境变量 `SOP_BOARD_CODEX_TIMEOUT` 给出时不是正整数，同样不满足。不满足时以退出码 1 结束，错误输出写明原因（参数应写成 `<项目身份>=<本机仓库路径>`、缺开发者令牌、两个令牌相同、路径不是 Git 工作区根目录并给出路径、超时取值不合规），并按 SOP-BOARD-1 的规则不留下新文件。
 
-启动成功时，每个授权仓库在标准输出写一行 `可写授权：<项目身份>（<路径>）`；项目不存在时以该身份登记，名称取仓库目录名。首页与批次页面对授权项目显示"可写"，其他项目显示"只读"。去掉参数重启即撤销授权；重启时状态为排队中或运行中的任务一律转"已中断"。
+启动成功时，每个授权仓库在标准输出写一行 `可写授权：<项目身份>（<路径>）`；项目不存在时以该身份登记，名称取仓库目录名；已存在的项目名称不变。首页与批次页面对授权项目显示"可写"，其他项目显示"只读"。去掉参数重启即撤销授权；重启时状态为排队中或运行中的任务一律转"已中断"。
 
-**场景文件发现**。看板启动时与此后每 5 秒读取各授权仓库 `docs/sop/` 下除 `entries.yaml` 外的 `*.yaml`：文件合格（按 sop-verify 的场景文件规则）且 `metadata.batch` 对应的批次没有该内容的版本时，登记为新的场景版本，推送人写"工作区"，提交号取仓库 HEAD，`dirty` 按工作区是否有未提交改动，产品指纹按 D2 计算；同一内容只登记一次；看板自己写入的内容不再登记。文件不合格时批次页面显示"工作区场景文件不合格"及问题与行号，已有版本保持不变。
+**场景文件发现**。看板启动时与此后每 5 秒读取各授权仓库 `docs/sop/` 下除 `entries.yaml` 外的 `*.yaml`：文件合格（按 sop-verify 的场景文件规则）且 `metadata.batch` 对应的批次没有该内容的版本时（批次不存在时随之建立），登记为新的场景版本，推送人写"工作区"，提交号取仓库 HEAD，`dirty` 按工作区是否有未提交改动，产品指纹按 D2 计算；同一内容只登记一次；看板自己写入的内容不再登记。文件不合格时批次页面显示"工作区场景文件不合格"及问题与行号，已有版本保持不变。
 
 ## 开发者令牌与开发者操作
 <!-- tw-section id=I2 type=interface depends=scope-global,I1 -->
-开发者操作凭 `Authorization: Bearer <SOP_BOARD_ADMIN_TOKEN>`；缺失返回 401 `unauthorized`，使用写入令牌返回 403 `admin-required`。本需求的开发者操作：
+开发者操作凭 `Authorization: Bearer <SOP_BOARD_ADMIN_TOKEN>`；缺失或既不是开发者令牌也不是写入令牌时返回 401 `unauthorized`，使用写入令牌返回 403 `admin-required`。任务不存在返回 404 `task-not-found`；任务状态不允许该操作返回 409 `task-state-invalid`；批次没有用例时发起重新合并返回 409 `cases-missing`。本需求的开发者操作：
 
-- `POST /api/v1/projects/<项目键>/batches/<批次>/merges`：发起重新合并，返回 `{ok, task}`；与已有排队或运行中的合并任务输入相同时返回该任务。
+- `POST /api/v1/projects/<项目键>/batches/<批次>/merges`：发起重新合并，返回 `{ok, task}`；与已有排队或运行中的合并任务输入相同时返回该任务，否则新建任务（即使同一输入此前已合并完成）。
 - `POST /api/v1/tasks/<任务编号>/retry`：对状态为失败、已中断或 Codex 不可用的任务以相同输入重新排队。
-- `POST /api/v1/tasks/<任务编号>/cancel`：放弃排队中、运行中、已中断或待同步的任务；运行中的 Codex 进程组被终止。
+- `POST /api/v1/tasks/<任务编号>/cancel`：放弃排队中、运行中、已中断、待同步或待补充的任务；运行中的 Codex 进程组被终止。
 
-页面身份栏增加"开发者令牌"栏，保存在浏览器 `localStorage` 的 `sop-board.admin-token`；开发者操作按钮带上该令牌，未填写时提示填写。写入令牌的用法不变。
+页面身份栏增加"开发者令牌"栏，保存在浏览器 `localStorage` 的 `sop-board.admin-token`；开发者操作按钮带上该令牌，未填写时提示"请先在身份栏填写开发者令牌"，不发送请求。写入令牌的用法不变。
 
 ## Codex 运行器与任务
 <!-- tw-section id=I3 type=interface depends=scope-global,D1 -->
@@ -57,41 +57,41 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 codex exec --json -s <沙箱> --skip-git-repo-check -C <任务目录> --output-schema <任务目录>/schema.json -o <任务目录>/final.json <提示词>
 ```
 
-合并任务的沙箱为 `read-only`。标准输入接空设备；会话编号取 `events.jsonl` 中 `thread.started` 事件的 `thread_id`。子进程环境只保留白名单变量（`PATH`、`HOME`、`USER`、`LANG`、`LC_*`、`TMPDIR`、`CODEX_HOME`、`SHELL`），不含 `SOP_BOARD_TOKEN`、`SOP_BOARD_ADMIN_TOKEN` 与 `JIRA_*`。单个任务运行超过环境变量 `SOP_BOARD_CODEX_TIMEOUT` 指定的秒数（缺省 1800）时终止其进程组，任务转"失败"并写明超时。
+续接已有会话的命令为 `codex -s <沙箱> exec resume <会话编号> --json --skip-git-repo-check -o <输出文件> <提示词>`（沙箱写在根命令层，工作目录为任务目录），续接后会话编号不变；本需求只提供该启动方式，由后续的修复与沉淀任务使用。`codex exec` 不发起审批；网络缺省关闭，需要联网的任务另加 `-c sandbox_workspace_write.network_access=true`。合并任务的沙箱为 `read-only`，不联网。标准输入接空设备；会话编号取 `events.jsonl` 中 `thread.started` 事件的 `thread_id`。子进程环境只保留白名单变量（`PATH`、`HOME`、`USER`、`LANG`、`LC_*`、`TMPDIR`、`CODEX_HOME`、`SHELL`），不含 `SOP_BOARD_TOKEN`、`SOP_BOARD_ADMIN_TOKEN` 与 `JIRA_*`。单个任务运行超过环境变量 `SOP_BOARD_CODEX_TIMEOUT` 指定的秒数（正整数，缺省 1800）时终止其进程组，任务转"失败"并写明超时。Codex 以非零码退出时任务转"失败"，错误说明写"Codex 退出码 <码>"；退出码为 0 而没有写出最终输出时写"Codex 没有写出最终输出"。已中断的任务由开发者重试（以相同输入重新排队）或放弃。
 
 **Codex 不可用**。启动时与每次取任务前检查 `codex --version`；命令不存在或失败时任务停在"Codex 不可用"，页面写明原因；恢复后由开发者重试。
 
-**读取**。`GET /api/v1/tasks?project=<项目键>&batch=<批次>` 列出任务；`GET /api/v1/tasks/<任务编号>` 返回任务字段与目录中各文件的下载地址；`GET /api/v1/tasks/<任务编号>/files/<文件名>` 下载目录中的文件。读取不需要令牌。
+**读取**。`GET /api/v1/tasks?project=<项目键>&batch=<批次>` 列出任务；`GET /api/v1/tasks/<任务编号>` 返回任务字段与目录中各文件的下载地址；`GET /api/v1/tasks/<任务编号>/files/<文件名>` 下载目录中的文件；文件名含路径分隔符或不存在时返回 404 `task-file-not-found`，任务不存在返回 404 `task-not-found`。读取不需要令牌。
 
 ## 以用例为准的合并
 <!-- tw-section id=I4 type=interface depends=scope-global,I3,D1,D2 -->
-**触发**。批次有用例时：上传用例（SOP-BOARD-2 I3）；场景文件出现新版本（推送或 I1 的发现）；开发者发起重新合并。输入摘要为用例并集版本、当前场景版本原文 sha256、SOP 原文摘要与入口声明摘要的组合：与最近一个已完成或排队、运行中的合并任务相同，或场景版本是看板自己写入的，都不再建任务。批次没有用例时不合并。
+**触发**。批次有用例时：上传用例（SOP-BOARD-2 I3）；场景文件出现新版本（推送或 I1 的发现）；开发者发起重新合并。输入摘要为用例并集内容的 sha256、当前场景版本原文 sha256、SOP 原文摘要与入口声明摘要的组合。上传与场景文件变化触发时，与该批次任何一个已完成、待同步、待补充、排队中或运行中的合并任务输入相同（即这一组合已合并过），或场景版本是看板自己写入的，都不再建任务；开发者发起的重新合并按 I2。批次没有用例时不合并。
 
-**输入快照**（任务目录）：`cases.yaml`（用例并集）、`scenarios.yaml`（当前场景文件，没有时为空）、`entries.yaml`（授权仓库取 `docs/sop/entries.yaml`，没有时取 `.tw/config.json` 的 `acceptance_entries`；未授权项目取推送附带的入口声明，见 I5）、`sop/`（SOP 原文，有则带上）、`nodes.json`（看板分配的节点编号）。
+**输入快照**（任务目录）：`cases.yaml`（用例并集）、`scenarios.yaml`（当前场景文件，没有时为空）、`entries.yaml`（授权仓库有 `.tw/config.json` 时取其 `acceptance_entries`，否则取 `docs/sop/entries.yaml`；未授权项目取推送附带的入口声明，见 I5）、`sop/`（SOP 原文，有则带上）、`nodes.json`（看板分配的节点编号）。
 
-**看板生成的确定字段**（按 v8 S7）：每条用例生成一条场景，编号、标题、优先级、`tags` 取用例的同名字段，`refs` 为用例编号，极性按用例 `tags` 是否含 `negative`，`initial_state`、`steps`、`expected` 分别取用例的 `preconditions`、`steps`、`expected_results`（按解析后的字符串原样），`forbidden_effects` 为空数组。节点按用例 `tags` 中的 `section:` 值分组，节点编号由看板分配为 `S01`、`S02`……，同一批次中同一 section 的编号保持不变。
+**看板生成的确定字段**（按 v8 S7）：每条用例生成一条场景，编号、标题、优先级、`tags` 取用例的同名字段，`refs` 为用例编号，极性按用例 `tags` 是否含 `negative`，`initial_state`、`steps`、`expected` 分别取用例的 `preconditions`、`steps`、`expected_results`（按解析后的字符串原样），`forbidden_effects` 为空数组。节点按用例 `tags` 中的 `section:` 值分组（没有该标签的归入"未分组"），节点 `title` 为该 section 值；节点编号由看板分配为 `S01`、`S02`……：用例按编号排序后，section 按首次出现的先后取号，此后新出现的 section 取下一个编号，同一批次中同一 section 的编号保持不变。`metadata` 按总体方案 S7：`requirement` 为批次需求名（只凭用例建立的批次取最近一次上传的 `metadata.feature`），`batch` 为批次名，`version` 为用例并集的最新上传序号，`owner` 为用例文件的 `metadata.owner`，`sources` 一项指向该批次与上传序号、`confirmed_by` 为用例文件的 `metadata.owner`，并保留补充场景原有的来源。
 
 **Codex 回答的判断字段**，`final.json` 须符合随看板发行的模式：
 
-- `cases`：每条用例的 `actor`、`verify`（取自入口声明的入口名）；反向用例的 `negative_type`（取枚举值，没有合适的取 `other`）；用例没有 `preconditions` 时补写 `initial_state`。
-- `nodes`：每个 section 的节点 `title`、`actor`、`entry`；没有正向用例的 section 可写 `merge_into` 指向另一个 section；仍没有正向依据时写入 `gaps`。
+- `cases`：每条用例的 `actor`、`verify`（取自入口声明的入口名）；反向用例的 `negative_type`（取 sop-verify 场景文件规则的枚举值，没有合适的取 `other`）；用例没有 `preconditions` 时补写 `initial_state`（用例有 `preconditions` 时 Codex 给出的值不采用，在 `check.json` 中记一条说明）。
+- `nodes`：每个 section 的节点 `actor`、`entry`；没有正向用例的 section 可写 `merge_into` 指向另一个 section；仍没有正向依据时写入 `gaps`。
 - `scenarios`：原有每条非用例场景的去向：`kept`（保留，编号与内容不变）、`duplicate`（与某条用例场景重复，写 `target` 与理由，并给出需要并入该用例场景的 `forbidden_effects` 与是否转移回归声明）、`conflict`（上下文相同而预期与某条用例相反，写 `target` 与理由）。只有角色、初始状态、入口与全部结果保证都被覆盖时才可判为 `duplicate`。
 - `negative_exempt`：没有反向场景的节点的豁免理由；依据出自推断的标 `inferred: true`。
 - `notes`：其他说明。
 
-**组装与核对**。看板用这些字段组装合并后的场景文件：用例节点在前，保留的原有场景留在原节点；原节点没有正向场景时，按 Codex 给出的 `relocate`（原有场景编号到用例节点编号）移入用例节点。推断出的内容（补写的 `initial_state`、`inferred` 的豁免理由）在对应位置写 `# 待确认 <编号>：<内容>` 注释。核对：场景文件格式（sop-verify 规则）；每条用例都有同编号场景且确定字段与用例一致；每条原有场景都有去向；`target`、`relocate` 引用的编号存在；原有场景没有 `TC_` 形式的编号。核对失败时任务为"失败"，`check.json` 列出问题；存在 `gaps` 时任务为"待补充"并列出缺口。重新合并时，已有场景的 `regression` 按编号保留。
+**组装与核对**。看板用这些字段组装合并后的场景文件：用例节点在前，保留的原有场景留在原节点；原节点没有正向场景时，按 Codex 给出的 `relocate`（原有场景编号到用例节点编号）移入用例节点。推断出的内容（补写的 `initial_state`、`inferred` 的豁免理由）在对应位置写 `# 待确认 <编号>：<内容>` 注释。`duplicate` 的原有场景独有的 `forbidden_effects` 并入目标用例场景，目标没有回归声明时转移其回归声明。核对：场景文件格式（sop-verify 规则）；每条用例都有同编号场景，确定字段与用例一致，`forbidden_effects` 恰为并入的禁止副作用（没有并入时为空数组）；`verify` 是入口声明中的入口名，`actor` 非空，`negative_type` 合法；每条原有场景都有去向；`target`、`relocate` 引用的编号存在；原有场景没有 `TC_` 形式的编号。核对失败时任务为"失败"，`check.json` 列出问题；存在 `gaps` 时任务为"待补充"并列出缺口，不生成草稿；此后用例或场景文件变化时按触发规则建新任务。重新合并时，已有场景的 `regression` 按编号保留。
 
-**落地**。核对通过后：未授权项目存为草稿，任务"已完成"；授权项目在磁盘上的 `docs/sop/<批次>.yaml` 与合并依据的版本相同（或文件不存在）时写入该文件，入口声明缺失时以 Codex 推断的入口写 `docs/sop/entries.yaml`（文件头注释写明待确认），登记为新的场景版本（推送人"看板合并 #<任务编号>"），任务"已完成"；磁盘文件不同则任务"待同步"，文件保持原样。写入不提交。
+**落地**。核对通过后：未授权项目存为草稿，任务"已完成"；授权项目在磁盘上的 `docs/sop/<批次>.yaml` 与合并依据的版本相同（或文件不存在）时写入该文件，入口声明缺失时以 Codex 推断的入口写 `docs/sop/entries.yaml`（文件头注释写明待确认），登记为新的场景版本（推送人"看板合并 #<任务编号>"），任务"已完成"；磁盘文件不同则任务"待同步"，文件保持原样；此时磁盘上的合格新内容同时会被 I1 的发现登记为新版本并触发新的合并任务，两个任务都列在合并页。写入不提交。批次 Markdown 报告的"合并记录"区块列出最近一个已完成合并任务移除的场景（重复或冲突、目标与理由）与待确认的推断；没有已完成的合并任务时仍写"暂无记录"。
 
 **合并页** `/p/<项目键>/b/<批次>/merges`（批次导航新增"合并"）：任务列表（编号、触发原因、状态、时间）；所选任务的对应关系（用例到场景）、原有场景的去向与理由、待确认的推断、缺口；失败时显示 `check.json` 与原始输出的下载链接；开发者按钮"重新合并""重试""放弃"。
 
-**下载**：`GET …/merges/<任务编号>/scenario-file`（合并结果原文）；`GET …/merges/<任务编号>/pairs.json`（配对文件，全部用例归入 `covered`，可直接用于 `sop-verify coverage --pairs`）。
+**下载**（任务没有合并结果时返回 404 `merge-result-not-found`）：`GET …/merges/<任务编号>/scenario-file`（合并结果原文）；`GET …/merges/<任务编号>/pairs.json`（配对文件，全部用例归入 `covered`，可直接用于 `sop-verify coverage --pairs`）。
 
 ## 推送附带的入口声明与 SOP 原文
 <!-- tw-section id=I5 type=interface depends=scope-global,D1 -->
-推送场景文件的正文增加两个可选字段：`entries`（`entries.yaml` 的内容对象，字段同 sop-verify 的入口声明）与 `sop_sources`（数组，每项 `{ref, path, commit, sha256, confirmed_by, content}`，`content` 为 Markdown 原文，不超过 2 MiB）。不合格时返回 422 `scenario-file-invalid` 并点名字段。授权仓库中，看板对场景文件 `metadata.sources` 的每项 `ref`，取其中第一个以空格分隔、指向仓库内已有文件的相对路径，读取该文件作为 SOP 原文。
+推送场景文件的正文增加两个可选字段：`entries`（`entries.yaml` 的内容对象，字段同 sop-verify 的入口声明）与 `sop_sources`（数组，每项 `{ref, path, commit, sha256, confirmed_by, content}`，`content` 为 Markdown 原文，不超过 2 MiB）。`sha256` 与 `content` 的实际摘要不一致也算不合格。不合格时返回 422 `scenario-file-invalid` 并点名字段（如 `sop_sources[0].sha256`）。同一路径的原文内容与最新版本相同时不新增版本。授权仓库中，看板对场景文件 `metadata.sources` 的每项 `ref`，取其中第一个以空格分隔、指向仓库内已有文件的相对路径，读取该文件作为 SOP 原文：提交号取仓库 HEAD，确认人取该项的 `confirmed_by`；场景文件发现时一并读取，内容变化时登记新版本。
 
-**SOP 页** `/p/<项目键>/b/<批次>/sop`（批次导航新增"SOP"）：每份原文显示最新版本的渲染结果：标题、段落、列表、表格、代码块、行内代码、强调与 `http`/`https` 链接，原文中的 HTML 一律转义显示；`mermaid` 代码块由随仓库提供的 mermaid 脚本渲染成图。每个标题带锚点。版本列表写版本号、提交号、sha256 前 12 位、确认人与本地时间；选两个版本显示逐行差异。场景详情页中，场景 `refs` 的某项与 SOP 标题文字相同时链接到该锚点。
+**SOP 页** `/p/<项目键>/b/<批次>/sop`（批次导航新增"SOP"）：每份原文显示最新版本的渲染结果：标题、段落、列表、表格、代码块、行内代码、强调与 `http`/`https` 链接，原文中的 HTML 一律转义显示，`http`/`https` 以外的链接按纯文本显示；批次没有 SOP 原文时页面写"尚无 SOP 原文"；`mermaid` 代码块由随仓库提供的 mermaid 脚本渲染成图。每个标题带锚点。版本列表写版本号、提交号、sha256 前 12 位、确认人与本地时间；选两个版本显示逐行差异。场景详情页中，场景 `refs` 的某项与 SOP 标题文字相同时链接到该锚点。
 
 ## 存储与产品指纹
 <!-- tw-section id=D1 type=data depends=scope-global -->
@@ -106,7 +106,7 @@ codex exec --json -s <沙箱> --skip-git-repo-check -C <任务目录> --output-s
 SOP-31 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-3.yaml#SOP-31
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D20、D21；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I1、I2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D20、D21；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I1、I2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -115,7 +115,7 @@ SOP-31 节点全部场景通过。
 SOP-32 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-3.yaml#SOP-32
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D17、D20、D21；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I3 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D17、D20、D21；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I3 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -124,7 +124,7 @@ SOP-32 节点全部场景通过。
 SOP-33 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-3.yaml#SOP-33
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D16 与第 4 节 S7；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I4 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D16 与第 4 节 S7；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I4 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -133,7 +133,7 @@ SOP-33 节点全部场景通过。
 SOP-34 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-3.yaml#SOP-34
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D16、D20；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I1、I4、D2 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D16、D20；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I1、I4、D2 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -142,7 +142,7 @@ SOP-34 节点全部场景通过。
 SOP-35 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-3.yaml#SOP-35
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D15；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I5 节；版本 修订 1；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D15；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-3.md 的 I5 节；版本 修订 2；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
