@@ -1,12 +1,14 @@
 """把 Service 的读取结果呈现为服务端 HTML，不重新计算业务指标。"""
 
 from html import escape
+from difflib import SequenceMatcher
 import json
 import re
 from urllib.parse import quote
 
 from .defect_links import ISSUE_KEY
 from .time_format import local_time
+from .sop_markdown import render as render_sop
 
 
 def text(value):
@@ -22,7 +24,7 @@ def time_tag(value, element_id=None):
     return f"<time{identifier} datetime='{text(value)}'>{local_time(value)}</time>"
 
 
-def layout(title, content, jira_url="", watch=None):
+def layout(title, content, jira_url="", watch=None, scripts=()):
     jira = f" data-jira-url='{text(jira_url)}'" if jira_url else ""
     polling = ""
     if watch:
@@ -30,10 +32,12 @@ def layout(title, content, jira_url="", watch=None):
         api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}/state"
         polling = f" data-state-url='{text(api)}' data-etag='{text(etag)}'"
         content = "<p id='refresh-message' class='notice' role='status' aria-live='polite' hidden></p>" + content
+    extra_scripts = ''.join(f"<script src='{text(src)}' defer></script>" for src in scripts)
     return ("<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>{text(title)} · sop-board</title>"
-            "<link rel='stylesheet' href='/assets/board.css'><script src='/assets/board.js' defer></script></head><body>"
+            "<link rel='stylesheet' href='/assets/board.css'><script src='/assets/board.js' defer></script>"
+            f"{extra_scripts}</head><body>"
             "<header><a href='/'>sop-board</a><span>SOP 验证协作看板</span></header>"
             f"<main{jira}{polling}>{content}</main></body></html>")
 
@@ -139,6 +143,11 @@ def evidence_preview(evidence):
 
 def scenario(data, jira_url=""):
     base = batch_url(data["project"], data["batch"])
+    titles = {}
+    for source in data.get('sop_sources', []):
+        _, headings = render_sop(source['content'], source['path'])
+        for heading in headings:
+            titles.setdefault(heading['title'], base + '/sop#' + quote(heading['anchor'], safe=''))
     sections = []
     for group in data["groups"]:
         label = ("当前内容" if group["current"] else "移除前内容" if group["fingerprint"] == data["fingerprint"] else "场景已变更")
@@ -146,6 +155,9 @@ def scenario(data, jira_url=""):
         for key, name in [("initial_state", "初始状态"), ("steps", "操作步骤"), ("expected", "预期结果"), ("forbidden_effects", "禁止产生的影响")]:
             values = "".join(f"<li>{text(v)}</li>" for v in group["body"][key])
             fields.append(f"<h3>{name}</h3><ul>{values}</ul>" if values else f"<h3>{name}</h3><p>未声明</p>")
+        refs = ''.join('<li>' + (f'<a href="{text(titles[ref])}">{text(ref)}</a>' if ref in titles else text(ref)) + '</li>'
+                       for ref in group['body'].get('refs', []))
+        fields.append('<h3>来源引用</h3>' + ('<ul>' + refs + '</ul>' if refs else '<p>未声明</p>'))
         results = []
         for result in group["results"]:
             kind = "Agent" if result["kind"] == "agent" else "人工"
@@ -213,6 +225,66 @@ def batch_nav(project, name, current):
         for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
                                    ("cases", "/cases", "用例"), ("progress", "/progress", "进度"), ("merges", "/merges", "合并"),
                                    ("sop", "/sop", "SOP")]) + "</nav>"
+
+
+def sop_diff(before, after):
+    old, new = before.splitlines(), after.splitlines()
+    rows = []
+
+    def row(kind, left, right, value):
+        marker = {'context': '', 'delete': '−', 'insert': '+'}[kind]
+        rows.append(f'<tr data-kind="{kind}"><td>{left}</td><td>{right}</td><td>{marker}</td>' +
+                    f'<td><code>{text(value)}</code></td></tr>')
+
+    for kind, a, b, c, d in SequenceMatcher(None, old, new).get_opcodes():
+        if kind == 'equal':
+            for offset, value in enumerate(old[a:b]):
+                row('context', a + offset + 1, c + offset + 1, value)
+        else:
+            for offset, value in enumerate(old[a:b]):
+                row('delete', a + offset + 1, '', value)
+            for offset, value in enumerate(new[c:d]):
+                row('insert', '', c + offset + 1, value)
+    return ('<div class="table-scroll"><table class="sop-diff"><thead><tr><th>旧行</th><th>新行</th>' +
+            '<th>变化</th><th>内容</th></tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div>')
+
+
+def sop(project, name, sources, query=None):
+    query = query or {}
+    content = batch_nav(project, name, 'sop') + f'<h1>批次 {text(name)} · SOP</h1>'
+    if not sources:
+        content += '<p>尚无 SOP 原文</p>'
+    for path, versions in sources.items():
+        rendered, _ = render_sop(versions[0]['content'], path)
+        content += f'<section data-sop-path="{text(path)}"><h2>{text(path)}</h2>'
+        content += f'<p>来源：{text(versions[0]["ref"])}</p><article class="sop-content">{rendered}</article>'
+        content += ('<h3>版本记录</h3><div class="table-scroll"><table class="sop-versions"><thead><tr>' +
+                    '<th>版本</th><th>提交号</th><th>SHA-256 前 12 位</th><th>确认人</th><th>登记时间</th></tr></thead><tbody>')
+        for version in versions:
+            content += (f'<tr data-version="{version["version"]}"><th scope="row">{version["version"]}</th>' +
+                        f'<td>{text(version["commit_id"])}</td><td>{text(version["sha256"][:12])}</td>' +
+                        f'<td>{text(version["confirmed_by"])}</td><td>{time_tag(version["recorded_at"])}</td></tr>')
+        content += '</tbody></table></div>'
+        if len(versions) > 1:
+            content += (f'<form method="get" action="{text(batch_url(project, name) + "/sop")}">' +
+                        f'<input type="hidden" name="path" value="{text(path)}">')
+            for key, label, default in [('from', '旧版本', versions[1]['version']), ('to', '新版本', versions[0]['version'])]:
+                selected = query.get(key, str(default)) if query.get('path') == path else str(default)
+                options = ''.join(f'<option value="{v["version"]}"' +
+                                  (' selected' if str(v['version']) == selected else '') +
+                                  f'>版本 {v["version"]}</option>' for v in versions)
+                content += f'<label>{label}<select name="{key}">{options}</select></label>'
+            content += '<button type="submit">比较版本</button></form>'
+        if query.get('path') == path:
+            chosen = {str(v['version']): v for v in versions}
+            before, after = chosen.get(query.get('from')), chosen.get(query.get('to'))
+            if before and after and before['version'] != after['version']:
+                content += f'<h3>版本 {before["version"]} → {after["version"]} 的逐行差异</h3>'
+                content += sop_diff(before['content'], after['content'])
+            else:
+                content += '<p>请选择这份原文的两个不同版本。</p>'
+        content += '</section>'
+    return layout('SOP · ' + name, content, scripts=('/assets/vendor/mermaid/mermaid.min.js', '/assets/sop.js'))
 
 
 def progress(project, data, coverage):

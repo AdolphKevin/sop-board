@@ -41,7 +41,9 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             method = self.command
             assets = {"/assets/board.css": ("board.css", "text/css; charset=utf-8"),
-                      "/assets/board.js": ("board.js", "text/javascript; charset=utf-8")}
+                      "/assets/board.js": ("board.js", "text/javascript; charset=utf-8"),
+                      "/assets/sop.js": ("sop.js", "text/javascript; charset=utf-8"),
+                      "/assets/vendor/mermaid/mermaid.min.js": ("vendor/mermaid/mermaid.min.js", "text/javascript; charset=utf-8")}
             if method == "GET" and path in assets:
                 name, content_type = assets[path]
                 self.respond(200, files("sop_board").joinpath("assets", name).read_bytes(), content_type)
@@ -96,6 +98,13 @@ class Handler(BaseHTTPRequestHandler):
                 service.read_batch(key, batch)
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
                 self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], selected).encode(), "text/html; charset=utf-8")
+                return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/sop", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'"
+                query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
+                self.respond(200, pages.sop(key, batch, service.read_sop(key, batch), query).encode(), "text/html; charset=utf-8",
+                             [('Content-Security-Policy', policy)])
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/progress", path)):
                 key, batch = unquote(match[1]), unquote(match[2])

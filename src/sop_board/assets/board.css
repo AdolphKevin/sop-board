@@ -55,3 +55,10 @@ nav a[aria-current] { background: #dce8fc; color: #123e87; font-weight: 700; }
 [hidden] { display: none !important; }
 .progress-columns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
 @media (max-width: 720px) { .progress-columns { grid-template-columns: 1fr; } }
+.sop-content h2 { margin-top: 24px; }
+.sop-content [id] { scroll-margin-top: 24px; }
+.sop-content code, .sop-diff code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sop-content .mermaid { max-height: none; }
+.mermaid svg { max-width: 100%; height: auto; }
+.sop-diff [data-kind=delete] { background: #fff0ee; }
+.sop-diff [data-kind=insert] { background: #eaf8ee; }

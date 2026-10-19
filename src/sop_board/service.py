@@ -77,6 +77,9 @@ class Service:
                               (batch["id"],)).fetchone()[0]
                    for table, column in [("versions", "version"), ("rounds", "number"), ("case_uploads", "number")]]
         etag = 'v%d-r%d-u%d' % tuple(numbers)
+        sop_version = db.execute('SELECT COALESCE(MAX(id),0) FROM sop_versions WHERE batch=?', (batch['id'],)).fetchone()[0]
+        if sop_version:
+            etag += f'-s{sop_version}'
         problems = self.workspace_problems.get((batch['project'], batch['name']), [])
         if problems:
             etag += '-w' + hashlib.sha256(canonical(problems).encode()).hexdigest()[:12]
@@ -198,6 +201,25 @@ class Service:
             if not version:
                 reject(404, "scenario-file-not-found", "scenario-file", "尚无场景文件")
             return version["content"].encode()
+
+    def read_sop(self, key, name):
+        with self.store.connection() as db:
+            db.execute('BEGIN')
+            batch = self.batch(db, key, name)
+            sources = {}
+            for row in db.execute('SELECT * FROM sop_versions WHERE batch=? ORDER BY path,version DESC', (batch['id'],)):
+                sources.setdefault(row['path'], []).append(dict(row))
+            return sources
+
+    def save_sop_sources(self, db, batch_id, sources):
+        """由推送与发现共用；同一路径只与最新原文比较，历史不覆写。"""
+        for source in sources:
+            last = db.execute('SELECT version,content FROM sop_versions WHERE batch=? AND path=? ORDER BY version DESC LIMIT 1',
+                              (batch_id, source['path'])).fetchone()
+            if not last or last['content'] != source['content']:
+                db.execute('INSERT INTO sop_versions(batch,path,version,ref,commit_id,sha256,confirmed_by,content,recorded_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                           (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
+                            source['sha256'], source['confirmed_by'], source['content'], now()))
 
     def insert_round(self, db, batch, version, body, kind="agent"):
         number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
@@ -338,10 +360,14 @@ class Service:
                 groups.append(dict(fingerprint=record["fingerprint"], current=bool(record["current"]),
                                    body=json.loads(record["body"]), results=[r for r in results if r["fingerprint"] == record["fingerprint"]]))
             latest = records[0]
+            sop_sources = [dict(row) for row in db.execute(
+                'SELECT path,content FROM sop_versions v WHERE batch=? AND NOT EXISTS '
+                '(SELECT 1 FROM sop_versions newer WHERE newer.batch=v.batch AND newer.path=v.path AND newer.version>v.version) ORDER BY path',
+                (batch['id'],))]
             return dict(project=key, batch=name, etag=self.batch_etag(db, batch), scenario=scenario, node=latest["node"], title=latest["title"],
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
                         fingerprint=latest["fingerprint"], current=bool(latest["current"]),
-                        pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups,
+                        pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups, sop_sources=sop_sources,
                         summary=next((item for item in calculate(db, batch)["scenarios"] if item["scenario"] == scenario), None))
 
     def export_round(self, key, name, number):
@@ -445,13 +471,7 @@ class Service:
                        "ON CONFLICT(project,name) DO UPDATE SET path=excluded.path, product_digest=excluded.product_digest",
                        (key, batch, body["path"], body["product_digest"]))
             batch_id = db.execute("SELECT id FROM batches WHERE project=? AND name=?", (key, batch)).fetchone()[0]
-            for source in body.get('sop_sources', []):
-                last = db.execute('SELECT version,content FROM sop_versions WHERE batch=? AND path=? ORDER BY version DESC LIMIT 1',
-                                  (batch_id, source['path'])).fetchone()
-                if not last or last['content'] != source['content']:
-                    db.execute('INSERT INTO sop_versions(batch,path,version,ref,commit_id,sha256,confirmed_by,content,recorded_at) VALUES (?,?,?,?,?,?,?,?,?)',
-                               (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
-                                source['sha256'], source['confirmed_by'], source['content'], now()))
+            self.save_sop_sources(db, batch_id, body.get('sop_sources', []))
             if isinstance(body.get("entries"), dict):
                 db.execute("INSERT INTO batch_entries(batch,content) VALUES (?,?) ON CONFLICT(batch) DO UPDATE SET content=excluded.content",
                            (batch_id, canonical(body["entries"])))

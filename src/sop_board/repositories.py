@@ -121,14 +121,20 @@ def read_sop_sources(root, raw):
     import hashlib
     document = yaml.safe_load(raw) or {}
     sources = {}
+    commit = None
     for source in document.get('metadata', {}).get('sources', []):
         for token in source['ref'].split():
             path = root / token
             if Path(token).is_absolute() or '..' in Path(token).parts or root not in path.resolve().parents or not path.is_file():
                 continue
             content = path.read_bytes().decode('utf-8')
+            if commit is None:
+                try:
+                    commit = git(root, 'rev-parse', '--verify', 'HEAD').decode().strip()
+                except subprocess.CalledProcessError:
+                    commit = 'unborn'
             sources[token] = dict(path=token, ref=source['ref'], content=content,
-                                  sha256=hashlib.sha256(content.encode()).hexdigest(), confirmed_by=source['confirmed_by'])
+                                  commit=commit, sha256=hashlib.sha256(content.encode()).hexdigest(), confirmed_by=source['confirmed_by'])
             break
     return [sources[name] for name in sorted(sources)]
 
@@ -148,6 +154,7 @@ class Discovery:
         from .errors import APIError
         from .scenario_file import load_scenarios
         from .service import fingerprint, project_key
+        from .validation import Problems, validate_sop_sources
         errors = {}
         for identity, root in self.repos.items():
             key = project_key(identity)
@@ -177,16 +184,27 @@ class Discovery:
                     entries, entry_path = entry_names(root)
                     document = load_scenarios(raw, entries=entries)
                     batch = document['metadata']['batch']
+                    sources = read_sop_sources(root, raw)
+                    body = dict(project=dict(id=identity, name=root.name), path=str(path.relative_to(root)),
+                                content=raw, pushed_by='工作区', sop_sources=sources,
+                                fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']})
                     # Include all history, including versions produced by the board itself.
                     with self.service.store.connection() as db:
                         found = db.execute('SELECT 1 FROM versions v JOIN batches b ON b.id=v.batch '
                                            'WHERE b.project=? AND b.name=? AND v.content=?', (key, batch, raw)).fetchone()
                     if found:
+                        # 场景可能已登记，而原文独立变化；不能重放旧场景为新版本。
+                        problems = Problems('scenario-file-invalid')
+                        validate_sop_sources(sources, problems)
+                        for problem in problems.items:
+                            problem['line'] = 1
+                        problems.finish()
+                        with self.service.store.transaction() as db:
+                            stored = self.service.batch(db, key, batch)
+                            self.service.save_sop_sources(db, stored['id'], sources)
                         continue
                     info = product(root, path, entry_path)
-                    self.service.push(key, batch, dict(project=dict(id=identity, name=root.name),
-                        path=str(path.relative_to(root)), content=raw, pushed_by='工作区', **info,
-                        fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}), preserve_project_name=True)
+                    self.service.push(key, batch, dict(body, **info), preserve_project_name=True)
                 except APIError as error:
                     errors.setdefault((key, batch), []).extend(dict(p, path=str(path.relative_to(root))) for p in error.problems)
                 except (OSError, UnicodeError, subprocess.SubprocessError) as error:

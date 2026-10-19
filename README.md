@@ -94,10 +94,22 @@ uv run sop-board --data ./board-data --host 0.0.0.0 --port 8787
 
 按 Ctrl+C 或发送终止信号停止服务；下次用同一数据目录启动，数据会保留。
 
+## SOP 原文与依赖
+
+批次导航中的“SOP”显示各路径的最新原文及历次版本，版本记录含提交号、SHA-256 前 12 位、确认人与本地登记时间。选择同一路径的两个版本可查看逐行增删与未变行。场景详情的来源引用与标题文字完全相同时，可直接跳转到对应标题；重名时取路径排序后的第一个标题。没有原文时显示“尚无 SOP 原文”。
+
+推送正文可附带 `entries` 入口声明对象和 `sop_sources` 原文数组。入口声明沿用 sop-verify 的字段（包括可选的启动、重载与检查说明）；不合格时返回 422 `scenario-file-invalid`，问题点名字段且整份不保存。原文相同不新增版本；只修改原文时不新增场景版本。不附带这两个字段时保留已经登记的入口与原文。授权仓库每五秒按场景来源 `ref` 中以空格分隔的首个有效仓库内相对文件路径读取原文，不跟随越界符号链接，不读取网址；场景不变时也登记原文变化，提交号取当时 HEAD，确认人取对应来源声明。
+
+Markdown 使用 Python 标准库实现约定子集：标题、段落、有序与无序列表、表格、代码块、行内代码、强调、HTTP/HTTPS 链接。原生 HTML 转义，其他协议的链接按文字显示。Mermaid 图示使用随包提供的本地脚本，页面不自动加载外网资源；格式错误的图示保留原文并提示。
+
+第三方脚本为 **Mermaid 12.2.0**，来源为 npm 的 `mermaid@12.2.0` 发行包 `dist/mermaid.min.js`（项目：[mermaid-js/mermaid](https://github.com/mermaid-js/mermaid)）。脚本与原包 MIT 许可原文位于 `src/sop_board/assets/vendor/mermaid/`；现有 uv 构建规则会把该目录及页面脚本放入发行包，无需增加 Python 依赖。
+
 ## 运行测试
 
 ```sh
 uv run --frozen pytest -q -p no:cacheprovider tests
 ```
+
+T3 的实际启动与推送自检可运行 `uv run --frozen python tests/demo_sop.py`：推送两版含标题、表格、图示和 HTML 片段的原文，核对场景版本、原文版本与差异，打印 HTML 片段及版本列表，最后停止服务并删除临时数据。加 `--browser` 可在打印的本机地址浏览，终端回车后清理。
 
 表单脚本的隔离逻辑测试还需要本机安装 Node.js 18 或以上版本，不需要安装 npm 包。其余测试通过临时目录中的真实 HTTP 服务与 SQLite 核对结果；浏览器操作和内网另一台机器的访问仍需另行验收。
