@@ -5,6 +5,7 @@
 # 2026-10-19：第 1、2 轮验收通过后写回各场景的 regression（不改变场景内容指纹）；SOP-06-P01 为人工回归，由 AdolphKevin 负责。
 # 版本 3（2026-10-19）：导入测试代理 sop-board-1-tester 的 51 条用例后核对覆盖，补充 18 条场景（含新节点 SOP-07 项目设置）；预期依据方案修订 3，经 AdolphKevin 授权由 Claude 代批。
 # 版本 4（2026-10-19）：测试代理复核配对后，补充 14 条场景并改写 SOP-07-N01 的核对方式；经 AdolphKevin 授权由 Claude 代批。
+# 2026-10-20：第 4、5 轮验收通过后写回新增 32 条场景的 regression（不改变场景内容指纹），守护测试见 tests/test_regression_*.py。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
 # SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
@@ -81,6 +82,7 @@ sops:
         evidence_hints: ["三次命令原文、输出与退出码", "进程列表"]
 
       - id: SOP-01-P03
+        regression: {"check": "unit", "cases": ["tests.test_regression_startup::test_signals_preserve_round_and_continue_numbering"]}
         polarity: positive
         title: 收到中断或终止信号后关闭退出，重启后轮次号继续递增
         actor: 启动看板的成员
@@ -94,6 +96,7 @@ sops:
         evidence_hints: ["命令原文与完整输出", "信号前后的连接测试输出", "SQLite 查询与输出"]
 
       - id: SOP-01-P04
+        regression: {"check": "unit", "cases": ["tests.test_regression_startup::test_default_port_prints_only_loopback_address", "tests.test_network_addresses::test_shared_startup_reports_each_ipv4_and_prints_loopback"]}
         polarity: positive
         title: 缺省端口与内网访问的输出格式
         actor: 启动看板的成员
@@ -107,6 +110,7 @@ sops:
         evidence_hints: ["两次命令原文与完整输出", "ifconfig 输出", "连接测试输出"]
 
       - id: SOP-01-P05
+        regression: {"check": "unit", "cases": ["tests.test_regression_startup::test_restart_preserves_evidence_and_manual_round"]}
         polarity: positive
         title: 重启后证据与人工轮次保留
         actor: 启动看板的成员
@@ -120,6 +124,7 @@ sops:
         evidence_hints: ["请求与响应原文", "两次下载文件的 sha256"]
 
       - id: SOP-01-N02
+        regression: {"check": "unit", "cases": ["tests.test_regression_startup::test_startup_failures_leave_paths_unchanged[empty-token]", "tests.test_regression_startup::test_startup_failures_leave_paths_unchanged[readonly-parent]", "tests.test_regression_startup::test_startup_failures_leave_paths_unchanged[plain-file]", "tests.test_regression_startup::test_startup_failures_leave_paths_unchanged[occupied-empty]"]}
         polarity: negative
         negative_type: incomplete-input
         title: 令牌为空或数据目录无法创建时启动失败且不留文件
@@ -217,6 +222,7 @@ sops:
         evidence_hints: ["请求与响应原文", "SQLite 中场景版本的查询结果"]
 
       - id: SOP-02-P02
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_project_key_and_crlf_fingerprint_are_normalized"]}
         polarity: positive
         title: 项目键按规则归一化，指纹计算统一换行符
         actor: 开发岗代理
@@ -230,6 +236,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）", "本地指纹计算脚本与输出"]
 
       - id: SOP-02-N05
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_write_auth_preserves_existing_data_and_reads_need_no_token[missing]", "tests.test_regression_api::test_write_auth_preserves_existing_data_and_reads_need_no_token[wrong]"]}
         polarity: negative
         negative_type: permission
         title: 全部写入接口都要求令牌，读取接口不需要
@@ -244,6 +251,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）", "请求前后的版本号、轮次表、前缀与 evidence 目录清单"]
 
       - id: SOP-02-P03
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_nonempty_custom_verify_is_preserved"]}
         polarity: positive
         title: 入口名只要求为非空字符串
         actor: 开发岗代理
@@ -257,6 +265,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-02-N06
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_push_diagnostics_and_empty_project_list[yaml-line-seven]", "tests.test_regression_api::test_push_diagnostics_and_empty_project_list[empty-verify]", "tests.test_regression_api::test_push_diagnostics_and_empty_project_list[identity]"]}
         polarity: negative
         negative_type: invalid-input
         title: YAML 语法错误、空入口名与项目身份不一致被拒绝
@@ -339,6 +348,7 @@ sops:
         evidence_hints: ["三次请求与响应原文", "批次摘要响应"]
 
       - id: SOP-03-P02
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_png_and_text_evidence_deduplicate_and_download_with_original_types"]}
         polarity: positive
         title: 证据按内容存储，相同内容只存一份并可原样下载
         actor: 开发岗代理
@@ -352,6 +362,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）", "evidence 目录清单", "SQLite 查询与输出"]
 
       - id: SOP-03-P03
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_round_reads_expose_normalized_and_undeclared_independence"]}
         polarity: positive
         title: 独立性按实现者与执行者姓名判定
         actor: 开发岗代理
@@ -365,6 +376,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-03-P04
+        regression: {"check": "unit", "cases": ["tests.test_rounds::test_batches_scope_versions_round_numbers_and_idempotency_keys"]}
         polarity: positive
         title: 幂等键按批次区分
         actor: 开发岗代理
@@ -378,6 +390,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-03-P05
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_later_agent_submission_reopens_retest_and_preserves_misjudgment"]}
         polarity: positive
         title: Agent 再次通过后场景回到复测，最新结果按提交顺序判定
         actor: 开发岗代理
@@ -391,6 +404,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-03-P06
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_product_change_with_new_scenario_respects_regression_and_manual_pass"]}
         polarity: positive
         title: 产品指纹变化后 Agent 通过的场景回到待执行，声明回归检查的场景不受影响
         actor: 开发岗代理
@@ -404,6 +418,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-03-N04
+        regression: {"check": "unit", "cases": ["tests.test_evidence::test_evidence_limit_rejects_without_writes", "tests.test_evidence::test_exactly_64_mib_evidence_is_accepted"]}
         polarity: negative
         negative_type: over-length
         title: 超过 64 MiB 的证据被拒绝
@@ -418,6 +433,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）", "上传前后的 evidence 目录清单"]
 
       - id: SOP-03-N05
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_invalid_time_duplicate_and_empty_results_report_precise_problems[naive-time]", "tests.test_regression_rounds::test_invalid_time_duplicate_and_empty_results_report_precise_problems[duplicate]", "tests.test_regression_rounds::test_invalid_time_duplicate_and_empty_results_report_precise_problems[empty]"]}
         polarity: negative
         negative_type: invalid-input
         title: 执行时间不带时区、同一场景重复与空结果被拒绝
@@ -432,6 +448,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）", "请求前后的轮次表"]
 
       - id: SOP-03-P07
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_four_minutes_future_time_is_accepted_and_preserved"]}
         polarity: positive
         title: 执行时间晚于服务端时间不超过五分钟时接受
         actor: 开发岗代理
@@ -445,6 +462,7 @@ sops:
         evidence_hints: ["请求与响应原文与请求时刻"]
 
       - id: SOP-03-N06
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_invalid_status_skip_reason_and_six_minutes_future_report_all_fields"]}
         polarity: negative
         negative_type: invalid-input
         title: 状态取值非法、跳过缺 finding、晚于五分钟被拒绝
@@ -459,6 +477,7 @@ sops:
         evidence_hints: ["请求与响应原文与请求时刻", "请求前后的轮次表"]
 
       - id: SOP-03-P08
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_first_fail_then_pass_keeps_first_pass_rate_zero"]}
         polarity: positive
         title: 一次通过率按每条场景的首个 Agent 结果计
         actor: 开发岗代理
@@ -563,6 +582,7 @@ sops:
         evidence_hints: ["推送请求与响应原文", "批次摘要响应", "详情页截图"]
 
       - id: SOP-05-P02
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_metadata_edits_keep_results_and_restored_content_reuses_matching_history"]}
         polarity: positive
         title: 只改不计入指纹的字段时结果保留，内容改回旧版后旧结果重新计入
         actor: 开发岗代理
@@ -576,6 +596,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-05-N02
+        regression: {"check": "unit", "cases": ["tests.test_rounds::test_round_rejects_stale_file_or_scenario[removed]"]}
         polarity: negative
         negative_type: stale-input
         title: 已移除场景的结果被拒绝
@@ -590,6 +611,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-05-N03
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_removed_scenario_manual_mark_is_rejected_without_writes"]}
         polarity: negative
         negative_type: stale-input
         title: 对已移除场景的人工标记被拒绝
@@ -670,6 +692,7 @@ sops:
         evidence_hints: ["请求与响应原文"]
 
       - id: SOP-06-P04
+        regression: {"check": "unit", "cases": ["tests.test_regression_views::test_detail_content_history_and_three_evidence_previews"]}
         polarity: positive
         title: 场景详情页显示内容、入口、按指纹分组的历史与证据预览
         actor: 测试岗
@@ -683,6 +706,7 @@ sops:
         evidence_hints: ["截图", "页面文本", "下载文件的 sha256"]
 
       - id: SOP-06-P05
+        regression: {"check": "unit", "cases": ["tests.test_regression_views::test_empty_then_blocked_and_skip_page_rates_and_progress"]}
         polarity: positive
         title: 没有样本时比率显示无数据，受阻与跳过不计入 Agent 验收通过率与一次通过率的分母
         actor: 测试岗
@@ -696,6 +720,7 @@ sops:
         evidence_hints: ["两次的页面文本与截图", "接口响应"]
 
       - id: SOP-06-P06
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_populated_scenario_and_round_read_fields"]}
         polarity: positive
         title: 场景列表与轮次接口返回完整字段
         actor: 开发岗
@@ -709,6 +734,7 @@ sops:
         evidence_hints: ["请求与响应原文"]
 
       - id: SOP-06-N02
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_missing_reads_return_resource_specific_errors[project-summary]", "tests.test_regression_api::test_missing_reads_return_resource_specific_errors[project-scenarios]", "tests.test_regression_api::test_missing_reads_return_resource_specific_errors[batch-summary]", "tests.test_regression_api::test_missing_reads_return_resource_specific_errors[batch-export]", "tests.test_regression_api::test_missing_reads_return_resource_specific_errors[round]", "tests.test_regression_api::test_missing_reads_return_resource_specific_errors[evidence]"]}
         polarity: negative
         negative_type: not-found
         title: 读取或导出不存在的项目、批次、轮次或证据返回 404
@@ -723,6 +749,7 @@ sops:
         evidence_hints: ["请求与响应原文"]
 
       - id: SOP-06-P07
+        regression: {"check": "unit", "cases": ["tests.test_regression_views::test_home_link_queues_round_kinds_and_misjudgment_details"]}
         polarity: positive
         title: 首页与总览页列出项目、批次、队列场景、轮次与误判明细
         actor: 测试岗
@@ -736,6 +763,7 @@ sops:
         evidence_hints: ["截图", "页面文本", "请求记录"]
 
       - id: SOP-06-P08
+        regression: {"check": "unit", "cases": ["tests.test_regression_views::test_shanghai_html_times_and_original_api_export_values"]}
         polarity: positive
         title: 页面时间按看板主机时区换算且不带微秒，与浏览器时区无关
         actor: 测试岗
@@ -749,6 +777,7 @@ sops:
         evidence_hints: ["两个浏览器的截图与页面文本", "接口响应", "导出的 results.jsonl"]
 
       - id: SOP-06-P09
+        regression: {"check": "unit", "cases": ["tests.test_regression_rounds::test_manual_blocked_counts_coverage_without_pass_rate_or_misjudgment"]}
         polarity: positive
         title: 人工受阻进入问题队列，计入复测覆盖率，不计入人工复测通过率与误判
         actor: 测试岗
@@ -762,6 +791,7 @@ sops:
         evidence_hints: ["请求与响应原文"]
 
       - id: SOP-06-P10
+        regression: {"check": "unit", "cases": ["tests.test_regression_views::test_export_omits_absent_optional_fields_and_preserves_evidence_and_times"]}
         polarity: positive
         title: 导出行只写有值的可选字段，证据与执行时间保持原样
         actor: 开发岗
@@ -775,6 +805,7 @@ sops:
         evidence_hints: ["导出的 ZIP 清单与 results.jsonl", "文件 sha256 对照"]
 
       - id: SOP-06-P11
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_project_list_contains_identity_name_and_batch"]}
         polarity: positive
         title: 项目列表含键、身份、名称与批次摘要
         actor: 开发岗
@@ -797,6 +828,7 @@ sops:
     scenarios:
 
       - id: SOP-07-P01
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_default_and_custom_defect_prefix_control_marks"]}
         polarity: positive
         title: GitHub 项目使用缺省前缀，设置新前缀后按新前缀核对
         actor: 开发者
@@ -810,6 +842,7 @@ sops:
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
       - id: SOP-07-N01
+        regression: {"check": "unit", "cases": ["tests.test_regression_api::test_invalid_prefixes_preserve_default_and_non_github_requires_setting"]}
         polarity: negative
         negative_type: invalid-input
         title: 前缀不合规时拒绝，项目没有前缀时失败标记被拒绝
