@@ -1,7 +1,7 @@
 ---
 design: "D-sop-board-2"
 task: "SOP-BOARD-2"
-revision: 2
+revision: 3
 assessment: {"complexity":"complex","risks":["persistence","public-contract"],"effort":"约两个半工作日代理时长","drivers":["人工复核改为在 SOP 场景页就地完成，标记接口按新字段改写","测试岗上传的用例按其 Schema 核对并计算并集，用例可以单独建立批次","缺陷链接改按 Jira 规范化，并在页面显示单据标题与状态","总览、进度、报告与测试岗结果文件读写同一份数据，页面轮询刷新"],"uncertainties":[],"required_skills":["Python","SQLite","HTTP","HTML 与原生 JavaScript","PyYAML"]}
 roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner":"AdolphKevin"}
 ---
@@ -10,7 +10,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 > 本文件是 tw 任务 SOP-BOARD-2 的方案原文。总体设计见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v8），本需求对应其第 8 节 SOP-BOARD-2 一行，以及 D6、D7、D13、D18、D26、D27 中属于本需求的部分。验收场景见 [docs/sop/sop-board-2.yaml](../sop/sop-board-2.yaml)。
 >
-> 状态：修订 2。修订 1 于 2026-10-19 经 AdolphKevin 授权由 Claude 代批；修订 2 答复测试代理 sop-board-2-tester 的 22 个待确认问题（显示用语、错误代码、空值与边界写法），同日代批。
+> 状态：修订 2。修订 1 于 2026-10-19 经 AdolphKevin 授权由 Claude 代批；修订 2 答复测试代理 sop-board-2-tester 的 22 个待确认问题（显示用语、错误代码、空值与边界写法）；修订 3 按用例核对覆盖时补写五处细节（重复编号的行号、无前缀且未配置 Jira 时单号的说明、导出时间的时区、报告与比率写法），均同日代批。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -62,7 +62,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 **上传** `POST /api/v1/projects/<项目键>/batches/<批次>/cases`，凭写入令牌，正文 `{filename, content, uploaded_by}`，`content` 为 YAML 原文。核对测试岗 Schema：
 
 - 顶层只有 `metadata` 与 `test_cases`。`metadata` 必填 `module`、`feature`、`owner`（非空字符串）与 `last_reviewed`（`YYYY-MM-DD`），可选 `tags`（字符串数组），没有其他字段。
-- `test_cases` 非空。每项必填 `id`（匹配 `^TC_[A-Z0-9_]{3,}_[0-9]{3}$`）、`title`、`priority`（`P0`、`P1`、`P2`）、`type`（`functional`、`ui`、`security`、`performance`、`accessibility`）、`steps` 与 `expected_results`（非空字符串数组，元素非空）、`tags`（非空字符串数组）；可选 `description`（字符串）、`preconditions`（字符串数组）、`auto`（布尔）；没有其他字段；同一文件内编号唯一。
+- `test_cases` 非空。每项必填 `id`（匹配 `^TC_[A-Z0-9_]{3,}_[0-9]{3}$`）、`title`、`priority`（`P0`、`P1`、`P2`）、`type`（`functional`、`ui`、`security`、`performance`、`accessibility`）、`steps` 与 `expected_results`（非空字符串数组，元素非空）、`tags`（非空字符串数组）；可选 `description`（字符串）、`preconditions`（字符串数组）、`auto`（布尔）；没有其他字段；同一文件内编号唯一，重复编号的问题指向后出现的那一项所在行。
 - 不合格返回 422 `cases-invalid`，`problems` 每项 `{field, line, problem}`，`line` 为 YAML 中对应位置的行号；内容为空、顶层不是映射、缺少 `metadata` 或 `test_cases` 等文件级问题的 `line` 为 null；YAML 语法错误的 `problem` 写出解析器给出的原因与列号，推送场景文件时的语法错误同样如此。失败的上传不留下任何数据。
 
 项目必须已存在，否则 404 `project-not-found`。批次不存在时随上传建立，状态为"尚无场景"，没有场景版本，可上传、浏览、下载用例。同一批次中同一编号以最后一次上传的完整内容为准，历次上传的并集是该批次的用例集。成功返回 `{ok, upload, added, updated, unchanged, union_count}`，`upload` 为批次内从 1 递增的上传序号；与上一次上传原文完全相同时返回 `unchanged_upload: true`，不产生新的上传序号。
@@ -78,7 +78,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 1. 配置了 `JIRA_URL` 且输入匹配 `^[A-Z][A-Z0-9_]*-[0-9]+$`：规范化为 `<JIRA_URL>/browse/<单号>`。
 2. 配置了 `JIRA_URL` 且输入为 `<JIRA_URL>/browse/<单号>`（可带查询串或片段）：规范化为不带查询串与片段的形式。
 3. 项目设置了缺陷链接前缀且输入以之开头（比较不区分大小写）：原样接受（SOP-BOARD-1 行为，含 GitHub 项目的缺省前缀）。
-4. 其余返回 422 `defect-link-invalid`，说明接受的写法；未配置 `JIRA_URL` 而输入为单号时，说明需填写完整链接；项目没有缺陷链接前缀且未配置 `JIRA_URL` 时，说明需先设置项目的缺陷链接前缀或配置 `JIRA_URL`。
+4. 其余返回 422 `defect-link-invalid`，说明接受的写法；未配置 `JIRA_URL` 而输入为单号时，说明需填写完整链接；项目没有缺陷链接前缀且未配置 `JIRA_URL` 时，说明需先设置项目的缺陷链接前缀或配置 `JIRA_URL`；适用多条说明时全部写出。
 
 已登记的链接保持原样。
 
@@ -100,11 +100,11 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 5. 修复记录、回归覆盖、合并记录：本期写"暂无记录"，由后续需求填充。
 6. 未验证范围：最新结果为受阻或跳过的场景及其缺陷链接或原因。
 
-比率写法同页面。报告中的数值与页面、接口使用同一套计算。
+比率写法同页面。报告中的数值与页面、接口使用同一套计算；总览页"导出报告"链接即该接口，两次导出只有生成时间不同。接口中的比率 `rate` 为分子除以分母的小数，分母为零时为 null。
 
 ## 测试岗结果文件
 <!-- tw-section id=I6 type=interface depends=scope-global,D1,I4 -->
-**导出** `GET /api/v1/projects/<项目键>/batches/<批次>/results.yaml`，符合测试岗结果 Schema：顶层 `run_id`（`<批次>-<导出时间 YYYYMMDDHHMMSS>`）、`round`（批次最新轮次号）、`environment`（"sop-board 导出；产品提交 <提交号>"）、`results`。并集中每条有同编号场景且该场景当前指纹有结果的用例输出一项：`case_id`、`status`（`pass`→`passed`、`fail`→`failed`、`blocked`→`blocked`、`skip`→`skipped`）、`actual_result`、`executor`、`tested_at`（ISO 8601），以及存在时的 `jira_issue`（缺陷链接为 Jira 链接时取单号）与 `notes`（结果的备注；缺陷链接不是 Jira 链接时写"缺陷链接 <链接>"，与备注之间以"；"分隔）。批次尚无轮次时 `round` 为 0，尚无场景版本时 `environment` 写"sop-board 导出；产品提交 无"。取值为该场景当前指纹的最新结果。
+**导出** `GET /api/v1/projects/<项目键>/batches/<批次>/results.yaml`，符合测试岗结果 Schema：顶层 `run_id`（`<批次>-<导出时间 YYYYMMDDHHMMSS>`，导出时间按看板所在机器的本地时区）、`round`（批次最新轮次号）、`environment`（"sop-board 导出；产品提交 <提交号>"）、`results`。并集中每条有同编号场景且该场景当前指纹有结果的用例输出一项：`case_id`、`status`（`pass`→`passed`、`fail`→`failed`、`blocked`→`blocked`、`skip`→`skipped`）、`actual_result`、`executor`、`tested_at`（ISO 8601），以及存在时的 `jira_issue`（缺陷链接为 Jira 链接时取单号）与 `notes`（结果的备注；缺陷链接不是 Jira 链接时写"缺陷链接 <链接>"，与备注之间以"；"分隔）。批次尚无轮次时 `round` 为 0，尚无场景版本时 `environment` 写"sop-board 导出；产品提交 无"。取值为该场景当前指纹的最新结果。
 
 **导入** `POST /api/v1/projects/<项目键>/batches/<批次>/results`，凭写入令牌，正文 `{content, uploaded_by}`，`content` 为测试岗工具产出的 `results.yaml` 原文。核对顶层必填 `run_id`、`round`、`environment`、`results`，每项必填 `case_id`、`status`、`actual_result`、`executor`、`tested_at`，可选 `duration_ms`、`evidence`、`jira_issue`、`notes`；`case_id` 必须对应当前版本中的同编号场景；`failed` 与 `blocked` 必须有 `jira_issue`，按 I4 规范化；`tested_at` 不带时区时按看板所在机器的本地时区解释；`skipped` 的项不登记，在响应中列出。任何一项不合格返回 422 `results-invalid` 并逐项列出，不留下任何数据。合格时登记为一个人工轮次，每项一条结果：执行者取 `executor`，执行时间取 `tested_at`，实际结果取 `actual_result`，`finding` 为规范化链接，`note` 取 `notes`，证据为看板生成的导入记录 `import-<轮次>.json`（上传人、`run_id`、`round`、`environment`、导入时用例并集的最新上传序号与该项原文）。返回 `{ok, round, imported, skipped}`；全部为 `skipped` 时不建立轮次，`round` 为 null，`imported` 为 0。
 
@@ -122,7 +122,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 SOP-21 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-2.yaml#SOP-21
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D6、D7、D13、S3；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I1、I2 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D6、D7、D13、S3；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I1、I2 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -131,7 +131,7 @@ SOP-21 节点全部场景通过。
 SOP-22 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-2.yaml#SOP-22
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D6、D7、D8；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I2、I4 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D6、D7、D8；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I2、I4 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -140,7 +140,7 @@ SOP-22 节点全部场景通过。
 SOP-23 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-2.yaml#SOP-23
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D13、D18；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I3、D1 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D13、D18；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I3、D1 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -149,7 +149,7 @@ SOP-23 节点全部场景通过。
 SOP-24 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-2.yaml#SOP-24
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D7；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I4 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D7；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I4 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -158,7 +158,7 @@ SOP-24 节点全部场景通过。
 SOP-25 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-2.yaml#SOP-25
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D13、D26、S3；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I5 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D13、D26、S3；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I5 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -167,7 +167,7 @@ SOP-25 节点全部场景通过。
 SOP-26 节点全部场景通过。
 
 - 场景：docs/sop/sop-board-2.yaml#SOP-26
-- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D18、D27；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I5、I6 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/proposals/2026-10-19-standalone-sop-verification.md 的 D18、D27；版本 v8（2026-10-19）；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的 I5、I6 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 
@@ -176,7 +176,7 @@ SOP-26 节点全部场景通过。
 `docs/sop/sop-board.yaml` 的 SOP-01、SOP-05、SOP-06、SOP-07 节点全部场景通过。删除 SOP-04 后，SOP-05-P01、SOP-06-P01、SOP-06-P03 改写初始状态，SOP-07-P01、SOP-07-N01 按 I2、I4 改写缺陷链接的预期并覆盖项目没有前缀的情形；SOP-06-P09 的人工受阻改填缺陷链接；SOP-01-N02 改写普通文件作数据目录时的预期；其余场景由已声明的回归守护。
 
 - 场景：docs/sop/sop-board.yaml#SOP-01、SOP-05、SOP-06、SOP-07
-- 依据：位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的全局范围与 I2、I4 节；版本 修订 2；确认人 AdolphKevin
+- 依据：位置 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节；版本 修订 3；确认人 AdolphKevin / 位置 docs/designs/SOP-BOARD-2.md 的全局范围与 I2、I4 节；版本 修订 3；确认人 AdolphKevin
 - 检查：unit
 - 验证：自动
 

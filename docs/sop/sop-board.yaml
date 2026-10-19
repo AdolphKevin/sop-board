@@ -7,6 +7,7 @@
 # 版本 4（2026-10-19）：测试代理复核配对后，补充 14 条场景并改写 SOP-07-N01 的核对方式；经 AdolphKevin 授权由 Claude 代批。
 # 2026-10-19：第 4、5 轮验收通过后写回新增 32 条场景的 regression（不改变场景内容指纹），守护测试见 tests/test_regression_*.py。
 # 版本 5（2026-10-19）：随 docs/designs/SOP-BOARD-2.md 修订 1 删除 SOP-04 节点（人工复核改由 docs/sop/sop-board-2.yaml 的 SOP-21、SOP-22 覆盖），改写 SOP-01-N02、SOP-05-P01、SOP-06-P01、SOP-06-P03、SOP-06-P09、SOP-07-P01、SOP-07-N01；经 AdolphKevin 授权由 Claude 代批。
+# 版本 6（2026-10-19）：按 SOP-BOARD-2 的用例核对覆盖，新增 SOP-01-P06、SOP-01-P07、SOP-01-N03（已有数据目录升级）与 SOP-07-P02，改写 SOP-01-N02、SOP-07-N01；依据 SOP-BOARD-2 方案修订 3，经 AdolphKevin 授权由 Claude 代批。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
 # SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
@@ -18,7 +19,7 @@
 metadata:
   requirement: "sop-board 核心：启动与持久化、推送场景文件、证据与 Agent 轮次、场景变更、总览与导出、项目设置"
   batch: "sop-board-1"
-  version: 5
+  version: 6
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节"
@@ -28,7 +29,7 @@ metadata:
       version: "修订 3"
       confirmed_by: "AdolphKevin"
     - ref: "docs/designs/SOP-BOARD-2.md 的全局范围、I2、I4 节"
-      version: "修订 2"
+      version: "修订 3"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "看板核心"]
 
@@ -138,10 +139,51 @@ sops:
         refs: ["I1"]
         verify: cli
         initial_state: ["clone 的检出目录已 uv sync", "一个只读的父目录 /tmp/<随机>/ro-parent，一个普通文件 /tmp/<随机>/plain-file，一个已存在的空目录 /tmp/<随机>/empty-data"]
-        steps: ["SOP_BOARD_TOKEN 设为空字符串，以新的数据目录启动", "设置令牌，以 ro-parent 下尚不存在的 data 目录启动", "设置令牌，以 plain-file 为数据目录启动", "设置令牌并占用一个端口，以 empty-data 为数据目录、该端口启动"]
-        expected: ["四次都以退出码 1 结束，没有输出 看板地址 行", "第一次的错误输出说明令牌缺失", "第二、三次的错误输出含对应路径，第三次写明该路径不是目录；ro-parent 下的 data 仍不存在，plain-file 的内容不变", "第四次的错误输出含端口号，empty-data 仍为空目录"]
+        steps: ["SOP_BOARD_TOKEN 设为空字符串，以新的数据目录启动", "设置令牌，以 ro-parent 下尚不存在的 data 目录启动", "设置令牌，以 plain-file 为数据目录、一个空闲端口启动，结束后检查该端口与进程列表", "设置令牌并占用一个端口，以 empty-data 为数据目录、该端口启动"]
+        expected: ["四次都以退出码 1 结束，没有输出 看板地址 行", "第一次的错误输出说明令牌缺失", "第二、三次的错误输出含对应路径，第三次写明该路径不是目录；ro-parent 下的 data 仍不存在，plain-file 的内容不变", "第三次结束后没有看板进程残留，所用端口可以被重新监听", "第四次的错误输出含端口号，empty-data 仍为空目录"]
         forbidden_effects: []
-        evidence_hints: ["四次命令原文与完整输出", "各路径在命令前后的清单与 sha256"]
+        evidence_hints: ["四次命令原文与完整输出", "各路径在命令前后的清单与 sha256", "第三次后的端口监听测试与进程列表"]
+
+
+      - id: SOP-01-P06
+        polarity: positive
+        title: SOP-BOARD-1 的数据目录升级后可用，已有数据保持原样
+        actor: 启动看板的成员
+        priority: P0
+        refs: ["scope-global", "D1"]
+        verify: api
+        initial_state: ["以 SOP-BOARD-1 交付提交检出并 uv sync 的看板建立数据目录：推送演示场景文件两个版本，登记 Agent 轮次与一条按 SOP-BOARD-1 标记接口登记的人工 fail（缺陷链接 https://github.com/demo-org/demo-app/issues/1），证据已上传", "已保存批次摘要、场景列表接口的响应，各轮导出的 ZIP 与各证据的 sha256，然后停止该看板"]
+        steps: ["用当前版本的看板以同一数据目录启动", "再次请求批次摘要与场景列表，下载各轮导出与证据", "打开 SOP 场景页与人工 fail 场景的详情页", "上传一份合规用例文件，并在 SOP 场景页对一条场景点通过"]
+        expected: ["启动成功，标准输出写出看板地址", "批次摘要的版本号、指标、队列数量、轮次表与误判明细，以及场景列表接口的响应与升级前相同", "各轮导出的 results.jsonl 与升级前的字节相同，证据的 sha256 不变", "旧人工结果的缺陷链接在两个页面上原样显示为 https://github.com/demo-org/demo-app/issues/1", "用例上传返回 200 且 upload 为 1，就地通过提交成功并新增一个人工轮次"]
+        forbidden_effects: ["已有轮次、结果或证据被修改或删除"]
+        evidence_hints: ["升级前后的接口响应对比", "results.jsonl 与证据的 sha256 对照", "页面截图"]
+
+      - id: SOP-01-P07
+        polarity: positive
+        title: 重启后用例上传与人工复核保留，Jira 摘要缓存不保留
+        actor: 启动看板的成员
+        priority: P1
+        refs: ["D1", "I4"]
+        verify: api
+        initial_state: ["测试看板以模拟 Jira 配置三个 Jira 变量启动并推送了演示场景文件；批次 demo 已有两次用例上传，N1-P01 有一条人工通过", "已请求过 GET /api/v1/jira/ABC-1，并保存了 GET …/cases 与场景列表的响应"]
+        steps: ["停止看板，用同一数据目录与相同配置重启", "请求 GET …/cases 与场景列表，打开 SOP 场景页", "请求 GET /api/v1/jira/ABC-1，查看模拟 Jira 的请求记录"]
+        expected: ["上传列表、并集与 N1-P01 的人工结果与重启前相同", "重启后第一次请求 ABC-1 时模拟 Jira 收到一次新请求"]
+        forbidden_effects: []
+        evidence_hints: ["重启前后的接口响应", "模拟 Jira 的请求记录"]
+
+      - id: SOP-01-N03
+        polarity: negative
+        negative_type: incomplete-input
+        title: 以旧数据目录启动失败时不改动其中任何文件
+        actor: 启动看板的成员
+        priority: P1
+        refs: ["I1", "scope-global"]
+        verify: cli
+        initial_state: ["一个由 SOP-BOARD-1 交付提交的看板建立的数据目录，已记下其中的文件清单与每个文件的 sha256"]
+        steps: ["不设置 SOP_BOARD_TOKEN，以该数据目录启动当前版本的看板", "再次列出文件并计算 sha256"]
+        expected: ["以退出码 1 结束，错误输出说明缺少 SOP_BOARD_TOKEN，没有输出看板地址行", "文件清单与每个文件的 sha256 与启动前相同"]
+        forbidden_effects: ["数据目录中出现新文件或新表"]
+        evidence_hints: ["命令原文、输出与退出码", "前后的文件清单与 sha256"]
 
   - id: SOP-02
     title: 推送场景文件
@@ -803,7 +845,21 @@ sops:
         refs: ["I2"]
         verify: api
         initial_state: ["测试看板推送了演示场景文件，另以项目身份 gitlab.example.com/team/app 把同一内容推送到项目键 gitlab-example-com-team-app 的批次 demo"]
-        steps: ["对 github-com-demo-org-demo-app 依次 PUT defect_prefix 为 http://jira.example.com/browse/、jira.example.com/browse/ 与空字符串", "对 github-com-demo-org-demo-app 的 N1-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/9", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/1"]
-        expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "GitHub 链接的标记成功，说明项目前缀仍为缺省的 https://github.com/demo-org/demo-app/issues/", "标记返回 422，error_code 为 defect-link-invalid，说明需先设置项目的缺陷链接前缀或配置 JIRA_URL"]
+        steps: ["对 github-com-demo-org-demo-app 依次 PUT defect_prefix 为 http://jira.example.com/browse/、jira.example.com/browse/ 与空字符串", "对 github-com-demo-org-demo-app 的 N1-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/9", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/1", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 ABC-123"]
+        expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "GitHub 链接的标记成功，说明项目前缀仍为缺省的 https://github.com/demo-org/demo-app/issues/", "gitlab 链接的标记返回 422，error_code 为 defect-link-invalid，说明需先设置项目的缺陷链接前缀或配置 JIRA_URL", "单号的标记返回 422，error_code 为 defect-link-invalid，说明需填写完整链接，并说明需先设置项目的缺陷链接前缀或配置 JIRA_URL"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文（令牌脱敏）"]
+
+
+      - id: SOP-07-P02
+        polarity: positive
+        title: 项目没有缺陷链接前缀时，配置 JIRA_URL 后 Jira 单号被接受
+        actor: 开发者
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板以 JIRA_URL=https://acme.atlassian.net 启动，以项目身份 gitlab.example.com/team/app 把演示场景文件推送到项目键 gitlab-example-com-team-app 的批次 demo，该项目没有缺陷链接前缀"]
+        steps: ["对 N1-P01 登记人工 fail，缺陷链接为 ABC-9", "对 N2-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/3"]
+        expected: ["第一次返回 200，finding 为 https://acme.atlassian.net/browse/ABC-9", "第二次返回 422，error_code 为 defect-link-invalid，说明接受的写法"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
