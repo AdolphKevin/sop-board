@@ -12,3 +12,21 @@ SOP 验证协作看板。开发岗的代理用 [praxis-skills](https://github.co
 
 - [praxis-skills](https://github.com/AdolphKevin/praxis-skills)：`sop-verify` 技能，从业务 SOP 写场景、派独立会话执行、登记结果。
 - [team-workflow](https://github.com/AdolphKevin/team-workflow)：团队流程；看板按轮次导出的结果可直接用 `tw team scenarios submit` 登记。
+
+## 启动
+
+需要 Python 3.10 或以上版本与 uv。在仓库目录安装依赖：
+
+```sh
+uv sync
+```
+
+在终端将自行选择的写入令牌设置到 `SOP_BOARD_TOKEN` 环境变量，再启动服务（令牌不要写入仓库）：
+
+```sh
+uv run sop-board --data ./board-data --port 8787
+```
+
+看到 `看板地址：http://127.0.0.1:8787/` 后即可访问。默认只允许本机连接；需要内网共用时，追加 `--host 0.0.0.0`，其他成员用启动者的内网地址访问。读取接口无需令牌，写入请求须带 `Authorization: Bearer <令牌>`。
+
+按 Ctrl+C 或发送终止信号可停止服务；下次使用同一数据目录启动，数据会保留。当前首页为启动核对用的最小页面，业务页面与轮次导出将在 T2 提供。

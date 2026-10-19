@@ -1,0 +1,17 @@
+[project]
+name = "sop-board"
+version = "0.1.0"
+description = "SOP 验证协作看板"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+sop-board = "sop_board.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
