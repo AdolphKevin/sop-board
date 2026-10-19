@@ -5,7 +5,7 @@
 # 2026-10-19：第 1、2 轮验收通过后写回各场景的 regression（不改变场景内容指纹）；SOP-06-P01 为人工回归，由 AdolphKevin 负责。
 # 版本 3（2026-10-19）：导入测试代理 sop-board-1-tester 的 51 条用例后核对覆盖，补充 18 条场景（含新节点 SOP-07 项目设置）；预期依据方案修订 3，经 AdolphKevin 授权由 Claude 代批。
 # 版本 4（2026-10-19）：测试代理复核配对后，补充 14 条场景并改写 SOP-07-N01 的核对方式；经 AdolphKevin 授权由 Claude 代批。
-# 2026-10-20：第 4、5 轮验收通过后写回新增 32 条场景的 regression（不改变场景内容指纹），守护测试见 tests/test_regression_*.py。
+# 2026-10-19：第 4、5 轮验收通过后写回新增 32 条场景的 regression（不改变场景内容指纹），守护测试见 tests/test_regression_*.py。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
 # SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
