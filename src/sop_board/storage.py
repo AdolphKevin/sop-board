@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS fix_tasks (
     task INTEGER PRIMARY KEY REFERENCES tasks(id), repository TEXT NOT NULL,
     baseline_branch TEXT NOT NULL DEFAULT '', baseline_commit TEXT NOT NULL DEFAULT '',
     fix_branch TEXT NOT NULL DEFAULT '', worktree TEXT NOT NULL DEFAULT '',
-    developer_note TEXT NOT NULL DEFAULT '', retry_reason TEXT NOT NULL DEFAULT ''
+    developer_note TEXT NOT NULL DEFAULT '', retry_reason TEXT NOT NULL DEFAULT '',
+    merged_commit TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS fix_problems (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
@@ -42,6 +43,15 @@ CREATE TABLE IF NOT EXISTS fix_attempts (
     reason TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}',
     validation_json TEXT NOT NULL DEFAULT '{}', added_json TEXT NOT NULL DEFAULT '[]',
     interruptions_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(task,number)
+);
+CREATE TABLE IF NOT EXISTS fix_candidates (
+    task INTEGER NOT NULL, attempt INTEGER NOT NULL, validation INTEGER NOT NULL,
+    batch TEXT NOT NULL, version INTEGER NOT NULL REFERENCES versions(id),
+    commit_id TEXT NOT NULL, product_digest TEXT NOT NULL, session_id TEXT NOT NULL,
+    status TEXT NOT NULL, reason TEXT NOT NULL, results_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL, promoted_round INTEGER,
+    PRIMARY KEY(task,attempt,validation,batch),
+    FOREIGN KEY(task,attempt) REFERENCES fix_attempts(task,number)
 );
 CREATE TABLE IF NOT EXISTS batches (
     id INTEGER PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(key),
@@ -73,6 +83,9 @@ CREATE TABLE IF NOT EXISTS rounds (
 );
 CREATE TABLE IF NOT EXISTS check_rounds (
     round_id INTEGER PRIMARY KEY REFERENCES rounds(id), check_name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS check_results (
+    result_id INTEGER PRIMARY KEY REFERENCES results(id), check_name TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY, round_id INTEGER NOT NULL REFERENCES rounds(id),

@@ -234,6 +234,9 @@ class Checks:
                               status='blocked' if run.get('blocked') else 'fail' if issues or run['problem'] else 'pass',
                               actual=actual,
                               executed_at=now(), executor='回归检查 ' + name, session=str(task['id']), evidence=[])
+                if 'batch' in scene:
+                    result['batch'] = scene['batch']
+                    result['fingerprint'] = fingerprint({k:v for k,v in scene.items() if k != 'batch'})
                 if run.get('blocked'):
                     result['finding'] = run['problem']
                 results.append(result)

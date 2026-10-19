@@ -7,11 +7,11 @@ from pathlib import Path
 import subprocess
 
 
-def git(root, *args):
+def git(root, *args, capture_stderr=False):
     env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     env['GIT_OPTIONAL_LOCKS'] = '0'
     return subprocess.check_output(['git', '-C', str(root), *args], env=env,
-                                   stderr=subprocess.DEVNULL, timeout=10)
+                                   stderr=subprocess.STDOUT if capture_stderr else subprocess.DEVNULL, timeout=10)
 
 
 def authorize(values, token, admin):
@@ -50,13 +50,13 @@ def product(root, scenario, entry):
                 dirty=bool(git(root, 'status', '--porcelain', '--untracked-files=all')))
 
 
-def product_files(root, scenario, entry, head=False):
+def product_files(root, scenario, entry, head=False, revision='HEAD'):
     """相同排除规则下的工作区或 HEAD 文件内容，用于已提交代码核对。"""
     import hashlib
     excluded = {scenario.resolve(), entry.resolve()}
     if head:
         files = []
-        for record in git(root, 'ls-tree', '-rz', '--full-tree', 'HEAD').split(b'\0'):
+        for record in git(root, 'ls-tree', '-rz', '--full-tree', revision).split(b'\0'):
             if not record:
                 continue
             info, raw = record.split(b'\t', 1)

@@ -11,6 +11,7 @@ from codex_helpers import ADMIN, read_task
 from conftest import ROOT
 from helpers import BASE, KEY, IDS, push_body, round_body, upload
 from test_writable_repos import repo, git, wait_for, IDENTITY
+from sop_board.repositories import product
 
 FIXES = f'/api/v1/projects/{KEY}/fixes'
 
@@ -44,28 +45,50 @@ def fix_codex(tmp_path):
 
 
 def configure(directory, *calls, **settings):
+    settings.setdefault('retests', [dict(delay=30)])
     (directory / 'mode.json').write_text(json.dumps(dict(calls=calls, **settings)))
 
 
-def invocations(directory):
+def all_invocations(directory):
     path = directory / 'invocations.jsonl'
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def invocations(directory):
+    return [call for call in all_invocations(directory) if '/validations/' not in call['argv'][call['argv'].index('-o') + 1]]
+
+
+def wait_invocations(directory, count):
+    calls = wait_for(lambda: value if len(value := all_invocations(directory)) >= count else None)
+    assert len(calls) == count, calls
+    return calls
 
 
 def fix_board(factory, fake, repo, *, authorize=True, paused=False, validation=None, **env):
     board = factory(env=dict(SOP_BOARD_ADMIN_TOKEN='isolated-admin',
         PATH=str(fake) + os.pathsep + os.defpath, **env))
-    body = push_body(yaml.safe_load((repo / 'docs/sop/demo.yaml').read_text()), path='docs/sop/demo.yaml')
-    assert board.request('PUT', BASE + '/scenario-file', body)[0] == 200
+    # 先登记全部初始批次；否则授权后的工作区发现会给未登记的批次创建普通执行任务。
+    entry = repo / ('.tw/config.json' if (repo / '.tw/config.json').exists() else 'docs/sop/entries.yaml')
+    for path in sorted((repo / 'docs/sop').glob('*.yaml')):
+        if path.name == 'entries.yaml':
+            continue
+        document = yaml.safe_load(path.read_text())
+        initial = push_body(document, path=str(path.relative_to(repo)), content=path.read_text(),
+                            **product(repo, path, entry))
+        base = BASE.replace('/demo', '/' + document['metadata']['batch'])
+        assert board.request('PUT', base + '/scenario-file', initial)[0] == 200
+        if document['metadata']['batch'] == 'demo':
+            body = initial
     if paused:
         assert board.request('POST', '/api/v1/automation/pause', {}, headers=ADMIN)[0] == 200
     if authorize:
         board.stop()
         if validation is not None:
-            preset = fake / 'validation.json'
-            preset.write_text(json.dumps(validation))
-            board.env['FIX_TEST_VALIDATION'] = str(preset)
-        command = [sys.executable, str(ROOT / 'tests/fix_validation_server.py')] if validation is not None else [str(ROOT / '.venv/bin/sop-board')]
+            path = fake / 'mode.json'
+            value = json.loads(path.read_text())
+            value['retests'] = [dict(delay=p.get('delay', 0), statuses={sid: 'fail' for sid in IDS} if p.get('status') == 'fail' else {}) for p in validation]
+            path.write_text(json.dumps(value))
+        command = [str(ROOT / '.venv/bin/sop-board')]
         board.command = [*command, '--writable-repo', f'{IDENTITY}={repo}']
         board.start()
     return board, body

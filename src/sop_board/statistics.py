@@ -14,8 +14,9 @@ def calculate(db, batch):
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]
     rows = [dict(row) for row in db.execute(
-        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at,c.check_name AS regression_check FROM results r JOIN rounds t ON t.id=r.round_id "
+        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at,COALESCE(c.check_name,rc.check_name) AS regression_check FROM results r JOIN rounds t ON t.id=r.round_id "
         "LEFT JOIN check_rounds c ON c.round_id=t.id "
+        "LEFT JOIN check_results rc ON rc.result_id=r.id "
         "WHERE t.batch=? ORDER BY t.number,r.id", (batch["id"],))]
     by_scenario = {}
     evidence = {}

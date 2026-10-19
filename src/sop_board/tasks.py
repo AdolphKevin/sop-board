@@ -132,6 +132,7 @@ class Tasks:
         service.execution_callback = self.executions.enqueue
         from .fixes import Fixes
         self.fixes = Fixes(self)
+        self.fixes.recover_promotions()
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 

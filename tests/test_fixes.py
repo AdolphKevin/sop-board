@@ -227,7 +227,7 @@ def test_fix_dirty_preparation_includes_new_failures_when_committed(board_factor
 
 
 def test_fix_failed_validation_passes_feedback_new_problems_and_honors_pause(board_factory, fix_codex, fix_repo):
-    """SOP-51-N04/N08、SOP-52-P03、SOP-53-P02：占位验证边界驱动下一次尝试。"""
+    """SOP-51-N04/N08、SOP-52-P03、SOP-53-P02：真实复测失败驱动下一次尝试。"""
     configure(fix_codex, dict(delay=1), {})
     board, pushed = fix_board(board_factory, fix_codex, fix_repo, validation=[
         dict(status='fail', reason='复测失败', evidence=['evidence/first.txt'], delay=2), dict(status='pass', evidence=['evidence/second.txt'])])
@@ -243,13 +243,13 @@ def test_fix_failed_validation_passes_feedback_new_problems_and_honors_pause(boa
     time.sleep(.2)
     assert len(invocations(fix_codex)) == 1
     board.request('POST', '/api/v1/automation/resume', {}, headers=ADMIN)
-    task = wait_state(board, task, '待合入')
+    task = wait_state(board, task, '已合入')
     assert task['attempt'] == 2
     assert [(p['scenario'], p['first_attempt']) for p in task['problems']] == [(IDS[0], 1), (IDS[1], 2)]
     assert task['attempts'][1]['added'] == [dict(batch='demo', scenario=IDS[1])]
     directory = board.data / 'tasks' / str(task['id'])
     feedback = json.loads((directory / 'feedback.json').read_text())
-    assert feedback['previous']['validation']['evidence'] == ['evidence/first.txt']
+    assert any(p.endswith('/evidence/observed.txt') for p in feedback['previous']['validation']['evidence'])
     assert [a['outcome'] for a in task['attempts']] == ['未通过', '通过']
     assert 'resume' in invocations(fix_codex)[1]['argv']
 
@@ -267,7 +267,7 @@ def test_fix_three_failed_validations_preserve_commits_and_evidence(board_factor
     for attempt in task['attempts']:
         assert attempt['commit_id'] and attempt['result']['root_cause'] == '折扣计算共用错误逻辑'
         assert attempt['result']['changed_files'] == ['src/app.py']
-        assert attempt['validation']['evidence'] == ['observed.txt']
+        assert any(p.endswith('/evidence/observed.txt') for p in attempt['validation']['evidence'])
 
 
 def test_fix_cancel_suppresses_same_result_but_new_result_is_eligible(board_factory, fix_codex, fix_repo):
@@ -406,6 +406,7 @@ def test_fix_distinguishes_registered_check_failure_from_executor_label(board_fa
     result = round_body(pushed, upload(board), statuses=['pass', 'pass', 'pass', 'fail'], key='executor-label')
     result['results'] = result['results'][3:]
     result['results'][0]['executor'] = '回归检查 junit'
+    result['results'][0]['regression_check'] = 'junit'
     assert board.request('POST', BASE + '/rounds', result)[0] == 200
     board.request('POST', '/api/v1/automation/resume', {}, headers=ADMIN)
     task = wait_fix(board, '复测中')
@@ -443,7 +444,7 @@ def test_fix_new_result_reintroduces_transferred_problem_next_attempt(board_fact
     board.request('POST', '/api/v1/automation/resume', {}, headers=ADMIN)
     task = wait_fix(board, '复测中')
     agent(board, pushed, ['fail', 'fail', 'pass', 'pass'], key='new-result')
-    task = wait_state(board, task, '待合入')
+    task = wait_state(board, task, '已合入')
     assert task['attempt'] == 2
     assert task['attempts'][1]['validation']['scenarios'] == [dict(batch='demo', scenario=IDS[0]), dict(batch='demo', scenario=IDS[1])]
     assert task['attempts'][1]['added'] == [dict(batch='demo', scenario=IDS[1])]
@@ -477,7 +478,7 @@ def test_fix_changed_content_failure_replaces_problem_snapshot_next_attempt(boar
     (fix_repo / 'docs/sop/demo.yaml').write_text(updated['content'])
     assert board.request('PUT', BASE + '/scenario-file', updated)[0] == 200
     agent(board, updated, ['fail', 'pass', 'pass', 'pass'], key='new-content')
-    task = wait_state(board, task, '待合入')
+    task = wait_state(board, task, '已合入')
     assert task['attempt'] == 2 and len(task['problems']) == 1
     assert task['problems'][0]['fingerprint'] == updated['fingerprints'][IDS[0]]
     assert task['problems'][0]['input']['scene']['expected'] == ['已确认的新规则']
@@ -513,22 +514,12 @@ def test_fix_unconfigured_jira_skips_read_but_keeps_issue_key_in_commit(board_fa
 
 
 def test_fix_merged_task_allows_new_task_and_transfers_stay_suppressed(board_factory, fix_codex, fix_repo):
-    """SOP-51-P02/N05：准备 T2 已合入前提，经真实调度核对新任务与抑制范围。"""
-    import sqlite3
-    from fix_helpers import git
-    configure(fix_codex, dict(categories={IDS[1]: 'environment'}), {})
+    """SOP-51-P02/N05：真实合入后经调度核对新任务与抑制范围。"""
+    configure(fix_codex, dict(categories={IDS[1]: 'environment'}), {}, retests=[{}, dict(delay=30)])
     board, pushed = fix_board(board_factory, fix_codex, fix_repo, paused=True)
     agent(board, pushed, ['fail', 'fail', 'pass', 'pass'])
     board.request('POST', '/api/v1/automation/resume', {}, headers=ADMIN)
-    first = wait_fix(board, '复测中')
-    # 本测试的边界是 T1 的触发器。以下只准备 T2 已完成的初始状态，
-    # 不把此处的 Git 操作或状态设置当作合入功能的验证。
-    agent(board, pushed, ['pass'], key='verified-product')
-    board.stop()
-    git(fix_repo, 'merge', '--ff-only', first['fix_branch'])
-    with sqlite3.connect(board.data / 'board.sqlite3') as db:
-        db.execute("UPDATE tasks SET status='已合入' WHERE id=?", (first['id'],))
-    board.start()
+    first = wait_fix(board, '已合入')
     time.sleep(5.2)
     assert len(fixes(board)) == 1 and fixes(board)[0]['status'] == '已合入'
     fail(board, pushed, IDS[2])

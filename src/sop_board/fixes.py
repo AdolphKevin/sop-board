@@ -7,6 +7,7 @@ import shutil
 from string import Template
 import subprocess
 import re
+import hashlib
 
 from .errors import reject, APIError
 from .defect_links import ISSUE_KEY
@@ -327,18 +328,28 @@ class Fixes:
         root = self.service.writable_repos[task['project']]
         author = git(root, 'config', 'user.name').decode().strip()
         email = git(root, 'config', 'user.email').decode().strip()
-        git(worktree, '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', '-c', 'user.name=' + author,
-            '-c', 'user.email=' + email, 'commit', '-m', message)
+        try:
+            git(worktree, '-c', 'commit.gpgsign=false', '-c', 'user.name=' + author,
+                '-c', 'user.email=' + email, 'commit', '-m', message, capture_stderr=True)
+        except subprocess.CalledProcessError as error:
+            output = error.output.decode('utf-8', errors='replace')
+            log = self.tasks.directory(task['id']) / 'commit-hook.txt'
+            log.write_text(output, encoding='utf-8')
+            self.failed(task, '仓库提交钩子未通过', answer,
+                dict(status='fail', reason='仓库提交钩子未通过', output=output, evidence=[str(log)]))
+            return
         commit = git(worktree, 'rev-parse', 'HEAD').decode().strip()
         with self.store.transaction() as db:
             pending = dict(status='pending', reason='等待验证', evidence=[], scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in product])
             db.execute("UPDATE fix_attempts SET commit_id=?,outcome='待验证',result_json=?,validation_json=? WHERE task=? AND number=?",
                 (commit, canonical(answer), canonical(pending), task['id'], number))
-        self.tasks.update(task['id'], attempt=number, status='复测中', error='验证占位：等待 T2 接入真实复测与合入', result_json=canonical(answer))
+        self.tasks.update(task['id'], attempt=number, status='复测中', error='复测产品问题并运行回归检查', result_json=canonical(answer))
         return product
 
-    def verify(self, task, problems):
+    def verify(self, task, problems, additional=False):
         validation = self.validate(self.tasks.read(task['id']), problems)
+        if validation is None:
+            return
         with self.tasks.lock:
             if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '复测中':
                 return
@@ -346,13 +357,135 @@ class Fixes:
             with self.store.transaction() as db:
                 db.execute('UPDATE fix_attempts SET validation_json=? WHERE task=? AND number=?', (canonical(validation), task['id'], number))
             if validation['status'] == 'fail':
+                if additional:
+                    validation['reason'] = '合入基线后的追加验证未通过：' + validation.get('reason', '验证未通过')
                 answer = self.tasks.read(task['id'])['result']
                 self.failed(task, validation.get('reason', '验证未通过'), answer, validation)
             elif validation['status'] == 'pass':
                 with self.store.transaction() as db:
                     db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=? WHERE task=? AND number=?", (now(), task['id'], number))
-                self.tasks.update(task['id'], status='待合入', error='验证通过，等待 T2 合入')
+                self.tasks.update(task['id'], status='待合入', error='验证通过，核对基线与工作区后快进合入')
             self.archive(task)
+        if validation['status'] == 'pass':
+            self.merge(task, problems)
+
+    def baseline_directory(self, task):
+        root = self.service.writable_repos[task['project']]
+        directory = None
+        for field in git(root, 'worktree', 'list', '--porcelain', '-z').decode().split('\0'):
+            if field.startswith('worktree '):
+                directory = Path(field[9:])
+            elif field == 'branch refs/heads/' + task['baseline_branch']:
+                return directory
+
+    def merge(self, task, problems):
+        info = self.tasks.read(task['id'])
+        root = self.service.writable_repos[task['project']]
+        worktree = Path(info['worktree'])
+        baseline = git(root, 'rev-parse', 'refs/heads/' + info['baseline_branch']).decode().strip()
+        candidate = git(worktree, 'rev-parse', 'HEAD').decode().strip()
+        try:
+            git(root, 'merge-base', '--is-ancestor', baseline, candidate)
+        except subprocess.CalledProcessError as error:
+            if error.returncode != 1:
+                raise
+            try:
+                git(worktree, '-c', 'commit.gpgsign=false', 'merge', '--no-edit', baseline, capture_stderr=True)
+            except subprocess.CalledProcessError as conflict:
+                if git(worktree, 'ls-files', '--unmerged'):
+                    git(worktree, 'merge', '--abort')
+                    reason = '合入基线时冲突'
+                else:
+                    reason = '无法合入基线'
+                self.tasks.update(task['id'], status='待开发者合入', error=reason + '：' + conflict.output.decode('utf-8', errors='replace'))
+                return
+            with self.store.transaction() as db:
+                db.execute("UPDATE fix_attempts SET outcome='待验证',finished_at=NULL WHERE task=? AND number=?", (task['id'], info['attempt']))
+            self.tasks.update(task['id'], status='复测中', error='基线已前进，验证合入基线后的候选提交')
+            self.verify(task, problems, additional=True)
+            return
+        directory = self.baseline_directory(info)
+        if directory is None:
+            branch = git(root, 'branch', '--show-current').decode().strip() or '分离头指针'
+            self.tasks.update(task['id'], status='待开发者合入', error='基线未在任何工作目录检出，主工作区当前分支为 ' + branch)
+            return
+        branch = git(directory, 'branch', '--show-current').decode().strip()
+        if branch != info['baseline_branch']:
+            self.tasks.update(task['id'], status='待开发者合入', error='基线工作目录当前分支为 ' + branch)
+            return
+        try:
+            git(directory, 'merge', '--ff-only', info['fix_branch'], capture_stderr=True)
+        except subprocess.CalledProcessError as error:
+            dirty = bool(git(directory, 'status', '--porcelain', '--untracked-files=all'))
+            reason = 'Git 因未提交修改拒绝快进' if dirty else 'Git 拒绝快进合入'
+            self.tasks.update(task['id'], status='待开发者合入', error=reason + '：' + error.output.decode('utf-8', errors='replace'))
+            return
+        merged = git(directory, 'rev-parse', 'HEAD').decode().strip()
+        dirty = bool(git(directory, 'status', '--porcelain', '--untracked-files=all'))
+        with self.store.transaction() as db:
+            db.execute('UPDATE fix_tasks SET merged_commit=? WHERE task=?', (merged, task['id']))
+        if not self.tasks.stopping.is_set():
+            self.promote(info, merged, '工作区含未经验收的修改' if dirty else '验证通过，已快进合入基线')
+
+    def promote(self, task, merged, reason):
+        root = self.service.writable_repos[task['project']]
+        entry = task['snapshot']['entry_path']
+        manifest = product_files(root, root / 'docs/sop', root / entry, head=True, revision=merged)
+        product_digest = hashlib.sha256(canonical(manifest).encode()).hexdigest()
+        with self.store.transaction() as db:
+            records = list(db.execute('SELECT * FROM fix_candidates WHERE task=? AND attempt=? AND validation='
+                '(SELECT MAX(validation) FROM fix_candidates WHERE task=? AND attempt=?) ORDER BY batch',
+                (task['id'], task['attempt'], task['id'], task['attempt'])))
+            if not records or any(r['status'] != 'pass' for r in records):
+                raise ValueError('没有可提升的通过候选记录')
+            rounds = []
+            for record in records:
+                batch = self.service.batch(db, task['project'], record['batch'])
+                key = f"fix-{task['id']}-{task['attempt']}-{record['batch']}"
+                existing = db.execute('SELECT number FROM rounds WHERE batch=? AND idempotency_key=?', (batch['id'], key)).fetchone()
+                if existing:
+                    number = existing[0]
+                else:
+                    rows = json.loads(record['results_json'])
+                    for row in rows:
+                        row['executor'] = record['session_id']
+                    version = db.execute('SELECT * FROM versions WHERE id=?', (record['version'],)).fetchone()
+                    body = dict(idempotency_key=key, scenario_file_sha256=version['sha256'], submitted_by=record['session_id'],
+                        implementer=task['session_id'], product=dict(commit=merged, digest=product_digest, dirty=False), results=rows)
+                    from .validation import validate_round
+                    validate_round(db, body)
+                    number = self.service.insert_round(db, batch, version, body,
+                        result_checks={r['scenario']: r['regression_check'] for r in rows if r.get('regression_check')})
+                    db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product_digest, batch['id']))
+                db.execute('UPDATE fix_candidates SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
+                    (number, task['id'], task['attempt'], record['validation'], record['batch']))
+                rounds.append(dict(batch=record['batch'], round=number))
+            db.execute('UPDATE fix_tasks SET merged_commit=? WHERE task=?', (merged, task['id']))
+            db.execute("UPDATE tasks SET status='已合入',finished_at=?,error=?,rounds_json=? WHERE id=?",
+                (now(), reason, canonical(rounds), task['id']))
+
+    def recover_promotions(self):
+        with self.store.connection() as db:
+            ids = [r[0] for r in db.execute("SELECT DISTINCT t.id FROM tasks t JOIN fix_candidates c ON c.task=t.id "
+                "JOIN fix_attempts a ON a.task=t.id AND a.number=t.attempt "
+                "WHERE t.kind='fix' AND t.status IN ('已中断','待合入','待开发者合入','已合入') "
+                "AND a.outcome='通过' AND c.attempt=t.attempt AND c.promoted_round IS NULL "
+                "AND c.validation=(SELECT MAX(latest.validation) FROM fix_candidates latest WHERE latest.task=t.id AND latest.attempt=t.attempt)")]
+        for task_id in ids:
+            task = self.tasks.read(task_id)
+            if task['project'] not in self.service.writable_repos:
+                continue
+            latest = max(c['validation'] for c in task['candidates'] if c['attempt'] == task['attempt'])
+            records = [c for c in task['candidates'] if c['attempt'] == task['attempt'] and c['validation'] == latest]
+            if any(c['status'] != 'pass' for c in records):
+                continue
+            root = self.service.writable_repos[task['project']]
+            try:
+                merged = git(root, 'rev-parse', 'refs/heads/' + task['baseline_branch']).decode().strip()
+                git(root, 'merge-base', '--is-ancestor', records[0]['commit_id'], merged)
+            except subprocess.CalledProcessError:
+                continue
+            self.promote(task, merged, '重启后确认候选已在基线中，已补做结果提升')
 
     def live(self, task):
         return not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] in ('分析中', '修复中')
@@ -397,9 +530,8 @@ class Fixes:
         self.archive(task)
 
     def validate(self, task, problems):
-        """T2 接入点；占位不生成通过结果、不合入、不提升轮次。"""
-        return dict(status='pending', reason='等待 T2 接入真实复测与合入',
-                    scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in problems], evidence=[])
+        from .fix_validation import FixValidation
+        return FixValidation(self).run(task, problems)
 
     def action(self, task, action, note=''):
         with self.tasks.lock:
@@ -507,6 +639,12 @@ class Fixes:
                 for field in ('result', 'validation', 'added', 'interruptions'):
                     attempt[field] = json.loads(attempt.pop(field + '_json'))
                 task['attempts'].append(attempt)
+            task['candidates'] = []
+            for row in db.execute('SELECT * FROM fix_candidates WHERE task=? ORDER BY attempt,validation,batch', (task['id'],)):
+                candidate = dict(row)
+                for field in ('results', 'evidence'):
+                    candidate[field] = json.loads(candidate.pop(field + '_json'))
+                task['candidates'].append(candidate)
         task['attention'] = [p for p in task['problems'] if p['category'] not in ('', 'product')]
         return task
 

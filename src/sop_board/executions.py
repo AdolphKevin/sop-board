@@ -86,7 +86,7 @@ class Executions:
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 
-    def read_results(self, task, scenes, session):
+    def read_results(self, task, scenes, session, batch=None):
         directory = self.tasks.directory(task['id'])
         path = directory / 'results.jsonl'
         if not path.is_file() or path.is_symlink():
@@ -99,6 +99,8 @@ class Executions:
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError('结果行应为对象')
+            if batch is not None and row.get('batch') != batch:
+                continue
             sid = row.get('scenario')
             if not isinstance(sid, str) or sid not in selected:
                 raise ValueError(f'{sid} 不在本轮范围内')
@@ -125,7 +127,7 @@ class Executions:
         missing = selected - seen
         if missing:
             raise ValueError('、'.join(sorted(missing)) + ' 缺少结果行')
-        return rows
+        return rows if batch is None else [row for row in rows if row.get('batch') == batch]
 
     def execute(self, task):
         directory = self.tasks.directory(task['id'])

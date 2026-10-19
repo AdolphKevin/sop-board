@@ -133,7 +133,15 @@ class Service:
         ids = {s["scenario"] for s in summary["scenarios"]}
         merge = db.execute("SELECT id,result_json FROM tasks WHERE project=? AND batch=? AND kind='merge' AND status='已完成' ORDER BY id DESC LIMIT 1",
                            (batch['project'], batch['name'])).fetchone()
+        fixes = list(db.execute("SELECT t.id,t.status,t.attempt,COUNT(p.id) AS problems FROM tasks t JOIN fix_problems p ON p.task=t.id "
+            "WHERE t.kind='fix' AND t.project=? AND p.batch=? GROUP BY t.id", (batch['project'], batch['name'])))
+        fix_statistics = dict(tasks=len(fixes), problems=sum(t['problems'] for t in fixes),
+            merged=sum(t['status'] == '已合入' for t in fixes),
+            developer=sum(t['status'] in ('待开发者处理', '待开发者合入') for t in fixes),
+            first_pass=sum(t['status'] == '已合入' and t['attempt'] == 1 for t in fixes),
+            attempts=sum(t['attempt'] for t in fixes)) if fixes else None
         return dict(batch=dict(batch), project=dict(db.execute("SELECT * FROM projects WHERE key=?", (batch["project"],)).fetchone()),
+                    fix_statistics=fix_statistics,
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
                     coverage=ratio(sum(c["id"] in ids for c in cases), len(cases)),
@@ -257,7 +265,7 @@ class Service:
                            (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
                             source['sha256'], source['confirmed_by'], source['content'], now()))
 
-    def insert_round(self, db, batch, version, body, kind="agent", regression_check=None):
+    def insert_round(self, db, batch, version, body, kind="agent", regression_check=None, result_checks=None):
         number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
         product = body["product"]
         cursor = db.execute("INSERT INTO rounds(batch,number,kind,version,product_commit,product_digest,product_dirty,"
@@ -277,6 +285,8 @@ class Service:
                                 "finding,note,independence) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                 (round_id, row["scenario"], row["fingerprint"], row["status"], row["actual"], row["executed_at"],
                                  row["executor"], row.get("session"), row.get("finding"), row.get("note"), independence))
+            if result_checks and row['scenario'] in result_checks:
+                db.execute('INSERT INTO check_results VALUES (?,?)', (cursor.lastrowid, result_checks[row['scenario']]))
             for ordinal, evidence in enumerate(row["evidence"], 1):
                 db.execute("INSERT INTO result_evidence VALUES (?,?,?,?)", (cursor.lastrowid, ordinal, evidence["name"], evidence["sha256"]))
         return number

@@ -53,7 +53,12 @@ def markdown(data, generated_at):
                     "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
                     table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]
                           for m in summary["misjudgments"]]))
-    sections.extend("## " + label + "\n\n暂无记录" for label in ["修复记录", "回归覆盖"])
+    fix_statistics = data.get('fix_statistics')
+    sections.append('## 修复记录\n\n' + ('### 自动修复统计\n\n' + '\n'.join(
+        '- ' + label + '：' + str(fix_statistics[key]) for key, label in [('tasks', '任务数'), ('problems', '问题数'),
+        ('merged', '已合入数'), ('developer', '转开发者数'), ('first_pass', '首次尝试即通过的任务数'), ('attempts', '总尝试次数')])
+        if fix_statistics else '暂无记录'))
+    sections.append('## 回归覆盖\n\n暂无记录')
     merge = data.get('merge')
     if not merge:
         sections.append('## 合并记录\n\n暂无记录')

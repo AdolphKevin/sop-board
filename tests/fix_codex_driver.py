@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import time
 
@@ -14,21 +15,53 @@ if args == ['--version']:
     sys.exit(config.get('version_exit', 0))
 calls = base / 'invocations.jsonl'
 count = len(calls.read_text().splitlines()) if calls.exists() else 0
+previous = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
+repair_index = sum('/validations/' not in c['argv'][c['argv'].index('-o') + 1] for c in previous)
 presets = config.get('calls', [{}])
-mode = presets[min(count, len(presets) - 1)] if presets else {}
+mode = presets[min(repair_index, len(presets) - 1)] if presets else {}
 output = Path(args[args.index('-o') + 1])
 report = dict(argv=args, cwd=os.getcwd(), env=environment, stdin_eof=sys.stdin.buffer.read() == b'',
               stdin_null=stat.S_ISCHR(os.fstat(0).st_mode), started=time.time())
+time.sleep(config.get('invocation_delay', 0))
 with calls.open('a') as stream:
     stream.write(json.dumps(report) + '\n')
 if mode.get('before_thread'):
     sys.exit(2)
-thread = args[args.index('resume') + 1] if 'resume' in args else 'TH-1'
+retest = (output.parent / 'retest.json').exists()
+if retest:
+    prior = [json.loads(line) for line in calls.read_text().splitlines()[:-1]]
+    index = sum('/validations/' in c['argv'][c['argv'].index('-o') + 1] for c in prior)
+    presets = config.get('retests', [{}])
+    mode = presets[min(index, len(presets) - 1)] if presets else {}
+thread = args[args.index('resume') + 1] if 'resume' in args else f'TH-R{index + 1}' if retest else 'TH-1'
 print(json.dumps(dict(type='thread.started', thread_id=thread)), flush=True)
 time.sleep(mode.get('delay', 0))
 if mode.get('exit'):
     sys.exit(mode['exit'])
 if mode.get('no_final'):
+    sys.exit(0)
+if retest:
+    from datetime import datetime, timezone
+    selected = json.loads((output.parent / 'retest.json').read_text())
+    observation = '独立复测已核对'
+    observed_status = 'pass'
+    if mode.get('observe_product'):
+        entries = json.loads((output.parent / 'entries.json').read_text())
+        target = entries['targets'][selected[0]['scene']['verify']]['directory']
+        run = subprocess.run([sys.executable, 'src/app.py'], cwd=target, capture_output=True, text=True, timeout=5)
+        observation = json.dumps(dict(command=[sys.executable, 'src/app.py'], cwd=target,
+            code=run.returncode, stdout=run.stdout, stderr=run.stderr), ensure_ascii=False)
+        observed_status = 'pass' if run.returncode == 0 and run.stdout == mode['expected_stdout'] else 'fail'
+    (output.parent / 'evidence/observed.txt').write_text(observation)
+    rows = []
+    for scene in selected:
+        status = mode.get('statuses', {}).get(scene['scenario'], observed_status)
+        rows.append(dict(batch=scene['batch'], scenario=scene['scenario'], status=status, actual='独立复测结果 ' + status,
+            evidence=['evidence/observed.txt'], executed_at=datetime.now(timezone.utc).isoformat(),
+            **(dict(finding='未满足条件') if status in ('blocked', 'skip') else {})))
+        rows[-1].update(mode.get('result_fields', {}))
+    (output.parent / 'results.jsonl').write_text('\n'.join(json.dumps(row) for row in rows))
+    output.write_text('复测完成')
     sys.exit(0)
 if not (output.parent / 'problems.json').exists():
     import yaml
