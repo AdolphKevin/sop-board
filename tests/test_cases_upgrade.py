@@ -84,8 +84,8 @@ def test_old_directory_upgrade_preserves_all_rows_reads_exports_evidence_and_acc
     evidence = {sha: evidence_bytes(board, sha) for sha, in board.sql("SELECT sha256 FROM evidence")}
     switch_to_current(board)
     after = snapshot(board)
-    # SOP-BOARD-4 D1 新增设置表保存全局暂停；原有数据、导出和证据仍逐项不变。
-    assert set(after[0]) - set(original[0]) == {"case_uploads", "case_versions", "tasks", "batch_entries", "node_numbers", "sop_versions", "check_rounds", "settings"}
+    # SOP-BOARD-5 D1 增加修复任务、问题与尝试；原有数据、导出和证据仍逐项不变。
+    assert set(after[0]) - set(original[0]) == {"case_uploads", "case_versions", "tasks", "batch_entries", "node_numbers", "sop_versions", "check_rounds", "settings", "fix_tasks", "fix_problems", "fix_attempts"}
     assert all(after[0][table] == rows for table, rows in original[0].items())
     assert after[1] == original[1]
     for path, response in reads.items():

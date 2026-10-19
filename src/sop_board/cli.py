@@ -92,6 +92,7 @@ def main():
                            os.environ.get("JIRA_API_TOKEN", ""),
                            timeout=os.environ.get("JIRA_TIMEOUT_SECONDS", "10"))
         server.token = token
+        server.service.jira = server.jira
         server.admin_token = os.environ.get("SOP_BOARD_ADMIN_TOKEN", "")
         tasks = server.tasks = Tasks(server.service, timeout=codex_timeout)
         discovery = Discovery(server.service, repos)

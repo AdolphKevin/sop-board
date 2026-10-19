@@ -1,0 +1,22 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["root_cause", "problems", "changed_files", "tests", "plan"],
+  "properties": {
+    "root_cause": {"type": "string"},
+    "problems": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["batch", "scenario", "category", "handling", "reason"],
+      "properties": {
+        "batch": {"type": "string"}, "scenario": {"type": "string"},
+        "category": {"type": "string", "enum": ["product", "execution", "environment", "scenario", "requirement", "unfixable"]},
+        "handling": {"type": "string"}, "reason": {"type": "string"}
+      }
+    }},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "tests": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["command", "result"],
+      "properties": {"command": {"type": "string"}, "result": {"type": "string"}}
+    }},
+    "plan": {"type": "string"}
+  }
+}

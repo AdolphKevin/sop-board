@@ -103,7 +103,7 @@
         try {
           const response = await fetch(button.dataset.developerAction, {
             method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer " + adminToken.value},
-            body: "{}",
+            body: button.dataset.developerNote !== undefined ? JSON.stringify({note: document.getElementById("developer-note")?.value || ""}) : "{}",
           });
           const data = await response.json();
           if (!response.ok || !data.ok) {

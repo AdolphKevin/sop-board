@@ -34,6 +34,45 @@ class Jira:
         self.lock = Lock()
         self.opener = build_opener(NoRedirect())
 
+    def issue(self, key):
+        """修复会话需要的单据内容；不使用页面摘要缓存。"""
+        if not re.fullmatch(ISSUE_KEY, key):
+            reject(422, 'jira-key-invalid', 'key', 'Jira 单号格式不符')
+        if not all((self.url, self.email, self.token)):
+            reject(404, 'jira-not-configured', 'jira', 'Jira 未配置完整')
+        authorization = base64.b64encode(f'{self.email}:{self.token}'.encode()).decode()
+        request = Request(f'{self.url}/rest/api/3/issue/{key}?fields=summary,description,status,comment,attachment',
+            headers={'Authorization': 'Basic ' + authorization, 'Accept': 'application/json'})
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                fields = json.load(response)['fields']
+            result = dict(key=key, summary=fields['summary'], description=fields.get('description'),
+                status=fields['status']['name'], comments=fields.get('comment', {}).get('comments', []),
+                attachments=[a['filename'] for a in fields.get('attachment', [])])
+            if not isinstance(result['summary'], str) or not isinstance(result['status'], str) or not isinstance(result['comments'], list):
+                raise ValueError()
+        except HTTPError as error:
+            error.close()
+            reject(502, 'jira-unavailable', 'jira', f'Jira 返回 HTTP {error.code}')
+        except TimeoutError:
+            reject(502, 'jira-unavailable', 'jira', f'Jira 读取超时（{self.timeout:g} 秒）')
+        except OSError:
+            reject(502, 'jira-unavailable', 'jira', 'Jira 连接失败')
+        except (ValueError, KeyError, TypeError, HTTPException):
+            reject(502, 'jira-unavailable', 'jira', 'Jira 响应格式无效或不完整')
+
+        def redact(value):
+            if isinstance(value, str):
+                for secret in sorted((self.email, self.token, authorization), key=len, reverse=True):
+                    value = value.replace(secret, '***')
+                return value
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                return {redact(k): redact(v) for k, v in value.items()}
+            return value
+        return redact(result)
+
     def summary(self, key):
         if not re.fullmatch(ISSUE_KEY, key):
             reject(422, "jira-key-invalid", "key", "Jira 单号格式不符，请填写如 ABC-1 的大写单号")

@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method in ("POST", "PUT"):
                 authorization = self.headers.get("Authorization", "")
-                developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel)", path) or
+                developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel|approve)", path) or
                                  re.fullmatch(r"/api/v1/automation/(pause|resume)", path) or
                                  re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/(merges|checks|executions)", path))
                 if developer and hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
@@ -79,6 +79,11 @@ class Handler(BaseHTTPRequestHandler):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
                 self.respond(200, pages.home(service.projects()).encode(), "text/html; charset=utf-8")
+                return
+            if method == 'GET' and (match := re.fullmatch(r'/p/([^/]+)/fixes', path)):
+                key = unquote(match[1])
+                selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
+                self.respond(200, pages.fixes(key, self.server.tasks.fixes.list(key)['tasks'], selected).encode(), 'text/html; charset=utf-8')
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -142,10 +147,16 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.tasks.enqueue_execution(unquote(match[1]), unquote(match[2]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/(retry|cancel)", path)):
                 result = self.server.tasks.action(int(match[1]), match[2])
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/approve", path)):
+                result = self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', body.get('note', '')) if isinstance(body, dict) else self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', None)
             elif method == "GET" and path == "/api/v1/projects":
                 result = service.projects()
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/entries", path)):
                 result = service.entries(unquote(match[1]))
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/fixes", path)):
+                result = self.server.tasks.fixes.list(unquote(match[1]))
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/attention", path)):
+                result = self.server.tasks.fixes.attention(unquote(match[1]), 'http://' + self.headers.get('Host', 'localhost'))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/jira/([^/]+)", path)):
                 result = self.server.jira.summary(unquote(match[1]))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):

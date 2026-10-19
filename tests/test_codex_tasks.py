@@ -212,7 +212,7 @@ def test_resume_launcher_keeps_session_and_isolated_boundary(fake_codex, tmp_pat
     process = resume_codex(directory, 'target-thread', 'continue fixture', sandbox='workspace-write')
     assert process.wait(timeout=5) == 0
     data = json.loads((directory / 'invocation.json').read_text())
-    assert data['argv'] == ['-s', 'workspace-write', 'exec', 'resume', 'target-thread', '--json',
+    assert data['argv'] == ['-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true', 'exec', 'resume', 'target-thread', '--json',
                             '--skip-git-repo-check', '-o', str(directory / 'final.json'), 'continue fixture']
     assert data['cwd'] == str(directory) and data['stdin_null']
     assert all(k in {'PATH', 'HOME', 'USER', 'LANG', 'TMPDIR', 'CODEX_HOME', 'SHELL'} or k.startswith('LC_') for k in data['env'])

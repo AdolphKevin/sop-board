@@ -43,7 +43,7 @@ def invalid_judgment_constant(value):
     raise ValueError(f'最终 JSON 消息含非有限数字：{value}')
 
 
-def start_codex(directory, prompt, sandbox='read-only', environment=None):
+def start_codex(directory, prompt, sandbox='read-only', environment=None, work_directory=None):
     """可替换的启动边界；子进程只得到白名单环境及独立进程组。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
@@ -52,22 +52,23 @@ def start_codex(directory, prompt, sandbox='read-only', environment=None):
         options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
         schema = ['--output-schema', str(directory / 'schema.json')] if (directory / 'schema.json').is_file() else []
         return subprocess.Popen(['codex', 'exec', '--json', '-s', sandbox, *options, '--skip-git-repo-check',
-            '-C', str(directory), *schema,
-            '-o', str(directory / 'final.json'), prompt], cwd=directory, env=environment if environment is not None else codex_environment(),
+            '-C', str(work_directory or directory), *schema,
+            '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory, env=environment if environment is not None else codex_environment(),
             stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
     finally:
         events.close()
         stderr.close()
 
 
-def resume_codex(directory, thread_id, prompt, sandbox='read-only'):
+def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None):
     """续接指定会话；resume 的沙箱参数位于 Codex 根命令层。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
     stderr = (directory / 'stderr.txt').open('wb')
     try:
-        return subprocess.Popen(['codex', '-s', sandbox, 'exec', 'resume', thread_id, '--json',
-            '--skip-git-repo-check', '-o', str(directory / 'final.json'), prompt], cwd=directory,
+        options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
+        return subprocess.Popen(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
+            '--skip-git-repo-check', '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory,
             env=codex_environment(), stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
     finally:
         events.close()
@@ -119,7 +120,9 @@ class Tasks:
         self.starting = None
         self.timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT')) if timeout is None else timeout
         with self.store.transaction() as db:
-            db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE status IN ('排队中','待提交','等待浏览器','运行中')", (now(),))
+            db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE "
+                "(kind!='fix' AND status IN ('排队中','待提交','等待浏览器','运行中')) OR "
+                "(kind='fix' AND status IN ('分析中','修复中','复测中','待合入'))", (now(),))
         self.availability_error = codex_available()
         from .checks import Checks
         self.checks = Checks(self)
@@ -127,6 +130,8 @@ class Tasks:
         from .executions import Executions
         self.executions = Executions(self)
         service.execution_callback = self.executions.enqueue
+        from .fixes import Fixes
+        self.fixes = Fixes(self)
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 
@@ -233,6 +238,8 @@ class Tasks:
         directory = self.directory(task_id)
         task['files'] = {str(p.relative_to(directory)): f'/api/v1/tasks/{task_id}/files/{quote(str(p.relative_to(directory)), safe="/")}'
                          for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink() and directory in p.resolve().parents}
+        if task['kind'] == 'fix':
+            self.fixes.details(task)
         return task
 
     def file(self, task_id, name):
@@ -259,6 +266,8 @@ class Tasks:
     def action(self, task_id, action):
         with self.lock:
             task = self.read(task_id)
+            if task['kind'] == 'fix':
+                return self.fixes.action(task, action)
             allowed = ('失败', '已中断', 'Codex 不可用') if action == 'retry' else ('排队中', '运行中', '已中断', '待同步', '待补充')
             if task['kind'] in ('check', 'execute'):
                 allowed += ('已作废',) if action == 'retry' else ('待提交', '等待浏览器')
@@ -432,6 +441,7 @@ class Tasks:
             with self.lock:
                 self.workers = {i: w for i, w in self.workers.items() if w.is_alive()}
                 self.check_workers.intersection_update(self.workers)
+                self.fixes.discover()
                 with self.store.connection() as db:
                     if self.service.automation_paused(db):
                         continue
@@ -449,14 +459,20 @@ class Tasks:
                         self.check_workers.add(task['id'])
                         worker.start()
                 with self.store.connection() as db:
-                    queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','execute') "
+                    queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','execute','fix') "
                         "AND status IN ('排队中','待提交','等待浏览器') ORDER BY id")]
                     running_batches = {(r['project'], r['batch']) for r in db.execute("SELECT project,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
                 for task in queued:
                     if self.stopping.is_set():
                         break
+                    if task['kind'] == 'fix':
+                        self.fixes.schedule(task)
+                        continue
                     checks_only = False
                     if task['kind'] == 'execute':
+                        if self.fixes.blocks_execution(task['project']):
+                            self.update(task['id'], status='排队中', error='等待同一仓库的修复任务')
+                            continue
                         try:
                             if not self.checks.prepare(task):
                                 continue

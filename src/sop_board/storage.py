@@ -21,6 +21,28 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS projects (
     key TEXT PRIMARY KEY, identity TEXT NOT NULL, name TEXT NOT NULL, defect_prefix TEXT
 );
+CREATE TABLE IF NOT EXISTS fix_tasks (
+    task INTEGER PRIMARY KEY REFERENCES tasks(id), repository TEXT NOT NULL,
+    baseline_branch TEXT NOT NULL DEFAULT '', baseline_commit TEXT NOT NULL DEFAULT '',
+    fix_branch TEXT NOT NULL DEFAULT '', worktree TEXT NOT NULL DEFAULT '',
+    developer_note TEXT NOT NULL DEFAULT '', retry_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS fix_problems (
+    id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
+    batch TEXT NOT NULL, scenario TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    result_id INTEGER NOT NULL REFERENCES results(id), first_attempt INTEGER NOT NULL,
+    category TEXT NOT NULL DEFAULT '', handling TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '', input_json TEXT NOT NULL,
+    UNIQUE(task,batch,scenario,fingerprint)
+);
+CREATE TABLE IF NOT EXISTS fix_attempts (
+    task INTEGER NOT NULL REFERENCES tasks(id), number INTEGER NOT NULL,
+    started_at TEXT NOT NULL, finished_at TEXT, start_commit TEXT NOT NULL,
+    commit_id TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '运行中',
+    reason TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}',
+    validation_json TEXT NOT NULL DEFAULT '{}', added_json TEXT NOT NULL DEFAULT '[]',
+    interruptions_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(task,number)
+);
 CREATE TABLE IF NOT EXISTS batches (
     id INTEGER PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(key),
     name TEXT NOT NULL, path TEXT NOT NULL, product_digest TEXT NOT NULL,

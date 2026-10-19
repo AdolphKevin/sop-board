@@ -48,7 +48,8 @@ def home(data):
         batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
                           f"{text(batch['name'])}</a> · <span data-agent-state=''>{agent_state(batch)}</span></li>" for batch in project["batches"])
         projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
-                        f"<p>{'可写' if project.get('writable') else '只读'}</p><ul>{batches}</ul></section>")
+                        f"<p>{'可写' if project.get('writable') else '只读'}</p><ul>{batches}</ul>" +
+                        ''.join(f"<p><a href='/p/{text(project['key'])}/fixes?task={t['id']}'>修复任务 #{t['id']}</a> · {text(t['status'])} · {text(t['error'])}</p>" for t in project.get('fix_tasks', [])) + '</section>')
     return layout("项目与批次", automation_controls(data) + "<h1>项目与批次</h1>" +
                   ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>") + identity_bar())
 
@@ -483,3 +484,39 @@ def merges(project, name, tasks, selected=None):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
         content += '</section>'
     return layout('任务', content)
+
+
+def fixes(project, tasks, selected=None):
+    content = ("<h1>修复任务</h1>" + identity_bar() +
+               "<p id='developer-message' role='status' aria-live='polite'></p>")
+    if not tasks:
+        return layout('修复任务', content + '<p>暂无记录</p>')
+    content += '<table><tr><th>任务</th><th>问题数</th><th>状态与原因</th><th>尝试次数</th><th>会话编号</th></tr>'
+    for task in tasks:
+        content += (f"<tr><td><a href='?task={task['id']}'>#{task['id']}</a></td><td>{len(task['problems'])}</td>" +
+            f"<td>{text(task['status'])} · {text(task['error'])}</td><td>{task['attempt']}</td><td>{text(task['session_id'] or '')}</td></tr>")
+    content += '</table>'
+    task = next((t for t in tasks if str(t['id']) == selected), tasks[-1])
+    content += f"<h2>修复任务 #{task['id']}</h2><h3>根因分析</h3><p>{text(task['result'].get('root_cause', ''))}</p><h3>问题与处理</h3><ul>"
+    categories = dict(product='产品缺陷', execution='执行问题', environment='环境问题', scenario='场景问题', requirement='需求问题', unfixable='暂无法修复的产品缺陷')
+    for problem in task['problems']:
+        content += (f"<li>{text(problem['batch'])} {text(problem['scenario'])}：{text(categories.get(problem['category'], '待分析'))} · " +
+            f"{text(problem['handling'])} · {text(problem['reason'])} · {text(problem['plan'])}" +
+            f"<p>{text(problem['input'].get('jira_error', ''))}</p></li>")
+    content += '</ul><h3>尝试记录</h3>'
+    for attempt in task['attempts']:
+        content += (f"<section><h4>第 {attempt['number']} 次 · {text(attempt['outcome'])}</h4><p>{text(attempt['reason'])}</p>" +
+            f"<p>提交：{text(attempt['commit_id'])}</p><p>{text(attempt['result'].get('root_cause', ''))}</p>" +
+            '<pre>' + text(json.dumps(attempt['validation'], ensure_ascii=False, indent=2)) + '</pre></section>')
+    content += "<label>开发者说明<textarea id='developer-note'></textarea></label>"
+    if task['status'] == '待开发者处理':
+        content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"
+    if task['status'] in ('已中断', 'Codex 不可用') or task.get('retry_reason') in ('detached', 'interrupted'):
+        content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
+    else:
+        content += "<button type='button' disabled>重试</button>"
+    if task['status'] not in ('已合入', '已放弃', '待合入'):
+        content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
+    for name, url in task['files'].items():
+        content += f"<p><a href='{text(url)}' download>{text(name)}</a></p>"
+    return layout('修复任务', content)

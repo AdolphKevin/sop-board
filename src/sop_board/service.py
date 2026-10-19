@@ -351,6 +351,8 @@ class Service:
                 projects.append(dict(key=project["key"], id=project["identity"], name=project["name"],
                     defect_prefix=project["defect_prefix"], writable=project["key"] in self.writable_repos, batches=[self.summary(db, batch) for batch in db.execute(
                         "SELECT * FROM batches WHERE project=? ORDER BY name", (project["key"],))]))
+            for project in projects:
+                project['fix_tasks'] = [dict(r) for r in db.execute("SELECT id,status,error FROM tasks WHERE project=? AND kind='fix' AND status NOT IN ('已合入','已放弃') ORDER BY id", (project['key'],))] if project['writable'] else []
             return dict(ok=True, projects=projects, automation_paused=self.automation_paused(db))
 
     def read_round(self, key, name, number):
