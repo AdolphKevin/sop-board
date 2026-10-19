@@ -23,6 +23,8 @@
 # 有用例的批次由上传用例经合并写入后提交得到场景文件，场景编号即用例编号。"产品已变化"指该结果登记时的产品指纹不同于批次当前的产品指纹（准备时以较早提交的提交号与指纹登记）。
 # 浏览器入口的执行由假 codex 代替，不需要真实浏览器；需要本机已登录的真实 Codex 的只有 SOP-42-P17。
 
+# 2026-10-20：按实现中发现的前提缺口改写 SOP-42-P08、SOP-42-P15 的步骤（再次执行前先产生待执行场景）与 SOP-42-N12 的步骤（失败任务不可放弃），经 AdolphKevin 授权由 Claude 代批。
+
 metadata:
   requirement: "sop-board 看板发起的执行与回归检查：入口与检查声明、执行任务、候选版本、浏览器独占与暂停与执行状态、回归检查运行器"
   batch: "sop-board-4"
@@ -267,7 +269,7 @@ sops:
         refs: ["I2", "D1"]
         verify: api
         initial_state: ["慢速假 codex", "授权看板中演示批次 B 有用例与待执行场景 TC_DEMO_A_001、TC_DEMO_B_002，另有声明 regression.check 为 unit 的场景 TC_DEMO_G_001，场景使用入口 cli", "演示批次 B3 没有用例，有待执行场景 N1"]
-        steps: ["对批次 B 发起执行，等待任务 E1 开始后请求 GET /api/v1/tasks/<E1>/files/snapshot.json", "对照 docs/sop/B.yaml 的 sha256、批次场景接口返回的指纹、git rev-parse HEAD 与 sop-verify 计算的产品指纹", "等待 E1 完成；再对批次 B 发起执行 E2，运行中提交一处产品改动，等待 E2 结束；对批次 B 发起检查 K1 并等待完成；对批次 B3 发起执行 E3", "请求 GET /api/v1/tasks?project=github-com-demo-org-demo-app&batch=B 与各任务的任务接口，下载 E3 的 snapshot.json"]
+        steps: ["对批次 B 发起执行，等待任务 E1 开始后请求 GET /api/v1/tasks/<E1>/files/snapshot.json", "对照 docs/sop/B.yaml 的 sha256、批次场景接口返回的指纹、git rev-parse HEAD 与 sop-verify 计算的产品指纹", "等待 E1 完成；修改 TC_DEMO_A_001 的 expected 并提交，使其成为待执行场景，再对批次 B 发起执行 E2，运行中提交一处产品改动，等待 E2 结束；对批次 B 发起检查 K1 并等待完成；对批次 B3 发起执行 E3", "请求 GET /api/v1/tasks?project=github-com-demo-org-demo-app&batch=B 与各任务的任务接口，下载 E3 的 snapshot.json"]
         expected: ["snapshot.json 含 scenario_file_sha256、scenarios、entries_sha256、cases_sha256、commit、product_digest", "scenario_file_sha256 等于 docs/sop/B.yaml 原文的 sha256，scenarios 为所选场景编号到内容指纹且与批次场景接口一致", "entries_sha256 与 cases_sha256 为 64 位十六进制，commit 等于 git rev-parse HEAD，product_digest 等于 sop-verify 计算的值", "E1、E2、K1 的种类分别为 execute、execute、check", "各任务返回 scope 与 snapshot；E2 的 void_reason 非空，E1 的 rounds 含所登记的轮次号，K1 的 rounds 含回归检查轮次号", "E3 的 snapshot.json 中 cases_sha256 为空字符串"]
         forbidden_effects: []
         evidence_hints: ["snapshot.json", "对照用的命令输出", "任务接口响应"]
@@ -358,7 +360,7 @@ sops:
         refs: ["I2"]
         verify: api
         initial_state: ["授权看板中演示批次 B 有待执行场景 N1、N2，场景使用入口 cli"]
-        steps: ["让假 codex 只为 N1 写结果，发起执行，等待任务 T1 为失败", "改为写出合格结果，用开发者令牌请求 POST /api/v1/tasks/<T1>/retry，等待结束", "让假 codex 等待 60 秒，发起执行 T2，运行中提交一处产品改动，等待 T2 为已作废", "用开发者令牌重试 T2，等待结束并读取 T2 的 snapshot.json"]
+        steps: ["让假 codex 只为 N1 写结果，发起执行，等待任务 T1 为失败", "改为写出合格结果，用开发者令牌请求 POST /api/v1/tasks/<T1>/retry，等待结束", "修改 N1 的 expected 并提交，使其重新成为待执行场景；让假 codex 等待 60 秒，发起执行 T2，运行中提交一处产品改动，等待 T2 为已作废", "用开发者令牌重试 T2，等待结束并读取 T2 的 snapshot.json"]
         expected: ["T1 重试返回 ok 为 true，T1 重新排队、运行并为已完成，scope 仍为 N1、N2，登记一个 Agent 轮次", "T2 重试返回 ok 为 true，scope 不变，重新运行后为已完成并登记轮次", "T2 重试后的 snapshot.json 的 commit 为改动提交后的 HEAD"]
         forbidden_effects: ["T1 失败那次的结果被登记"]
         evidence_hints: ["请求与响应原文", "任务接口响应", "snapshot.json"]
@@ -552,7 +554,7 @@ sops:
         refs: ["I2"]
         verify: api
         initial_state: ["授权看板中演示批次 B 有待执行场景 N1、N2 与不在范围内的 P1（Agent pass 且产品未变化），场景使用入口 cli"]
-        steps: ["依次让假 codex：只为 N1 写结果；为 N1 写两行、N2 写一行；不写 results.jsonl；为 N1、N2 各写一行并另写 P1 一行；N1 写 blocked 而不带 finding", "每次发起执行（失败后用开发者令牌放弃再发起），等待结束，下载 check.json 并请求批次轮次"]
+        steps: ["依次让假 codex：只为 N1 写结果；为 N1 写两行、N2 写一行；不写 results.jsonl；为 N1、N2 各写一行并另写 P1 一行；N1 写 blocked 而不带 finding", "每次发起执行（失败的任务保留原状，直接发起下一次执行），等待结束，下载 check.json 并请求批次轮次"]
         expected: ["五次任务都为失败", "check.json 依次指出：N2 缺少结果行；N1 有重复的结果行；results.jsonl 不存在；P1 不在本轮范围内；N1 为 blocked 而缺少 finding", "批次没有新增 Agent 轮次"]
         forbidden_effects: ["部分结果被登记"]
         evidence_hints: ["五份 check.json", "任务接口响应", "轮次列表"]
