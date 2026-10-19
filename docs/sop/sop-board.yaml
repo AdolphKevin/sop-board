@@ -28,7 +28,7 @@ metadata:
       version: "修订 3"
       confirmed_by: "AdolphKevin"
     - ref: "docs/designs/SOP-BOARD-2.md 的全局范围、I2、I4 节"
-      version: "修订 1"
+      version: "修订 2"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "看板核心"]
 
