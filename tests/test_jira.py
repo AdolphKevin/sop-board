@@ -180,7 +180,7 @@ def test_jira_redirect_cannot_forward_authentication(board_factory):
 
 
 def test_jira_credentials_absent_from_existing_pages_apis_exports_and_logs(board_factory):
-    """SOP-24-N06：扫描 T1–T3 已有入口，包含上游错误回显与看板日志。"""
+    """SOP-24-N06、T4：扫描进度、报告、结果导出/导入及已有入口与日志。"""
     from cases_helpers import upload_cases
     from helpers import BASE, IDS, KEY, push, snapshot
     from test_marks import mark_body
@@ -195,8 +195,16 @@ def test_jira_credentials_absent_from_existing_pages_apis_exports_and_logs(board
         for sid, issue in [(IDS[0], "ABC-1"), (IDS[2], "ABC-500")]:
             assert board.request("POST", BASE + "/marks", mark_body(pushed, "fail", scenario=sid,
                 fingerprint=pushed["fingerprints"][sid], defect_url=issue))[0] == 200
+        import yaml
+        document = dict(run_id="scan", round=1, environment="隔离环境", results=[dict(
+            case_id=IDS[0], status="passed", actual_result="人工结果", executor="测试者", tested_at="2026-10-18T10:00:00+08:00")])
+        status, imported, headers = board.request("POST", BASE + "/results", dict(
+            uploaded_by="上传者", content=yaml.safe_dump(document, allow_unicode=True)))
+        assert status == 200 and imported["imported"] == 1
+        assert not any(secret in str(imported) + str(headers) for secret in [jira.email, jira.token, jira.basic]), "导入响应泄漏隔离测试身份"
         before = snapshot(board)
-        paths = ["/", WEB, WEB + "/scenarios", WEB + "/cases", *(WEB + "/s/" + sid for sid in IDS),
+        paths = ["/", WEB, WEB + "/progress", BASE + "/report.md", BASE + "/results.yaml", BASE + "/state",
+                 WEB + "/scenarios", WEB + "/cases", *(WEB + "/s/" + sid for sid in IDS),
                  "/assets/board.js", "/assets/board.css", "/api/v1/projects", BASE, BASE + "/scenarios",
                  BASE + "/cases", BASE + "/cases.yaml", BASE + "/scenario-file", BASE + "/rounds/1",
                  BASE + "/rounds/2", BASE + "/rounds/1/export", BASE + "/rounds/2/export",

@@ -1,0 +1,63 @@
+"""将同一读取快照中的批次统计和用例呈现为稳定的 Markdown。"""
+
+from html import escape
+
+
+STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
+MANUAL = {**STATUS, "fail": "不通过（失败）", "blocked": "不通过（受阻）"}
+
+
+def fraction(value):
+    return f"{value['numerator']}/{value['denominator']}" if value["denominator"] else "无数据"
+
+
+def cell(value):
+    return escape(str(value), quote=False).replace("|", "&#124;").replace("\r\n", "<br>").replace("\r", "<br>").replace("\n", "<br>")
+
+
+def table(headers, rows):
+    if not rows:
+        return "无\n"
+    return ("| " + " | ".join(headers) + " |\n| " + " | ".join("---" for _ in headers) + " |\n" +
+            "".join("| " + " | ".join(cell(v) for v in row) + " |\n" for row in rows))
+
+
+def markdown(data, generated_at):
+    version = data["version"]
+    summary = data["summary"]
+    scenarios = {item["scenario"]: item for item in summary["scenarios"]}
+    project = data["project"]
+    sections = ["# 验收报告\n\n## 头部\n\n" + "\n".join("- " + label + "：" + cell(value) for label, value in [
+        ("项目", f"{project['name']}（{project['identity']}）"), ("批次", data["batch"]["name"]),
+        ("场景版本", version["version"] if version else "无"), ("推送提交号", version["commit_id"] if version else "无"),
+        ("用例并集的最新上传序号", data["latest_upload"] or "无"),
+        ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("生成时间", generated_at)])]
+    matched, unmatched = [], []
+    for case in data["cases"]:
+        item = scenarios.get(case["id"])
+        if item is None:
+            unmatched.append([case["id"], case["title"]])
+        else:
+            a, m = item["latest_agent"], item["latest_manual"]
+            matched.append([case["id"], case["title"], item["scenario"], STATUS[a["status"]] if a else "尚无 Agent 结果",
+                            MANUAL[m["status"]] if m else "尚无人工结果"])
+    sections.append("## 用例覆盖\n\n用例覆盖：" + fraction(data["coverage"]) + "\n\n" +
+                    table(["用例", "标题", "对应场景", "Agent 结果", "人工结果"], matched) +
+                    "\n### 尚无对应场景\n\n" + table(["用例", "标题"], unmatched))
+    stats = summary["statistics"]
+    sections.append("## Agent 统计\n\nAgent 验收通过率：" + fraction(stats["agent_pass_rate"]) +
+                    "\n\n一次通过率：" + fraction(stats["first_pass_rate"]) + "\n\n" +
+                    table(["轮次", "种类", "每轮通过率"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
+                                                               fraction(r["pass_rate"])] for r in summary["rounds"]]))
+    sections.append("## 人工复测\n\n人工复测通过率：" + fraction(stats["manual_pass_rate"]) +
+                    "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
+                    table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]
+                          for m in summary["misjudgments"]]))
+    sections.extend("## " + label + "\n\n暂无记录" for label in ["修复记录", "回归覆盖", "合并记录"])
+    unverified = []
+    for item in summary["scenarios"]:
+        latest = max((r for r in [item["latest_agent"], item["latest_manual"]] if r), key=lambda r: r["number"], default=None)
+        if latest and latest["status"] in ("blocked", "skip"):
+            unverified.append([item["scenario"], STATUS[latest["status"]], latest.get("finding") or latest.get("note") or "无"])
+    sections.append("## 未验证范围\n\n" + table(["场景", "结果", "缺陷链接或原因"], unverified))
+    return "\n\n".join(s.rstrip() for s in sections) + "\n"

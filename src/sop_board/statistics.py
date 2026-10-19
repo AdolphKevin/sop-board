@@ -29,6 +29,7 @@ def calculate(db, batch):
     queues = dict(pending=[], issues=[], retest=[])
     agent_pass = agent_fail = first_pass = first_fail = reviewed = manual_pass = manual_fail = executed = 0
     details, misjudgments = [], []
+    agent_counts = {"pass": 0, "fail": 0, "blocked": 0, "skip": 0}
     filters = {"all": len(scenarios), "unreviewed": 0, "agent-pass": 0, "fail": 0, "blocked": 0}
     for scenario in scenarios:
         history = by_scenario.get((scenario["scenario"], scenario["fingerprint"]), [])
@@ -41,6 +42,7 @@ def calculate(db, batch):
             filters[latest["status"]] += 1
         executed += bool(history)
         if agents:
+            agent_counts[a["status"]] += 1
             agent_pass += a["status"] == "pass"
             agent_fail += a["status"] == "fail"
             first_pass += agents[0]["status"] == "pass"
@@ -85,6 +87,8 @@ def calculate(db, batch):
         results = [r for r in rows if r["round_id"] == item["id"]]
         item["pass_rate"] = ratio(sum(r["status"] == "pass" for r in results), len(results))
         rounds.append(item)
+    latest_agent = next((r for r in reversed(rounds) if r["kind"] == "agent"), None)
     return dict(statistics=statistics, queues=queues, queue_counts={k: len(v) for k, v in queues.items()},
+                agent_execution=dict(counts=agent_counts, submitted_at=latest_agent["submitted_at"] if latest_agent else None),
                 progress=dict(executed=statistics["executed_progress"], reviewed=statistics["reviewed_progress"]),
                 scenario_count=len(scenarios), scenarios=details, rounds=rounds, misjudgments=misjudgments, filters=filters)

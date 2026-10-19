@@ -80,7 +80,7 @@ class Board:
             response = error
         with response:
             raw = response.read()
-            content = (json.loads(raw) if "application/json" in
+            content = (json.loads(raw) if raw and "application/json" in
                        response.headers.get("Content-Type", "") else raw)
             return response.status, content, response.headers
 

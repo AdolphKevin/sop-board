@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -29,7 +30,7 @@ def run_page_client(board, case, url, *, saved=None, network=False, context=None
     status, script, _ = board.request("GET", "/assets/board.js", auth=False)
     assert status == 200
     payload = dict(case=case, document=serialize(document), location="http://board.test" + url,
-                   script=script.decode(), saved=saved or {}, **(context or {}))
+                   python=sys.executable, script=script.decode(), saved=saved or {}, **(context or {}))
     if network:
         payload["serverOrigin"] = f"http://127.0.0.1:{board.port}"
     result = subprocess.run(["node", str(Path(__file__).with_name("client_form_runner.js"))],

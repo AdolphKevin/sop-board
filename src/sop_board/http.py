@@ -82,9 +82,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                data = service.read_cases(key, batch)
+                data = service.read_cases(key, batch, include_state=True)
                 scenarios = service.read_batch(key, batch, scenarios=True)["scenarios"]
                 self.respond(200, pages.cases(key, batch, data, scenarios).encode(), "text/html; charset=utf-8")
+                return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/progress", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                data = service.read_batch(key, batch)
+                coverage = service.read_cases(key, batch)["coverage"]
+                self.respond(200, pages.progress(key, data, coverage).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
@@ -110,7 +116,7 @@ class Handler(BaseHTTPRequestHandler):
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
                               ("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
-            elif match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|cases|cases\.yaml)(?:/([0-9]+))?)?", path):
+            elif match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]
                 if method == "PUT" and action == "scenario-file" and number is None:
                     result = service.push(key, batch, body)
@@ -120,8 +126,27 @@ class Handler(BaseHTTPRequestHandler):
                     result = service.mark(key, batch, body)
                 elif method == "POST" and action == "cases" and number is None:
                     result = service.upload_cases(key, batch, body)
+                elif method == "POST" and action == "results" and number is None:
+                    result = service.import_results(key, batch, body)
                 elif method == "GET" and action == "cases" and number is None:
                     result = service.read_cases(key, batch)
+                elif method == "GET" and action == "report.md" and number is None:
+                    self.respond(200, service.report(key, batch), "text/markdown; charset=utf-8",
+                                 [("Content-Disposition", "attachment; filename=report.md")])
+                    return
+                elif method == "GET" and action == "results.yaml" and number is None:
+                    self.respond(200, service.results_yaml(key, batch), "text/yaml; charset=utf-8",
+                                 [("Content-Disposition", "attachment; filename=results.yaml")])
+                    return
+                elif method == "GET" and action == "state" and number is None:
+                    result = service.state(key, batch)
+                    etag = result["etag"]
+                    matches = [value.strip().removeprefix("W/") for value in self.headers.get("If-None-Match", "").split(",")]
+                    raw = json.dumps(result, ensure_ascii=False).encode()
+                    self.respond(304 if etag in matches or "*" in matches else 200,
+                                 b"" if etag in matches or "*" in matches else raw,
+                                 "application/json; charset=utf-8", [("ETag", etag), ("Cache-Control", "no-cache")])
+                    return
                 elif method == "GET" and action in ("cases.yaml", "scenario-file") and number is None:
                     raw = service.cases_yaml(key, batch) if action == "cases.yaml" else service.scenario_file(key, batch)
                     self.respond(200, raw, "text/yaml; charset=utf-8",

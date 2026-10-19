@@ -15,6 +15,8 @@ from .cases import load_cases
 from .defect_links import normalize
 from .evidence_types import content_type, is_text
 from .scenario_file import load_scenarios
+from .reports import markdown
+from .result_files import export_results, load_results
 from .statistics import calculate, ratio
 from .validation import Problems, validate_mark, validate_push, validate_round
 
@@ -64,6 +66,61 @@ class Service:
     def latest_version(self, db, batch):
         return db.execute("SELECT * FROM versions WHERE batch=? ORDER BY version DESC LIMIT 1", (batch["id"],)).fetchone()
 
+    def batch_etag(self, db, batch):
+        numbers = [db.execute(f"SELECT COALESCE(MAX({column}),0) FROM {table} WHERE batch=?",
+                              (batch["id"],)).fetchone()[0]
+                   for table, column in [("versions", "version"), ("rounds", "number"), ("case_uploads", "number")]]
+        return '"v%d-r%d-u%d"' % tuple(numbers)
+
+    def state(self, key, name):
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            batch = self.batch(db, key, name)
+            return dict(ok=True, etag=self.batch_etag(db, batch))
+
+    def report_data(self, db, batch):
+        summary = calculate(db, batch)
+        cases = self.case_union(db, batch)
+        ids = {s["scenario"] for s in summary["scenarios"]}
+        return dict(batch=dict(batch), project=dict(db.execute("SELECT * FROM projects WHERE key=?", (batch["project"],)).fetchone()),
+                    version=self.latest_version(db, batch), summary=summary, cases=cases,
+                    coverage=ratio(sum(c["id"] in ids for c in cases), len(cases)),
+                    latest_upload=db.execute("SELECT COALESCE(MAX(number),0) FROM case_uploads WHERE batch=?", (batch["id"],)).fetchone()[0])
+
+    def report(self, key, name):
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            data = self.report_data(db, self.batch(db, key, name))
+            return markdown(data, datetime.now().astimezone().isoformat()).encode()
+
+    def results_yaml(self, key, name):
+        with self.store.connection() as db:
+            db.execute("BEGIN")
+            return export_results(self.report_data(db, self.batch(db, key, name)), self.jira_url)
+
+    def import_results(self, key, name, body):
+        with self.store.transaction() as db:
+            batch = self.batch(db, key, name)
+            current = {row["scenario"]: row["fingerprint"] for row in db.execute(
+                "SELECT scenario,fingerprint FROM scenarios WHERE batch=? AND current=1", (batch["id"],))}
+            prefix = db.execute("SELECT defect_prefix FROM projects WHERE key=?", (key,)).fetchone()[0]
+            document, prepared, skipped = load_results(body, current, self.jira_url, prefix)
+            if not prepared:
+                return dict(ok=True, round=None, imported=0, skipped=skipped)
+            version = self.latest_version(db, batch)
+            number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
+            latest_upload = db.execute("SELECT COALESCE(MAX(number),0) FROM case_uploads WHERE batch=?", (batch["id"],)).fetchone()[0]
+            filename = f"import-{number}.json"
+            for result, original in prepared:
+                record = dict(uploaded_by=body["uploaded_by"], run_id=document["run_id"], round=document["round"],
+                              environment=document["environment"], latest_upload=latest_upload, result=original)
+                saved = self.store.save_evidence(db, canonical(record).encode(), filename)
+                result["evidence"] = [dict(name=filename, sha256=saved["sha256"])]
+            round_body = dict(product=dict(commit=version["commit_id"], digest=batch["product_digest"], dirty=bool(version["dirty"])),
+                              submitted_by=body["uploaded_by"], results=[result for result, _ in prepared])
+            number = self.insert_round(db, batch, version, round_body, kind="manual")
+            return dict(ok=True, round=number, imported=len(prepared), skipped=skipped)
+
     def upload_cases(self, key, name, body):
         document = load_cases(body)
         with self.store.transaction() as db:
@@ -96,7 +153,7 @@ class Service:
             "(SELECT 1 FROM case_versions newer WHERE newer.batch=v.batch AND newer.case_id=v.case_id AND newer.upload>v.upload) "
             "ORDER BY v.case_id", (batch["id"],))]
 
-    def read_cases(self, key, name):
+    def read_cases(self, key, name, include_state=False):
         with self.store.connection() as db:
             db.execute("BEGIN")
             batch = self.batch(db, key, name)
@@ -105,7 +162,8 @@ class Service:
                        for row in db.execute("SELECT * FROM case_uploads WHERE batch=? ORDER BY number", (batch["id"],))]
             cases = self.case_union(db, batch)
             scenarios = {row[0] for row in db.execute("SELECT scenario FROM scenarios WHERE batch=? AND current=1", (batch["id"],))}
-            return dict(uploads=uploads, cases=cases, coverage=ratio(sum(item["id"] in scenarios for item in cases), len(cases)))
+            return dict(uploads=uploads, cases=cases, coverage=ratio(sum(item["id"] in scenarios for item in cases), len(cases)),
+                        **(dict(etag=self.batch_etag(db, batch)) if include_state else {}))
 
     def cases_yaml(self, key, name):
         with self.store.connection() as db:
@@ -179,7 +237,7 @@ class Service:
         result = calculate(db, batch)
         result.pop("scenarios")
         version = self.latest_version(db, batch)
-        return dict(ok=True, name=batch["name"], version=version["version"] if version else None,
+        return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
                     pushed_at=version["pushed_at"] if version else None,
                     scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
 
@@ -192,7 +250,7 @@ class Service:
                 version = self.latest_version(db, batch)
                 nodes = yaml.safe_load(version["content"])["sops"] if version else []
                 return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
-                            has_version=version is not None)
+                            has_version=version is not None, etag=self.batch_etag(db, batch))
             return self.summary(db, batch)
 
     def projects(self):
@@ -259,7 +317,7 @@ class Service:
                 groups.append(dict(fingerprint=record["fingerprint"], current=bool(record["current"]),
                                    body=json.loads(record["body"]), results=[r for r in results if r["fingerprint"] == record["fingerprint"]]))
             latest = records[0]
-            return dict(project=key, batch=name, scenario=scenario, node=latest["node"], title=latest["title"],
+            return dict(project=key, batch=name, etag=self.batch_etag(db, batch), scenario=scenario, node=latest["node"], title=latest["title"],
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
                         fingerprint=latest["fingerprint"], current=bool(latest["current"]),
                         pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups,

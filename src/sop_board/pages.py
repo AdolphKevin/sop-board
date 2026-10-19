@@ -22,21 +22,27 @@ def time_tag(value, element_id=None):
     return f"<time{identifier} datetime='{text(value)}'>{local_time(value)}</time>"
 
 
-def layout(title, content, jira_url=""):
+def layout(title, content, jira_url="", watch=None):
     jira = f" data-jira-url='{text(jira_url)}'" if jira_url else ""
+    polling = ""
+    if watch:
+        project, name, etag = watch
+        api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}/state"
+        polling = f" data-state-url='{text(api)}' data-etag='{text(etag)}'"
+        content = "<p id='refresh-message' class='notice' role='status' aria-live='polite' hidden></p>" + content
     return ("<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
             f"<title>{text(title)} · sop-board</title>"
             "<link rel='stylesheet' href='/assets/board.css'><script src='/assets/board.js' defer></script></head><body>"
             "<header><a href='/'>sop-board</a><span>SOP 验证协作看板</span></header>"
-            f"<main{jira}>{content}</main></body></html>")
+            f"<main{jira}{polling}>{content}</main></body></html>")
 
 
 def home(data):
     projects = []
     for project in data["projects"]:
         batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
-                          f"{text(batch['name'])}</a>" + (" · 尚无场景" if batch["version"] is None else "") + "</li>" for batch in project["batches"])
+                          f"{text(batch['name'])}</a> · {agent_state(batch)}</li>" for batch in project["batches"])
         projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
                         f"<ul>{batches}</ul></section>")
     return layout("项目与批次", "<h1>项目与批次</h1>" + ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>"))
@@ -46,13 +52,27 @@ def ratio(value):
     return f"{value['numerator']}/{value['denominator']}" if value["denominator"] else "无数据"
 
 
+def agent_state(data):
+    if data["version"] is None:
+        return "尚无场景"
+    if data["queue_counts"]["pending"]:
+        return f"有待执行 {data['queue_counts']['pending']} 条"
+    execution = data["agent_execution"]
+    counts = execution["counts"]
+    submitted = time_tag(execution["submitted_at"]) if execution["submitted_at"] else "无"
+    return (f"Agent 已测完 · 最近 Agent 轮次提交时间：{submitted} · "
+            f"通过 {counts['pass']}、失败 {counts['fail']}、受阻 {counts['blocked']}、跳过 {counts['skip']}")
+
+
 def batch(project, data):
     base = batch_url(project, data["name"])
+    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
+    report_link = f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
     if data["version"] is None:
         return layout("批次 " + data["name"], batch_nav(project, data["name"], "overview") +
                       f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"
-                      f"<a href='{text(base + '/cases')}'>用例页</a>")
-    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
+                      f"<p id='agent-state'>{agent_state(data)}</p>{report_link}"
+                      f"<a href='{text(base + '/cases')}'>用例页</a>", watch=(project, data["name"], data["etag"]))
     metrics = "".join(f"<div id='metric-{key}'><dt>{label}</dt><dd>{ratio(data['statistics'][key])}</dd></div>"
                       for key, label in [("agent_pass_rate", "Agent 验收通过率"), ("manual_pass_rate", "人工复测通过率"),
                       ("retest_coverage", "复测覆盖率"), ("first_pass_rate", "一次通过率"),
@@ -74,6 +94,7 @@ def batch(project, data):
                        for item in data["misjudgments"])
     content = (f"<nav><a href='/'>全部项目</a></nav>{batch_nav(project, data['name'], 'overview')}<h1>批次 {text(data['name'])}</h1>"
                f"<p>场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条</p>"
+               f"<p id='agent-state'>{agent_state(data)}</p>{report_link}"
                f"<p>场景文件推送时间：{time_tag(data['pushed_at'], 'pushed-at')}</p>"
                f"<dl class='metrics'>{metrics}</dl><div class='queues'>{''.join(queues)}</div>"
                "<section><h2>轮次记录</h2><div class='table-scroll'><table><thead><tr><th>轮次</th><th>种类</th>"
@@ -82,7 +103,7 @@ def batch(project, data):
                f"<section id='misjudgments'><h2>误判明细 <span id='misjudgment-count'>{len(data['misjudgments'])}</span></h2>"
                "<div class='table-scroll'><table><thead><tr><th>场景</th><th>缺陷链接</th><th>Agent 执行者</th><th>标记人</th></tr></thead>"
                f"<tbody>{findings}</tbody></table></div></section>")
-    return layout("批次 " + data["name"], content)
+    return layout("批次 " + data["name"], content, watch=(project, data["name"], data["etag"]))
 
 
 STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
@@ -148,7 +169,7 @@ def scenario(data, jira_url=""):
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
             f"<p>验证入口：{text(data['verify'])}</p>"
             f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}{review}{''.join(sections)}")
-    return layout(data["scenario"], body, jira_url)
+    return layout(data["scenario"], body, jira_url, watch=(data["project"], data["batch"], data["etag"]))
 
 
 def identity_bar():
@@ -184,7 +205,25 @@ def batch_nav(project, name, current):
     return "<nav aria-label='批次导航'>" + "".join(
         f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
         for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
-                                   ("cases", "/cases", "用例")]) + "</nav>"
+                                   ("cases", "/cases", "用例"), ("progress", "/progress", "进度")]) + "</nav>"
+
+
+def progress(project, data, coverage):
+    def metric(key, label, value):
+        return f"<div id='metric-{key}'><dt>{label}</dt><dd>{value}</dd></div>"
+
+    development = metric("pending", "待执行", data["queue_counts"]["pending"])
+    for key, label in [("executed_progress", "已执行进度"), ("agent_pass_rate", "Agent 验收通过率"), ("first_pass_rate", "一次通过率")]:
+        development += metric(key, label, ratio(data["statistics"][key]))
+    testing = metric("retest", "待复核", data["queue_counts"]["retest"])
+    for key, label in [("reviewed_progress", "已复核进度"), ("manual_pass_rate", "人工复测通过率")]:
+        testing += metric(key, label, ratio(data["statistics"][key]))
+    testing += metric("misjudgments", "误判", len(data["misjudgments"]))
+    content = (batch_nav(project, data["name"], "progress") + f"<h1>批次 {text(data['name'])} · 进度</h1>"
+               f"<div class='progress-columns'><section><h2>开发侧</h2><dl>{development}</dl></section>"
+               f"<section><h2>测试侧</h2><dl>{testing}</dl></section></div>"
+               f"<dl>{metric('coverage', '用例覆盖', ratio(coverage))}</dl>")
+    return layout("进度 · " + data["name"], content, watch=(project, data["name"], data["etag"]))
 
 
 def cases(project, name, data, scenarios):
@@ -223,7 +262,7 @@ def cases(project, name, data, scenarios):
         content += "</section>"
     if not groups:
         content += "<p>尚无用例，请选择文件上传。</p>"
-    return layout("用例 · " + name, content)
+    return layout("用例 · " + name, content, watch=(project, name, data["etag"]))
 
 
 def scenario_fields(body):
@@ -260,7 +299,7 @@ def scenarios(project, name, data, jira_url=""):
     content = batch_nav(project, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
     if not data["has_version"]:
         content += f"<p>尚无场景，测试岗上传用例后由合并生成</p><a href='{text(base + '/cases')}'>用例页</a>"
-        return layout("SOP 场景 · " + name, content)
+        return layout("SOP 场景 · " + name, content, watch=(project, name, data["etag"]))
     content += identity_bar()
     content += "<nav aria-label='场景筛选'>" + "".join(
         f"<a href='?filter={key}' data-filter='{key}'>{label} <span>{data['filters'][key]}</span></a>"
@@ -277,4 +316,4 @@ def scenarios(project, name, data, jira_url=""):
                         f"<p>{'正向' if source['polarity'] == 'positive' else '反向'} · 优先级：{text(source['priority'])} · 角色：{text(source['actor'])} · 验证入口：{text(source['verify'])}</p>"
                         f"{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
         content += "</section>"
-    return layout("SOP 场景 · " + name, content, jira_url)
+    return layout("SOP 场景 · " + name, content, jira_url, watch=(project, name, data["etag"]))

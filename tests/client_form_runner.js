@@ -2,6 +2,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
+const {execFileSync} = require("node:child_process");
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
 
 class Element {
@@ -34,6 +35,7 @@ class Element {
     node.parentElement = parent;
   }
   replaceChildren(...children) { for (const c of this.children) if (typeof c !== "string") c.parentElement = null; this.children = []; this.append(...children); }
+  replaceWith(node) { const p = this.parentElement; p.children[p.children.indexOf(this)] = node; node.parentElement = p; this.parentElement = null; }
   remove() { this.parentElement.children = this.parentElement.children.filter(c => c !== this); this.parentElement = null; }
   setAttribute(key, value) { this.attrs[key] = String(value); }
   getAttribute(key) { return key in this.attrs ? this.attrs[key] : null; }
@@ -81,6 +83,21 @@ const location = {get href() {return currentUrl.href;}, get search() {return cur
 const history = {pushState(_state, _title, url) {navigation.push(String(url)); currentUrl = new URL(url, currentUrl);},
   replaceState(_state, _title, url) {currentUrl = new URL(url, currentUrl);}};
 const window = {location, history, addEventListener(type, fn) {windowHandlers[type] = fn;}};
+const intervals = [];
+const setInterval = (callback, ms) => {intervals.push({callback, ms}); return intervals.length;};
+class DOMParser {
+  parseFromString(raw) {
+    const serialized = execFileSync(input.python, ["-c", `
+import sys,json
+sys.path.insert(0,'tests')
+from html_helpers import Document
+serialize = lambda n: n if isinstance(n,str) else dict(tag=n.tag,attrs=n.attrs,children=[serialize(c) for c in n.children])
+print(json.dumps(serialize(Document(sys.stdin.read()).root)))
+`], {input: raw, encoding: "utf8"});
+    const parsed = deserialize(JSON.parse(serialized));
+    return {querySelector: selector => parsed.querySelector(selector)};
+  }
+}
 const requests = [], responses = [], jiraRequests = [];
 const fetch = async (url, options) => {
   if (url.startsWith("/api/v1/jira/")) {
@@ -94,15 +111,16 @@ const fetch = async (url, options) => {
   requests.push({url, options});
   if (input.serverOrigin) {
     const target = new URL(url, input.serverOrigin);
+    if (target.origin === new URL(input.location).origin) target.host = new URL(input.serverOrigin).host;
     assert.equal(target.origin, input.serverOrigin, "only the isolated board may receive requests");
     return globalThis.fetch(target, {...options, signal: AbortSignal.timeout(5000)});
   }
   const reply = responses.shift();
   assert.ok(reply, "unexpected client request");
   if (reply instanceof Error) throw reply;
-  return {ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body};
+  return {ok: reply.status >= 200 && reply.status < 300, status: reply.status, json: async () => reply.body, text: async () => {if (reply.beforeText) await reply.beforeText(); return reply.html || "";}};
 };
-vm.runInNewContext(input.script, {document, localStorage: storage, fetch, window, history, location, URL});
+vm.runInNewContext(input.script, {document, localStorage: storage, fetch, window, history, location, URL, setInterval, DOMParser});
 const q = s => document.querySelector(s);
 const qa = s => document.querySelectorAll(s);
 const identity = q("#review-identity");
@@ -138,7 +156,9 @@ function assertSaved(status, round = 2) {
   assert.equal(currentUrl.href, input.location);
 }
 async function main() {
-  if (input.case.startsWith("jira-")) {
+  if (input.case.startsWith("poll-")) {
+    await runPollingCase();
+  } else if (input.case.startsWith("jira-")) {
     await runJiraCase();
   } else if (input.case.startsWith("cases-")) {
     await runCasesUpload();
@@ -152,7 +172,7 @@ async function main() {
     const freshRoot = deserialize(input.document);
     const freshDocument = {querySelector: s => freshRoot.querySelector(s), querySelectorAll: s => freshRoot.querySelectorAll(s),
       getElementById: id => freshRoot.querySelector("#" + id), createElement: tag => new Element(tag)};
-    vm.runInNewContext(input.script, {document: freshDocument, localStorage: storage, fetch, window, history, location, URL});
+    vm.runInNewContext(input.script, {document: freshDocument, localStorage: storage, fetch, window, history, location, URL, setInterval, DOMParser});
     assert.equal(freshDocument.querySelector("[name='marker']").value, "张三");
     assert.equal(freshDocument.querySelector("[name='token']").value, "local-test-value");
     marker.value = "李四"; await marker.dispatch("input");
@@ -418,7 +438,7 @@ async function runBusinessCase() {
     const freshRoot = deserialize(input.document);
     const freshDocument = {querySelector: s => freshRoot.querySelector(s), querySelectorAll: s => freshRoot.querySelectorAll(s),
       getElementById: id => freshRoot.querySelector("#" + id), createElement: tag => new Element(tag)};
-    vm.runInNewContext(input.script, {document: freshDocument, localStorage: storage, fetch, window, history, location, URL});
+    vm.runInNewContext(input.script, {document: freshDocument, localStorage: storage, fetch, window, history, location, URL, setInterval, DOMParser});
     assert.equal(freshDocument.querySelector("[name='marker']").value, "张三");
     assert.equal(freshDocument.querySelector("[name='token']").value, "isolated-test");
     await click(controls("N1-P01", freshDocument).button("pass"));
@@ -510,6 +530,94 @@ async function runJiraCase() {
     return;
   }
   assert.equal(requests.length, input.case === "jira-live" ? 1 : 0);
+  assert.equal(currentUrl.href, input.location);
+}
+async function runPollingCase() {
+  assert.equal(intervals.length, 1);
+  assert.equal(intervals[0].ms, 3000);
+  const tick = () => intervals[0].callback();
+  const oldMain = q("main");
+  const oldTag = oldMain.dataset.etag;
+  assert.ok(oldTag);
+  const statePath = oldMain.dataset.stateUrl;
+  assert.match(statePath, /\/state$/);
+  const notChanged = () => responses.push({status: 304});
+  if (input.case === "poll-unchanged") {
+    for (let t = 0; t < 30000; t += 3000) {notChanged(); await tick();}
+    assert.equal(requests.length, 10);
+    for (const request of requests) {
+      assert.equal(request.url, statePath);
+      assert.equal(request.options.headers["If-None-Match"], oldTag);
+      assert.equal(request.options.headers.Authorization, undefined);
+    }
+    assert.equal(q("main"), oldMain);
+    return;
+  }
+  if (input.case === "poll-real") {
+    // An independent client changes the board; the next real three-second tick sees it.
+    await tick(); assert.equal(requests.at(-1).url, statePath);
+    if (marker) {readyIdentity(); await marker.dispatch("input"); await token.dispatch("input");}
+    const result = await globalThis.fetch(new URL(input.mutationPath, input.serverOrigin), {
+      method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer isolated-test"},
+      body: JSON.stringify(input.mutation)});
+    assert.equal(result.status, 200);
+    const start = Date.now();
+    await new Promise(resolve => globalThis.setTimeout(resolve, 3000));
+    await tick();
+    assert.ok(Date.now() - start < 5000);
+    assert.notEqual(q("main"), oldMain);
+    assert.equal(requests.at(-1).url, input.location);
+    if (input.location.includes("/cases")) assert.match(q("main").textContent, /cases-a.yaml/);
+    else if (q(".review-form")) {
+      assert.match(q("[data-latest-manual]").textContent, /人工.*通过/);
+      assert.equal(q("[name='marker']").value, "张三");
+      assert.equal(q("[name='token']").value, "isolated-test");
+      const c = controls("N1-P01");
+      if (input.location.includes("filter=unreviewed")) assert.equal(c.card.hidden, true);
+      await click(c.button("fail")); assert.equal(c.expanded.hidden, false);
+      await click(c.form.querySelector("[data-review-cancel]")); assert.equal(c.expanded.hidden, true);
+    } else assert.match(q("#metric-manual_pass_rate").textContent, /1\/1/);
+    const count = requests.length;
+    await tick(); assert.equal(requests.length, count + 1); // 304, no second page fetch
+    return;
+  }
+  readyIdentity();
+  const c = controls("N1-P01");
+  await click(c.button("fail"));
+  const ending = input.case.slice("poll-draft-".length);
+  if (ending !== "empty" && ending !== "typing-during-fetch") c.field("defect_url").value = "ABC-5";
+  if (ending === "note") {c.field("defect_url").value = ""; c.field("note").value = "复现两次";}
+  if (ending === "multiple") {
+    const other = controls("N2-P01"); await click(other.button("blocked")); other.field("note").value = "另一个草稿";
+  }
+  const newPage = `<html><body><main data-state-url='${statePath}' data-etag='&quot;v1-r2-u0&quot;'><p>最新页面</p></main></body></html>`;
+  responses.push({status: 200, body: {ok: true, etag: '"v1-r2-u0"'}});
+  if (["empty", "typing-during-fetch"].includes(ending)) responses.push({status: 200, html: newPage,
+    beforeText: ending === "typing-during-fetch" ? () => {c.field("note").value = "取回期间输入";} : undefined});
+  await tick();
+  if (ending === "empty") {assert.notEqual(q("main"), oldMain); assert.match(q("main").textContent, /最新页面/); return;}
+  assert.equal(q("main"), oldMain);
+  assert.equal(q("#refresh-message").textContent, "有新数据，提交或取消后刷新");
+  assert.equal(q("#refresh-message").hidden, false);
+  assert.equal(oldMain.children[0], q("#refresh-message"));
+  assert.equal(c.expanded.hidden, false);
+  if (ending === "typing-during-fetch") assert.equal(c.field("note").value, "取回期间输入");
+  else if (ending === "note") assert.equal(c.field("note").value, "复现两次");
+  else assert.equal(c.field("defect_url").value, "ABC-5");
+  if (ending === "reject") {
+    responses.push({status: 422, body: {ok: false, error_code: "defect-link-invalid", problems: []}});
+    await c.form.dispatch("submit"); assert.equal(q("main"), oldMain); assert.equal(c.field("defect_url").value, "ABC-5");
+  }
+  if (ending === "submit") responses.push(reply("fail"));
+  responses.push({status: 200, html: newPage});
+  if (ending === "submit") await c.form.dispatch("submit");
+  else await click(c.form.querySelector("[data-review-cancel]"));
+  if (ending === "multiple") {
+    assert.equal(q("main"), oldMain);
+    await click(controls("N2-P01").form.querySelector("[data-review-cancel]"));
+  }
+  assert.notEqual(q("main"), oldMain);
+  assert.match(q("main").textContent, /最新页面/);
   assert.equal(currentUrl.href, input.location);
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});
