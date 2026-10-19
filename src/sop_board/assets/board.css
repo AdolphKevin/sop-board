@@ -39,8 +39,17 @@ textarea { resize: vertical; }
 button { font: inherit; cursor: pointer; background: #215fc4; color: white; border: 0; padding: 10px 18px; border-radius: 6px; }
 button:disabled { opacity: .6; cursor: wait; }
 #save-identity { background: #e9eff9; color: #1f4a88; }
-#mark-message { padding: 10px 0; white-space: pre-wrap; }
-#mark-message[data-state=error] { color: #a32626; }
-#mark-message[data-state=success] { color: #16643d; }
 :focus-visible { outline: 3px solid #739cde; outline-offset: 3px; }
 @media (max-width: 720px) { .metrics, .queues { grid-template-columns: 1fr; } header { gap: 12px; flex-wrap: wrap; } main { padding: 20px 14px 40px; } section { padding: 18px; } }
+nav { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+nav a { padding: 6px 12px; border-radius: 6px; }
+nav a[aria-current] { background: #dce8fc; color: #123e87; font-weight: 700; }
+.scenario-card { border-top: 1px solid #dce2ec; padding: 24px 0; }
+.scenario-card > h3 { font-size: 18px; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.review-form { margin-top: 18px; }
+.review-form [data-review-fields] { padding: 16px; margin-top: 12px; background: #f4f6fa; border-radius: 8px; }
+[data-review-message], #identity-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+[data-state=error] { color: #a32626; }
+[data-state=success] { color: #16643d; }
+[hidden] { display: none !important; }

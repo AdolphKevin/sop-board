@@ -3,13 +3,16 @@
 from datetime import datetime, timezone
 import hashlib
 import json
-import mimetypes
 from itertools import islice
 from io import BytesIO
 import re
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import yaml
+
 from .errors import APIError, reject
+from .defect_links import normalize
+from .evidence_types import content_type, is_text
 from .scenario_file import load_scenarios
 from .statistics import calculate
 from .validation import Problems, validate_mark, validate_push, validate_round
@@ -34,8 +37,9 @@ def project_key(identity):
 
 
 class Service:
-    def __init__(self, store):
+    def __init__(self, store, jira_url=""):
         self.store = store
+        self.jira_url = jira_url.rstrip("/")
 
     def upload(self, raw, name):
         with self.store.transaction() as db:
@@ -122,7 +126,11 @@ class Service:
             db.execute("BEGIN")
             batch = self.batch(db, key, name)
             if scenarios:
-                return dict(ok=True, scenarios=calculate(db, batch)["scenarios"])
+                summary = calculate(db, batch)
+                version = self.latest_version(db, batch)
+                nodes = yaml.safe_load(version["content"])["sops"] if version else []
+                return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
+                            has_version=version is not None)
             return self.summary(db, batch)
 
     def projects(self):
@@ -177,11 +185,13 @@ class Service:
                     "SELECT r.name,r.sha256,e.name AS stored_name FROM result_evidence r JOIN evidence e ON e.sha256=r.sha256 "
                     "WHERE r.result_id=? ORDER BY r.ordinal", (row["id"],))]
                 for evidence in row["evidence"]:
-                    evidence["content_type"] = mimetypes.guess_type(evidence.pop("stored_name"))[0] or "application/octet-stream"
-                    if evidence["content_type"].startswith("text/") or evidence["content_type"] in ("application/json", "application/xml", "application/yaml", "application/x-yaml"):
+                    evidence["content_type"] = content_type(evidence.pop("stored_name"))
+                    if is_text(evidence["content_type"]):
                         sha = evidence["sha256"]
                         with (self.store.data / "evidence" / sha[:2] / sha).open(encoding="utf-8", errors="replace") as source:
-                            evidence["preview"] = "".join(islice(source, 200))
+                            lines = list(islice(source, 201))
+                            evidence["preview"] = "".join(lines[:200])
+                            evidence["preview_truncated"] = len(lines) > 200
             groups = []
             for record in records:
                 groups.append(dict(fingerprint=record["fingerprint"], current=bool(record["current"]),
@@ -190,7 +200,8 @@ class Service:
             return dict(project=key, batch=name, scenario=scenario, node=latest["node"], title=latest["title"],
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
                         fingerprint=latest["fingerprint"], current=bool(latest["current"]),
-                        pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups)
+                        pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups,
+                        summary=next((item for item in calculate(db, batch)["scenarios"] if item["scenario"] == scenario), None))
 
     def export_round(self, key, name, number):
         round_data = self.read_round(key, name, number)
@@ -232,35 +243,40 @@ class Service:
     def mark(self, key, name, body):
         with self.store.transaction() as db:
             batch = self.batch(db, key, name)
-            validate_mark(db, body)
-            self.check_scenarios(db, batch, [body])
-            if body["status"] == "fail":
+            validate_mark(body)
+            current = db.execute("SELECT fingerprint FROM scenarios WHERE batch=? AND scenario=? AND current=1",
+                                 (batch["id"], body["scenario"])).fetchone()
+            if not current:
+                reject(409, "scenario-stale", "scenario", f"场景 {body['scenario']} 不在当前版本")
+            if current["fingerprint"] != body["fingerprint"]:
+                reject(409, "scenario-stale", "fingerprint", "场景内容指纹已变更")
+            if body["status"] in ("fail", "blocked"):
                 prefix = db.execute("SELECT defect_prefix FROM projects WHERE key=?", (key,)).fetchone()[0]
-                if not prefix:
-                    reject(422, "defect-prefix-unset", "defect_url", "请先设置本项目的缺陷链接前缀")
-                if not body.get("defect_url", "").startswith(prefix):
-                    reject(422, "defect-link-required", "defect_url", "失败结果必须填写本项目的缺陷链接")
+                body = {**body, "defect_url": normalize(body["defect_url"], self.jira_url, prefix)}
             version = self.latest_version(db, batch)
             number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
             timestamp = now()
-            evidence = body.get("evidence", [])
-            if not evidence:
-                observation = dict(marker=body["marker"], environment=body["environment"], status=body["status"],
-                                   actual=body["actual"], executed_at=timestamp)
-                filename = f"observation-{number}.json"
-                saved = self.store.save_evidence(db, canonical(observation).encode(), filename)
-                evidence = [dict(name=filename, sha256=saved["sha256"])]
+            observation = dict(marker=body["marker"], status=body["status"], recorded_at=timestamp)
+            for field in ("defect_url", "note"):
+                if body.get(field):
+                    observation[field] = body[field]
+            filename = f"observation-{number}.json"
+            saved = self.store.save_evidence(db, canonical(observation).encode(), filename)
             result = dict(scenario=body["scenario"], fingerprint=body["fingerprint"], status=body["status"],
-                          actual=body["actual"], executor=body["marker"], executed_at=timestamp, evidence=evidence)
-            for field in ("finding", "note"):
-                if field in body:
-                    result[field] = body[field]
-            if body["status"] == "fail":
+                          actual="人工复核通过", executor=body["marker"], executed_at=timestamp,
+                          evidence=[dict(name=filename, sha256=saved["sha256"])])
+            if body["status"] in ("fail", "blocked"):
+                label = "失败" if body["status"] == "fail" else "受阻"
                 result["finding"] = body["defect_url"]
+                result["actual"] = f"人工复核不通过（{label}），缺陷 {body['defect_url']}"
+            if "note" in body:
+                result["note"] = body["note"]
             round_body = dict(product=dict(commit=version["commit_id"], digest=batch["product_digest"], dirty=bool(version["dirty"])),
                               submitted_by=body["marker"], results=[result])
             number = self.insert_round(db, batch, version, round_body, kind="manual")
-            return dict(ok=True, round=number, queues=calculate(db, batch)["queues"])
+            summary = calculate(db, batch)
+            scenario = next(item for item in summary["scenarios"] if item["scenario"] == body["scenario"])
+            return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"])
 
     def push(self, key, batch, body):
         validate_push(body)

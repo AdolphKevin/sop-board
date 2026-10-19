@@ -4,13 +4,13 @@ import hmac
 from http.server import BaseHTTPRequestHandler
 from importlib.resources import files
 import json
-import mimetypes
 import re
 import sqlite3
 from urllib.parse import quote, unquote, urlsplit
 
 from .errors import APIError, reject
 from . import pages
+from .evidence_types import content_type as evidence_content_type, is_text
 
 
 def invalid_constant(value):
@@ -76,6 +76,10 @@ class Handler(BaseHTTPRequestHandler):
                 key, batch = unquote(match[1]), unquote(match[2])
                 self.respond(200, pages.batch(key, service.read_batch(key, batch)).encode(), "text/html; charset=utf-8")
                 return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/scenarios", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True)).encode(), "text/html; charset=utf-8")
+                return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
                 self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario)).encode(), "text/html; charset=utf-8")
@@ -91,7 +95,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = service.settings(unquote(match[1]), body)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/evidence/([^/]+)", path)):
                 raw, name = service.evidence(unquote(match[1]))
-                self.respond(200, raw, mimetypes.guess_type(name)[0] or "application/octet-stream",
+                media = evidence_content_type(name)
+                if is_text(media):
+                    media += "; charset=utf-8"
+                self.respond(200, raw, media,
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
                               ("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return

@@ -128,7 +128,8 @@ def test_shanghai_html_times_and_original_api_export_values(board_factory):
     assert board.request("POST", BASE + "/rounds", body)[0] == 200
     for row, (original, literal) in zip(body["results"], times):
         detail = page(board, WEB + "/s/" + row["scenario"])
-        assert detail.one("time", datetime=original).text == literal
+        group = detail.one("section", **{"data-fingerprint": pushed["fingerprints"][row["scenario"]]})
+        assert group.one("time", datetime=original).text == literal
         for element in detail.find_all("time"):
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00", element.text)
     expected = [row["executed_at"] for row in body["results"]]

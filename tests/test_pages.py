@@ -20,7 +20,7 @@ def test_home_lists_projects_and_batches_without_token(board):
 
 @pytest.mark.parametrize("state", ["new", "agent", "manual-fail"])
 def test_batch_page_matches_all_metrics_queues_rounds_and_misjudgments(board, state):
-    """I1、D2；SOP-04-N01、SOP-06-P01：页面与接口数值一致，零分母显示无数据。"""
+    """I1、D2；SOP-21-P04、SOP-06-P01：页面与接口数值一致，零分母显示无数据。"""
     pushed, _ = push(board)
     if state != "new":
         assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
@@ -61,7 +61,7 @@ def test_batch_page_matches_all_metrics_queues_rounds_and_misjudgments(board, st
 
 
 def test_scenario_history_groups_fingerprints_and_preserves_removed_scenarios(board):
-    """I1、D1；SOP-04-P01、SOP-05-P01、SOP-05-N01：旧内容与移除历史仍可查看。"""
+    """I1、D1；SOP-21-P05、SOP-05-P01、SOP-05-N01：旧内容与移除历史仍可查看。"""
     pushed, _ = push(board)
     assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
     assert board.request("POST", BASE + "/marks", mark_body(pushed))[0] == 200
@@ -99,6 +99,7 @@ def test_image_evidence_is_displayed_inline(board):
     detail = page(board, WEB + "/s/" + IDS[0])
     image = detail.one("img", src="/api/v1/evidence/" + evidence["sha256"])
     assert image.attrs["alt"] == "截图.png"
+    assert "download" in detail.one("a", href="/api/v1/evidence/" + evidence["sha256"]).attrs
 
 
 def test_text_evidence_shows_only_first_200_lines_and_escapes_markup(board):
@@ -112,6 +113,8 @@ def test_text_evidence_shows_only_first_200_lines_and_escapes_markup(board):
     assert preview.text.splitlines() == lines[:200]
     assert not preview.find_all("script")
     assert "LINE-201" not in detail.text
+    assert "只显示前 200 行" in detail.text
+    assert "download" in detail.one("a", href="/api/v1/evidence/" + evidence["sha256"]).attrs
 
 
 def test_binary_evidence_has_download_link_and_original_bytes(board):
@@ -126,23 +129,34 @@ def test_binary_evidence_has_download_link_and_original_bytes(board):
     assert board.request("GET", link.attrs["href"], auth=False)[1] == raw
 
 
-def test_mark_form_identifies_current_scenario_and_requires_identity_actual_environment(board):
-    """I1；SOP-04-P01：表单提交人工标记，身份与当前内容明确。"""
+def test_shared_review_controls_identify_scenario_and_use_one_identity_bar(board):
+    """SOP-21-P03/P04/P05, I1: same three buttons, no retired result/environment fields."""
     pushed, _ = push(board)
+    for url, count in [(WEB + "/s/" + IDS[0], 1), (WEB + "/scenarios", 4)]:
+        doc = page(board, url)
+        identity = doc.one("section", id="review-identity")
+        assert "标记人" in identity.text and "写入令牌" in identity.text
+        assert identity.one("input", name="token").attrs["type"] == "password"
+        assert identity.one("button", id="save-identity").text == "保存标记人与令牌"
+        forms = doc.find_all("form", **{"class": "review-form"})
+        assert len(forms) == count
+        for form in forms:
+            assert form.attrs["action"] == BASE + "/marks"
+            assert "novalidate" in form.attrs
+            sid = form.one("input", name="scenario").attrs["value"]
+            assert form.one("input", name="fingerprint").attrs["value"] == pushed["fingerprints"][sid]
+            assert [(b.attrs.get("data-mark-status"), b.text) for b in form.find_all("button")
+                    if "data-mark-status" in b.attrs] == [("pass", "通过"), ("fail", "失败"), ("blocked", "受阻")]
+            assert "hidden" in form.one("div", **{"data-review-fields": ""}).attrs
+            assert form.one("input", name="defect_url").attrs["type"] == "text"
+            assert form.one("textarea", name="note")
+            assert form.one("p", **{"data-review-message": ""}).attrs["role"] == "status"
+            assert not form.find_all("select")
+            assert {e.attrs.get("name") for e in form.find_all() if e.tag in ("input", "textarea")} == {
+                "scenario", "fingerprint", "defect_url", "note"}
+        assert not doc.find_all(id="mark-form")
     detail = page(board, WEB + "/s/" + IDS[0])
-    form = detail.one("form", id="mark-form")
-    assert form.attrs["action"] == BASE + "/marks"
-    assert form.attrs["method"] == "post"
-    assert form.one("input", name="scenario").attrs["value"] == IDS[0]
-    assert form.one("input", name="fingerprint").attrs["value"] == pushed["fingerprints"][IDS[0]]
-    for name in ("marker", "token", "environment"):
-        assert "required" in form.one("input", name=name).attrs
-    assert form.one("input", name="token").attrs["type"] == "password"
-    assert "required" in form.one("textarea", name="actual").attrs
-    assert [option.attrs["value"] for option in form.one("select", name="status").find_all("option")] == ["pass", "fail", "blocked", "skip"]
-    assert form.one("input", name="defect_url").attrs["type"] == "url"
-    assert form.one("button", id="save-identity").text == "保存标记人与令牌"
-    assert detail.one("p", id="mark-message").attrs["role"] == "status"
+    assert detail.one("nav", **{"aria-label": "批次导航"}).one("a", href=WEB + "/scenarios")
 
 
 def test_styles_and_script_are_served_from_packaged_same_origin_assets(board):
@@ -171,19 +185,20 @@ def test_removed_scenario_has_no_form_for_obsolete_content(board):
     assert not archived.find_all("form")
 
 
-def test_mark_form_http_rejection_then_success_updates_page_without_rewriting_agent(board):
-    """I1、I2、D2；SOP-04-P01、SOP-04-N01、SOP-04-N02：真实接口拒绝与保存。"""
+def test_review_controls_http_rejection_then_success_updates_page_without_rewriting_agent(board):
+    """I1、I2、D2；SOP-21-P04、SOP-21-N01、SOP-21-N02：真实接口拒绝与保存。"""
     pushed, _ = push(board)
     assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
-    form = page(board, WEB + "/s/" + IDS[2]).one("form", id="mark-form")
+    form = page(board, WEB + "/s/" + IDS[2]).one("form", **{"class": "review-form"})
     body = dict(scenario=form.one("input", name="scenario").attrs["value"],
                 fingerprint=form.one("input", name="fingerprint").attrs["value"],
-                status="fail", actual="人工发现不符", marker="Tester A", environment="本机测试")
+                status="fail", marker="Tester A")
     before = snapshot(board)
     for defect in (None, "https://example.com/bugs/1"):
         if defect:
             body["defect_url"] = defect
-        assert_error(board.request("POST", form.attrs["action"], body), 422, "defect-link-required")
+        assert_error(board.request("POST", form.attrs["action"], body), 422,
+                     "mark-invalid" if defect is None else "defect-link-invalid")
         assert snapshot(board) == before
     body["defect_url"] = "https://github.com/demo-org/demo-app/issues/1"
     assert_error(board.request("POST", form.attrs["action"], body, auth=False,
@@ -192,7 +207,7 @@ def test_mark_form_http_rejection_then_success_updates_page_without_rewriting_ag
     response = board.request("POST", form.attrs["action"], body)
     assert response[0] == 200 and response[1]["round"] == 2
     detail = page(board, WEB + "/s/" + IDS[2])
-    assert "人工发现不符" in detail.text and "Li Si" in detail.text and "Tester A" in detail.text
+    assert "人工复核不通过（失败），缺陷 " + body["defect_url"] in detail.text and "Li Si" in detail.text and "Tester A" in detail.text
     assert len(detail.find_all("article", **{"class": "result"})) == 2
     summary = page(board, WEB)
     assert summary.one("div", id="metric-manual_pass_rate").one("dd").text == "0/1"
@@ -216,3 +231,29 @@ def test_untrusted_page_text_is_escaped_and_active_evidence_is_sandboxed(board):
     assert status == 200 and raw == dangerous.encode()
     assert "sandbox" in headers.get("Content-Security-Policy", "")
     assert "allow-scripts" not in headers["Content-Security-Policy"]
+
+
+def test_overview_local_metrics_after_manual_pass_and_fail_match_api(board_factory):
+    """SOP-06-P01 local portion: exact metrics, queues and misjudgment after the specified marks."""
+    from test_regression_views import assert_same_origin_resources
+    board = board_factory(host="0.0.0.0")
+    pushed, _ = push(board)
+    assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
+    assert board.request("POST", BASE + "/marks", mark_body(pushed))[0] == 200
+    link = "https://github.com/demo-org/demo-app/issues/1"
+    assert board.request("POST", BASE + "/marks", mark_body(pushed, "fail", scenario=IDS[2],
+                        fingerprint=pushed["fingerprints"][IDS[2]], defect_url=link))[0] == 200
+    doc = page(board, WEB)
+    summary = get(board, BASE)
+    for key, numerator, denominator in [("agent_pass_rate", 2, 3), ("manual_pass_rate", 1, 2),
+        ("retest_coverage", 2, 2), ("first_pass_rate", 2, 3), ("executed_progress", 4, 4), ("reviewed_progress", 2, 2)]:
+        assert doc.one("div", id="metric-" + key).one("dd").text == f"{numerator}/{denominator}"
+        assert summary["statistics"][key] == dict(numerator=numerator, denominator=denominator, rate=numerator/denominator)
+    assert summary["queue_counts"] == {"pending": 0, "issues": 3, "retest": 0}
+    for key, expected in [("pending", []), ("retest", []), ("issues", [IDS[1], IDS[2], IDS[3]])]:
+        queue = doc.one("section", id="queue-" + key)
+        assert queue.one("span").text == str(len(expected))
+        assert [a.attrs["data-scenario"] for a in queue.find_all("a")] == expected
+    assert doc.one("span", id="misjudgment-count").text == "1"
+    assert summary["misjudgments"] == [dict(scenario=IDS[2], round=3, defect_url=link, agent_executor="Li Si", marker="Tester A")]
+    assert_same_origin_resources(board, doc)

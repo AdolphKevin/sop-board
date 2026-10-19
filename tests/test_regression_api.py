@@ -139,7 +139,7 @@ def test_default_and_custom_defect_prefix_control_marks(board):
     assert board.request("POST", BASE + "/marks", body)[0] == 200
     body["defect_url"] = "https://github.com/demo-org/demo-app/issues/2"
     before = snapshot(board)
-    assert_error(board.request("POST", BASE + "/marks", body), 422, "defect-link-required")
+    assert_error(board.request("POST", BASE + "/marks", body), 422, "defect-link-invalid")
     assert snapshot(board) == before
 
 
@@ -160,6 +160,31 @@ def test_invalid_prefixes_preserve_default_and_non_github_requires_setting(board
     other_base = "/api/v1/projects/gitlab-example-com-team-app/batches/demo"
     assert board.request("PUT", other_base + "/scenario-file", other)[0] == 200
     before = snapshot(board)
-    assert_error(board.request("POST", other_base + "/marks", mark_body(other, "fail",
-                 defect_url="https://gitlab.example.com/team/app/-/issues/1")), 422, "defect-prefix-unset")
+    for supplied in ("https://gitlab.example.com/team/app/-/issues/1", "ABC-123"):
+        problems = assert_error(board.request("POST", other_base + "/marks", mark_body(other, "fail", defect_url=supplied)),
+                                422, "defect-link-invalid")
+        assert "先设置项目的缺陷链接前缀或配置 JIRA_URL" in problems[0]["problem"]
+        if supplied == "ABC-123":
+            assert "需填写完整链接" in problems[0]["problem"]
+        assert snapshot(board) == before
+        assert board.sql("SELECT COUNT(*) FROM rounds t JOIN batches b ON b.id=t.batch WHERE b.project=?",
+                         ("gitlab-example-com-team-app",)) == [(0,)]
+
+
+def test_jira_key_without_project_prefix_accepts_only_configured_forms(board_factory):
+    """SOP-07-P02: Jira configuration alone accepts a key, not arbitrary full links."""
+    board = board_factory(env={"JIRA_URL": "https://acme.atlassian.net"})
+    pushed = push_body(project=dict(id="gitlab.example.com/team/app", name="其他项目"))
+    base = "/api/v1/projects/gitlab-example-com-team-app/batches/demo"
+    assert board.request("PUT", base + "/scenario-file", pushed)[0] == 200
+    assert board.sql("SELECT defect_prefix FROM projects") == [(None,)]
+    status, response, _ = board.request("POST", base + "/marks", mark_body(pushed, "fail", defect_url="ABC-9"))
+    assert status == 200, response
+    assert get(board, base + "/rounds/1")["results"][0]["finding"] == "https://acme.atlassian.net/browse/ABC-9"
+    before = snapshot(board)
+    problems = assert_error(board.request("POST", base + "/marks", mark_body(pushed, "fail", scenario=IDS[2],
+        fingerprint=pushed["fingerprints"][IDS[2]], defect_url="https://gitlab.example.com/team/app/-/issues/3")),
+        422, "defect-link-invalid")
+    assert "接受的写法" in problems[0]["problem"]
+    assert "https://acme.atlassian.net/browse/" in problems[0]["problem"]
     assert snapshot(board) == before

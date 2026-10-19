@@ -23,6 +23,8 @@ def prepare_store(data):
     sqlite_files = [data / ("board.sqlite3" + suffix) for suffix in ("", "-wal", "-shm", "-journal")]
     new_files = [path for path in sqlite_files if not (path.exists() or path.is_symlink())]
     try:
+        if data.exists() and not data.is_dir():
+            raise NotADirectoryError(f"{data} 不是目录")
         data.mkdir(parents=True, exist_ok=True)
         if not os.access(data, os.W_OK):
             raise PermissionError("目录不可写")
@@ -64,7 +66,7 @@ def main():
         except (OSError, sqlite3.Error) as error:
             print(f"启动失败：数据目录 {args.data} 无法创建或写入：{error}", file=sys.stderr)
             return 1
-        server.service = Service(store)
+        server.service = Service(store, jira_url=os.environ.get("JIRA_URL", ""))
         server.token = token
         server.timeout = 0.1
 

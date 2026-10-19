@@ -2,6 +2,8 @@
 
 import json
 
+from .time_format import local_time
+
 
 def ratio(numerator, denominator):
     return dict(numerator=numerator, denominator=denominator,
@@ -12,7 +14,7 @@ def calculate(db, batch):
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]
     rows = [dict(row) for row in db.execute(
-        "SELECT r.*,t.number,t.kind,t.product_digest FROM results r JOIN rounds t ON t.id=r.round_id "
+        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at FROM results r JOIN rounds t ON t.id=r.round_id "
         "WHERE t.batch=? ORDER BY t.number,r.id", (batch["id"],))]
     by_scenario = {}
     evidence = {}
@@ -20,16 +22,23 @@ def calculate(db, batch):
                            "JOIN rounds t ON t.id=r.round_id WHERE t.batch=? ORDER BY e.ordinal", (batch["id"],)):
         evidence.setdefault(item["result_id"], []).append(dict(name=item["name"], sha256=item["sha256"]))
     for row in rows:
+        row["executed_at_display"] = local_time(row["executed_at"])
+        row["submitted_at_display"] = local_time(row["submitted_at"])
         row["evidence"] = evidence.get(row["id"], [])
         by_scenario.setdefault((row["scenario"], row["fingerprint"]), []).append(row)
     queues = dict(pending=[], issues=[], retest=[])
     agent_pass = agent_fail = first_pass = first_fail = reviewed = manual_pass = manual_fail = executed = 0
     details, misjudgments = [], []
+    filters = {"all": len(scenarios), "unreviewed": 0, "agent-pass": 0, "fail": 0, "blocked": 0}
     for scenario in scenarios:
         history = by_scenario.get((scenario["scenario"], scenario["fingerprint"]), [])
         agents = [r for r in history if r["kind"] == "agent"]
         manuals = [r for r in history if r["kind"] == "manual"]
         a, m, latest = agents[-1] if agents else None, manuals[-1] if manuals else None, history[-1] if history else None
+        filters["unreviewed"] += m is None
+        filters["agent-pass"] += bool(a and a["status"] == "pass")
+        if latest and latest["status"] in ("fail", "blocked"):
+            filters[latest["status"]] += 1
         executed += bool(history)
         if agents:
             agent_pass += a["status"] == "pass"
@@ -61,7 +70,8 @@ def calculate(db, batch):
                     defect_url=row["finding"], agent_executor=preceding_agent["executor"], marker=row["executor"]))
         details.append(dict(scenario=scenario["scenario"], node=scenario["node"], title=scenario["title"],
                             polarity=scenario["polarity"], priority=scenario["priority"], verify=scenario["verify"],
-                            fingerprint=scenario["fingerprint"], queue=queue, latest_agent=a, latest_manual=m,
+                            fingerprint=scenario["fingerprint"], status=latest["status"] if latest else None,
+                            queue=queue, latest_agent=a, latest_manual=m,
                             regression=regression, body=json.loads(scenario["body"])))
     statistics = dict(agent_pass_rate=ratio(agent_pass, agent_pass + agent_fail),
                       manual_pass_rate=ratio(manual_pass, manual_pass + manual_fail),
@@ -77,4 +87,4 @@ def calculate(db, batch):
         rounds.append(item)
     return dict(statistics=statistics, queues=queues, queue_counts={k: len(v) for k, v in queues.items()},
                 progress=dict(executed=statistics["executed_progress"], reviewed=statistics["reviewed_progress"]),
-                scenario_count=len(scenarios), scenarios=details, rounds=rounds, misjudgments=misjudgments)
+                scenario_count=len(scenarios), scenarios=details, rounds=rounds, misjudgments=misjudgments, filters=filters)

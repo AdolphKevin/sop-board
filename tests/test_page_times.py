@@ -39,7 +39,8 @@ def test_page_times_use_server_timezone_while_api_and_export_keep_iso(board_fact
     agent, manual = get(board, BASE + "/rounds/1"), get(board, BASE + "/rounds/2")
     detail = page(board, WEB + "/s/" + IDS[0])
     overview = page(board, WEB)
-    assert detail.one("time", datetime=executed_at).text == literal
+    group = detail.one("section", **{"data-fingerprint": pushed["fingerprints"][IDS[0]]})
+    assert group.one("time", datetime=executed_at).text == literal
     pushed_at = board.sql("SELECT pushed_at FROM versions")[0][0]
     assert overview.one("time", id="pushed-at").attrs["datetime"] == pushed_at
     for data in (agent, manual):
@@ -65,5 +66,5 @@ def test_page_times_use_server_timezone_while_api_and_export_keep_iso(board_fact
             assert exported["executed_at"] == result["results"][0]["executed_at"]
             if result["kind"] == "manual":
                 observation = json.loads(archive.read(exported["evidence"][0]))
-                assert observation["executed_at"] == exported["executed_at"]
-                assert "T" in observation["executed_at"]
+                assert observation["recorded_at"] == exported["executed_at"]
+                assert "T" in observation["recorded_at"]

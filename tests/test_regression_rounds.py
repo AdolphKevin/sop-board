@@ -229,7 +229,7 @@ def test_manual_blocked_counts_coverage_without_pass_rate_or_misjudgment(board):
     """SOP-06-P09：人工受阻进入问题队列并计入覆盖率，未形成失败误判。"""
     pushed, _ = push(board)
     assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
-    assert board.request("POST", BASE + "/marks", mark_body(pushed, "blocked", finding="环境不可用"))[0] == 200
+    assert board.request("POST", BASE + "/marks", mark_body(pushed, "blocked", defect_url="https://github.com/demo-org/demo-app/issues/3"))[0] == 200
     summary = get(board, BASE)
     assert IDS[0] in summary["queues"]["issues"]
     assert scenarios_by_id(board)[IDS[0]]["queue"] == "issues"

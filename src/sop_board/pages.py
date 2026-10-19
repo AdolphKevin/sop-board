@@ -1,10 +1,11 @@
 """把 Service 的读取结果呈现为服务端 HTML，不重新计算业务指标。"""
 
 from html import escape
-from datetime import datetime
 import json
 import re
 from urllib.parse import quote
+
+from .time_format import local_time
 
 
 def text(value):
@@ -13,12 +14,6 @@ def text(value):
 
 def batch_url(project, batch):
     return f"/p/{quote(project, safe='')}/b/{quote(batch, safe='')}"
-
-
-def local_time(value):
-    value = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
-    offset = value.strftime("%z")
-    return value.strftime("%Y-%m-%d %H:%M:%S") + " " + offset[:3] + ":" + offset[3:5]
 
 
 def time_tag(value, element_id=None):
@@ -71,7 +66,7 @@ def batch(project, data):
                        f"<td><a href='{text(item['defect_url'])}'>{text(item['defect_url'])}</a></td>"
                        f"<td>{text(item['agent_executor'])}</td><td>{text(item['marker'])}</td></tr>"
                        for item in data["misjudgments"])
-    content = (f"<nav><a href='/'>全部项目</a></nav><h1>批次 {text(data['name'])}</h1>"
+    content = (f"<nav><a href='/'>全部项目</a></nav>{batch_nav(project, data['name'], 'overview')}<h1>批次 {text(data['name'])}</h1>"
                f"<p>场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条</p>"
                f"<p>场景文件推送时间：{time_tag(data['pushed_at'], 'pushed-at')}</p>"
                f"<dl class='metrics'>{metrics}</dl><div class='queues'>{''.join(queues)}</div>"
@@ -85,26 +80,29 @@ def batch(project, data):
 
 
 STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
+MANUAL_STATUS = {**STATUS, "fail": "不通过（失败）", "blocked": "不通过（受阻）"}
 
 
 def evidence_preview(evidence):
     url = "/api/v1/evidence/" + evidence["sha256"]
+    download = f"<a href='{text(url)}' download='{text(evidence['name'])}'>下载 {text(evidence['name'])}</a>"
     if evidence["content_type"].startswith("image/"):
-        return f"<figure><img src='{text(url)}' alt='{text(evidence['name'])}' loading='lazy'><figcaption>{text(evidence['name'])}</figcaption></figure>"
+        return download + f"<figure><img src='{text(url)}' alt='{text(evidence['name'])}' loading='lazy'><figcaption>{text(evidence['name'])}</figcaption></figure>"
     if "preview" in evidence:
         preview = evidence["preview"]
-        caption = evidence["name"] + "（前 200 行）"
+        caption = evidence["name"] + ("（只显示前 200 行）" if evidence.get("preview_truncated") else "")
         if re.fullmatch(r"observation-[0-9]+\.json", evidence["name"]):
             try:
                 observation = json.loads(preview)
-                if isinstance(observation, dict) and isinstance(observation.get("executed_at"), str):
-                    observation["executed_at"] = local_time(observation["executed_at"])
+                time_field = "recorded_at" if "recorded_at" in observation else "executed_at"
+                if isinstance(observation, dict) and isinstance(observation.get(time_field), str):
+                    observation[time_field] = local_time(observation[time_field])
                     preview = json.dumps(observation, ensure_ascii=False, indent=2)
                     caption = evidence["name"] + "（观察记录，本地时间）"
             except (ValueError, TypeError):
                 pass
-        return f"<figure><figcaption>{text(caption)}</figcaption><pre data-evidence='{text(evidence['sha256'])}'>{text(preview)}</pre></figure>"
-    return f"<p><a href='{text(url)}' download='{text(evidence['name'])}'>下载 {text(evidence['name'])}</a></p>"
+        return download + f"<figure><figcaption>{text(caption)}</figcaption><pre data-evidence='{text(evidence['sha256'])}'>{text(preview)}</pre></figure>"
+    return f"<p>{download}</p>"
 
 
 def scenario(data):
@@ -122,39 +120,110 @@ def scenario(data):
             extras = "".join(f"<p>{name}：{text(result[field])}</p>" for field, name in
                              [("finding", "问题或缺陷"), ("note", "备注"), ("session", "会话")]
                              if result.get(field))
-            results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {STATUS[result['status']]}</h3>"
+            result_label = (MANUAL_STATUS if result["kind"] == "manual" else STATUS)[result["status"]]
+            results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {result_label}</h3>"
                            f"<p>执行者：{text(result['executor'])} · 执行时间：{time_tag(result['executed_at'])}</p>"
                            f"<p>提交时间：{time_tag(result['submitted_at'])}</p>"
                            f"<p>实际结果：{text(result['actual'])}</p>{extras}"
                            f"{''.join(evidence_preview(e) for e in result['evidence'])}</article>")
         sections.append(f"<section data-fingerprint='{text(group['fingerprint'])}'><h2>{label}</h2>"
                         f"<p class='fingerprint'>内容指纹：{text(group['fingerprint'])}</p>{''.join(fields)}"
-                        f"{''.join(results) or '<p>尚无执行结果</p>'}</section>")
+                        f"<div data-result-history=''>{''.join(results) or '<p data-no-results>尚无执行结果</p>'}</div></section>")
     removed = "<p class='notice'>已从场景文件移除</p>" if not data["current"] else ""
-    body = (f"<nav><a href='{text(base)}'>返回批次总览</a></nav><h1>{text(data['scenario'])} · {text(data['title'])}</h1>"
+    summary = data.get("summary")
+    review = (f"<article class='scenario-card' data-scenario='{text(data['scenario'])}'>"
+              f"{scenario_summary(summary)}{review_controls(data['project'], data['batch'], data)}</article>" if data["current"] else "")
+    body = (f"<nav><a href='{text(base)}'>返回批次总览</a></nav>{batch_nav(data['project'], data['batch'], 'scenarios')}<h1>{text(data['scenario'])} · {text(data['title'])}</h1>"
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
             f"<p>验证入口：{text(data['verify'])}</p>"
-            f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{mark_form(data)}{''.join(sections)}")
+            f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}{review}{''.join(sections)}")
     return layout(data["scenario"], body)
 
 
-def mark_form(data):
-    if not data["current"]:
-        return ""
-    action = f"/api/v1/projects/{quote(data['project'], safe='')}/batches/{quote(data['batch'], safe='')}/marks"
-    options = "".join(f"<option value='{value}'>{label}</option>" for value, label in STATUS.items())
-    return (f"<section><h2>人工复核</h2><form id='mark-form' action='{text(action)}' method='post'>"
-            f"<input type='hidden' name='scenario' value='{text(data['scenario'])}'>"
-            f"<input type='hidden' name='fingerprint' value='{text(data['fingerprint'])}'>"
-            "<fieldset><legend>标记人与令牌（可随时更换）</legend>"
-            "<label>标记人<input name='marker' required autocomplete='off'></label>"
-            "<label>写入令牌<input name='token' type='password' required autocomplete='off'></label>"
+def identity_bar():
+    return ("<section id='review-identity'><h2>复核身份</h2><fieldset><legend>标记人与令牌（可随时更换）</legend>"
+            "<label>标记人<input name='marker' autocomplete='off'></label>"
+            "<label>写入令牌<input name='token' type='password' autocomplete='off'></label>"
             "<button type='button' id='save-identity'>保存标记人与令牌</button></fieldset>"
-            f"<label>复核状态<select name='status'>{options}</select></label>"
-            "<label>实际结果<textarea name='actual' required rows='4'></textarea></label>"
-            "<label>验证环境<input name='environment' required></label>"
-            "<label>缺陷链接（失败时必填）<input name='defect_url' type='url'></label>"
-            "<label>受阻或跳过的原因<textarea name='finding' rows='2'></textarea></label>"
-            "<label>备注<textarea name='note' rows='2'></textarea></label>"
-            "<button type='submit'>保存标记</button><p id='mark-message' role='status' aria-live='polite'></p>"
-            "<noscript>请启用 JavaScript 后保存标记。</noscript></form></section>")
+            "<p id='identity-message' role='status' aria-live='polite'></p></section>")
+
+
+def review_controls(project, name, item):
+    action = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}/marks"
+    buttons = "".join(f"<button type='button' data-mark-status='{value}' aria-expanded='false'>{label}</button>"
+                      for value, label in [("pass", "通过"), ("fail", "失败"), ("blocked", "受阻")])
+    return (f"<form class='review-form' action='{text(action)}' method='post' novalidate>"
+            f"<input type='hidden' name='scenario' value='{text(item['scenario'])}'>"
+            f"<input type='hidden' name='fingerprint' value='{text(item['fingerprint'])}'>"
+            f"<div class='review-actions'>{buttons}</div><div data-review-fields='' hidden>"
+            "<label>缺陷链接（必填）<input name='defect_url' type='text' required></label>"
+            "<label>备注（选填）<textarea name='note' rows='2'></textarea></label>"
+            "<button type='submit'>提交</button> <button type='button' data-review-cancel=''>取消</button></div>"
+            "<p data-review-message='' role='status' aria-live='polite'></p>"
+            "<noscript>请启用 JavaScript 后复核。</noscript></form>")
+
+
+QUEUE = {"pending": "待执行", "issues": "问题", "retest": "复测", "reviewed": "已复核通过"}
+FILTERS = [("all", "全部"), ("unreviewed", "未人工复核"), ("agent-pass", "Agent 已通过"),
+           ("fail", "不通过"), ("blocked", "受阻")]
+
+
+def batch_nav(project, name, current):
+    base = batch_url(project, name)
+    return "<nav aria-label='批次导航'>" + "".join(
+        f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
+        for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景")]) + "</nav>"
+
+
+def scenario_fields(body):
+    parts = []
+    for key, label in [("initial_state", "初始状态"), ("steps", "操作步骤"), ("expected", "预期结果"),
+                       ("forbidden_effects", "禁止产生的影响"), ("refs", "来源引用")]:
+        values = "".join(f"<li>{text(v)}</li>" for v in body.get(key, []))
+        parts.append(f"<h3>{label}</h3><ul>{values}</ul>" if values else f"<h3>{label}</h3><p>未声明</p>")
+    regression = body.get("regression")
+    parts.append("<h3>回归声明</h3><pre>" + text(json.dumps(regression, ensure_ascii=False, indent=2)) + "</pre>"
+                 if regression else "<h3>回归声明</h3><p>未声明</p>")
+    return "".join(parts)
+
+
+def latest_result(result, kind):
+    if not result:
+        return ""
+    link = (f"<a href='{text(result['finding'])}'>{text(result['finding'])}</a>" if kind == "人工" and result.get("finding") else "")
+    note = f"<p>备注：{text(result['note'])}</p>" if result.get("note") else ""
+    label = (MANUAL_STATUS if kind == "人工" else STATUS)[result["status"]]
+    return (f"<p>{kind} · {label} · {'标记人' if kind == '人工' else '执行者'}：{text(result['executor'])} · "
+            f"{time_tag(result['executed_at'])}</p>{link}{note}")
+
+
+def scenario_summary(item):
+    return (f"<div data-latest-agent=''>{latest_result(item['latest_agent'], 'Agent')}</div>"
+            f"<div data-latest-manual=''>{latest_result(item['latest_manual'], '人工')}</div>"
+            f"<p data-queue=''>所在队列：{QUEUE[item['queue']]}</p>")
+
+
+def scenarios(project, name, data):
+    base = batch_url(project, name)
+    by_id = {item["scenario"]: item for item in data["scenarios"]}
+    content = batch_nav(project, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
+    if not data["has_version"]:
+        content += f"<p>尚无场景，测试岗上传用例后由合并生成</p><a href='{text(base + '/cases')}'>用例页</a>"
+        return layout("SOP 场景 · " + name, content)
+    content += identity_bar()
+    content += "<nav aria-label='场景筛选'>" + "".join(
+        f"<a href='?filter={key}' data-filter='{key}'>{label} <span>{data['filters'][key]}</span></a>"
+        for key, label in FILTERS) + "</nav>"
+    for node in data["nodes"]:
+        content += (f"<section class='scenario-node' data-node='{text(node['id'])}'><h2>{text(node['id'])} · {text(node['title'])}</h2>"
+                    f"<p>角色：{text(node['actor'])} · 入口：{text(node['entry'])}</p>")
+        for source in node["scenarios"]:
+            item = by_id[source["id"]]
+            content += (f"<article class='scenario-card' data-scenario='{text(source['id'])}' "
+                        f"data-status='{text(item['status'] or '')}' data-agent-pass='{str(bool(item['latest_agent'] and item['latest_agent']['status'] == 'pass')).lower()}' "
+                        f"data-unreviewed='{str(item['latest_manual'] is None).lower()}'>"
+                        f"<h3><a href='{text(base + '/s/' + quote(source['id'], safe=''))}'>{text(source['id'])}</a> · {text(source['title'])}</h3>"
+                        f"<p>{'正向' if source['polarity'] == 'positive' else '反向'} · 优先级：{text(source['priority'])} · 角色：{text(source['actor'])} · 验证入口：{text(source['verify'])}</p>"
+                        f"{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
+        content += "</section>"
+    return layout("SOP 场景 · " + name, content)

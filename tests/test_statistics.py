@@ -20,8 +20,9 @@ def submit(board, pushed, evidence, key, statuses=("pass", "fail", "pass", "bloc
 
 
 def mark(board, pushed, scenario, status):
-    body = mark_body(pushed, status, scenario=scenario, fingerprint=pushed["fingerprints"][scenario],
-                     finding="Q1", defect_url="https://github.com/demo-org/demo-app/issues/1")
+    body = mark_body(pushed, status, scenario=scenario, fingerprint=pushed["fingerprints"][scenario])
+    if status in ("fail", "blocked"):
+        body["defect_url"] = "https://github.com/demo-org/demo-app/issues/1"
     code, response, _ = board.request("POST", BASE + "/marks", body)
     assert code == 200, response
     return response
@@ -56,7 +57,7 @@ def test_manual_rates_progress_misjudgments_and_submission_order(board):
         defect_url="https://github.com/demo-org/demo-app/issues/1", agent_executor="Li Si", marker="Tester A")]
     mark(board, pushed, IDS[2], "fail")
     assert len(get(board, BASE)["misjudgments"]) == 2
-    mark(board, pushed, IDS[0], "skip")
+    mark(board, pushed, IDS[0], "blocked")
     mark(board, pushed, IDS[2], "blocked")
     summary = get(board, BASE)
     assert_ratio(summary["statistics"]["manual_pass_rate"], 0, 0)
@@ -104,9 +105,19 @@ def test_changed_and_removed_scenarios_exclude_old_results_keep_history(board):
     submit(board, pushed, upload(board), "first")
     mark(board, pushed, IDS[0], "pass")
     mark(board, pushed, IDS[2], "fail")
+    before = {r["scenario"]: r for r in get(board, BASE + "/scenarios")["scenarios"]}
+    stored_results = board.sql("SELECT * FROM results ORDER BY id")
     doc = demo()
     doc["sops"][0]["scenarios"][0]["expected"] = ["changed content"]
-    changed, _ = push(board, push_body(doc))
+    changed, response = push(board, push_body(doc))
+    assert response["version"] == 2 and response["changed"] == [IDS[0]]
+    assert response["added"] == [] and response["removed"] == []
+    after = {r["scenario"]: r for r in get(board, BASE + "/scenarios")["scenarios"]}
+    assert after[IDS[0]]["latest_agent"] is None and after[IDS[0]]["latest_manual"] is None
+    for sid in IDS[1:]:
+        for field in ("queue", "latest_agent", "latest_manual"):
+            assert after[sid][field] == before[sid][field]
+    assert board.sql("SELECT * FROM results ORDER BY id") == stored_results
     summary = get(board, BASE)
     assert summary["queues"]["pending"] == [IDS[0]]
     assert_ratio(summary["statistics"]["agent_pass_rate"], 1, 2)

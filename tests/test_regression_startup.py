@@ -116,16 +116,31 @@ def test_startup_failures_leave_paths_unchanged(tmp_path, kind):
         occupied.listen()
         reason = str(port)
     try:
-        result = subprocess.run([str(ROOT / ".venv/bin/sop-board"), "--data", str(data),
-                                 "--port", str(port)], env=env, capture_output=True,
-                                text=True, timeout=5)
+        argv = [str(ROOT / ".venv/bin/sop-board"), "--data", str(data), "--port", str(port)]
+        process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+            pytest.fail("启动失败的进程未退出")
+        result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
         assert result.returncode == 1
         assert "看板地址" not in result.stdout
         assert reason in result.stderr
         if kind in ("empty-token", "readonly-parent"):
             assert not data.exists()
         elif kind == "plain-file":
+            assert "不是目录" in result.stderr
             assert data.read_bytes() == b"keep plain file unchanged"
+            assert process.poll() == 1
+            import os
+            with pytest.raises(ProcessLookupError):
+                os.kill(process.pid, 0)
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(("127.0.0.1", port))
+                listener.listen()
         else:
             assert data.is_dir() and list(data.iterdir()) == []
     finally:

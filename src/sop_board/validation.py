@@ -125,20 +125,23 @@ def validate_round(db, body):
     p.finish()
 
 
-def validate_mark(db, body):
+def validate_mark(body):
     p = Problems("mark-invalid")
     if not isinstance(body, dict):
         p.add("body", "应为对象")
         p.finish()
-    for key in ("scenario", "fingerprint", "actual", "marker", "environment"):
+    allowed = {"scenario", "fingerprint", "status", "marker", "defect_url", "note"}
+    for field in sorted(body.keys() - allowed):
+        p.add(field, "人工标记不接受此字段")
+    for key in ("scenario", "fingerprint", "marker"):
         p.text(body.get(key), key)
-    if body.get("status") not in ("pass", "fail", "blocked", "skip"):
-        p.add("status", "应为 pass、fail、blocked 或 skip")
-    if body.get("status") in ("blocked", "skip"):
-        p.text(body.get("finding"), "finding")
-    if "evidence" in body:
-        validate_evidence(db, body["evidence"], p, "evidence")
-    for key in ("defect_url", "finding", "note"):
-        if key in body and not isinstance(body[key], str):
-            p.add(key, "应为字符串")
+    status = body.get("status")
+    if status not in ("pass", "fail", "blocked"):
+        p.add("status", "应为 pass、fail 或 blocked")
+    if status == "pass" and "defect_url" in body:
+        p.add("defect_url", "通过标记不接受缺陷链接")
+    if status in ("fail", "blocked"):
+        p.text(body.get("defect_url"), "defect_url")
+    if "note" in body and not isinstance(body["note"], str):
+        p.add("note", "应为字符串")
     p.finish()
