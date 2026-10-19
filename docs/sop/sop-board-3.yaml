@@ -1,7 +1,7 @@
 # SOP-BOARD-3：Codex 任务、可写授权与以用例为准的合并的验收场景
 # 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v8）的 D15、D16、D17、D20、D21、S7 与 docs/designs/SOP-BOARD-3.md 的 I1–I5、D1、D2，不依据当前实现的输出。
 # 版本 1（2026-10-19）：Claude 依据上述两份原文编写，经 AdolphKevin 授权由 Claude 代批。
-# 版本 2（2026-10-20）：按测试代理 sop-board-3-tester 的 78 条用例与方案修订 2 核对覆盖，补充 30 条场景、修改 25 条，经 AdolphKevin 授权由 Claude 代批。
+# 版本 2（2026-10-20，同日按实现中发现的格式冲突改写 SOP-33-P09、SOP-33-N01 的初始状态）：按测试代理 sop-board-3-tester 的 78 条用例与方案修订 2 核对覆盖，补充 30 条场景、修改 25 条，经 AdolphKevin 授权由 Claude 代批。
 #
 # 下文"测试看板"同 SOP-BOARD-1、2 的约定；"开发者令牌"指 SOP_BOARD_ADMIN_TOKEN（与写入令牌不同）。
 # "演示仓库"指执行者新建的临时 Git 仓库 /tmp/<随机>/demo-repo：已有一次提交，含 README.md、src/app.py、docs/sop/entries.yaml（入口 web、api），
@@ -481,7 +481,7 @@ sops:
         priority: P0
         refs: ["I4"]
         verify: api
-        initial_state: ["假 codex 在 PATH 最前，返回的判断字段中：TC_DEMO_LOGIN_001 的 verify 为不存在的入口 desktop，TC_DEMO_ORDER_001 的 actor 为空字符串，原有场景 N1-P01 没有去向，N1-N01 为 duplicate 且 target 为不存在的 TC_DEMO_NONE_001，N2-N01 为 kept 且 relocate 把它移入不存在的 S09", "演示仓库的 demo.yaml 含节点 N1（N1-P01、N1-N01）与只有反向场景 N2-N01 的节点 N2，并已提交", "授权看板已登记该批次"]
+        initial_state: ["假 codex 在 PATH 最前，返回的判断字段中：TC_DEMO_LOGIN_001 的 verify 为不存在的入口 desktop，TC_DEMO_ORDER_001 的 actor 为空字符串，原有场景 N1-P01 没有去向，N1-N01 为 duplicate 且 target 为不存在的 TC_DEMO_NONE_001，N2-N01 为 kept 且 relocate 把它移入不存在的 S09", "演示仓库的 demo.yaml 含节点 N1（N1-P01、N1-N01）与节点 N2（N2-P01、N2-N01），并已提交；假 codex 另把 N2-P01 判为 duplicate（target 为 TC_DEMO_ORDER_001），因而 N2 合并后只剩反向场景", "授权看板已登记该批次"]
         steps: ["上传演示用例文件，等待合并任务结束", "读取 check.json 与演示仓库的 demo.yaml"]
         expected: ["任务为失败", "check.json 逐条列出入口 desktop 不在入口声明中、TC_DEMO_ORDER_001 的 actor 为空、N1-P01 没有去向、target TC_DEMO_NONE_001 不存在、relocate 的 S09 不存在", "演示仓库的 demo.yaml 保持原样"]
         forbidden_effects: ["写入不合规的场景文件"]
@@ -547,7 +547,7 @@ sops:
         priority: P0
         refs: ["I4"]
         verify: api
-        initial_state: ["演示仓库已提交 docs/sop/demo.yaml（批次 demo）：metadata.sources 有一项 ref 为 登录 SOP 第 3 节；节点 SOP-01 含正向场景 SOP-01-P01；节点 SOP-03 只含反向场景 SOP-03-N01", "授权看板已登记批次 demo", "用例文件含 TC_DEMO_LOGIN_001（section:登录，正向）、TC_DEMO_LOGIN_002（section:登录、negative）、TC_DEMO_LOGIN_004（section:登录异常、negative）与 TC_DEMO_ORDER_001（section:订单，正向）", "假 codex 在 PATH 最前，返回：每条用例的 actor 为 测试岗、verify 为 web，反向用例的 negative_type 为 invalid-input；登录 节点 actor 为 测试岗、entry 为 浏览器登录页，订单 节点 actor 为 买家、entry 为 下单接口；登录异常 写 merge_into 指向 登录；SOP-01-P01 与 SOP-03-N01 为 kept；relocate 把 SOP-03-N01 移入 S01；gaps 为空"]
+        initial_state: ["演示仓库已提交 docs/sop/demo.yaml（批次 demo）：metadata.sources 有一项 ref 为 登录 SOP 第 3 节；节点 SOP-01 含正向场景 SOP-01-P01；节点 SOP-03 含正向场景 SOP-03-P01 与反向场景 SOP-03-N01，假 codex 把 SOP-03-P01 判为 duplicate（target 为 TC_DEMO_LOGIN_001），因而 SOP-03 合并后只剩反向场景", "授权看板已登记批次 demo", "用例文件含 TC_DEMO_LOGIN_001（section:登录，正向）、TC_DEMO_LOGIN_002（section:登录、negative）、TC_DEMO_LOGIN_004（section:登录异常、negative）与 TC_DEMO_ORDER_001（section:订单，正向）", "假 codex 在 PATH 最前，返回：每条用例的 actor 为 测试岗、verify 为 web，反向用例的 negative_type 为 invalid-input；登录 节点 actor 为 测试岗、entry 为 浏览器登录页，订单 节点 actor 为 买家、entry 为 下单接口；登录异常 写 merge_into 指向 登录；SOP-01-P01 与 SOP-03-N01 为 kept；relocate 把 SOP-03-N01 移入 S01；gaps 为空"]
         steps: ["向批次 demo 上传用例文件，等待合并结束", "读取写入的 docs/sop/demo.yaml 与该任务的 check.json"]
         expected: ["任务为已完成，check.json 没有问题", "用例节点排在原有节点之前：S01 的 title 为 登录，订单 节点的 title 为 订单", "S01 的 actor 为 测试岗、entry 为 浏览器登录页，订单 节点的 actor 为 买家、entry 为 下单接口", "每条用例场景的 actor 为 测试岗、verify 为 web，TC_DEMO_LOGIN_002 与 TC_DEMO_LOGIN_004 的 negative_type 为 invalid-input", "TC_DEMO_LOGIN_004 位于 S01", "SOP-01-P01 留在节点 SOP-01，SOP-03-N01 位于 S01，二者编号与内容不变", "metadata.sources 保留 ref 为 登录 SOP 第 3 节 的原有来源，另有一项指向批次 demo 与本次上传序号"]
         forbidden_effects: ["节点 title 取 section 值以外的文字"]
