@@ -154,7 +154,7 @@ sops:
         verify: api
         initial_state: ["以 SOP-BOARD-1 交付提交检出并 uv sync 的看板建立数据目录：推送演示场景文件两个版本，登记 Agent 轮次与一条按 SOP-BOARD-1 标记接口登记的人工 fail（缺陷链接 https://github.com/demo-org/demo-app/issues/1），证据已上传", "已保存批次摘要、场景列表接口的响应，各轮导出的 ZIP 与各证据的 sha256，然后停止该看板"]
         steps: ["用当前版本的看板以同一数据目录启动", "再次请求批次摘要与场景列表，下载各轮导出与证据", "打开 SOP 场景页与人工 fail 场景的详情页", "上传一份合规用例文件，并在 SOP 场景页对一条场景点通过"]
-        expected: ["启动成功，标准输出写出看板地址", "批次摘要的版本号、指标、队列数量、轮次表与误判明细，以及场景列表接口的响应与升级前相同", "各轮导出的 results.jsonl 与升级前的字节相同，证据的 sha256 不变", "旧人工结果的缺陷链接在两个页面上原样显示为 https://github.com/demo-org/demo-app/issues/1", "用例上传返回 200 且 upload 为 1，就地通过提交成功并新增一个人工轮次"]
+        expected: ["启动成功，标准输出写出看板地址", "批次摘要的版本号、指标、队列数量、轮次表与误判明细与升级前相同；场景列表接口中升级前已有的字段取值与升级前相同（本需求新增的字段不计）", "各轮导出的 results.jsonl 与升级前的字节相同，证据的 sha256 不变", "旧人工结果的缺陷链接在两个页面上原样显示为 https://github.com/demo-org/demo-app/issues/1", "用例上传返回 200 且 upload 为 1，就地通过提交成功并新增一个人工轮次"]
         forbidden_effects: ["已有轮次、结果或证据被修改或删除"]
         evidence_hints: ["升级前后的接口响应对比", "results.jsonl 与证据的 sha256 对照", "页面截图"]
 
