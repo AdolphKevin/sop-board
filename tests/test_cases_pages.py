@@ -63,10 +63,10 @@ def test_cases_page_groups_details_upload_history_local_time_and_current_coverag
 
 
 def test_cases_navigation_is_shared_and_only_current_page_is_highlighted(board):
-    """SOP-21-P07：总览、场景、用例、进度与合并页共用导航且当前页高亮。"""
+    """SOP-21-P07/SOP-33-P12：含新增 SOP 链接的共用导航，当前页单独高亮。"""
     push(board)
     for url, label in [(WEB, "总览"), (WEB + "/scenarios", "SOP 场景"), (WEB + "/cases", "用例"), (WEB + "/progress", "进度"), (WEB + "/merges", "合并")]:
         nav = page(board, url).one("nav", **{"aria-label": "批次导航"})
         assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [
-            ("总览", WEB), ("SOP 场景", WEB + "/scenarios"), ("用例", WEB + "/cases"), ("进度", WEB + "/progress"), ("合并", WEB + "/merges")]
+            ("总览", WEB), ("SOP 场景", WEB + "/scenarios"), ("用例", WEB + "/cases"), ("进度", WEB + "/progress"), ("合并", WEB + "/merges"), ("SOP", WEB + "/sop")]
         assert nav.one("a", **{"aria-current": "page"}).text == label

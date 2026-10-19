@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, project TEXT NOT NULL REFERENCES projects(key),
     batch TEXT NOT NULL, status TEXT NOT NULL, trigger TEXT NOT NULL, input_digest TEXT NOT NULL,
     input_json TEXT NOT NULL, scenario_file_sha256 TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
-    attempt INTEGER NOT NULL DEFAULT 1, session_id TEXT, error TEXT NOT NULL DEFAULT '', result_digest TEXT
+    attempt INTEGER NOT NULL DEFAULT 1, session_id TEXT, error TEXT NOT NULL DEFAULT '', result_digest TEXT,
+    result_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS projects (
     key TEXT PRIMARY KEY, identity TEXT NOT NULL, name TEXT NOT NULL, defect_prefix TEXT
@@ -59,6 +60,16 @@ CREATE TABLE IF NOT EXISTS result_evidence (
 CREATE TABLE IF NOT EXISTS batch_entries (
     batch INTEGER PRIMARY KEY REFERENCES batches(id), content TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS node_numbers (
+    batch INTEGER NOT NULL REFERENCES batches(id), section TEXT NOT NULL, node TEXT NOT NULL,
+    PRIMARY KEY(batch, section), UNIQUE(batch, node)
+);
+CREATE TABLE IF NOT EXISTS sop_versions (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
+    path TEXT NOT NULL, version INTEGER NOT NULL, ref TEXT NOT NULL, commit_id TEXT NOT NULL,
+    sha256 TEXT NOT NULL, confirmed_by TEXT NOT NULL, content TEXT NOT NULL, recorded_at TEXT NOT NULL,
+    UNIQUE(batch, path, version)
+);
 CREATE TABLE IF NOT EXISTS case_uploads (
     id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
     number INTEGER NOT NULL, filename TEXT NOT NULL, uploaded_by TEXT NOT NULL,
@@ -84,15 +95,6 @@ class Store:
             # executescript 默认逐条提交；补表必须作为一个事务，失败时不留部分升级。
             try:
                 db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
-                columns = {r['name'] for r in db.execute('PRAGMA table_info(tasks)')}
-                if 'scenario_file_sha256' not in columns:
-                    db.execute("ALTER TABLE tasks ADD COLUMN scenario_file_sha256 TEXT NOT NULL DEFAULT ''")
-                    import json
-                    for row in db.execute('SELECT id,input_json FROM tasks').fetchall():
-                        content = json.loads(row['input_json']).get('scenarios', '')
-                        digest = hashlib.sha256(content.encode()).hexdigest() if content else ''
-                        db.execute('UPDATE tasks SET scenario_file_sha256=? WHERE id=?', (digest, row['id']))
-                db.execute("UPDATE tasks SET trigger='重新合并' WHERE trigger='开发者请求'")
                 db.commit()
             except BaseException:
                 db.rollback()

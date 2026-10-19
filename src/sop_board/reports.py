@@ -53,7 +53,17 @@ def markdown(data, generated_at):
                     "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
                     table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]
                           for m in summary["misjudgments"]]))
-    sections.extend("## " + label + "\n\n暂无记录" for label in ["修复记录", "回归覆盖", "合并记录"])
+    sections.extend("## " + label + "\n\n暂无记录" for label in ["修复记录", "回归覆盖"])
+    merge = data.get('merge')
+    if not merge:
+        sections.append('## 合并记录\n\n暂无记录')
+    else:
+        removed = [[s['id'], '重复' if s['action'] == 'duplicate' else '冲突', s['target'], s['reason']]
+                   for s in merge.get('scenarios', []) if s['action'] != 'kept']
+        inferred = [[i['id'], i['content']] for i in merge.get('inferences', [])]
+        sections.append(f"## 合并记录\n\n最近完成的合并任务：#{merge['id']}\n\n" +
+                        table(['移除场景', '去向', '目标', '理由'], removed) +
+                        '\n### 待确认的推断\n\n' + table(['编号', '内容'], inferred))
     unverified = []
     for item in summary["scenarios"]:
         latest = max((r for r in [item["latest_agent"], item["latest_manual"]] if r), key=lambda r: r["number"], default=None)

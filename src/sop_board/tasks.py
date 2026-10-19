@@ -1,4 +1,4 @@
-"""持久任务与 Codex 进程入口。合并内容的业务核对由后续处理器承担。"""
+"""持久任务、Codex 进程入口与经过核对后的合并落地。"""
 import hashlib
 import json
 import re
@@ -7,10 +7,11 @@ from pathlib import Path
 import signal
 import subprocess
 import threading
+from importlib.resources import files
 from urllib.parse import quote
 
 from .errors import reject, APIError
-from .drafts import SCHEMA, assemble
+from .drafts import SCHEMA, assemble, section
 
 import yaml
 from .service import canonical, now
@@ -27,6 +28,19 @@ def parse_timeout(value):
 def codex_environment():
     allowed = {'PATH', 'HOME', 'USER', 'LANG', 'TMPDIR', 'CODEX_HOME', 'SHELL'}
     return {k: v for k, v in os.environ.items() if k in allowed or k.startswith('LC_')}
+
+
+def judgment_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('最终 JSON 消息含重复字段')
+        result[key] = value
+    return result
+
+
+def invalid_judgment_constant(value):
+    raise ValueError(f'最终 JSON 消息含非有限数字：{value}')
 
 
 def start_codex(directory, prompt, sandbox='read-only'):
@@ -93,7 +107,7 @@ class Tasks:
     def __init__(self, service, launcher=start_codex, timeout=None):
         self.service, self.store, self.launcher = service, service.store, launcher
         service.merge_callback = self.enqueue_merge
-        self.lock = threading.RLock()
+        self.lock = service.workspace_lock
         self.stopping = threading.Event()
         self.workers = {}
         self.processes = {}
@@ -117,14 +131,43 @@ class Tasks:
             upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
             source = db.execute('SELECT content FROM batch_entries WHERE batch=?', (batch['id'],)).fetchone()
             entries = json.loads(source['content']) if source else {}
+            sop_sources = [dict(row) for row in db.execute(
+                'SELECT path,ref,commit_id AS "commit",sha256,confirmed_by,content FROM sop_versions v WHERE batch=? '
+                'AND NOT EXISTS (SELECT 1 FROM sop_versions newer WHERE newer.batch=v.batch AND newer.path=v.path AND newer.version>v.version) ORDER BY path',
+                (batch['id'],))]
             if key in self.service.writable_repos:
-                from .repositories import read_entries
+                from .repositories import read_entries, read_sop_sources
                 declared, _ = read_entries(self.service.writable_repos[key])
                 entries = dict(entries=declared)
+                sop_sources = read_sop_sources(self.service.writable_repos[key], version['content'] if version else '')
+            nodes = {r['section']: r['node'] for r in db.execute('SELECT section,node FROM node_numbers WHERE batch=?', (batch['id'],))}
+            for case in cases:
+                name_ = section(case)
+                if name_ not in nodes:
+                    nodes[name_] = f'S{len(nodes) + 1:02}'
+                    db.execute('INSERT INTO node_numbers VALUES (?,?,?)', (batch['id'], name_, nodes[name_]))
             snapshot = dict(cases=cases, scenarios=version['content'] if version else '', entries=entries,
-                            batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'])
+                            batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'], nodes=nodes,
+                            writable=key in self.service.writable_repos)
+            # 只继承已有记录证明曾经并入、且仍在当前场景中的禁止副作用。
+            # 任意外来用例场景上的额外断言不因此成为确定字段的输入。
+            transferred = {}
+            for row in db.execute("SELECT result_json FROM tasks WHERE project=? AND batch=? AND status IN ('已完成','待同步') ORDER BY id",
+                                  (key, name)):
+                for disposition in json.loads(row['result_json']).get('scenarios', []):
+                    if disposition['action'] == 'duplicate':
+                        transferred.setdefault(disposition['target'], set()).update(disposition['forbidden_effects'])
+            original = yaml.safe_load(snapshot['scenarios']) or {}
+            snapshot['merged_forbidden_effects'] = {
+                scene['id']: [effect for effect in scene['forbidden_effects'] if effect in transferred[scene['id']]]
+                for node in original.get('sops', []) for scene in node['scenarios'] if scene['id'] in transferred}
+            snapshot['sop_sources'] = sop_sources
             scenario_sha = version['sha256'] if version else ''
-            digest = hashlib.sha256(canonical(snapshot).encode()).hexdigest()
+            # 排版、上传序号和已分配节点不是业务输入；按规定的四种内容组成摘要。
+            inputs = dict(cases=dict(metadata=snapshot['case_metadata'], test_cases=cases),
+                          scenarios=scenario_sha, entries=entries,
+                          sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
+            digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
             states = ('排队中', '运行中') if trigger == '重新合并' else ('已完成', '待同步', '待补充', '排队中', '运行中')
             placeholders = ','.join('?' for _ in states)
             previous = db.execute(f"SELECT id FROM tasks WHERE project=? AND batch=? AND input_digest=? AND status IN ({placeholders}) ORDER BY id LIMIT 1",
@@ -152,6 +195,8 @@ class Tasks:
             reject(404, 'task-not-found', 'task', '任务不存在')
         task = dict(row)
         task.pop('input_json')
+        task['result'] = json.loads(task.pop('result_json'))
+        task['gaps'] = task['result'].get('gaps', [])
         directory = self.directory(task_id)
         task['files'] = {str(p.relative_to(directory)): f'/api/v1/tasks/{task_id}/files/{quote(str(p.relative_to(directory)), safe="/")}'
                          for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink() and directory in p.resolve().parents}
@@ -198,7 +243,7 @@ class Tasks:
                         if path.is_file():
                             path.rename(archive / path.name)
                 self.update(task_id, status='排队中', started_at=None, finished_at=None,
-                            session_id=None, error='', result_digest=None, attempt=task['attempt'] + 1)
+                            session_id=None, error='', result_digest=None, result_json='{}', attempt=task['attempt'] + 1)
         return dict(ok=True, task=self.read(task_id))
 
     def execute(self, task):
@@ -212,10 +257,17 @@ class Tasks:
         try:
             directory.mkdir(parents=True, exist_ok=True)
             snapshot = json.loads(task['input_json'])
-            prompt = '读取 cases.yaml、scenarios.yaml、entries.yaml。按 schema.json 返回用例角色和入口、节点、原有场景去向及缺口。只读取快照，不运行 Git 写操作，不访问网络。'
+            prompt = files('sop_board').joinpath('prompts/merge.md').read_text(encoding='utf-8')
             (directory / 'cases.yaml').write_text(yaml.safe_dump(dict(metadata=snapshot['case_metadata'], test_cases=snapshot['cases']), allow_unicode=True), encoding='utf-8')
             (directory / 'scenarios.yaml').write_text(snapshot['scenarios'], encoding='utf-8')
             (directory / 'entries.yaml').write_text(yaml.safe_dump(snapshot['entries'], allow_unicode=True), encoding='utf-8')
+            (directory / 'nodes.json').write_text(canonical(snapshot['nodes']), encoding='utf-8')
+            for source in snapshot['sop_sources']:
+                target = directory / 'sop' / source['path']
+                if directory not in target.resolve().parents or '..' in Path(source['path']).parts:
+                    raise ValueError('SOP 原文路径越界')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(source['content'], encoding='utf-8')
             (directory / 'input.json').write_text(task['input_json'], encoding='utf-8')
             (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
             (directory / 'schema.json').write_text(canonical(SCHEMA), encoding='utf-8')
@@ -237,26 +289,30 @@ class Tasks:
                 final = (directory / 'final.json').read_text(encoding='utf-8')
                 if not final.strip():
                     raise FileNotFoundError()
-                result = json.loads(final)
+                result = json.loads(final, object_pairs_hook=judgment_object,
+                                    parse_constant=invalid_judgment_constant)
                 if not error:
                     raw, check = assemble(snapshot, result)
+                    if check['ok']:
+                        check['pairs'] = [dict(case=c['id'], scenarios=[c['id']], note='同编号用例场景') for c in snapshot['cases']]
+                        check['scenarios'] = result['scenarios']
                     if not check['ok']:
                         error = '; '.join(str(p) for p in check['problems'])
                     elif check.get('gaps'):
                         outcome = '待补充'
                     elif raw is not None:
                         (directory / 'scenario-file.yaml').write_text(raw, encoding='utf-8')
-                        root = self.service.writable_repos.get(task['project'])
-                        if root:
-                            source = root / 'docs/sop' / (task['batch'] + '.yaml')
-                            if root not in source.resolve().parents:
-                                error = '场景文件路径越出授权仓库'
-                            elif source.exists() and hashlib.sha256(source.read_bytes()).hexdigest() != task['scenario_file_sha256']:
-                                outcome = '待同步'
-                                check['workspace_changed'] = True
+                        pairs = dict(covered=[dict(case=c['id'], scenarios=[c['id']], note='同编号用例场景') for c in snapshot['cases']], conflict=[], disposed=[])
+                        (directory / 'pairs.json').write_text(canonical(pairs), encoding='utf-8')
+                        with self.lock:
+                            if not self.stopping.is_set() and self.read(task['id'])['status'] == '运行中':
+                                try:
+                                    outcome = self.land(task, raw, check)
+                                except (OSError, ValueError, APIError) as problem:
+                                    error = f'合并结果无法写入工作区：{problem}'
             except FileNotFoundError:
                 error = error or 'Codex 没有写出最终输出'
-            except (OSError, ValueError):
+            except (OSError, ValueError, RecursionError):
                 error = error or '最终消息不是 JSON 对象'
             except (KeyError, TypeError):
                 error = error or '最终消息不符合输出模式'
@@ -285,10 +341,51 @@ class Tasks:
                         except (ValueError, AttributeError):
                             continue
                 if not self.stopping.is_set() and self.read(task['id'])['status'] == '运行中':
-                    (directory / 'check.json').write_text(canonical(check if check and not error else dict(ok=False, problems=[error])), encoding='utf-8')
+                    if check is None:
+                        check = dict(ok=False, problems=[error])
+                    elif error and check['ok']:
+                        check.update(ok=False, problems=[error])
+                    (directory / 'check.json').write_text(canonical(check), encoding='utf-8')
                     self.update(task['id'], status='Codex 不可用' if unavailable else '失败' if error else outcome,
                                 finished_at=now(), session_id=session, error=error,
+                                result_json=canonical(check),
                                 result_digest=hashlib.sha256((directory / 'final.json').read_bytes()).hexdigest() if (directory / 'final.json').is_file() else None)
+
+    def land(self, task, raw, check):
+        root = self.service.writable_repos.get(task['project'])
+        if not root:
+            return '已完成'
+        source = root / 'docs/sop' / (task['batch'] + '.yaml')
+        if source.parent != root / 'docs/sop' or source.is_symlink() or root not in source.resolve().parents:
+            raise ValueError('场景文件路径必须位于授权仓库的 docs/sop 目录内')
+        if source.exists() and hashlib.sha256(source.read_bytes()).hexdigest() != task['scenario_file_sha256']:
+            check['workspace_changed'] = True
+            return '待同步'
+        from .repositories import product, read_entries
+        from .service import fingerprint
+        if check.get('inferred_entries'):
+            entry_file = root / 'docs/sop/entries.yaml'
+            if root not in entry_file.resolve().parents or entry_file.exists():
+                check['workspace_changed'] = True
+                return '待同步'
+            entry_file.parent.mkdir(parents=True, exist_ok=True)
+            with entry_file.open('x', encoding='utf-8') as stream:
+                stream.write('# 待确认：以下入口由 Codex 根据本次输入推断，请开发者核实。\n')
+                stream.write(yaml.safe_dump(check['inferred_entries'], allow_unicode=True, sort_keys=False))
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(raw, encoding='utf-8')
+        _, entry_path = read_entries(root)
+        document = yaml.safe_load(raw)
+        with self.store.connection() as db:
+            project = dict(db.execute('SELECT * FROM projects WHERE key=?', (task['project'],)).fetchone())
+        self.service.push(task['project'], task['batch'], dict(
+            project=dict(id=project['identity'], name=project['name']),
+            path=str(source.relative_to(root)), content=raw, pushed_by=f"看板合并 #{task['id']}",
+            **product(root, source, entry_path),
+            fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}),
+            preserve_project_name=True)
+        check['draft'] = False
+        return '已完成'
 
     def run(self):
         while not self.stopping.wait(.05):

@@ -1,0 +1,219 @@
+{
+  "type": "object",
+  "properties": {
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "verify": {
+            "type": "string"
+          },
+          "negative_type": {
+            "type": "string",
+            "enum": [
+              "empty-input",
+              "over-length",
+              "not-found",
+              "permission",
+              "cross-tenant",
+              "duplicate",
+              "concurrency",
+              "disconnect",
+              "timeout",
+              "archived",
+              "invalid-input",
+              "incomplete-input",
+              "interrupted",
+              "stale-input",
+              "tampered-input",
+              "other"
+            ]
+          },
+          "initial_state": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "actor",
+          "verify"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "entry": {
+            "type": "string"
+          },
+          "merge_into": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "section",
+          "actor",
+          "entry"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "kept",
+              "duplicate",
+              "conflict"
+            ]
+          },
+          "target": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "forbidden_effects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "transfer_regression": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "negative_exempt": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "inferred": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "section",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "relocate": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "entries": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "surface": {
+                "type": "string"
+              },
+              "operate": {
+                "type": "string"
+              },
+              "isolation": {
+                "type": "string"
+              },
+              "address_env": {
+                "type": "string"
+              },
+              "observe": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "surface",
+              "operate",
+              "observe",
+              "evidence",
+              "isolation"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "cases",
+    "nodes",
+    "scenarios",
+    "negative_exempt",
+    "gaps",
+    "notes",
+    "relocate"
+  ],
+  "additionalProperties": false
+}

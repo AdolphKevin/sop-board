@@ -23,7 +23,7 @@ def test_scenario_list_groups_all_current_scenarios_fields_results_and_navigatio
     assert board.request("POST", BASE + "/rounds", round_body(pushed, upload(board)))[0] == 200
     listing = page(board, WEB + "/scenarios?filter=agent-pass")
     nav = listing.one("nav", **{"aria-label": "批次导航"})
-    assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", WEB), ("SOP 场景", WEB + "/scenarios"), ("用例", WEB + "/cases"), ("进度", WEB + "/progress"), ("合并", WEB + "/merges")]
+    assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", WEB), ("SOP 场景", WEB + "/scenarios"), ("用例", WEB + "/cases"), ("进度", WEB + "/progress"), ("合并", WEB + "/merges"), ("SOP", WEB + "/sop")]
     assert nav.one("a", href=WEB + "/scenarios").attrs["aria-current"] == "page"
     assert page(board, WEB).one("nav", **{"aria-label": "批次导航"}).one("a", href=WEB).attrs["aria-current"] == "page"
     assert [s.attrs["data-node"] for s in listing.find_all("section", **{"class": "scenario-node"})] == ["N1", "N2"]
@@ -101,7 +101,7 @@ def test_seven_scenario_fields_current_summaries_manual_labels_and_navigation(bo
     for path, active in [(F7_WEB, F7_WEB), (F7_WEB + "/scenarios", F7_WEB + "/scenarios")]:
         doc = page(board, path)
         nav = doc.one("nav", **{"aria-label": "批次导航"})
-        assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", F7_WEB), ("SOP 场景", F7_WEB + "/scenarios"), ("用例", F7_WEB + "/cases"), ("进度", F7_WEB + "/progress"), ("合并", F7_WEB + "/merges")]
+        assert [(a.text, a.attrs["href"]) for a in nav.find_all("a")] == [("总览", F7_WEB), ("SOP 场景", F7_WEB + "/scenarios"), ("用例", F7_WEB + "/cases"), ("进度", F7_WEB + "/progress"), ("合并", F7_WEB + "/merges"), ("SOP", F7_WEB + "/sop")]
         assert [a.attrs["href"] for a in nav.find_all("a") if "aria-current" in a.attrs] == [active]
         assert_same_origin_resources(board, doc)
     expected_queues = {"N1-P01": "待执行", "N1-P02": "问题", "N1-N01": "问题", "N1-N02": "问题",

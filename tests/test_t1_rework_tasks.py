@@ -407,23 +407,19 @@ def test_timeout_kills_three_groups_and_gives_slot_to_fourth_task(board_factory,
     wait_for(lambda: all(not process_alive(pid) and not process_alive(child) for pid, child in pids))
 
 
-def test_existing_task_database_gains_scenario_digest_and_normalized_trigger(board_factory, fake_codex):
-    """修订 3 I3/D1：旧任务表升级补依据摘要，原编号、输入、完成状态及文件保持。"""
-    import sqlite3
+def test_current_task_database_restart_preserves_digest_trigger_and_files(board_factory, fake_codex):
+    """T2 清理：当前任务重启后依据摘要、原因和文件保持。"""
     board = task_board(board_factory, fake_codex)
     pushed, _ = push(board)
     task = settled(board, upload_task(board))
     before = read_task(board, task)
     files = {name: (board.data / 'tasks' / str(task['id']) / name).read_bytes() for name in before['files']}
     board.stop()
-    with sqlite3.connect(board.data / 'board.sqlite3') as db:
-        db.execute('ALTER TABLE tasks DROP COLUMN scenario_file_sha256')
-        db.execute("UPDATE tasks SET trigger='开发者请求' WHERE id=?", (task['id'],))
     board.start()
     after = read_task(board, task)
+    assert after == before
     assert after['scenario_file_sha256'] == hashlib.sha256(pushed['content'].encode()).hexdigest()
-    assert after['trigger'] == '重新合并'
-    assert (after['id'], after['input_digest'], after['status']) == (before['id'], before['input_digest'], before['status'])
+    assert after['trigger'] == '上传用例'
     assert files == {name: (board.data / 'tasks' / str(task['id']) / name).read_bytes() for name in after['files']}
 
 

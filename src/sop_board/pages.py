@@ -211,7 +211,8 @@ def batch_nav(project, name, current):
     return "<nav aria-label='批次导航'>" + "".join(
         f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
         for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
-                                   ("cases", "/cases", "用例"), ("progress", "/progress", "进度"), ("merges", "/merges", "合并")]) + "</nav>"
+                                   ("cases", "/cases", "用例"), ("progress", "/progress", "进度"), ("merges", "/merges", "合并"),
+                                   ("sop", "/sop", "SOP")]) + "</nav>"
 
 
 def progress(project, data, coverage):
@@ -325,16 +326,42 @@ def scenarios(project, name, data, jira_url=""):
     return layout("SOP 场景 · " + name, content, jira_url, watch=(project, name, data["etag"]))
 
 
-def merges(project, name, tasks):
+def merges(project, name, tasks, selected=None):
     api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}"
     content = (batch_nav(project, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" + identity_bar() +
-               "<p>当前合并结果保存在任务草稿中，不写入项目工作区。</p>" +
+               "<p>未授权项目保存草稿；授权项目核对磁盘版本后写入工作区。待同步时请核对工作区的修改。</p>" +
                f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
+    current = next((t for t in tasks if str(t['id']) == selected), tasks[-1] if tasks else None)
+    content += "<table><thead><tr><th>任务</th><th>触发原因</th><th>状态</th><th>创建时间</th></tr></thead><tbody>"
     for task in tasks:
+        content += (f"<tr><td><a href='?task={task['id']}'>#{task['id']}</a></td><td>{text(task['trigger'])}</td>" +
+                    f"<td>{text(task['status'])}</td><td>{time_tag(task['created_at'])}</td></tr>")
+    content += '</tbody></table>'
+    if current:
+        task = current
         content += (f"<section><h2>任务 #{task['id']} · {text(task['status'])}</h2>" +
                     f"<p>{text(task['trigger'])} · {time_tag(task['created_at'])}</p>" +
                     f"<p>{text(task['error'])}</p>")
+        result = task['result']
+        content += '<h3>用例到场景</h3><ul>'
+        for pair in result.get('pairs', []):
+            content += f"<li>{text(pair['case'])} → {text('、'.join(pair['scenarios']))}</li>"
+        content += '</ul><h3>原有场景的去向</h3><ul>'
+        for item in result.get('scenarios', []):
+            action = {'kept': '保留', 'duplicate': '重复', 'conflict': '冲突'}[item['action']]
+            content += f"<li>{text(item['id'])}：{action} {text(item.get('target', ''))}；{text(item.get('reason', ''))}</li>"
+        content += '</ul><h3>待确认的推断</h3><ul>'
+        for item in result.get('inferences', []):
+            content += f"<li>{text(item['id'])}：{text(item['content'])}</li>"
+        content += '</ul><h3>缺口</h3><ul>'
+        for gap in result.get('gaps', []):
+            content += f'<li>{text(gap)}</li>'
+        content += '</ul>'
+        if result.get('problems'):
+            content += '<h3>核对问题（check.json）</h3><pre>' + text(json.dumps(result['problems'], ensure_ascii=False, indent=2)) + '</pre>'
+        if task['status'] in ('已完成', '待同步'):
+            content += f"<p><a href='{text(api)}/merges/{task['id']}/scenario-file' download>下载合并场景</a> " + f"<a href='{text(api)}/merges/{task['id']}/pairs.json' download>下载配对文件</a></p>"
         for name_, url in task['files'].items():
             content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
         if task['status'] in ('失败', '已中断', 'Codex 不可用'):

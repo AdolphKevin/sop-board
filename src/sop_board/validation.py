@@ -1,6 +1,8 @@
 """写入正文的字段校验，不产生持久副作用。"""
 
 from datetime import datetime, timedelta, timezone
+import hashlib
+from pathlib import PurePosixPath
 import re
 
 from .errors import APIError
@@ -45,6 +47,34 @@ def validate_push(body):
         fingerprints = body.get("fingerprints")
         if not isinstance(fingerprints, dict) or not all(isinstance(v, str) for v in fingerprints.values()):
             p.add("fingerprints", "应为场景编号到指纹字符串的对象")
+        if 'sop_sources' in body:
+            sources = body['sop_sources']
+            if not isinstance(sources, list):
+                p.add('sop_sources', '应为 SOP 原文数组')
+            else:
+                seen = set()
+                required = {'ref', 'path', 'commit', 'sha256', 'confirmed_by', 'content'}
+                for index, source in enumerate(sources):
+                    field = f'sop_sources[{index}]'
+                    if not isinstance(source, dict):
+                        p.add(field, '应为 SOP 原文对象')
+                        continue
+                    for key in required - {'content'}:
+                        p.text(source.get(key), field + '.' + key)
+                    for key in source.keys() - required:
+                        p.add(field + '.' + key, '格式外字段')
+                    path = source.get('path')
+                    if isinstance(path, str):
+                        if '\0' in path or not PurePosixPath(path).parts or PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts or path in seen:
+                            p.add(field + '.path', '应为不重复且不含 .. 的仓库内相对路径')
+                        seen.add(path)
+                    content = source.get('content')
+                    if not isinstance(content, str):
+                        p.add(field + '.content', '应为 Markdown 原文字符串')
+                    elif len(content.encode()) > 2 * 1024 * 1024:
+                        p.add(field + '.content', 'SOP 原文不能超过 2 MiB')
+                    elif hashlib.sha256(content.encode()).hexdigest() != source.get('sha256'):
+                        p.add(field + '.sha256', '与 SOP 原文实际摘要不一致')
     for item in p.items:
         item["line"] = 1
     p.finish()

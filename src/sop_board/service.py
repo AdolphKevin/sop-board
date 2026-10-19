@@ -6,6 +6,7 @@ import json
 from itertools import islice
 from io import BytesIO
 import re
+import threading
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import yaml
@@ -45,6 +46,8 @@ class Service:
         self.writable_repos = writable_repos or {}
         self.workspace_problems = {}
         self.merge_callback = None
+        # 发现与合并落地共享锁，防止看板写入在登记版本前被自己的扫描发现。
+        self.workspace_lock = threading.RLock()
         self.jira_url = jira_url.rstrip("/")
 
     def upload(self, raw, name):
@@ -89,7 +92,10 @@ class Service:
         summary = calculate(db, batch)
         cases = self.case_union(db, batch)
         ids = {s["scenario"] for s in summary["scenarios"]}
+        merge = db.execute("SELECT id,result_json FROM tasks WHERE project=? AND batch=? AND kind='merge' AND status='已完成' ORDER BY id DESC LIMIT 1",
+                           (batch['project'], batch['name'])).fetchone()
         return dict(batch=dict(batch), project=dict(db.execute("SELECT * FROM projects WHERE key=?", (batch["project"],)).fetchone()),
+                    merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
                     coverage=ratio(sum(c["id"] in ids for c in cases), len(cases)),
                     latest_upload=db.execute("SELECT COALESCE(MAX(number),0) FROM case_uploads WHERE batch=?", (batch["id"],)).fetchone()[0])
@@ -439,6 +445,13 @@ class Service:
                        "ON CONFLICT(project,name) DO UPDATE SET path=excluded.path, product_digest=excluded.product_digest",
                        (key, batch, body["path"], body["product_digest"]))
             batch_id = db.execute("SELECT id FROM batches WHERE project=? AND name=?", (key, batch)).fetchone()[0]
+            for source in body.get('sop_sources', []):
+                last = db.execute('SELECT version,content FROM sop_versions WHERE batch=? AND path=? ORDER BY version DESC LIMIT 1',
+                                  (batch_id, source['path'])).fetchone()
+                if not last or last['content'] != source['content']:
+                    db.execute('INSERT INTO sop_versions(batch,path,version,ref,commit_id,sha256,confirmed_by,content,recorded_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                               (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
+                                source['sha256'], source['confirmed_by'], source['content'], now()))
             if isinstance(body.get("entries"), dict):
                 db.execute("INSERT INTO batch_entries(batch,content) VALUES (?,?) ON CONFLICT(batch) DO UPDATE SET content=excluded.content",
                            (batch_id, canonical(body["entries"])))

@@ -116,6 +116,23 @@ def entry_names(root):
     return set(entries), path
 
 
+def read_sop_sources(root, raw):
+    """按已登记场景来源取仓库内原文，任务建立时冻结，模型只看到副本。"""
+    import hashlib
+    document = yaml.safe_load(raw) or {}
+    sources = {}
+    for source in document.get('metadata', {}).get('sources', []):
+        for token in source['ref'].split():
+            path = root / token
+            if Path(token).is_absolute() or '..' in Path(token).parts or root not in path.resolve().parents or not path.is_file():
+                continue
+            content = path.read_bytes().decode('utf-8')
+            sources[token] = dict(path=token, ref=source['ref'], content=content,
+                                  sha256=hashlib.sha256(content.encode()).hexdigest(), confirmed_by=source['confirmed_by'])
+            break
+    return [sources[name] for name in sorted(sources)]
+
+
 class Discovery:
     def __init__(self, service, repos):
         import threading
@@ -124,6 +141,10 @@ class Discovery:
         self.thread = threading.Thread(target=self.run, name='workspace-discovery', daemon=True)
 
     def scan(self):
+        with self.service.workspace_lock:
+            self._scan()
+
+    def _scan(self):
         from .errors import APIError
         from .scenario_file import load_scenarios
         from .service import fingerprint, project_key
@@ -141,7 +162,7 @@ class Discovery:
                     if previous:
                         batch = previous['name']
                 try:
-                    raw = path.read_text(encoding='utf-8')
+                    raw = path.read_bytes().decode('utf-8')
                     # Read only scalar metadata when the rest of the file is invalid.
                     try:
                         node = yaml.compose(raw, Loader=yaml.SafeLoader)

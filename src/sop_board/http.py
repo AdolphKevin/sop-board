@@ -94,7 +94,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/merges", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 service.read_batch(key, batch)
-                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks']).encode(), "text/html; charset=utf-8")
+                selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
+                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], selected).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/progress", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -115,9 +116,11 @@ class Handler(BaseHTTPRequestHandler):
                 raw = self.server.tasks.file(int(match[1]), unquote(match[2]))
                 self.respond(200, raw, "application/octet-stream", [("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges/([0-9]+)/scenario-file", path)):
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges/([0-9]+)/(scenario-file|pairs\.json)", path)):
                 raw = self.server.tasks.merge_result(unquote(match[1]), unquote(match[2]), int(match[3]))
-                self.respond(200, raw, 'text/yaml; charset=utf-8')
+                if match[4] == 'pairs.json':
+                    raw = self.server.tasks.file(int(match[3]), 'pairs.json')
+                self.respond(200, raw, 'application/json; charset=utf-8' if match[4] == 'pairs.json' else 'text/yaml; charset=utf-8')
                 return
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
