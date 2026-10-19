@@ -68,6 +68,7 @@
     if (!identity) return;
     const marker = identity.querySelector("[name='marker']");
     const token = identity.querySelector("[name='token']");
+    const adminToken = identity.querySelector("[name='admin-token']");
     const show = (element, value, state = "success") => {
       element.textContent = value;
       element.dataset.state = state;
@@ -75,16 +76,45 @@
     const saveIdentity = () => {
       localStorage.setItem("sop-board.marker", marker.value.trim());
       localStorage.setItem("sop-board.token", token.value);
+      if (adminToken) localStorage.setItem("sop-board.admin-token", adminToken.value);
     };
     marker.value = localStorage.getItem("sop-board.marker") || "";
     token.value = localStorage.getItem("sop-board.token") || "";
+    if (adminToken) adminToken.value = localStorage.getItem("sop-board.admin-token") || "";
     for (const event of ["input", "change"]) {
       marker.addEventListener(event, saveIdentity);
       token.addEventListener(event, saveIdentity);
+      if (adminToken) adminToken.addEventListener(event, saveIdentity);
     }
     document.getElementById("save-identity").addEventListener("click", () => {
       saveIdentity();
       show(document.getElementById("identity-message"), "标记人与令牌已保存，可随时更换。");
+    });
+    document.querySelectorAll("[data-developer-action]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const message = document.getElementById("developer-message");
+        if (!adminToken?.value.trim()) {
+          show(message, "请先在身份栏填写开发者令牌", "error");
+          adminToken?.focus();
+          return;
+        }
+        saveIdentity();
+        button.disabled = true;
+        try {
+          const response = await fetch(button.dataset.developerAction, {
+            method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer " + adminToken.value},
+            body: "{}",
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            show(message, (data.error_code || "操作失败") + "：" + (data.problems || []).map(p => p.problem).join("；"), "error");
+          } else {
+            show(message, "任务 #" + data.task.id + "：" + data.task.status + "。刷新页面可查看最新状态。");
+          }
+        } catch {
+          show(message, "连接失败，请重试。", "error");
+        } finally {button.disabled = false;}
+      });
     });
     const filterLinks = document.querySelectorAll("[data-filter]");
     const applyFilter = () => {

@@ -156,7 +156,58 @@ function assertSaved(status, round = 2) {
   assert.equal(currentUrl.href, input.location);
 }
 async function main() {
-  if (input.case.startsWith("poll-")) {
+  if (input.case === "admin-rework") {
+    const admin = identity.querySelector("[name='admin-token']");
+    const buttons = qa("[data-developer-action]");
+    const merge = buttons.find(b => b.dataset.developerAction.endsWith("/merges"));
+    const retry = buttons.find(b => b.dataset.developerAction.endsWith("/retry"));
+    const before = (await serverGet("/api/v1/tasks")).body;
+    for (const button of [merge, retry]) {
+      await click(button);
+      assert.equal(q("#developer-message").textContent, "请先在身份栏填写开发者令牌");
+      assert.equal(requests.length, 0);
+    }
+    assert.deepEqual((await serverGet("/api/v1/tasks")).body, before);
+    assert.equal(token.value, "isolated-test");
+    admin.value = "isolated-admin"; await admin.dispatch("input");
+    assert.equal(saved.get("sop-board.admin-token"), "isolated-admin");
+    assert.equal(saved.get("sop-board.token"), "isolated-test");
+    await click(retry); await click(merge);
+    assert.equal(requests.length, 2);
+    assert.ok(requests[0].url.endsWith("/retry")); assert.ok(requests[1].url.endsWith("/merges"));
+    assert.ok(requests.every(r => r.options.headers.Authorization === "Bearer isolated-admin"));
+    assert.match(q("#developer-message").textContent, /任务/);
+  } else if (input.case === "admin-write-token") {
+    const c = controls(input.sid);
+    assert.equal(identity.querySelector("[name='admin-token']").value, "isolated-admin");
+    assert.equal(token.value, "isolated-test");
+    await click(c.button("pass"));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].options.headers.Authorization, "Bearer isolated-test");
+    assertResult(c, "pass", "Tester A");
+    assert.equal(saved.get("sop-board.admin-token"), "isolated-admin");
+  } else if (input.case === "admin-token") {
+    const admin = identity.querySelector("[name='admin-token']");
+    assert.ok(admin);
+    const merge = q("[data-developer-action]");
+    await click(merge);
+    assert.equal(requests.length, 0);
+    assert.equal(q("#developer-message").textContent, "请先在身份栏填写开发者令牌");
+    admin.value = "isolated-admin";
+    await admin.dispatch("input");
+    assert.equal(saved.get("sop-board.admin-token"), "isolated-admin");
+    // Reload restores developer identity without reading the saved value into the page.
+    const fresh = deserialize(input.document);
+    const freshDocument = {...document, querySelector: selector => fresh.querySelector(selector),
+      querySelectorAll: selector => fresh.querySelectorAll(selector), getElementById: id => fresh.querySelector("#" + id)};
+    vm.runInNewContext(input.script, {document: freshDocument, localStorage: storage, fetch, window, history, location, URL, setInterval, DOMParser});
+    assert.equal(freshDocument.querySelector("[name='admin-token']").value, "isolated-admin");
+    await click(merge);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].options.headers.Authorization, "Bearer isolated-admin");
+    assert.equal(requests[0].options.method, "POST");
+    assert.match(q("#developer-message").textContent, /任务/);
+  } else if (input.case.startsWith("poll-")) {
     await runPollingCase();
   } else if (input.case.startsWith("jira-")) {
     await runJiraCase();

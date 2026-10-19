@@ -116,9 +116,9 @@ def test_progress_columns_navigation_and_five_scenario_metrics(board_factory):
                       ("reviewed_progress", 2, 3), ("manual_pass_rate", 1, 2)]:
         assert summary["statistics"][key] == dict(numerator=n, denominator=d, rate=n/d)
     assert board.request("GET", P5_API + "/cases")[1]["coverage"] == dict(numerator=3, denominator=4, rate=.75)
-    for suffix in ["", "/scenarios", "/cases", "/progress"]:
+    for suffix in ["", "/scenarios", "/cases", "/progress", "/merges"]:
         nav = page(board, P5_WEB + suffix).one("nav", **{"aria-label": "批次导航"})
-        assert [a.attrs["href"] for a in nav.find_all("a")] == [P5_WEB + s for s in ["", "/scenarios", "/cases", "/progress"]]
+        assert [a.attrs["href"] for a in nav.find_all("a")] == [P5_WEB + s for s in ["", "/scenarios", "/cases", "/progress", "/merges"]]
         assert nav.one("a", **{"aria-current": "page"}).attrs["href"] == P5_WEB + suffix
     css = board.request("GET", "/assets/board.css")[1].decode()
     assert ".progress-columns" in css and "repeat(2, 1fr)" in css

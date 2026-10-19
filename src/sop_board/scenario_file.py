@@ -12,7 +12,7 @@ NEGATIVE_TYPES = set("empty-input over-length not-found permission cross-tenant 
 CONTENT_FIELDS = ("initial_state", "steps", "expected", "forbidden_effects")
 
 
-def load_scenarios(raw):
+def load_scenarios(raw, entries=None):
     lines = {(): 1}
     problems = []
 
@@ -101,17 +101,18 @@ def load_scenarios(raw):
         if shape(meta, ("metadata",), {"requirement", "batch", "version", "owner", "sources"}, {"tags"}):
             for key in ("requirement", "batch", "owner"):
                 text(meta.get(key), ("metadata", key))
-            if type(meta.get("version")) is not int:
+            if type(meta.get("version")) not in (int, float):
                 text(meta.get("version"), ("metadata", "version"))
             for index, source in enumerate(array(meta.get("sources"), ("metadata", "sources"), True)):
                 path = ("metadata", "sources", index)
                 if shape(source, path, {"ref", "version", "confirmed_by"}):
                     for key in ("ref", "version", "confirmed_by"):
-                        text(source.get(key), path + (key,))
+                        if key != "version" or type(source.get(key)) not in (int, float):
+                            text(source.get(key), path + (key,))
             if "tags" in meta:
                 texts(meta["tags"], ("metadata", "tags"))
         nodes, scenarios = set(), set()
-        for i, node in enumerate(array(value.get("sops"), ("sops",))):
+        for i, node in enumerate(array(value.get("sops"), ("sops",), entries is not None)):
             path = ("sops", i)
             if not shape(node, path, {"id", "title", "actor", "entry", "scenarios"}, {"must", "negative_exempt"}):
                 continue
@@ -123,7 +124,7 @@ def load_scenarios(raw):
                     add(path + ("id",), "重复节点编号：" + identifier)
                 nodes.add(identifier)
             if "must" in node:
-                texts(node["must"], path + ("must",))
+                texts(node["must"], path + ("must",), entries is not None)
             if "negative_exempt" in node:
                 text(node["negative_exempt"], path + ("negative_exempt",))
             polarities = set()
@@ -134,6 +135,8 @@ def load_scenarios(raw):
                     continue
                 for key in ("id", "title", "actor", "priority", "verify"):
                     text(row.get(key), p + (key,))
+                if entries is not None and isinstance(row.get("verify"), str) and row["verify"] not in entries:
+                    add(p + ("verify",), f"未声明的入口：{row['verify']}")
                 if isinstance(row.get("id"), str):
                     if row["id"] in scenarios:
                         add(p + ("id",), "重复场景编号：" + row["id"])

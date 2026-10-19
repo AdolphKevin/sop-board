@@ -52,7 +52,7 @@ def push_body(document=None, **overrides):
                 content=yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
                 fingerprints={s["id"]: independent_fingerprint(s)
                               for node in document["sops"] for s in node["scenarios"]},
-                pushed_by="开发岗")
+                pushed_by="开发岗", entries={"entries": {"自定义入口": dict(surface="http", operate="调用接口", observe=["响应"], evidence=["响应原文"], isolation="临时目录")}})
     body.update(overrides)
     return body
 
@@ -61,6 +61,11 @@ def push(board, body=None):
     body = body or push_body()
     status, response, _ = board.request("PUT", BASE + "/scenario-file", body)
     assert status == 200, response
+    import os
+    if board.env.get('PATH') == os.defpath:
+        from test_writable_repos import wait_for
+        wait_for(lambda: all(t['status'] not in ('排队中', '运行中') for t in
+                             board.request('GET', '/api/v1/tasks', auth=False)[1].get('tasks', [])))
     return body, response
 
 

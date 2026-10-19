@@ -6,7 +6,7 @@ from importlib.resources import files
 import json
 import re
 import sqlite3
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit, parse_qs
 
 from .errors import APIError, reject
 from . import pages
@@ -48,10 +48,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method in ("POST", "PUT"):
                 authorization = self.headers.get("Authorization", "")
-                if not hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
+                developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel)", path) or
+                                 re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/merges", path))
+                if developer and hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
+                    reject(403, "admin-required", "Authorization", "此操作需要开发者令牌")
+                expected = self.server.admin_token if developer else self.server.token
+                if not expected or not hmac.compare_digest(authorization.encode(), ("Bearer " + expected).encode()):
                     reject(401, "unauthorized", "Authorization", "令牌缺失或不符")
                 try:
-                    length = int(self.headers.get("Content-Length", ""))
+                    length = int(self.headers.get("Content-Length", "0" if developer else ""))
                     if length < 0:
                         raise ValueError()
                 except ValueError:
@@ -66,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond_json(200, result)
                     return
                 try:
-                    body = json.loads(raw.decode("utf-8"), parse_constant=invalid_constant)
+                    body = {} if developer and not raw else json.loads(raw.decode("utf-8"), parse_constant=invalid_constant)
                 except (ValueError, UnicodeError):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
@@ -86,6 +91,11 @@ class Handler(BaseHTTPRequestHandler):
                 scenarios = service.read_batch(key, batch, scenarios=True)["scenarios"]
                 self.respond(200, pages.cases(key, batch, data, scenarios).encode(), "text/html; charset=utf-8")
                 return
+            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/merges", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                service.read_batch(key, batch)
+                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks']).encode(), "text/html; charset=utf-8")
+                return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/progress", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 data = service.read_batch(key, batch)
@@ -96,7 +106,24 @@ class Handler(BaseHTTPRequestHandler):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
                 self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario), service.jira_url).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and path == "/api/v1/projects":
+            if method == "GET" and path == "/api/v1/tasks":
+                query = parse_qs(urlsplit(self.path).query)
+                result = self.server.tasks.list(query.get('project', [None])[0], query.get('batch', [None])[0])
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)", path)):
+                result = dict(ok=True, task=self.server.tasks.read(int(match[1])))
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/files/(.+)", path)):
+                raw = self.server.tasks.file(int(match[1]), unquote(match[2]))
+                self.respond(200, raw, "application/octet-stream", [("Content-Security-Policy", "sandbox; default-src 'none'")])
+                return
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges/([0-9]+)/scenario-file", path)):
+                raw = self.server.tasks.merge_result(unquote(match[1]), unquote(match[2]), int(match[3]))
+                self.respond(200, raw, 'text/yaml; charset=utf-8')
+                return
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges", path)):
+                result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/(retry|cancel)", path)):
+                result = self.server.tasks.action(int(match[1]), match[2])
+            elif method == "GET" and path == "/api/v1/projects":
                 result = service.projects()
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/jira/([^/]+)", path)):
                 result = self.server.jira.summary(unquote(match[1]))

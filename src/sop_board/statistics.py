@@ -22,6 +22,7 @@ def calculate(db, batch):
                            "JOIN rounds t ON t.id=r.round_id WHERE t.batch=? ORDER BY e.ordinal", (batch["id"],)):
         evidence.setdefault(item["result_id"], []).append(dict(name=item["name"], sha256=item["sha256"]))
     for row in rows:
+        row["round"] = row["number"]
         row["executed_at_display"] = local_time(row["executed_at"])
         row["submitted_at_display"] = local_time(row["submitted_at"])
         row["evidence"] = evidence.get(row["id"], [])

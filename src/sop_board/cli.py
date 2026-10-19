@@ -8,11 +8,13 @@ import signal
 import sqlite3
 import sys
 
-from .service import Service
+from .service import Service, project_key
 from .storage import Store
+from .tasks import Tasks, parse_timeout
 from .http import Handler
 from .jira import Jira
 from .network import local_ipv4_addresses
+from .repositories import authorize, Discovery
 
 
 def prepare_store(data):
@@ -49,10 +51,20 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--writable-repo", action="append", default=[])
     args = parser.parse_args()
     token = os.environ.get("SOP_BOARD_TOKEN", "")
     if not token.strip():
         print("启动失败：缺少非空 SOP_BOARD_TOKEN", file=sys.stderr)
+        return 1
+    try:
+        codex_timeout = parse_timeout(os.environ.get("SOP_BOARD_CODEX_TIMEOUT"))
+        repos = authorize(args.writable_repo, token, os.environ.get("SOP_BOARD_ADMIN_TOKEN", ""))
+        data_path = args.data.resolve()
+        if any(data_path == path or path in data_path.parents for path in repos.values()):
+            raise ValueError('数据目录不能位于授权仓库内')
+    except ValueError as error:
+        print(f"启动失败：{error}", file=sys.stderr)
         return 1
     try:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
@@ -61,17 +73,30 @@ def main():
         print(f"启动失败：无法监听端口 {args.port}：{error}", file=sys.stderr)
         return 1
     stopping = False
+    discovery = None
+    tasks = None
     try:
         try:
             store = prepare_store(args.data)
         except (OSError, sqlite3.Error) as error:
             print(f"启动失败：数据目录 {args.data} 无法创建或写入：{error}", file=sys.stderr)
             return 1
-        server.service = Service(store, jira_url=os.environ.get("JIRA_URL", ""))
+        server.service = Service(store, jira_url=os.environ.get("JIRA_URL", ""),
+                                 writable_repos={project_key(k): p for k, p in repos.items()})
+        with store.transaction() as db:
+            for identity, path in repos.items():
+                prefix = f"https://{identity}/issues/" if identity.startswith("github.com/") else None
+                db.execute("INSERT OR IGNORE INTO projects VALUES (?,?,?,?)",
+                           (project_key(identity), identity, path.name, prefix))
         server.jira = Jira(os.environ.get("JIRA_URL", ""), os.environ.get("JIRA_EMAIL", ""),
                            os.environ.get("JIRA_API_TOKEN", ""),
                            timeout=os.environ.get("JIRA_TIMEOUT_SECONDS", "10"))
         server.token = token
+        server.admin_token = os.environ.get("SOP_BOARD_ADMIN_TOKEN", "")
+        tasks = server.tasks = Tasks(server.service, timeout=codex_timeout)
+        discovery = Discovery(server.service, repos)
+        discovery.scan()
+        discovery.thread.start()
         server.timeout = 0.1
 
         def stop(signum, frame):
@@ -81,6 +106,8 @@ def main():
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+        for identity, path in repos.items():
+            print(f"可写授权：{identity}（{path}）", flush=True)
         print(f"看板地址：http://{display_host}:{server.server_port}/", flush=True)
         if args.host == "0.0.0.0":
             for address in local_ipv4_addresses():
@@ -90,4 +117,8 @@ def main():
     finally:
         stopping = True
         server.server_close()
+        if tasks:
+            tasks.close()
+        if discovery and discovery.thread.is_alive():
+            discovery.close()
     return 0

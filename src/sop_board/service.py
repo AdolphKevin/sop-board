@@ -40,8 +40,11 @@ def project_key(identity):
 
 
 class Service:
-    def __init__(self, store, jira_url=""):
+    def __init__(self, store, jira_url="", writable_repos=None):
         self.store = store
+        self.writable_repos = writable_repos or {}
+        self.workspace_problems = {}
+        self.merge_callback = None
         self.jira_url = jira_url.rstrip("/")
 
     def upload(self, raw, name):
@@ -70,7 +73,11 @@ class Service:
         numbers = [db.execute(f"SELECT COALESCE(MAX({column}),0) FROM {table} WHERE batch=?",
                               (batch["id"],)).fetchone()[0]
                    for table, column in [("versions", "version"), ("rounds", "number"), ("case_uploads", "number")]]
-        return '"v%d-r%d-u%d"' % tuple(numbers)
+        etag = 'v%d-r%d-u%d' % tuple(numbers)
+        problems = self.workspace_problems.get((batch['project'], batch['name']), [])
+        if problems:
+            etag += '-w' + hashlib.sha256(canonical(problems).encode()).hexdigest()[:12]
+        return '"' + etag + '"'
 
     def state(self, key, name):
         with self.store.connection() as db:
@@ -144,8 +151,11 @@ class Service:
             for item in document["test_cases"]:
                 db.execute("INSERT INTO case_versions(batch,case_id,upload,body) VALUES (?,?,?,?)",
                            (batch["id"], item["id"], number, canonical(item)))
-            return dict(ok=True, upload=number, added=added, updated=updated,
-                        unchanged=count - added - updated, union_count=len(current) + added)
+            result = dict(ok=True, upload=number, added=added, updated=updated,
+                          unchanged=count - added - updated, union_count=len(current) + added)
+        if self.merge_callback:
+            self.merge_callback(key, name, trigger="上传用例")
+        return result
 
     def case_union(self, db, batch):
         return [json.loads(row["body"]) for row in db.execute(
@@ -239,6 +249,11 @@ class Service:
         version = self.latest_version(db, batch)
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
                     pushed_at=version["pushed_at"] if version else None,
+                    pushed_by=version["pushed_by"] if version else None,
+                    dirty=bool(version["dirty"]) if version else None,
+                    commit=version["commit_id"] if version else None,
+                    writable=batch["project"] in self.writable_repos,
+                    workspace_problems=self.workspace_problems.get((batch["project"], batch["name"]), []),
                     scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
 
     def read_batch(self, key, name, scenarios=False):
@@ -259,7 +274,7 @@ class Service:
             projects = []
             for project in db.execute("SELECT * FROM projects ORDER BY key"):
                 projects.append(dict(key=project["key"], id=project["identity"], name=project["name"],
-                    defect_prefix=project["defect_prefix"], batches=[self.summary(db, batch) for batch in db.execute(
+                    defect_prefix=project["defect_prefix"], writable=project["key"] in self.writable_repos, batches=[self.summary(db, batch) for batch in db.execute(
                         "SELECT * FROM batches WHERE project=? ORDER BY name", (project["key"],))]))
             return dict(ok=True, projects=projects)
 
@@ -398,7 +413,7 @@ class Service:
             scenario = next(item for item in summary["scenarios"] if item["scenario"] == body["scenario"])
             return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"])
 
-    def push(self, key, batch, body):
+    def push(self, key, batch, body, *, preserve_project_name=False):
         validate_push(body)
         document = load_scenarios(body["content"])
         if document["metadata"]["batch"] != batch:
@@ -417,12 +432,16 @@ class Service:
             identity = body["project"]["id"]
             prefix = (f"https://{identity}/issues/" if
                       re.fullmatch(r"github\.com/[^/]+/[^/]+", identity, re.I) else None)
-            db.execute("INSERT INTO projects VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET name=excluded.name",
+            conflict = "DO NOTHING" if preserve_project_name else "DO UPDATE SET name=excluded.name"
+            db.execute("INSERT INTO projects VALUES (?,?,?,?) ON CONFLICT(key) " + conflict,
                        (key, identity, body["project"]["name"], prefix))
             db.execute("INSERT INTO batches(project,name,path,product_digest) VALUES (?,?,?,?) "
                        "ON CONFLICT(project,name) DO UPDATE SET path=excluded.path, product_digest=excluded.product_digest",
                        (key, batch, body["path"], body["product_digest"]))
             batch_id = db.execute("SELECT id FROM batches WHERE project=? AND name=?", (key, batch)).fetchone()[0]
+            if isinstance(body.get("entries"), dict):
+                db.execute("INSERT INTO batch_entries(batch,content) VALUES (?,?) ON CONFLICT(batch) DO UPDATE SET content=excluded.content",
+                           (batch_id, canonical(body["entries"])))
             previous = db.execute("SELECT * FROM versions WHERE batch=? ORDER BY version DESC LIMIT 1", (batch_id,)).fetchone()
             if previous and previous["content"] == body["content"]:
                 return dict(ok=True, version=previous["version"], added=[], changed=[], removed=[], unchanged=True)
@@ -445,4 +464,6 @@ class Service:
                            (batch_id, scenario["id"], fingerprint(scenario), node,
                            scenario["title"], scenario["polarity"], scenario["priority"], scenario["verify"],
                            canonical(scenario.get("regression")), canonical(scenario)))
+        if self.merge_callback and not body['pushed_by'].startswith('看板合并 #'):
+            self.merge_callback(key, batch, trigger='场景文件变化')
         return dict(ok=True, version=version, added=added, changed=changed, removed=removed, unchanged=False)

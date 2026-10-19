@@ -14,8 +14,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 # This value belongs only to isolated test processes; never inherit a user's token.
-TEST_ENV = {k: v for k, v in os.environ.items() if k not in ("SOP_BOARD_TOKEN", "JIRA_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_TIMEOUT_SECONDS")}
+TEST_ENV = {k: v for k, v in os.environ.items() if k not in ("SOP_BOARD_TOKEN", "SOP_BOARD_ADMIN_TOKEN", "SOP_BOARD_CODEX_TIMEOUT", "JIRA_URL", "JIRA_EMAIL", "JIRA_API_TOKEN", "JIRA_TIMEOUT_SECONDS")}
 TEST_ENV["SOP_BOARD_TOKEN"] = "isolated-test"
+# All Codex-dependent tests opt in with a disposable fake executable.
+TEST_ENV["PATH"] = os.defpath
 OPENER = build_opener(ProxyHandler({}))
 
 

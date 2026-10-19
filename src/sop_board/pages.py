@@ -44,7 +44,7 @@ def home(data):
         batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
                           f"{text(batch['name'])}</a> · {agent_state(batch)}</li>" for batch in project["batches"])
         projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
-                        f"<ul>{batches}</ul></section>")
+                        f"<p>{'可写' if project.get('writable') else '只读'}</p><ul>{batches}</ul></section>")
     return layout("项目与批次", "<h1>项目与批次</h1>" + ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>"))
 
 
@@ -67,7 +67,12 @@ def agent_state(data):
 def batch(project, data):
     base = batch_url(project, data["name"])
     api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
-    report_link = f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
+    workspace = f"<p>{'可写' if data.get('writable') else '只读'}</p>"
+    if data.get("workspace_problems"):
+        workspace += "<section><h2>工作区场景文件不合格</h2>" + "".join(
+            f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
+            for p in data["workspace_problems"]) + "</section>"
+    report_link = workspace + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
     if data["version"] is None:
         return layout("批次 " + data["name"], batch_nav(project, data["name"], "overview") +
                       f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"
@@ -176,6 +181,7 @@ def identity_bar():
     return ("<section id='review-identity'><h2>复核身份</h2><fieldset><legend>标记人与令牌（可随时更换）</legend>"
             "<label>标记人<input name='marker' autocomplete='off'></label>"
             "<label>写入令牌<input name='token' type='password' autocomplete='off'></label>"
+            "<label>开发者令牌<input name='admin-token' type='password' autocomplete='off'></label>"
             "<button type='button' id='save-identity'>保存标记人与令牌</button></fieldset>"
             "<p id='identity-message' role='status' aria-live='polite'></p></section>")
 
@@ -205,7 +211,7 @@ def batch_nav(project, name, current):
     return "<nav aria-label='批次导航'>" + "".join(
         f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
         for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
-                                   ("cases", "/cases", "用例"), ("progress", "/progress", "进度")]) + "</nav>"
+                                   ("cases", "/cases", "用例"), ("progress", "/progress", "进度"), ("merges", "/merges", "合并")]) + "</nav>"
 
 
 def progress(project, data, coverage):
@@ -317,3 +323,23 @@ def scenarios(project, name, data, jira_url=""):
                         f"{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
         content += "</section>"
     return layout("SOP 场景 · " + name, content, jira_url, watch=(project, name, data["etag"]))
+
+
+def merges(project, name, tasks):
+    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}"
+    content = (batch_nav(project, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" + identity_bar() +
+               "<p>当前合并结果保存在任务草稿中，不写入项目工作区。</p>" +
+               f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" +
+               "<p id='developer-message' role='status' aria-live='polite'></p>")
+    for task in tasks:
+        content += (f"<section><h2>任务 #{task['id']} · {text(task['status'])}</h2>" +
+                    f"<p>{text(task['trigger'])} · {time_tag(task['created_at'])}</p>" +
+                    f"<p>{text(task['error'])}</p>")
+        for name_, url in task['files'].items():
+            content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
+        if task['status'] in ('失败', '已中断', 'Codex 不可用'):
+            content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
+        if task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充'):
+            content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
+        content += '</section>'
+    return layout('任务', content)

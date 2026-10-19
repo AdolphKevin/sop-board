@@ -31,4 +31,11 @@ def cases_body(document=None, **overrides):
 def upload_cases(board, body=None, base=CASES_BASE):
     status, data, _ = board.request("POST", base + "/cases", body or cases_body())
     assert status == 200, data
+    # Old case/review tests compare the whole database. Their environment has no
+    # Codex, so finish the newly introduced availability check before snapshotting.
+    import os
+    if board.env.get('PATH') == os.defpath:
+        from test_writable_repos import wait_for
+        wait_for(lambda: all(t['status'] not in ('排队中', '运行中') for t in
+                             board.request('GET', '/api/v1/tasks', auth=False)[1].get('tasks', [])))
     return data
