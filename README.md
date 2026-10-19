@@ -42,6 +42,33 @@ uv run sop-board --data /tmp/sop-board-data --port 8787 \
 
 页面身份栏中的“开发者令牌”单独保存在当前浏览器的 `sop-board.admin-token`；开发者按钮需要填写该栏。写入令牌仍只用于原有写入操作。开发者接口缺少或令牌不符时返回 401 `unauthorized`；使用写入令牌时返回 403 `admin-required`。
 
+授权项目的 `GET /api/v1/projects/<项目键>/entries` 无需令牌，返回 `{ok, source, entries, checks, problems}`。有 `.tw/config.json` 时，只取其中的 `acceptance_entries` 与 `checks`；否则取 `docs/sop/entries.yaml` 的 `entries` 与顶层 `checks`。入口包含 `surface`、`operate`、`observe`、`evidence`、`isolation`，可选 `address_env`、`candidate`、`start`、`reload`；`candidate` 缺省为 `in-place`，另可取 `checkout` 或 `start`，取 `start` 时须声明启动命令数组。声明错误或场景引用不存在的入口、检查时，批次页显示“入口声明不合格”与具体问题，检查任务等待声明恢复；此时新发起检查返回 409 `entries-invalid`。读取不存在的项目返回 404 `project-not-found`，未授权项目返回 409 `repo-not-writable`。
+
+检查声明示例（命令以数组传递，不经过命令行解释器）：
+
+```yaml
+checks:
+  unit:
+    argv: [python3, scripts/check.py, "{output}"]
+    format: junit
+    report: "{output}/report.xml"
+    cwd: .
+    timeout: 900
+    required_env: []
+```
+
+`cwd` 是检出目录内的相对路径，缺省 `.`；`timeout` 缺省 900 秒；`required_env` 缺省空数组。`format` 支持 `junit` 与 `go-json`，前者必须声明 `report`；其他检查字段忽略。场景以 `regression: {check: unit, cases: ['pkg.Order::test_create']}` 引用检查与用例。JUnit 用例名为 `<classname>::<name>`；Go JSON 用例名为 `<Package>::<Test>`，包级事件不算用例。
+
+开发者向 `POST /api/v1/projects/<项目键>/batches/<批次>/checks` 提交空正文或 `{}`，以开发者令牌单独发起回归检查，返回 `{ok, task}`。范围为全部声明检查的场景；没有这类场景返回 409 `nothing-to-check`。每项检查在一次任务中只运行一次，不占 Codex 的三个运行名额。检查任务的读取接口另含 `scope`、`snapshot`、`void_reason`、`rounds`。
+
+检查只运行已提交的产品代码。看板比较工作区与 HEAD 的产品指纹，包含未跟踪且未忽略的文件；有差异时任务为“待提交”，列出前十个变化路径，每五秒复核。`docs/sop/` 与当前入口声明文件不计入产品指纹。满足条件后，在数据目录 `worktrees/<任务编号>/` 检出快照提交运行检查，结束后移除。任务目录的 `snapshot.json` 固定场景版本、所选场景内容、入口与检查声明、用例并集、提交号与产品指纹；结束与登记前复核，变化时任务为“已作废”，不登记轮次。工作区场景文件的变化也会核对，不必等下一次扫描。
+
+`{output}` 替换为任务目录的 `checks/<检查编号>/`，标准输出与错误输出存为 `output.txt`；Go JSON 的标准输出另存为 `report.jsonl`。检查继承与 Codex 相同的环境白名单，额外传入 `required_env` 声明的变量；缺变量时不启动命令，场景登记为受阻。超时终止整个进程组。报告缺失、无法解析，或声明用例缺失、失败、出错、跳过时，场景为失败；声明用例全部通过时为通过，命令退出码非零仍通过并注明退出码。
+
+每项检查登记一个 Agent 轮次，执行者与提交人为“回归检查 <检查编号>”，会话为任务编号，证据为输出和可用报告，产品取快照提交号与指纹。检查任务的“已完成”表示运行与登记结束，各检查及场景的通过、失败、受阻另列在结果中。已作废的检查可以重试，待提交的检查可以放弃；重试重新固定快照，旧文件连同报告目录归档，避免误用旧报告。重启后待提交、排队与运行中的任务为“已中断”，清理残留检出目录。
+
+场景列表接口的 `regression_status` 为 `passed`、`failed`、`pending` 或 null，分别表示当前产品指纹上的最新真实回归检查通过、失败或受阻、尚未运行，以及没有声明检查。普通 Agent 或人工轮次不冒充回归检查。页面对应显示“检查通过”“检查失败”“检查待运行”；产品变化后重新等待检查。
+
 批次导航中的“合并”页提供任务列表、错误原因、原始文件下载与开发者操作。有用例的批次在上传用例或场景文件变化时自动建立任务，触发原因分别为“上传用例”和“场景文件变化”。`POST /api/v1/projects/<项目键>/batches/<批次>/merges` 发起“重新合并”：相同输入已有排队或运行任务时返回该任务，否则建立新任务，即使此前相同输入已经完成。没有用例时返回 409 `cases-missing`。任务带 `scenario_file_sha256` 表示依据的场景原文摘要，无场景版本时为空字符串。
 
 合并时，每条用例生成一条同编号场景，标题、优先级、标签、前置条件、步骤和预期按解析后的文字原样复制，只有标签含 `negative` 才作为反向场景。按用例编号排序后，分组首次出现时分配 S01、S02 等节点编号；以后新分组追加编号，合入其他节点的分组也保留原编号。重新合并时按场景编号保留回归声明；已经并入且仍在当前场景中的禁止副作用，经历史合并记录确认来源后也继续保留。

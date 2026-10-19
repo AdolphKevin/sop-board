@@ -69,6 +69,20 @@ class Service:
             reject(404, "batch-not-found", "batch", "批次不存在")
         return batch
 
+    def entries(self, key):
+        with self.store.connection() as db:
+            if not db.execute('SELECT 1 FROM projects WHERE key=?', (key,)).fetchone():
+                reject(404, 'project-not-found', 'project', '项目不存在')
+        root = self.writable_repos.get(key)
+        if not root:
+            reject(409, 'repo-not-writable', 'project', '项目未授权写入')
+        from .entries import read_declarations, check_references
+        with self.store.connection() as db:
+            documents = [yaml.safe_load(row[0]) for row in db.execute(
+                'SELECT v.content FROM versions v JOIN batches b ON b.id=v.batch WHERE b.project=? '
+                'AND NOT EXISTS (SELECT 1 FROM versions newer WHERE newer.batch=v.batch AND newer.version>v.version)', (key,))]
+        return check_references(read_declarations(root), documents)
+
     def latest_version(self, db, batch):
         return db.execute("SELECT * FROM versions WHERE batch=? ORDER BY version DESC LIMIT 1", (batch["id"],)).fetchone()
 
@@ -77,12 +91,16 @@ class Service:
                               (batch["id"],)).fetchone()[0]
                    for table, column in [("versions", "version"), ("rounds", "number"), ("case_uploads", "number")]]
         etag = 'v%d-r%d-u%d' % tuple(numbers)
+        if batch['project'] in self.writable_repos:
+            etag += '-p' + batch['product_digest'][:12]
         sop_version = db.execute('SELECT COALESCE(MAX(id),0) FROM sop_versions WHERE batch=?', (batch['id'],)).fetchone()[0]
         if sop_version:
             etag += f'-s{sop_version}'
         problems = self.workspace_problems.get((batch['project'], batch['name']), [])
         if problems:
             etag += '-w' + hashlib.sha256(canonical(problems).encode()).hexdigest()[:12]
+        if batch['project'] in self.writable_repos:
+            etag += '-e' + hashlib.sha256(canonical(self.entries(batch['project'])).encode()).hexdigest()[:12]
         return '"' + etag + '"'
 
     def state(self, key, name):
@@ -221,7 +239,7 @@ class Service:
                            (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
                             source['sha256'], source['confirmed_by'], source['content'], now()))
 
-    def insert_round(self, db, batch, version, body, kind="agent"):
+    def insert_round(self, db, batch, version, body, kind="agent", regression_check=None):
         number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
         product = body["product"]
         cursor = db.execute("INSERT INTO rounds(batch,number,kind,version,product_commit,product_digest,product_dirty,"
@@ -230,6 +248,8 @@ class Service:
                              body.get("implementer"), body["submitted_by"], now(), body.get("idempotency_key"),
                              hashlib.sha256(canonical(body).encode()).hexdigest()))
         round_id = cursor.lastrowid
+        if regression_check is not None:
+            db.execute('INSERT INTO check_rounds VALUES (?,?)', (round_id, regression_check))
         for row in body["results"]:
             implementer = body.get("implementer")
             fold = lambda name: " ".join(name.casefold().split())
@@ -281,6 +301,7 @@ class Service:
                     dirty=bool(version["dirty"]) if version else None,
                     commit=version["commit_id"] if version else None,
                     writable=batch["project"] in self.writable_repos,
+                    entry_problems=self.entries(batch['project'])['problems'] if batch['project'] in self.writable_repos else [],
                     workspace_problems=self.workspace_problems.get((batch["project"], batch["name"]), []),
                     scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
 

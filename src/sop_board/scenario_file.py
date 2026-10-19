@@ -12,7 +12,7 @@ NEGATIVE_TYPES = set("empty-input over-length not-found permission cross-tenant 
 CONTENT_FIELDS = ("initial_state", "steps", "expected", "forbidden_effects")
 
 
-def load_scenarios(raw, entries=None):
+def load_scenarios(raw, entries=None, check_entry_references=True):
     lines = {(): 1}
     problems = []
 
@@ -135,7 +135,7 @@ def load_scenarios(raw, entries=None):
                     continue
                 for key in ("id", "title", "actor", "priority", "verify"):
                     text(row.get(key), p + (key,))
-                if entries is not None and isinstance(row.get("verify"), str) and row["verify"] not in entries:
+                if check_entry_references and entries is not None and isinstance(row.get("verify"), str) and row["verify"] not in entries:
                     add(p + ("verify",), f"未声明的入口：{row['verify']}")
                 if isinstance(row.get("id"), str):
                     if row["id"] in scenarios:

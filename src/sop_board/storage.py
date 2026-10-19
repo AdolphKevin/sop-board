@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     batch TEXT NOT NULL, status TEXT NOT NULL, trigger TEXT NOT NULL, input_digest TEXT NOT NULL,
     input_json TEXT NOT NULL, scenario_file_sha256 TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
     attempt INTEGER NOT NULL DEFAULT 1, session_id TEXT, error TEXT NOT NULL DEFAULT '', result_digest TEXT,
-    result_json TEXT NOT NULL DEFAULT '{}'
+    result_json TEXT NOT NULL DEFAULT '{}', scope_json TEXT NOT NULL DEFAULT '[]',
+    snapshot_json TEXT NOT NULL DEFAULT '{}', void_reason TEXT NOT NULL DEFAULT '', rounds_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS projects (
     key TEXT PRIMARY KEY, identity TEXT NOT NULL, name TEXT NOT NULL, defect_prefix TEXT
@@ -44,6 +45,9 @@ CREATE TABLE IF NOT EXISTS rounds (
     product_commit TEXT, product_digest TEXT, product_dirty INTEGER,
     implementer TEXT, submitted_by TEXT NOT NULL, submitted_at TEXT NOT NULL,
     idempotency_key TEXT, body_sha256 TEXT, UNIQUE(batch,number), UNIQUE(batch,idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS check_rounds (
+    round_id INTEGER PRIMARY KEY REFERENCES rounds(id), check_name TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY, round_id INTEGER NOT NULL REFERENCES rounds(id),

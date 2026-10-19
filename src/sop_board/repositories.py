@@ -1,7 +1,6 @@
 """授权路径核对与只读 Git 查询；不继承 Git 配置覆盖变量。"""
 import os
 import json
-import re
 
 import yaml
 from pathlib import Path
@@ -41,10 +40,34 @@ def authorize(values, token, admin):
 
 def product(root, scenario, entry):
     import hashlib
-    import json
+    files = product_files(root, scenario, entry)
+    digest = hashlib.sha256(json.dumps(files, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    try:
+        commit = git(root, 'rev-parse', '--verify', 'HEAD').decode().strip()
+    except subprocess.CalledProcessError:
+        commit = 'unborn'
+    return dict(product_digest=digest, commit=commit,
+                dirty=bool(git(root, 'status', '--porcelain', '--untracked-files=all')))
+
+
+def product_files(root, scenario, entry, head=False):
+    """相同排除规则下的工作区或 HEAD 文件内容，用于已提交代码核对。"""
+    import hashlib
+    excluded = {scenario.resolve(), entry.resolve()}
+    if head:
+        files = []
+        for record in git(root, 'ls-tree', '-rz', '--full-tree', 'HEAD').split(b'\0'):
+            if not record:
+                continue
+            info, raw = record.split(b'\t', 1)
+            name = os.fsdecode(raw)
+            if name.startswith('docs/sop/') or (root / name).resolve() in excluded:
+                continue
+            data = git(root, 'cat-file', 'blob', info.split()[2].decode())
+            files.append(dict(path=name, sha256=hashlib.sha256(data).hexdigest()))
+        return sorted(files, key=lambda f: os.fsencode(f['path']))
     names = set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').split(b'\0'))
     files = []
-    excluded = {scenario.resolve(), entry.resolve()}
     for raw in sorted(names):
         if not raw:
             continue
@@ -63,52 +86,18 @@ def product(root, scenario, entry):
             files.append(dict(path=name, sha256=hashlib.sha256(data).hexdigest()))
         except FileNotFoundError:
             files.append(dict(path=name, deleted=True))
-    digest = hashlib.sha256(json.dumps(files, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
-    try:
-        commit = git(root, 'rev-parse', '--verify', 'HEAD').decode().strip()
-    except subprocess.CalledProcessError:
-        commit = 'unborn'
-    return dict(product_digest=digest, commit=commit,
-                dirty=bool(git(root, 'status', '--porcelain', '--untracked-files=all')))
+    return files
 
 
 def read_entries(root):
-    """仅读取入口声明；名称用于场景的 verify 引用核对。"""
+    """合并任务共用新声明读取规则；读取接口自行展示声明问题。"""
     from .errors import APIError
-    path = root / 'docs/sop/entries.yaml'
-    config = root / '.tw/config.json'
-    if config.exists():
-        path = config
-    if not path.exists():
-        return {}, path
-    try:
-        raw = path.read_text(encoding='utf-8')
-        for token in yaml.scan(raw):
-            if isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken, yaml.tokens.TagToken)):
-                raise ValueError('入口声明不支持锚点、别名或显式标签')
-        document = json.loads(raw) if path == config else yaml.safe_load(raw)
-        entries = document.get('acceptance_entries' if path == config else 'entries')
-        if not isinstance(entries, dict) or not entries:
-            raise ValueError('入口声明应含非空 entries 对象')
-        required = {'surface', 'operate', 'observe', 'evidence', 'isolation'}
-        for name, entry in entries.items():
-            if not isinstance(name, str) or not name.strip() or not isinstance(entry, dict):
-                raise ValueError('入口名称应为非空字符串，入口内容应为对象')
-            if not required <= entry.keys() or (path != config and entry.keys() - required - {'address_env'}):
-                raise ValueError(f'入口 {name} 的字段不合格')
-            for key in ('surface', 'operate', 'isolation'):
-                if not isinstance(entry[key], str) or not entry[key].strip():
-                    raise ValueError(f'入口 {name} 的 {key} 应为非空字符串')
-            for key in ('observe', 'evidence'):
-                if not isinstance(entry[key], list) or not entry[key] or not all(isinstance(v, str) and v.strip() for v in entry[key]):
-                    raise ValueError(f'入口 {name} 的 {key} 应为非空字符串数组')
-            if 'address_env' in entry and (not isinstance(entry['address_env'], str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', entry['address_env'])):
-                raise ValueError(f'入口 {name} 的 address_env 应为环境变量名')
-        return entries, path
-    except (ValueError, AttributeError, yaml.YAMLError, RecursionError) as error:
-        mark = getattr(error, 'problem_mark', None)
-        raise APIError(422, 'scenario-file-invalid', [dict(field='entries', line=mark.line + 1 if mark else 1,
-            problem=f'{path.relative_to(root)} 入口声明不合格：{error}')]) from error
+    from .entries import read_declarations
+    declarations = read_declarations(root)
+    path = root / ('.tw/config.json' if declarations['source'] == 'tw-config' else 'docs/sop/entries.yaml')
+    if not declarations['ok']:
+        raise APIError(422, 'scenario-file-invalid', [dict(p, line=1) for p in declarations['problems']])
+    return declarations['entries'], path
 
 
 def entry_names(root):
@@ -181,8 +170,10 @@ class Discovery:
                                             batch = mv.value
                     except (yaml.YAMLError, RecursionError):
                         pass
-                    entries, entry_path = entry_names(root)
-                    document = load_scenarios(raw, entries=entries)
+                    from .entries import read_declarations
+                    declarations = read_declarations(root)
+                    entry_path = root / ('.tw/config.json' if declarations['source'] == 'tw-config' else 'docs/sop/entries.yaml')
+                    document = load_scenarios(raw, entries=set(declarations['entries']), check_entry_references=False)
                     batch = document['metadata']['batch']
                     sources = read_sop_sources(root, raw)
                     body = dict(project=dict(id=identity, name=root.name), path=str(path.relative_to(root)),
@@ -202,6 +193,8 @@ class Discovery:
                         with self.service.store.transaction() as db:
                             stored = self.service.batch(db, key, batch)
                             self.service.save_sop_sources(db, stored['id'], sources)
+                            info = product(root, path, entry_path)
+                            db.execute('UPDATE batches SET product_digest=? WHERE id=?', (info['product_digest'], stored['id']))
                         continue
                     info = product(root, path, entry_path)
                     self.service.push(key, batch, dict(body, **info), preserve_project_name=True)

@@ -110,12 +110,16 @@ class Tasks:
         self.lock = service.workspace_lock
         self.stopping = threading.Event()
         self.workers = {}
+        self.check_workers = set()
         self.processes = {}
         self.starting = None
         self.timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT')) if timeout is None else timeout
         with self.store.transaction() as db:
-            db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE status IN ('排队中','运行中')", (now(),))
+            db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE status IN ('排队中','待提交','运行中')", (now(),))
         self.availability_error = codex_available()
+        from .checks import Checks
+        self.checks = Checks(self)
+        self.checks.cleanup_worktrees()
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 
@@ -179,6 +183,23 @@ class Tasks:
                                      (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
         return dict(ok=True, task=self.read(task_id))
 
+    def enqueue_check(self, key, name):
+        with self.lock:
+            declarations = self.service.entries(key)
+            if not declarations['ok']:
+                raise APIError(409, 'entries-invalid', declarations['problems'])
+            with self.store.transaction() as db:
+                batch = self.service.batch(db, key, name)
+                scope = [dict(scenario=r['scenario'], reason='regression') for r in db.execute(
+                    'SELECT scenario,regression FROM scenarios WHERE batch=? AND current=1 ORDER BY id', (batch['id'],))
+                    if (json.loads(r['regression']) or {}).get('check')]
+                if not scope:
+                    reject(409, 'nothing-to-check', 'scenarios', '批次没有声明回归的场景')
+                task_id = db.execute("INSERT INTO tasks(kind,project,batch,status,trigger,input_digest,input_json,scope_json,created_at) "
+                    "VALUES ('check',?,?,'排队中','开发者发起',?,'{}',?,?)", (key, name,
+                    hashlib.sha256(canonical(scope).encode()).hexdigest(), canonical(scope), now())).lastrowid
+        return dict(ok=True, task=self.read(task_id))
+
     def list(self, project=None, batch=None):
         with self.store.connection() as db:
             ids = [r[0] for r in db.execute('SELECT id FROM tasks WHERE (? IS NULL OR project=?) AND (? IS NULL OR batch=?) ORDER BY id',
@@ -197,6 +218,8 @@ class Tasks:
         task.pop('input_json')
         task['result'] = json.loads(task.pop('result_json'))
         task['gaps'] = task['result'].get('gaps', [])
+        for field in ('scope', 'snapshot', 'rounds'):
+            task[field] = json.loads(task.pop(field + '_json'))
         directory = self.directory(task_id)
         task['files'] = {str(p.relative_to(directory)): f'/api/v1/tasks/{task_id}/files/{quote(str(p.relative_to(directory)), safe="/")}'
                          for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink() and directory in p.resolve().parents}
@@ -227,6 +250,8 @@ class Tasks:
         with self.lock:
             task = self.read(task_id)
             allowed = ('失败', '已中断', 'Codex 不可用') if action == 'retry' else ('排队中', '运行中', '已中断', '待同步', '待补充')
+            if task['kind'] == 'check':
+                allowed += ('已作废',) if action == 'retry' else ('待提交',)
             if task['status'] not in allowed:
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持此操作')
             if action == 'cancel':
@@ -240,10 +265,12 @@ class Tasks:
                     archive = directory / ('attempt-' + str(task['attempt']))
                     archive.mkdir()
                     for path in directory.iterdir():
-                        if path.is_file():
+                        if path.is_file() or (task['kind'] == 'check' and path != archive and not path.name.startswith('attempt-')):
                             path.rename(archive / path.name)
+                self.checks.next_review.pop(task_id, None)
                 self.update(task_id, status='排队中', started_at=None, finished_at=None,
-                            session_id=None, error='', result_digest=None, result_json='{}', attempt=task['attempt'] + 1)
+                            session_id=None, error='', result_digest=None, result_json='{}', snapshot_json='{}',
+                            void_reason='', rounds_json='[]', attempt=task['attempt'] + 1)
         return dict(ok=True, task=self.read(task_id))
 
     def execute(self, task):
@@ -391,10 +418,25 @@ class Tasks:
         while not self.stopping.wait(.05):
             with self.lock:
                 self.workers = {i: w for i, w in self.workers.items() if w.is_alive()}
-                if self.starting is not None or len(self.workers) >= 3:
+                self.check_workers.intersection_update(self.workers)
+                with self.store.connection() as db:
+                    checks = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind='check' AND status IN ('排队中','待提交') ORDER BY id")]
+                for task in checks:
+                    try:
+                        prepared = self.checks.prepare(task)
+                    except (OSError, ValueError, KeyError, APIError, subprocess.SubprocessError) as error:
+                        self.update(task['id'], status='失败', finished_at=now(), error=f'无法准备检查快照：{error}')
+                        continue
+                    if prepared:
+                        self.update(task['id'], status='运行中', started_at=now())
+                        worker = threading.Thread(target=self.checks.execute, args=(task,), daemon=True)
+                        self.workers[task['id']] = worker
+                        self.check_workers.add(task['id'])
+                        worker.start()
+                if self.starting is not None or len(self.workers) - len(self.check_workers) >= 3:
                     continue
                 with self.store.connection() as db:
-                    row = db.execute("SELECT * FROM tasks WHERE status='排队中' ORDER BY id LIMIT 1").fetchone()
+                    row = db.execute("SELECT * FROM tasks WHERE kind='merge' AND status='排队中' ORDER BY id LIMIT 1").fetchone()
                 if not row or self.stopping.is_set():
                     continue
                 task = dict(row)

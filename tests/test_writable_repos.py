@@ -192,8 +192,10 @@ def test_discovery_uses_sop_verify_scenario_rules(board_factory, repo, kind):
     (repo / 'docs/sop/demo.yaml').write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False))
     board = writable_board(board_factory, repo)
     summary = board.request('GET', BASE, auth=False)[1]
-    if kind == 'numeric-source':
+    if kind in ('numeric-source', 'unknown-entry'):
         assert summary.get('version') == 1
+        if kind == 'unknown-entry':
+            assert any('undeclared' in p['problem'] for p in summary['entry_problems'])
     else:
         assert board.sql('SELECT COUNT(*) FROM versions') == [(0,)]
         assert summary['workspace_problems'] and all(p['line'] > 0 for p in summary['workspace_problems'])

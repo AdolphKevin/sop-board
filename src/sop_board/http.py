@@ -51,7 +51,7 @@ class Handler(BaseHTTPRequestHandler):
             if method in ("POST", "PUT"):
                 authorization = self.headers.get("Authorization", "")
                 developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel)", path) or
-                                 re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/merges", path))
+                                 re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/(merges|checks)", path))
                 if developer and hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
                     reject(403, "admin-required", "Authorization", "此操作需要开发者令牌")
                 expected = self.server.admin_token if developer else self.server.token
@@ -133,10 +133,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/checks", path)):
+                result = self.server.tasks.enqueue_check(unquote(match[1]), unquote(match[2]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/(retry|cancel)", path)):
                 result = self.server.tasks.action(int(match[1]), match[2])
             elif method == "GET" and path == "/api/v1/projects":
                 result = service.projects()
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/entries", path)):
+                result = service.entries(unquote(match[1]))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/jira/([^/]+)", path)):
                 result = self.server.jira.summary(unquote(match[1]))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):

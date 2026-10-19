@@ -72,6 +72,9 @@ def batch(project, data):
     base = batch_url(project, data["name"])
     api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
     workspace = f"<p>{'可写' if data.get('writable') else '只读'}</p>"
+    if data.get('entry_problems'):
+        workspace += '<section><h2>入口声明不合格</h2>' + ''.join(
+            f"<p>{text(p['problem'])}</p>" for p in data['entry_problems']) + '</section>'
     if data.get("workspace_problems"):
         workspace += "<section><h2>工作区场景文件不合格</h2>" + "".join(
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
@@ -388,12 +391,13 @@ def scenarios(project, name, data, jira_url=""):
                     f"<p>角色：{text(node['actor'])} · 入口：{text(node['entry'])}</p>")
         for source in node["scenarios"]:
             item = by_id[source["id"]]
+            regression = {'passed': '检查通过', 'failed': '检查失败', 'pending': '检查待运行'}.get(item.get('regression_status'), '')
             content += (f"<article class='scenario-card' data-scenario='{text(source['id'])}' "
                         f"data-status='{text(item['status'] or '')}' data-agent-pass='{str(bool(item['latest_agent'] and item['latest_agent']['status'] == 'pass')).lower()}' "
                         f"data-unreviewed='{str(item['latest_manual'] is None).lower()}'>"
                         f"<h3><a href='{text(base + '/s/' + quote(source['id'], safe=''))}'>{text(source['id'])}</a> · {text(source['title'])}</h3>"
                         f"<p>{'正向' if source['polarity'] == 'positive' else '反向'} · 优先级：{text(source['priority'])} · 角色：{text(source['actor'])} · 验证入口：{text(source['verify'])}</p>"
-                        f"{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
+                        f"<p>{regression}</p>{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
         content += "</section>"
     return layout("SOP 场景 · " + name, content, jira_url, watch=(project, name, data["etag"]))
 

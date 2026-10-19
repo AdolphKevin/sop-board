@@ -41,7 +41,8 @@ def test_snapshots_use_config_then_file_and_freeze_sources(board_factory, fake_c
     root = board.data / 'tasks' / str(task['id'])
     assert (root / 'scenarios.yaml').read_text() == raw
     assert yaml.safe_load((root / 'cases.yaml').read_text()) == merge_cases()
-    assert yaml.safe_load((root / 'entries.yaml').read_text()) == {'entries': {'cfg-web': declaration['自定义入口']}}
+    # SOP-BOARD-4 I1：读取后回填 candidate 的明确缺省值。
+    assert yaml.safe_load((root / 'entries.yaml').read_text()) == {'entries': {'cfg-web': dict(declaration['自定义入口'], candidate='in-place')}}
     assert (root / 'sop/docs/flows/order.md').read_text() == '# 订单流程\n\n独立事实原文。\n'
     assert 'sop/docs/flows/order.md' in task['files']
     # 新任务建立时即冻结原文；Codex 运行期间的文件变化不改变快照。
@@ -59,7 +60,8 @@ def test_snapshots_use_config_then_file_and_freeze_sources(board_factory, fake_c
             scene['verify'] = '自定义入口'
     push(board, push_body(document))
     task = settled(board, task_list(board)[-1])
-    assert yaml.safe_load((board.data / 'tasks' / str(task['id']) / 'entries.yaml').read_text()) == {'entries': declaration}
+    assert yaml.safe_load((board.data / 'tasks' / str(task['id']) / 'entries.yaml').read_text()) == {
+        'entries': {'自定义入口': dict(declaration['自定义入口'], candidate='in-place')}}
     new_base = BASE.replace('/demo', '/newb')
     task = settled(board, upload_merge(board, base=new_base))
     assert task['status'] == '已完成'

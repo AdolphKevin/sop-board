@@ -14,7 +14,8 @@ def calculate(db, batch):
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]
     rows = [dict(row) for row in db.execute(
-        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at FROM results r JOIN rounds t ON t.id=r.round_id "
+        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at,c.check_name AS regression_check FROM results r JOIN rounds t ON t.id=r.round_id "
+        "LEFT JOIN check_rounds c ON c.round_id=t.id "
         "WHERE t.batch=? ORDER BY t.number,r.id", (batch["id"],))]
     by_scenario = {}
     evidence = {}
@@ -53,6 +54,11 @@ def calculate(db, batch):
             manual_pass += m["status"] == "pass"
             manual_fail += m["status"] == "fail"
         regression = json.loads(scenario["regression"])
+        regression_status = None
+        if (regression or {}).get('check'):
+            checked = next((r for r in reversed(agents) if r['regression_check'] == regression['check'] and
+                            r['product_digest'] == batch['product_digest']), None)
+            regression_status = ('passed' if checked['status'] == 'pass' else 'failed') if checked else 'pending'
         if not latest or (a and latest is a and a["status"] == "pass" and
                           a["product_digest"] != batch["product_digest"] and not (regression or {}).get("check")):
             queue = "pending"
@@ -75,7 +81,7 @@ def calculate(db, batch):
                             polarity=scenario["polarity"], priority=scenario["priority"], verify=scenario["verify"],
                             fingerprint=scenario["fingerprint"], status=latest["status"] if latest else None,
                             queue=queue, latest_agent=a, latest_manual=m,
-                            regression=regression, body=json.loads(scenario["body"])))
+                            regression=regression, regression_status=regression_status, body=json.loads(scenario["body"])))
     statistics = dict(agent_pass_rate=ratio(agent_pass, agent_pass + agent_fail),
                       manual_pass_rate=ratio(manual_pass, manual_pass + manual_fail),
                       retest_coverage=ratio(reviewed, agent_pass), first_pass_rate=ratio(first_pass, first_pass + first_fail),
