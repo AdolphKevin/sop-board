@@ -1,0 +1,131 @@
+{
+  "format": "channelwill/team-workflow",
+  "data_version": 1,
+  "project": {
+    "id": "github.com/AdolphKevin/sop-board",
+    "name": "sop-board"
+  },
+  "context": [
+    "README.md",
+    "docs/verification.md"
+  ],
+  "shared": {},
+  "documents": [],
+  "checks": {
+    "unit": {
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "pytest",
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "--junitxml={output}/results.xml",
+        "tests"
+      ],
+      "purpose": "经真实 HTTP 入口在临时数据目录启动看板，核对接口响应、页面内容、SQLite 数据、证据文件与导出",
+      "cwd": ".",
+      "timeout": 900,
+      "format": "junit",
+      "report": "{output}/results.xml",
+      "required_cases": [],
+      "required_env": [],
+      "environment": {
+        "kind": "stateless"
+      },
+      "coverage": {
+        "level": "interface",
+        "entrypoints": [
+          "sop-board"
+        ],
+        "environment": "isolated-temp-data-directories",
+        "substitutes": [],
+        "isolation": "isolated",
+        "isolation_evidence": []
+      }
+    }
+  },
+  "required_checks": {
+    "code": [
+      "unit"
+    ],
+    "docs": []
+  },
+  "risk_checks": {
+    "persistence": [
+      "unit"
+    ],
+    "public-contract": [
+      "unit"
+    ],
+    "concurrency": [
+      "unit"
+    ]
+  },
+  "inputs": [],
+  "external_inputs": {},
+  "environment_versions": {
+    "python": [
+      "python3",
+      "--version"
+    ],
+    "uv": [
+      "uv",
+      "--version"
+    ]
+  },
+  "acceptance_entries": {
+    "cli": {
+      "surface": "cli",
+      "operate": "在 clone 的检出目录用 uv run sop-board 启动、停止看板",
+      "observe": [
+        "标准输出",
+        "错误输出",
+        "退出码",
+        "监听地址与端口",
+        "数据目录中的文件"
+      ],
+      "evidence": [
+        "命令原文",
+        "完整输出",
+        "连接测试输出",
+        "数据目录清单"
+      ],
+      "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
+    },
+    "api": {
+      "surface": "http",
+      "address_env": "SOP_BOARD_URL",
+      "operate": "用 curl 按接口发送请求，写入请求带 SOP_BOARD_TOKEN",
+      "observe": [
+        "状态码",
+        "响应正文",
+        "SQLite 中的相关行",
+        "证据目录中的文件"
+      ],
+      "evidence": [
+        "请求与响应原文（令牌脱敏）",
+        "SQLite 查询与输出"
+      ],
+      "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
+    },
+    "web": {
+      "surface": "web",
+      "address_env": "SOP_BOARD_URL",
+      "operate": "浏览器打开看板页面，按场景点击与填写；跨机访问用内网另一台机器的浏览器",
+      "observe": [
+        "页面显示的数值、列表与提示",
+        "浏览器发出的请求",
+        "SQLite 中的相关行"
+      ],
+      "evidence": [
+        "截图",
+        "页面文本",
+        "请求记录",
+        "SQLite 查询与输出"
+      ],
+      "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
+    }
+  }
+}

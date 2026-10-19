@@ -1,0 +1,349 @@
+# SOP-BOARD-1：看板核心的验收场景
+# 预期只依据 team-workflow 仓库的 SOP 验证独立化方案 v7 与 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2，不依据当前实现的输出。
+# 版本 1（2026-10-19）：Claude 依据上述两份原文编写，AdolphKevin 2026-10-19 确认。
+#
+# 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
+# SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
+# 推送时项目身份为 github.com/demo-org/demo-app，项目键为 github-com-demo-org-demo-app，缺省缺陷链接前缀为 https://github.com/demo-org/demo-app/issues/。
+
+metadata:
+  requirement: "sop-board 核心：启动与持久化、推送场景文件、证据与 Agent 轮次、人工复核、场景变更、总览与导出"
+  batch: "sop-board-1"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "AdolphKevin/team-workflow docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节"
+      version: "v7（2026-10-19）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节"
+      version: "修订 1"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "看板核心"]
+
+sops:
+
+  - id: SOP-01
+    title: 启动与持久化
+    actor: "启动看板的成员"
+    entry: "uv run sop-board"
+    must:
+      - "谁 clone 谁启动，缺省只有本机能访问"
+      - "重启后数据完整保留"
+    scenarios:
+
+      - id: SOP-01-P01
+        polarity: positive
+        title: 启动后页面可访问，缺省只监听本机
+        actor: 启动看板的成员
+        priority: P0
+        refs: ["I1"]
+        verify: cli
+        initial_state: ["clone 的检出目录已 uv sync，SOP_BOARD_TOKEN 已设置", "一个尚不存在的临时数据目录路径与一个空闲端口"]
+        steps: ["运行 uv run sop-board --data <数据目录> --port <端口>", "用 curl 访问 http://127.0.0.1:<端口>/", "用本机的内网地址访问同一端口", "停止后加 --host 0.0.0.0 重新启动，再用内网地址访问"]
+        expected: ["启动后标准输出写出看板地址", "本机地址返回 200 与项目列表页", "未加 --host 时内网地址的连接被拒绝", "加 --host 0.0.0.0 后内网地址返回 200", "数据目录被创建并含 board.sqlite3"]
+        forbidden_effects: ["检出目录中出现未被忽略的新文件"]
+        evidence_hints: ["命令原文与完整输出", "三次连接的输出", "数据目录清单", "启动前后的 git status"]
+
+      - id: SOP-01-P02
+        polarity: positive
+        title: 用同一数据目录重启后数据完整保留
+        actor: 启动看板的成员
+        priority: P0
+        refs: ["I1", "D1"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，并按 SOP-03-P01 登记了第 1 轮"]
+        steps: ["请求批次摘要接口并保存响应", "停止看板，用同一数据目录与端口重新启动", "再次请求批次摘要接口"]
+        expected: ["两次响应的版本号、场景数、轮次表与各项比率相同"]
+        forbidden_effects: ["重启后出现重复的轮次或场景版本"]
+        evidence_hints: ["两次响应原文与对比", "重启命令与输出"]
+
+      - id: SOP-01-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 启动条件不满足时说明原因并退出
+        actor: 启动看板的成员
+        priority: P1
+        refs: ["I1"]
+        verify: cli
+        initial_state: ["clone 的检出目录已 uv sync"]
+        steps: ["不设置 SOP_BOARD_TOKEN 启动", "设置令牌后用一个已被占用的端口启动", "用一个没有写权限的目录作为数据目录启动"]
+        expected: ["三次都以退出码 1 结束", "错误输出分别说明缺少 SOP_BOARD_TOKEN、端口被占用并给出端口号、数据目录不可写并给出路径"]
+        forbidden_effects: ["看板进程在后台继续运行"]
+        evidence_hints: ["三次命令原文、输出与退出码", "进程列表"]
+
+  - id: SOP-02
+    title: 推送场景文件
+    actor: "开发岗代理"
+    entry: "PUT /api/v1/projects/<项目键>/batches/<批次>/scenario-file"
+    must:
+      - "只有带令牌且内容合格的场景文件被保存"
+      - "看板与客户端的内容指纹一致"
+    scenarios:
+
+      - id: SOP-02-P01
+        polarity: positive
+        title: 推送合格的场景文件后批次出现，四条场景待执行
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I2", "D2"]
+        verify: api
+        initial_state: ["测试看板，数据目录为空", "演示场景文件，以及按内容指纹规则独立算出的四个指纹"]
+        steps: ["带令牌 PUT /api/v1/projects/github-com-demo-org-demo-app/batches/demo/scenario-file，正文含 project、path、commit、dirty、product_digest、content、fingerprints、pushed_by", "请求批次摘要与场景列表接口", "用浏览器打开批次总览页"]
+        expected: ["响应 200，version 为 1，added 列出四条场景", "场景列表中四条场景都在待执行队列", "总览页显示待执行 4、复测 0、问题 0"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文（令牌脱敏）", "总览页截图", "SQLite 中场景版本与场景的查询结果"]
+
+      - id: SOP-02-N01
+        polarity: negative
+        negative_type: permission
+        title: 没有令牌或令牌错误时拒绝
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板，数据目录为空", "与 SOP-02-P01 相同的请求正文"]
+        steps: ["不带令牌 PUT", "带错误令牌 PUT", "请求项目列表接口"]
+        expected: ["前两次均返回 401，error_code 为 unauthorized", "项目列表为空"]
+        forbidden_effects: ["创建项目、批次或场景版本"]
+        evidence_hints: ["三次请求与响应原文", "SQLite 查询结果"]
+
+      - id: SOP-02-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 客户端指纹与看板计算不一致时拒绝
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I2", "D1"]
+        verify: api
+        initial_state: ["测试看板，数据目录为空", "请求正文中 N1-P01 的指纹被改掉一位"]
+        steps: ["带令牌 PUT 场景文件"]
+        expected: ["返回 409，error_code 为 fingerprint-mismatch，列出 N1-P01"]
+        forbidden_effects: ["保存任何场景版本"]
+        evidence_hints: ["请求与响应原文", "SQLite 查询结果"]
+
+      - id: SOP-02-N03
+        polarity: negative
+        negative_type: invalid-input
+        title: 场景文件不合格或批次不一致时拒绝
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板，数据目录为空"]
+        steps: ["推送删掉 N1 反向场景且没有 negative_exempt 的演示场景文件", "推送 metadata.batch 为 other 的演示场景文件，地址中的批次仍为 demo"]
+        expected: ["第一次返回 422，error_code 为 scenario-file-invalid，problems 指出 N1 缺少反向场景并给出行号", "第二次返回 422，error_code 为 project-mismatch，指出批次不一致"]
+        forbidden_effects: ["保存任何场景版本"]
+        evidence_hints: ["两次请求与响应原文"]
+
+      - id: SOP-02-N04
+        polarity: negative
+        negative_type: duplicate
+        title: 重复推送相同内容不产生新版本
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件版本 1"]
+        steps: ["再次推送完全相同的内容"]
+        expected: ["返回 200，unchanged 为 true，version 仍为 1"]
+        forbidden_effects: ["产生版本 2"]
+        evidence_hints: ["请求与响应原文", "SQLite 中场景版本的查询结果"]
+
+  - id: SOP-03
+    title: 证据与 Agent 轮次
+    actor: "开发岗代理"
+    entry: "POST /api/v1/evidence、POST /api/v1/projects/<项目键>/batches/<批次>/rounds"
+    must:
+      - "轮次只引用已上传的证据与当前场景内容"
+      - "登记后队列与统计按口径更新"
+    scenarios:
+
+      - id: SOP-03-P01
+        polarity: positive
+        title: 登记一轮后队列与统计按口径更新
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I2", "D2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件版本 1", "四份证据文件：两张截图与两份文本"]
+        steps: ["逐个 POST /api/v1/evidence 上传四份证据", "POST 一轮：N1-P01 与 N2-P01 为 pass，N1-N01 为 fail，N2-N01 为 blocked（finding 为 Q1）；implementer 为 Zhang San，执行者为 Li Si", "请求批次摘要接口", "查询 SQLite 中的轮次与结果"]
+        expected: ["每次上传返回的 sha256 与本地计算值相同", "轮次接口返回 round 为 1", "复测 2、问题 2、待执行 0", "Agent 验收通过率 2/3，一次通过率 2/3，第 1 轮通过率 2/4", "SQLite 中有 1 个轮次与 4 条结果，独立性均为 independent"]
+        forbidden_effects: []
+        evidence_hints: ["上传与登记的请求与响应原文", "本地 sha256 计算输出", "批次摘要响应", "SQLite 查询结果"]
+
+      - id: SOP-03-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 逐条指出结果的问题
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件版本 1，并上传了一份证据"]
+        steps: ["POST 一轮，四条结果各有一个问题：N1-P01 为 pass 但没有证据；N1-N01 引用未上传的证据 sha256；N2-P01 的 executed_at 晚于服务端时间一小时；N2-N01 为 blocked 但没有 finding"]
+        expected: ["返回 422，error_code 为 round-invalid", "problems 分别指向 results[0] 至 results[3] 并说明各自的问题"]
+        forbidden_effects: ["登记轮次"]
+        evidence_hints: ["请求与响应原文", "SQLite 查询结果"]
+
+      - id: SOP-03-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 场景内容不是当前版本时拒绝
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件版本 1 与修改过 N1-P01 的版本 2，证据已上传"]
+        steps: ["POST 一轮，scenario_file_sha256 为版本 1 的值", "POST 一轮，scenario_file_sha256 为版本 2，但 N1-P01 的 fingerprint 为版本 1 的值"]
+        expected: ["第一次返回 409，error_code 为 scenario-file-stale", "第二次返回 409，error_code 为 scenario-stale，点名 N1-P01"]
+        forbidden_effects: ["登记轮次"]
+        evidence_hints: ["两次请求与响应原文"]
+
+      - id: SOP-03-N03
+        polarity: negative
+        negative_type: duplicate
+        title: 同一幂等键只登记一次
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件版本 1，证据已上传"]
+        steps: ["用同一 idempotency_key 与相同正文 POST 两次", "用同一 idempotency_key、改动一条 actual 的正文再 POST 一次", "请求批次摘要接口"]
+        expected: ["前两次返回相同的轮次号", "第三次返回 409，error_code 为 idempotency-conflict", "批次只有一个轮次"]
+        forbidden_effects: ["产生第二个轮次"]
+        evidence_hints: ["三次请求与响应原文", "批次摘要响应"]
+
+  - id: SOP-04
+    title: 人工复核
+    actor: "测试同事"
+    entry: "场景详情页的标记表单"
+    must:
+      - "人工标记与 Agent 结果分开保存，互不改写"
+      - "判为失败时必须关联本项目的缺陷链接"
+    scenarios:
+
+      - id: SOP-04-P01
+        polarity: positive
+        title: 复核通过后离开复测队列
+        actor: 测试同事
+        priority: P0
+        refs: ["I1", "I2", "D2"]
+        verify: web
+        initial_state: ["SOP-03-P01 完成后的测试看板"]
+        steps: ["用浏览器打开批次总览页，进入复测队列中的 N1-P01", "首次标记时填写标记人 Tester A 与令牌", "查看证据后标记 pass，填写实际结果与环境", "刷新页面并回到总览页"]
+        expected: ["标记保存成功，N1-P01 离开复测队列", "人工复测通过率 1/1，复测覆盖率 1/2", "N1-P01 的历史同时显示 Li Si 的 Agent pass 与 Tester A 的人工 pass", "刷新后标记人仍为 Tester A"]
+        forbidden_effects: ["修改或删除 Agent 的结果"]
+        evidence_hints: ["各步骤截图", "浏览器请求记录", "SQLite 中两条结果的查询结果"]
+
+      - id: SOP-04-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 判为失败必须填写本项目的缺陷链接
+        actor: 测试同事
+        priority: P0
+        refs: ["I2", "D2"]
+        verify: web
+        initial_state: ["SOP-04-P01 完成后的测试看板"]
+        steps: ["在 N2-P01 标记 fail，不填缺陷链接并保存", "填写 https://example.com/bug/1 并保存", "改填 https://github.com/demo-org/demo-app/issues/1 并保存", "回到总览页"]
+        expected: ["前两次无法保存，页面提示需要本项目的缺陷链接，已填内容保留", "第三次保存成功，N2-P01 进入问题队列", "误判明细列出 N2-P01、该链接、Agent 执行者 Li Si 与标记人 Tester A", "人工复测通过率 1/2"]
+        forbidden_effects: ["前两次留下任何轮次"]
+        evidence_hints: ["各步骤截图", "接口拒绝的响应原文", "SQLite 查询结果"]
+
+      - id: SOP-04-N02
+        polarity: negative
+        negative_type: permission
+        title: 令牌错误时不保存标记
+        actor: 测试同事
+        priority: P1
+        refs: ["I1", "I2"]
+        verify: web
+        initial_state: ["SOP-04-N01 完成后的测试看板"]
+        steps: ["把页面保存的令牌改为错误值", "在 N2-P01 标记 pass 并保存"]
+        expected: ["页面提示令牌无效并请重新填写", "N2-P01 仍在问题队列"]
+        forbidden_effects: ["登记轮次"]
+        evidence_hints: ["截图", "接口响应原文", "SQLite 查询结果"]
+
+  - id: SOP-05
+    title: 场景变更
+    actor: "开发岗代理与测试同事"
+    entry: "重新推送场景文件"
+    must:
+      - "内容变化的场景重新执行，未变的场景保留结果"
+      - "历史结果与标记保留"
+    scenarios:
+
+      - id: SOP-05-P01
+        polarity: positive
+        title: 修改一条场景后只有它回到待执行
+        actor: 开发岗代理
+        priority: P0
+        refs: ["I1", "I2", "D2"]
+        verify: web
+        initial_state: ["SOP-04-N01 完成后的测试看板"]
+        steps: ["修改演示场景文件中 N1-P01 的 expected，按新指纹推送", "请求批次摘要与场景列表接口", "打开 N1-P01 的详情页"]
+        expected: ["响应 200，version 为 2，changed 列出 N1-P01", "N1-P01 回到待执行队列，其余三条的队列与结果不变", "详情页把 N1-P01 的旧 Agent 结果与 Tester A 的标记标为场景已变更", "统计不再计入 N1-P01 的旧结果：人工复测通过率 0/1，Agent 验收通过率 1/2"]
+        forbidden_effects: ["删除旧结果或旧标记"]
+        evidence_hints: ["推送请求与响应原文", "批次摘要响应", "详情页截图", "SQLite 查询结果"]
+
+      - id: SOP-05-N01
+        polarity: negative
+        negative_type: archived
+        title: 从场景文件删除一条场景
+        actor: 开发岗代理
+        priority: P1
+        refs: ["I1", "I2", "D2"]
+        verify: web
+        initial_state: ["SOP-05-P01 完成后的测试看板"]
+        steps: ["删除 N2-N01，给 N2 节点加 negative_exempt 理由后推送", "请求批次摘要接口", "打开 N2-N01 的详情页"]
+        expected: ["响应 removed 列出 N2-N01", "N2-N01 不在任何队列与统计中", "详情页标明已从场景文件移除，并保留它的历史结果"]
+        forbidden_effects: ["删除 N2-N01 的历史结果"]
+        evidence_hints: ["推送请求与响应原文", "批次摘要响应", "详情页截图"]
+
+  - id: SOP-06
+    title: 总览与导出
+    actor: "团队成员"
+    entry: "批次总览页、轮次导出接口"
+    must:
+      - "页面与接口的数值一致，比率带样本量"
+      - "导出的轮次能被 team-workflow 直接登记"
+    scenarios:
+
+      - id: SOP-06-P01
+        polarity: positive
+        title: 内网另一台机器打开总览页
+        actor: 团队成员
+        priority: P0
+        refs: ["I1", "I3", "D2"]
+        verify: web
+        initial_state: ["以 --host 0.0.0.0 启动的测试看板，处于 SOP-04-N01 完成后的状态"]
+        steps: ["在内网另一台机器的浏览器打开批次总览页", "请求批次摘要接口"]
+        expected: ["页面显示 Agent 验收通过率、人工复测通过率、复测覆盖率、一次通过率、误判数、三个队列的数量与两项进度", "比率写成分子/分母", "各数值与摘要接口相同"]
+        forbidden_effects: ["页面请求外网资源"]
+        evidence_hints: ["另一台机器上的截图", "浏览器请求记录", "摘要响应原文"]
+
+      - id: SOP-06-P02
+        polarity: positive
+        title: 导出的一轮被 team-workflow 登记
+        actor: 团队成员
+        priority: P0
+        refs: ["I3"]
+        verify: api
+        initial_state: ["SOP-03-P01 完成后的测试看板", "一个接入 tw 的临时项目：含同一份演示场景文件、声明了 cli 入口、有一个验收节引用它的已开工任务，实施负责人不是 Li Si"]
+        steps: ["GET 第 1 轮的导出", "解压到仓库外的目录", "在临时项目运行 tw team scenarios submit --task <任务> --results <目录>/results.jsonl"]
+        expected: ["导出为 ZIP，含 results.jsonl 与 evidence/ 下四份证据", "results.jsonl 每行只有 tw 结果契约的字段", "tw 登记成功，四条结果的状态与看板相同"]
+        forbidden_effects: []
+        evidence_hints: ["导出与解压的命令与输出", "results.jsonl 原文", "tw 命令原文与完整输出"]
+
+      - id: SOP-06-N01
+        polarity: negative
+        negative_type: not-found
+        title: 导出不存在的轮次
+        actor: 团队成员
+        priority: P1
+        refs: ["I3"]
+        verify: api
+        initial_state: ["SOP-03-P01 完成后的测试看板"]
+        steps: ["GET 第 99 轮的导出"]
+        expected: ["返回 404，error_code 为 round-not-found"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
