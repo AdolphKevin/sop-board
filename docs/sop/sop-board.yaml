@@ -1,22 +1,24 @@
 # SOP-BOARD-1：看板核心的验收场景
-# 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v7 决定）与 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2，不依据当前实现的输出。
+# 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v7 决定）与 docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2（版本 5 起另依据 docs/designs/SOP-BOARD-2.md 的全局范围、I2、I4），不依据当前实现的输出。
 # 版本 1（2026-10-19）：Claude 依据上述两份原文编写，AdolphKevin 2026-10-19 确认。
 # 版本 2（2026-10-19）：随方案修订 2 修改 SOP-01-P01、SOP-01-N01 的预期，新增 SOP-06-P03；AdolphKevin 同日要求本期修复。
 # 2026-10-19：第 1、2 轮验收通过后写回各场景的 regression（不改变场景内容指纹）；SOP-06-P01 为人工回归，由 AdolphKevin 负责。
 # 版本 3（2026-10-19）：导入测试代理 sop-board-1-tester 的 51 条用例后核对覆盖，补充 18 条场景（含新节点 SOP-07 项目设置）；预期依据方案修订 3，经 AdolphKevin 授权由 Claude 代批。
 # 版本 4（2026-10-19）：测试代理复核配对后，补充 14 条场景并改写 SOP-07-N01 的核对方式；经 AdolphKevin 授权由 Claude 代批。
 # 2026-10-19：第 4、5 轮验收通过后写回新增 32 条场景的 regression（不改变场景内容指纹），守护测试见 tests/test_regression_*.py。
+# 版本 5（2026-10-19）：随 docs/designs/SOP-BOARD-2.md 修订 1 删除 SOP-04 节点（人工复核改由 docs/sop/sop-board-2.yaml 的 SOP-21、SOP-22 覆盖），改写 SOP-01-N02、SOP-05-P01、SOP-06-P01、SOP-06-P03、SOP-06-P09、SOP-07-P01、SOP-07-N01；经 AdolphKevin 授权由 Claude 代批。
 #
 # 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
 # SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01。
 # 推送时项目身份为 github.com/demo-org/demo-app，项目键为 github-com-demo-org-demo-app，缺省缺陷链接前缀为 https://github.com/demo-org/demo-app/issues/。
 # 登记 Agent 轮次时，product.digest 取推送场景文件时的 product_digest，场景另有说明的除外。向看板发信号时发给运行看板服务的 Python 进程。
 # 写入接口的请求正文除场景要求的错误外都合法；'不给 implementer'指省略该字段。
+# 测试看板启动时不设置 JIRA_URL。人工标记经 SOP-BOARD-2 的标记接口登记：正文为 scenario、fingerprint、status、marker，fail 与 blocked 另带 defect_url。
 
 metadata:
-  requirement: "sop-board 核心：启动与持久化、推送场景文件、证据与 Agent 轮次、人工复核、场景变更、总览与导出"
+  requirement: "sop-board 核心：启动与持久化、推送场景文件、证据与 Agent 轮次、场景变更、总览与导出、项目设置"
   batch: "sop-board-1"
-  version: 4
+  version: 5
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 第 3、4 节"
@@ -24,6 +26,9 @@ metadata:
       confirmed_by: "AdolphKevin"
     - ref: "docs/designs/SOP-BOARD-1.md 的 I1、I2、I3、D1、D2 节"
       version: "修订 3"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-2.md 的全局范围、I2、I4 节"
+      version: "修订 1"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "看板核心"]
 
@@ -134,7 +139,7 @@ sops:
         verify: cli
         initial_state: ["clone 的检出目录已 uv sync", "一个只读的父目录 /tmp/<随机>/ro-parent，一个普通文件 /tmp/<随机>/plain-file，一个已存在的空目录 /tmp/<随机>/empty-data"]
         steps: ["SOP_BOARD_TOKEN 设为空字符串，以新的数据目录启动", "设置令牌，以 ro-parent 下尚不存在的 data 目录启动", "设置令牌，以 plain-file 为数据目录启动", "设置令牌并占用一个端口，以 empty-data 为数据目录、该端口启动"]
-        expected: ["四次都以退出码 1 结束，没有输出 看板地址 行", "第一次的错误输出说明令牌缺失", "第二、三次的错误输出含对应路径；ro-parent 下的 data 仍不存在，plain-file 的内容不变", "第四次的错误输出含端口号，empty-data 仍为空目录"]
+        expected: ["四次都以退出码 1 结束，没有输出 看板地址 行", "第一次的错误输出说明令牌缺失", "第二、三次的错误输出含对应路径，第三次写明该路径不是目录；ro-parent 下的 data 仍不存在，plain-file 的内容不变", "第四次的错误输出含端口号，empty-data 仍为空目录"]
         forbidden_effects: []
         evidence_hints: ["四次命令原文与完整输出", "各路径在命令前后的清单与 sha256"]
 
@@ -490,59 +495,6 @@ sops:
         forbidden_effects: []
         evidence_hints: ["请求与响应原文"]
 
-  - id: SOP-04
-    title: 人工复核
-    actor: "测试同事"
-    entry: "场景详情页的标记表单"
-    must:
-      - "人工标记与 Agent 结果分开保存，互不改写"
-      - "判为失败时必须关联本项目的缺陷链接"
-    scenarios:
-
-      - id: SOP-04-P01
-        regression: {"check": "unit", "cases": ["tests.test_pages::test_mark_form_http_rejection_then_success_updates_page_without_rewriting_agent", "tests.test_client::test_client_restores_identity_and_saves_changes_without_network", "tests.test_marks::test_manual_mark_creates_observation_and_keeps_agent_result"]}
-        polarity: positive
-        title: 复核通过后离开复测队列
-        actor: 测试同事
-        priority: P0
-        refs: ["I1", "I2", "D2"]
-        verify: web
-        initial_state: ["SOP-03-P01 完成后的测试看板"]
-        steps: ["用浏览器打开批次总览页，进入复测队列中的 N1-P01", "首次标记时填写标记人 Tester A 与令牌", "查看证据后标记 pass，填写实际结果与环境", "刷新页面并回到总览页"]
-        expected: ["标记保存成功，N1-P01 离开复测队列", "人工复测通过率 1/1，复测覆盖率 1/2", "N1-P01 的历史同时显示 Li Si 的 Agent pass 与 Tester A 的人工 pass", "刷新后标记人仍为 Tester A"]
-        forbidden_effects: ["修改或删除 Agent 的结果"]
-        evidence_hints: ["各步骤截图", "浏览器请求记录", "SQLite 中两条结果的查询结果"]
-
-      - id: SOP-04-N01
-        regression: {"check": "unit", "cases": ["tests.test_client::test_client_empty_fail_defect_shows_reason_without_request[native]", "tests.test_client::test_client_empty_fail_defect_shows_reason_without_request[programmatic]", "tests.test_marks::test_project_defect_prefix_default_custom_and_unset", "tests.test_statistics::test_manual_rates_progress_misjudgments_and_submission_order", "tests.test_pages::test_batch_page_matches_all_metrics_queues_rounds_and_misjudgments[manual-fail]"]}
-        polarity: negative
-        negative_type: invalid-input
-        title: 判为失败必须填写本项目的缺陷链接
-        actor: 测试同事
-        priority: P0
-        refs: ["I2", "D2"]
-        verify: web
-        initial_state: ["SOP-04-P01 完成后的测试看板"]
-        steps: ["在 N2-P01 标记 fail，不填缺陷链接并保存", "填写 https://example.com/bug/1 并保存", "改填 https://github.com/demo-org/demo-app/issues/1 并保存", "回到总览页"]
-        expected: ["前两次无法保存，页面提示需要本项目的缺陷链接，已填内容保留", "第三次保存成功，N2-P01 进入问题队列", "误判明细列出 N2-P01、该链接、Agent 执行者 Li Si 与标记人 Tester A", "人工复测通过率 1/2"]
-        forbidden_effects: ["前两次留下任何轮次"]
-        evidence_hints: ["各步骤截图", "接口拒绝的响应原文", "SQLite 查询结果"]
-
-      - id: SOP-04-N02
-        regression: {"check": "unit", "cases": ["tests.test_client::test_client_preserves_input_and_allows_retry_after_rejection[unauthorized]", "tests.test_scenario_file::test_all_write_endpoints_require_token[Bearer REDACTED]"]}
-        polarity: negative
-        negative_type: permission
-        title: 令牌错误时不保存标记
-        actor: 测试同事
-        priority: P1
-        refs: ["I1", "I2"]
-        verify: web
-        initial_state: ["SOP-04-N01 完成后的测试看板"]
-        steps: ["把页面保存的令牌改为错误值", "在 N2-P01 标记 pass 并保存"]
-        expected: ["页面提示令牌无效并请重新填写", "N2-P01 仍在问题队列"]
-        forbidden_effects: ["登记轮次"]
-        evidence_hints: ["截图", "接口响应原文", "SQLite 查询结果"]
-
   - id: SOP-05
     title: 场景变更
     actor: "开发岗代理与测试同事"
@@ -560,7 +512,7 @@ sops:
         priority: P0
         refs: ["I1", "I2", "D2"]
         verify: web
-        initial_state: ["SOP-04-N01 完成后的测试看板"]
+        initial_state: ["SOP-03-P01 完成后，Tester A 经人工标记接口对 N1-P01 标记 pass、对 N2-P01 标记 fail（缺陷链接 https://github.com/demo-org/demo-app/issues/1）的测试看板"]
         steps: ["修改演示场景文件中 N1-P01 的 expected，按新指纹推送", "请求批次摘要与场景列表接口", "打开 N1-P01 的详情页"]
         expected: ["响应 200，version 为 2，changed 列出 N1-P01", "N1-P01 回到待执行队列，其余三条的队列与结果不变", "详情页把 N1-P01 的旧 Agent 结果与 Tester A 的标记标为场景已变更", "统计不再计入 N1-P01 的旧结果：人工复测通过率 0/1，Agent 验收通过率 1/2"]
         forbidden_effects: ["删除旧结果或旧标记"]
@@ -642,7 +594,7 @@ sops:
         priority: P0
         refs: ["I1", "I3", "D2"]
         verify: web
-        initial_state: ["以 --host 0.0.0.0 启动的测试看板，处于 SOP-04-N01 完成后的状态"]
+        initial_state: ["以 --host 0.0.0.0 启动的测试看板：SOP-03-P01 完成后，Tester A 经人工标记接口对 N1-P01 标记 pass、对 N2-P01 标记 fail（缺陷链接 https://github.com/demo-org/demo-app/issues/1）"]
         steps: ["在内网另一台机器的浏览器打开批次总览页", "请求批次摘要接口"]
         expected: ["页面显示 Agent 验收通过率、人工复测通过率、复测覆盖率、一次通过率、误判数、三个队列的数量与两项进度", "比率写成分子/分母", "各数值与摘要接口相同"]
         forbidden_effects: ["页面请求外网资源"]
@@ -670,7 +622,7 @@ sops:
         priority: P1
         refs: ["I1"]
         verify: web
-        initial_state: ["SOP-04-P01 完成后的测试看板：第 1 轮 Agent 结果的 executed_at 带 +08:00，Tester A 的人工标记由看板记录服务端时间"]
+        initial_state: ["SOP-03-P01 完成后，Tester A 经人工标记接口对 N1-P01 标记 pass 的测试看板：第 1 轮 Agent 结果的 executed_at 带 +08:00，Tester A 的人工标记由看板记录服务端时间"]
         steps: ["用浏览器打开批次总览页与 N1-P01 的详情页", "请求第 1 轮与第 2 轮的读取接口"]
         expected: ["页面上的执行时间与提交时间都写成看板所在机器本地时区的 YYYY-MM-DD HH:MM:SS ±HH:MM，不带微秒", "接口返回的时间保持原始 ISO 8601 值"]
         forbidden_effects: ["同一页面混用两种时区或时间格式"]
@@ -785,7 +737,7 @@ sops:
         refs: ["D2"]
         verify: api
         initial_state: ["测试看板已推送演示场景文件并按 SOP-03-P01 登记第 1 轮"]
-        steps: ["对 N1-P01 登记一条人工 blocked 标记（按当前接口要求填写受阻原因）", "请求批次摘要与场景列表"]
+        steps: ["对 N1-P01 登记一条人工 blocked 标记，缺陷链接为 https://github.com/demo-org/demo-app/issues/3", "请求批次摘要与场景列表"]
         expected: ["N1-P01 在问题队列", "复测覆盖率为 1/2", "人工复测通过率为无数据", "误判明细为空"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文"]
@@ -837,7 +789,7 @@ sops:
         verify: api
         initial_state: ["测试看板已推送演示场景文件"]
         steps: ["对 N1-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/1", "PUT 项目设置，defect_prefix 为 https://jira.example.com/browse/", "对 N2-P01 登记人工 fail，缺陷链接为 https://jira.example.com/browse/ABC-1", "对 N2-P01 再登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/2"]
-        expected: ["第一次标记成功，finding 为该 GitHub 链接", "设置返回 ok 与新前缀", "Jira 链接的标记成功", "GitHub 链接的标记返回 422，error_code 为 defect-link-required"]
+        expected: ["第一次标记成功，finding 为该 GitHub 链接", "设置返回 ok 与新前缀", "Jira 链接的标记成功", "GitHub 链接的标记返回 422，error_code 为 defect-link-invalid"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）"]
 
@@ -852,6 +804,6 @@ sops:
         verify: api
         initial_state: ["测试看板推送了演示场景文件，另以项目身份 gitlab.example.com/team/app 把同一内容推送到项目键 gitlab-example-com-team-app 的批次 demo"]
         steps: ["对 github-com-demo-org-demo-app 依次 PUT defect_prefix 为 http://jira.example.com/browse/、jira.example.com/browse/ 与空字符串", "对 github-com-demo-org-demo-app 的 N1-P01 登记人工 fail，缺陷链接为 https://github.com/demo-org/demo-app/issues/9", "对 gitlab-example-com-team-app 的 N1-P01 登记人工 fail，缺陷链接为 https://gitlab.example.com/team/app/-/issues/1"]
-        expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "GitHub 链接的标记成功，说明项目前缀仍为缺省的 https://github.com/demo-org/demo-app/issues/", "标记返回 422，error_code 为 defect-prefix-unset"]
+        expected: ["三次设置都被拒绝，ok 为 false，problems 指出 defect_prefix", "GitHub 链接的标记成功，说明项目前缀仍为缺省的 https://github.com/demo-org/demo-app/issues/", "标记返回 422，error_code 为 defect-link-invalid，说明需先设置项目的缺陷链接前缀或配置 JIRA_URL"]
         forbidden_effects: []
         evidence_hints: ["请求与响应原文（令牌脱敏）"]

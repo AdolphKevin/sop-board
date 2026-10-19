@@ -1,0 +1,581 @@
+# SOP-BOARD-2：人工复核改版与用例协作的验收场景
+# 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v8）与 docs/designs/SOP-BOARD-2.md 的 I1–I6、D1，不依据当前实现的输出。
+# 版本 1（2026-10-19）：Claude 依据上述两份原文编写，经 AdolphKevin 授权由 Claude 代批；按测试代理 sop-board-1-tester 确认延期时提出的条件加强了 SOP-22-P01、SOP-22-N01、SOP-22-N02。
+# 真实 Jira 的接入验证按 AdolphKevin 2026-10-19 的决定延到外部接入阶段，本文件只以模拟 Jira 验证。
+#
+# 下文"测试看板"指：clone 的 sop-board 检出目录已 uv sync，SOP_BOARD_TOKEN 已设置，用 uv run sop-board --data <新的临时目录> --port <空闲端口> 启动，
+# SOP_BOARD_URL 指向它。"演示场景文件"指批次 demo 的 demo.yaml：节点 N1、N2，场景 N1-P01、N1-N01、N2-P01、N2-N01，
+# 推送时项目身份为 github.com/demo-org/demo-app，项目键为 github-com-demo-org-demo-app。
+# "演示轮次"指按 SOP-BOARD-1 的接口登记的一个 Agent 轮次：N1-P01 pass、N1-N01 fail、N2-P01 pass、N2-N01 blocked（finding 为"环境未就绪"）。
+# "演示用例文件"指符合测试岗 Schema 的 cases-a.yaml：metadata 含 module、feature、owner、last_reviewed；test_cases 含 TC_DEMO_LOGIN_001（tags 含 section:登录、happy-path）、
+# TC_DEMO_LOGIN_002（section:登录、negative）、TC_DEMO_ORDER_001（section:订单、happy-path）。
+# "模拟 Jira"指执行者在本机启动的 HTTP 服务：对 GET /rest/api/3/issue/ABC-1 返回 {"key":"ABC-1","fields":{"summary":"登录按钮无响应","status":{"name":"待确认"}}}，
+# 对其他单号返回 404，并记录收到的请求头；测试看板以 JIRA_URL=<模拟 Jira 地址>、JIRA_EMAIL、JIRA_API_TOKEN（任意测试值）启动。
+
+metadata:
+  requirement: "sop-board 人工复核改版与用例协作：SOP 场景页就地复核、标记接口、用例上传、缺陷链接与 Jira、状态与进度、报告与测试岗结果文件"
+  batch: "sop-board-2"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 的 D6、D7、D8、D13、D18、D26、D27 与第 4 节 S3"
+      version: "v8（2026-10-19）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-2.md 的 I1–I6、D1 节"
+      version: "修订 1"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "人工复核", "用例协作"]
+
+sops:
+
+  - id: SOP-21
+    title: SOP 场景页与就地复核
+    actor: "测试同事"
+    entry: "浏览器打开批次的 SOP 场景页"
+    must:
+      - "全部场景都能看到说明并就地复核，包括 Agent 已通过的场景"
+      - "通过一键提交；失败与受阻只填缺陷链接，备注选填"
+      - "复核不跳转页面"
+    scenarios:
+
+      - id: SOP-21-P01
+        polarity: positive
+        title: SOP 场景页按节点列出全部场景说明与状态
+        actor: 测试同事
+        priority: P0
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次"]
+        steps: ["在浏览器打开总览页，点导航中的 SOP 场景", "查看页面内容"]
+        expected: ["页面按 N1、N2 分组列出四条场景", "每条显示编号、标题、极性、优先级、角色、验证入口、初始状态、步骤、预期与禁止产生的影响", "每条显示最新 Agent 结果：N1-P01 与 N2-P01 为通过，N1-N01 为失败，N2-N01 为受阻", "每条显示所在队列", "导航中 SOP 场景处于高亮"]
+        forbidden_effects: ["页面加载外网资源"]
+        evidence_hints: ["整页截图", "页面文本", "浏览器请求记录"]
+
+      - id: SOP-21-P02
+        polarity: positive
+        title: 筛选的数量与列表正确
+        actor: 测试同事
+        priority: P1
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "尚无人工结果"]
+        steps: ["在 SOP 场景页依次点全部、未人工复核、Agent 已通过、不通过、受阻", "复制带 ?filter=agent-pass 的地址在新标签页打开"]
+        expected: ["全部 4 条", "未人工复核 4 条", "Agent 已通过 2 条：N1-P01、N2-P01", "不通过 1 条：N1-N01", "受阻 1 条：N2-N01", "新标签页直接显示 Agent 已通过的 2 条"]
+        forbidden_effects: []
+        evidence_hints: ["每个筛选的截图与页面文本"]
+
+      - id: SOP-21-P03
+        polarity: positive
+        title: 对 Agent 已通过的场景一键标记通过，页面不跳转
+        actor: 测试同事
+        priority: P0
+        refs: ["I1", "I2"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "SOP 场景页的身份栏已填写标记人张三与写入令牌"]
+        steps: ["在 N1-P01 下点通过", "观察页面地址与 N1-P01 的显示", "查看筛选数量", "查询 SQLite 中最新的人工轮次与结果"]
+        expected: ["点击后无需填写任何内容即提交", "页面地址不变", "N1-P01 原处显示最新人工结果：通过、标记人张三、本地时间", "未人工复核的数量从 4 变为 3", "SQLite 中新增一个人工轮次，结果的执行者为张三，实际结果为人工复核通过"]
+        forbidden_effects: ["浏览器发生页面跳转或整页重新加载", "N1-P01 的 Agent 结果被改写"]
+        evidence_hints: ["点击前后的截图", "浏览器请求记录", "SQLite 查询与输出"]
+
+      - id: SOP-21-P04
+        polarity: positive
+        title: 标记失败时只填缺陷链接，备注可留空
+        actor: 测试同事
+        priority: P0
+        refs: ["I1", "I2"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "身份栏已填写标记人与写入令牌"]
+        steps: ["在 N2-P01 下点失败", "在展开的缺陷链接栏填 https://github.com/demo-org/demo-app/issues/7，备注留空", "点提交"]
+        expected: ["点失败后在 N2-P01 下展开缺陷链接与备注两栏，没有其他必填栏", "提交成功，页面不跳转", "N2-P01 原处显示最新人工结果为失败及缺陷链接", "总览页误判明细增加一项 N2-P01", "复测通过率为 0/1"]
+        forbidden_effects: ["要求填写实际结果或验证环境"]
+        evidence_hints: ["展开栏的截图", "提交后的截图", "总览页文本"]
+
+      - id: SOP-21-N01
+        polarity: negative
+        negative_type: empty-input
+        title: 失败或受阻没有缺陷链接时不提交
+        actor: 测试同事
+        priority: P0
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "身份栏已填写标记人与写入令牌"]
+        steps: ["在 N1-P01 下点受阻", "缺陷链接留空，备注填写'等环境'，点提交"]
+        expected: ["页面在 N1-P01 下提示需要填写缺陷链接", "已填的备注保留", "没有发出标记请求"]
+        forbidden_effects: ["SQLite 新增人工轮次"]
+        evidence_hints: ["提示截图", "浏览器请求记录", "SQLite 轮次数"]
+
+      - id: SOP-21-N02
+        polarity: negative
+        negative_type: permission
+        title: 令牌错误时在原处提示且保留内容
+        actor: 测试同事
+        priority: P1
+        refs: ["I1", "I2"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "身份栏的写入令牌填写为错误值"]
+        steps: ["在 N2-P01 下点失败，填写缺陷链接 https://github.com/demo-org/demo-app/issues/8", "点提交"]
+        expected: ["N2-P01 下提示令牌无效", "已填的缺陷链接保留", "页面不跳转"]
+        forbidden_effects: ["SQLite 新增人工轮次"]
+        evidence_hints: ["提示截图", "SQLite 轮次数"]
+
+      - id: SOP-21-N03
+        polarity: negative
+        negative_type: incomplete-input
+        title: 身份栏未填写时先提示填写
+        actor: 测试同事
+        priority: P2
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件", "浏览器的 localStorage 中没有标记人与令牌"]
+        steps: ["打开 SOP 场景页，在 N1-P01 下点通过"]
+        expected: ["页面提示先在身份栏填写标记人与写入令牌", "没有发出标记请求"]
+        forbidden_effects: ["SQLite 新增人工轮次"]
+        evidence_hints: ["提示截图", "浏览器请求记录"]
+
+      - id: SOP-21-P05
+        polarity: positive
+        title: 场景详情页使用同一组复核控件
+        actor: 测试同事
+        priority: P1
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "身份栏已填写标记人与写入令牌"]
+        steps: ["打开 N1-N01 的场景详情页", "点通过"]
+        expected: ["详情页显示通过、失败、受阻三个按钮，没有实际结果与验证环境输入栏", "点通过后页面不跳转，详情页的结果历史出现该人工结果"]
+        forbidden_effects: []
+        evidence_hints: ["详情页截图", "提交后的截图"]
+
+      - id: SOP-21-P06
+        polarity: positive
+        title: 每份证据都可下载，中文文本证据正常显示
+        actor: 测试同事
+        priority: P1
+        refs: ["I1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件", "已登记一轮：N1-P01 为 pass，证据为一个 300 行、含中文的 UTF-8 文本文件与一张 PNG 图片"]
+        steps: ["打开 N1-P01 的详情页", "点文本证据与图片的下载链接，在浏览器中直接打开文本证据的下载地址"]
+        expected: ["两份证据都有下载链接", "文本预览处注明只显示前 200 行", "直接打开文本证据时中文显示正常，响应的内容类型带 charset=utf-8", "下载的字节与原文件相同"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "响应头", "下载文件的 sha256"]
+
+  - id: SOP-22
+    title: 标记接口与导出
+    actor: "测试岗页面与工具"
+    entry: "POST /api/v1/projects/<项目键>/batches/<批次>/marks"
+    must:
+      - "接口只接受 scenario、fingerprint、status、marker、defect_url、note"
+      - "人工结果的实际结果、finding 与证据由看板生成，导出后被 tw 接受"
+    scenarios:
+
+      - id: SOP-22-P01
+        polarity: positive
+        title: 受阻标记生成实际结果、finding 与观察记录
+        actor: 测试岗页面
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次"]
+        steps: ["用 curl 对 N1-P01 发送 {scenario, fingerprint, status: blocked, marker: 李四, defect_url: https://github.com/demo-org/demo-app/issues/9, note: 等数据}", "请求该轮次接口与演示轮次的轮次接口", "下载该轮次的导出 ZIP 并解压"]
+        expected: ["返回 200，含 round、scenario 与 filters", "该轮次的种类为 manual，只有一条结果：执行者为李四，executed_at 为带时区的服务端时间，独立性为 undeclared", "该结果的实际结果为'人工复核不通过（受阻），缺陷 https://github.com/demo-org/demo-app/issues/9'", "finding 为该链接，note 为等数据", "证据为 observation-<轮次>.json，内容含标记人、状态、缺陷链接、备注与时间，不含验证环境", "演示轮次中 N1-P01 的 Agent 结果保持不变", "ZIP 的 results.jsonl 只含 tw 结果契约字段，executor 为李四，executed_at 与轮次接口一致，evidence 指向 ZIP 内的 observation 文件且内容与看板保存的一致"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文（令牌脱敏）", "ZIP 文件清单与 results.jsonl"]
+
+      - id: SOP-22-P02
+        polarity: positive
+        title: 导出的人工结果被 tw 登记
+        actor: 开发岗
+        priority: P1
+        refs: ["I2"]
+        verify: cli
+        initial_state: ["测试看板中 N1-P01 有一条人工通过、N2-P01 有一条人工失败（带缺陷链接）", "一个接入了 tw 团队流程的临时项目，其任务场景文件与演示场景文件相同"]
+        steps: ["分别下载这两个人工轮次的导出 ZIP 并解压", "在临时项目中运行 tw team scenarios submit --task <任务> --results <解压目录>/results.jsonl"]
+        expected: ["两次提交都被 tw 接受"]
+        forbidden_effects: []
+        evidence_hints: ["命令原文与完整输出"]
+
+      - id: SOP-22-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 旧字段被拒绝
+        actor: 测试岗工具
+        priority: P0
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件"]
+        steps: ["对 N1-P01 发送 status: pass 并附带 actual、environment、evidence 与 finding 字段的标记"]
+        expected: ["返回 422，error_code 为 mark-invalid，problems 点名 actual、environment、evidence 与 finding"]
+        forbidden_effects: ["SQLite 新增轮次"]
+        evidence_hints: ["请求与响应原文", "SQLite 轮次数"]
+
+      - id: SOP-22-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 通过附带缺陷链接、跳过状态、缺少标记人与不通过缺少缺陷链接被拒绝
+        actor: 测试岗工具
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件"]
+        steps: ["发送 status: pass 并带 defect_url 的标记", "发送 status: skip 的标记", "发送 marker 为空字符串的标记", "直接调用接口发送 status: fail 且不带 defect_url 的标记", "直接调用接口发送 status: blocked 且不带 defect_url 的标记"]
+        expected: ["前三次都返回 422，error_code 为 mark-invalid，并分别点名 defect_url、status、marker", "后两次都返回 422，error_code 为 mark-invalid，problems 点名 defect_url"]
+        forbidden_effects: ["SQLite 新增轮次"]
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-22-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 场景指纹不是当前内容时被拒绝
+        actor: 测试岗页面
+        priority: P1
+        refs: ["I2"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件，随后推送了修改 N1-P01 预期后的版本"]
+        steps: ["用修改前的指纹对 N1-P01 发送通过标记"]
+        expected: ["返回 409，error_code 为 scenario-stale，problems 的 field 为 fingerprint"]
+        forbidden_effects: ["SQLite 新增轮次"]
+        evidence_hints: ["请求与响应原文"]
+
+  - id: SOP-23
+    title: 用例上传与浏览
+    actor: "测试同事"
+    entry: "用例页与 /api/v1/.../cases"
+    must:
+      - "按测试岗 Schema 核对，问题指出行号，失败不留数据"
+      - "同编号以最后一次上传为准，历次上传取并集"
+      - "只有用例也能建立批次"
+    scenarios:
+
+      - id: SOP-23-P01
+        polarity: positive
+        title: 只凭用例建立批次并在用例页浏览
+        actor: 测试同事
+        priority: P0
+        refs: ["I3", "D1"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件（批次 demo）", "身份栏已填写标记人与写入令牌"]
+        steps: ["用接口把演示用例文件上传到同一项目的新批次 cases-only", "在首页打开 cases-only，查看总览、SOP 场景页与用例页"]
+        expected: ["上传返回 200，upload 为 1，added 为 3，union_count 为 3", "首页列出批次 cases-only，状态为尚无场景", "SOP 场景页写明尚无场景并链接到用例页", "用例页按登录、订单两组显示三条用例的编号、标题、优先级、类型、前置条件、步骤与预期，每条标为尚无对应场景"]
+        forbidden_effects: ["批次 demo 的数据发生变化"]
+        evidence_hints: ["上传请求与响应", "三个页面的截图与文本"]
+
+      - id: SOP-23-P02
+        polarity: positive
+        title: 两次上传取并集，同编号以后一次为准
+        actor: 测试同事
+        priority: P0
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板中批次 cases-only 已上传演示用例文件"]
+        steps: ["上传 cases-b.yaml：修改 TC_DEMO_LOGIN_001 的标题，新增 TC_DEMO_ORDER_002，不含 TC_DEMO_LOGIN_002", "请求 GET …/cases 与 GET …/cases.yaml"]
+        expected: ["上传返回 upload 2、added 1、updated 1、unchanged 0、union_count 4", "并集含 TC_DEMO_LOGIN_001（新标题）、TC_DEMO_LOGIN_002、TC_DEMO_ORDER_001、TC_DEMO_ORDER_002", "cases.yaml 符合测试岗 Schema，metadata 取第二次上传的值"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "下载的 cases.yaml"]
+
+      - id: SOP-23-P03
+        polarity: positive
+        title: 用例对应场景的标注与覆盖数
+        actor: 测试同事
+        priority: P1
+        refs: ["I3"]
+        verify: web
+        initial_state: ["测试看板中批次 demo 推送了一份场景文件，其中一条场景的编号为 TC_DEMO_LOGIN_001", "批次 demo 已上传演示用例文件"]
+        steps: ["打开 demo 的用例页", "请求 GET …/cases"]
+        expected: ["TC_DEMO_LOGIN_001 标为已有对应场景并链接到该场景", "另外两条标为尚无对应场景", "coverage 为 1/3"]
+        forbidden_effects: []
+        evidence_hints: ["用例页截图", "接口响应"]
+
+      - id: SOP-23-P04
+        polarity: positive
+        title: 重复上传相同原文不产生新上传
+        actor: 测试同事
+        priority: P2
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板中批次 cases-only 已上传演示用例文件"]
+        steps: ["再次上传原文完全相同的演示用例文件"]
+        expected: ["返回 200，unchanged_upload 为 true", "上传列表仍只有 1 次"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "上传列表"]
+
+      - id: SOP-23-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 违反 Schema 的用例被拒绝并指出行号
+        actor: 测试同事
+        priority: P0
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板中批次 cases-only 已上传演示用例文件"]
+        steps: ["上传一个文件：一条用例编号为 TC_1，一条用例带多余字段 owner，两条用例编号相同，一条用例缺 expected_results"]
+        expected: ["返回 422，error_code 为 cases-invalid", "problems 分别指出编号格式、多余字段、重复编号与缺少字段，每项带该处的行号"]
+        forbidden_effects: ["上传列表与并集发生变化"]
+        evidence_hints: ["请求与响应原文", "上传前后的 GET …/cases"]
+
+      - id: SOP-23-N02
+        polarity: negative
+        negative_type: not-found
+        title: 项目不存在时上传被拒绝
+        actor: 测试同事
+        priority: P1
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板中没有项目键 no-such-project"]
+        steps: ["向 /api/v1/projects/no-such-project/batches/x/cases 上传演示用例文件"]
+        expected: ["返回 404，error_code 为 project-not-found"]
+        forbidden_effects: ["SQLite 中出现项目 no-such-project 或批次 x"]
+        evidence_hints: ["请求与响应原文", "SQLite 查询"]
+
+      - id: SOP-23-N03
+        polarity: negative
+        negative_type: not-found
+        title: 尚无场景的批次下载场景文件返回 404
+        actor: 开发岗
+        priority: P2
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板中批次 cases-only 只有用例"]
+        steps: ["请求 GET …/batches/cases-only/scenario-file", "请求 GET …/batches/demo/scenario-file"]
+        expected: ["cases-only 返回 404，error_code 为 scenario-file-not-found", "demo 返回 200，正文与最新推送的场景文件原文一致"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-23-N04
+        polarity: negative
+        negative_type: invalid-input
+        title: YAML 语法错误给出原因、行号与列号
+        actor: 测试同事
+        priority: P2
+        refs: ["I3"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件"]
+        steps: ["上传第 5 行有未闭合引号的用例文件", "推送第 7 行缩进错误、解析器在该行报错的场景文件"]
+        expected: ["两次都返回 422，error_code 分别为 cases-invalid 与 scenario-file-invalid", "两次的问题都给出出错的行号，problem 写出解析器的原因与列号"]
+        forbidden_effects: ["产生上传记录或场景版本"]
+        evidence_hints: ["请求与响应原文"]
+
+  - id: SOP-24
+    title: 缺陷链接与 Jira
+    actor: "测试同事"
+    entry: "标记接口、SOP 场景页与 /api/v1/jira/<单号>"
+    must:
+      - "Jira 单号规范化为完整链接，旧链接保持原样"
+      - "页面显示 Jira 标题与状态，令牌不外露"
+    scenarios:
+
+      - id: SOP-24-P01
+        polarity: positive
+        title: Jira 单号规范化为完整链接
+        actor: 测试同事
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["测试看板以模拟 Jira 的地址配置 JIRA_URL 等三个变量启动，并推送了演示场景文件"]
+        steps: ["对 N1-P01 发送 fail 标记，defect_url 为 ABC-1", "对 N2-P01 发送 fail 标记，defect_url 为 <JIRA_URL>/browse/ABC-1?focusedCommentId=2#x"]
+        expected: ["两次都返回 200", "两条结果的 finding 都为 <JIRA_URL>/browse/ABC-1"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "SQLite 结果行"]
+
+      - id: SOP-24-P02
+        polarity: positive
+        title: 页面显示 Jira 标题与状态
+        actor: 测试同事
+        priority: P1
+        refs: ["I4"]
+        verify: web
+        initial_state: ["测试看板以模拟 Jira 配置启动", "N1-P01 的最新人工结果为失败，缺陷链接为 ABC-1 的完整链接"]
+        steps: ["打开 SOP 场景页与 N1-P01 的详情页", "查看模拟 Jira 收到的请求"]
+        expected: ["缺陷链接旁显示'登录按钮无响应 · 待确认'", "模拟 Jira 收到 GET /rest/api/3/issue/ABC-1，带 Basic 认证头，查询参数含 fields=summary,status"]
+        forbidden_effects: ["页面源码或浏览器请求中出现 JIRA_API_TOKEN 的值"]
+        evidence_hints: ["截图", "模拟 Jira 的请求记录", "页面源码检索结果"]
+
+      - id: SOP-24-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 不符合规则的缺陷链接被拒绝
+        actor: 测试同事
+        priority: P0
+        refs: ["I4"]
+        verify: api
+        initial_state: ["测试看板以模拟 Jira 配置启动，并推送了演示场景文件"]
+        steps: ["对 N1-P01 发送 fail 标记，defect_url 为 https://example.com/bug/1", "发送 defect_url 为 abc-1 的 fail 标记"]
+        expected: ["两次都返回 422，error_code 为 defect-link-invalid，说明接受的写法"]
+        forbidden_effects: ["SQLite 新增轮次"]
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-24-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 未配置 Jira 时单号被拒绝，GitHub 前缀照常可用
+        actor: 测试同事
+        priority: P1
+        refs: ["I4"]
+        verify: api
+        initial_state: ["测试看板不带 JIRA_URL 启动，并推送了演示场景文件"]
+        steps: ["对 N1-P01 发送 fail 标记，defect_url 为 ABC-1", "再发送 defect_url 为 https://github.com/demo-org/demo-app/issues/3"]
+        expected: ["第一次返回 422，error_code 为 defect-link-invalid，说明需要填写完整链接", "第二次返回 200"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
+      - id: SOP-24-N03
+        polarity: negative
+        negative_type: disconnect
+        title: Jira 不可用时页面照常显示并标出读取失败
+        actor: 测试同事
+        priority: P1
+        refs: ["I4"]
+        verify: web
+        initial_state: ["测试看板以模拟 Jira 配置启动", "N1-P01 的最新人工结果为失败，缺陷链接为 ABC-1 的完整链接", "模拟 Jira 已停止"]
+        steps: ["打开 SOP 场景页", "请求 GET /api/v1/jira/ABC-1", "请求 GET /api/v1/jira/abc"]
+        expected: ["页面其余内容正常显示，链接旁显示 Jira 读取失败", "Jira 摘要接口返回 502，error_code 为 jira-unavailable", "格式不符的单号返回 422"]
+        forbidden_effects: []
+        evidence_hints: ["截图", "请求与响应原文"]
+
+      - id: SOP-24-P04
+        polarity: positive
+        title: 缺陷链接前缀的比较不区分大小写
+        actor: 测试同事
+        priority: P2
+        refs: ["I4"]
+        verify: api
+        initial_state: ["测试看板不带 JIRA_URL 启动", "以项目身份 GitHub.com/Demo_Org/Demo.App 把演示场景文件推送到项目键 github-com-demo-org-demo-app"]
+        steps: ["对 N1-P01 发送 fail 标记，缺陷链接为 https://github.com/demo_org/demo.app/issues/1"]
+        expected: ["返回 200，finding 为提交的链接"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文"]
+
+  - id: SOP-25
+    title: 状态、进度与刷新
+    actor: "测试同事与开发者"
+    entry: "首页、批次总览、进度页与状态接口"
+    must:
+      - "能看出 Agent 是否已测完"
+      - "两个浏览器打开同一批次时，一侧的变化在五秒内出现在另一侧"
+    scenarios:
+
+      - id: SOP-25-P01
+        polarity: positive
+        title: 执行状态从有待执行变为 Agent 已测完
+        actor: 测试同事
+        priority: P0
+        refs: ["I5"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件，尚无轮次"]
+        steps: ["打开首页与批次总览", "登记演示轮次后再次打开"]
+        expected: ["登记前显示有待执行 4 条", "登记后显示 Agent 已测完，附该轮提交的本地时间，以及通过 2、失败 1、受阻 1、跳过 0"]
+        forbidden_effects: []
+        evidence_hints: ["前后两次的截图与文本"]
+
+      - id: SOP-25-P02
+        polarity: positive
+        title: 进度页两列数值与总览一致
+        actor: 开发者
+        priority: P1
+        refs: ["I5"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "N1-P01 有一条人工通过", "批次 demo 已上传演示用例文件"]
+        steps: ["打开进度页", "请求批次摘要接口"]
+        expected: ["开发侧：待执行 0、已执行 4/4、Agent 验收通过率 2/3、一次通过率 2/3", "测试侧：待复核 1、已复核 1/2、人工复测通过率 1/1、误判 0", "用例覆盖 0/3", "各数值与接口返回一致"]
+        forbidden_effects: []
+        evidence_hints: ["进度页截图与文本", "接口响应"]
+
+      - id: SOP-25-P03
+        polarity: positive
+        title: 另一个浏览器五秒内刷新
+        actor: 测试同事
+        priority: P0
+        refs: ["I5"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "两个独立的浏览器上下文都打开 SOP 场景页"]
+        steps: ["在第一个浏览器对 N2-P01 点通过", "从提交时刻起观察第二个浏览器"]
+        expected: ["第二个浏览器在五秒内显示 N2-P01 的人工通过与新的筛选数量，无需手动刷新"]
+        forbidden_effects: []
+        evidence_hints: ["两个浏览器的时间戳截图", "第二个浏览器的请求记录"]
+
+      - id: SOP-25-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 填写中的内容不被刷新冲掉
+        actor: 测试同事
+        priority: P1
+        refs: ["I5"]
+        verify: web
+        initial_state: ["测试看板已推送演示场景文件并登记演示轮次", "两个浏览器都打开 SOP 场景页"]
+        steps: ["在第二个浏览器对 N1-P01 点失败并在缺陷链接栏输入内容，暂不提交", "在第一个浏览器对 N2-P01 点通过", "等待十秒后观察第二个浏览器"]
+        expected: ["第二个浏览器顶部提示有新数据，已输入的缺陷链接保留", "第二个浏览器提交或取消后，页面显示 N2-P01 的人工通过"]
+        forbidden_effects: ["已输入的内容丢失"]
+        evidence_hints: ["截图", "提交后的截图"]
+
+      - id: SOP-25-P04
+        polarity: positive
+        title: 状态接口支持条件请求
+        actor: 开发者
+        priority: P2
+        refs: ["I5"]
+        verify: api
+        initial_state: ["测试看板已推送演示场景文件"]
+        steps: ["请求 GET …/state 记下 ETag", "带 If-None-Match 再请求一次", "登记一个轮次后带同一 If-None-Match 请求"]
+        expected: ["第二次返回 304", "第三次返回 200 与新的 ETag"]
+        forbidden_effects: []
+        evidence_hints: ["三次请求与响应头"]
+
+  - id: SOP-26
+    title: 报告与测试岗结果文件
+    actor: "开发者与测试同事"
+    entry: "report.md、results.yaml 的下载与 results 导入接口"
+    must:
+      - "报告各区块齐全，数值与页面一致"
+      - "测试岗结果文件可导出、可导入"
+    scenarios:
+
+      - id: SOP-26-P01
+        polarity: positive
+        title: 导出 Markdown 报告
+        actor: 开发者
+        priority: P0
+        refs: ["I5"]
+        verify: api
+        initial_state: ["测试看板中批次 demo 推送了一份场景文件，其中场景编号为 TC_DEMO_LOGIN_001、TC_DEMO_LOGIN_002 与 N2-P01、N2-N01", "批次 demo 已上传演示用例文件", "登记了一个 Agent 轮次与一条人工失败"]
+        steps: ["在总览页点导出报告，或请求 GET …/report.md"]
+        expected: ["报告依次含头部、用例覆盖、Agent 统计、人工复测、修复记录、回归覆盖、合并记录、未验证范围", "用例覆盖中两条登录用例对应同编号场景并写出最新结果，TC_DEMO_ORDER_001 列在尚无对应场景中", "修复记录、回归覆盖与合并记录写暂无记录", "各比率与总览页一致"]
+        forbidden_effects: []
+        evidence_hints: ["报告原文", "总览页文本"]
+
+      - id: SOP-26-P02
+        polarity: positive
+        title: 导出测试岗结果文件
+        actor: 测试同事
+        priority: P1
+        refs: ["I6"]
+        verify: api
+        initial_state: ["同 SOP-26-P01 的状态，其中人工失败的缺陷链接为 Jira 单 ABC-1"]
+        steps: ["请求 GET …/results.yaml"]
+        expected: ["文件含 run_id、round、environment、results", "results 只含有同编号场景且有结果的用例，status 为 passed、failed、blocked 或 skipped", "人工失败那条的 jira_issue 为 ABC-1"]
+        forbidden_effects: []
+        evidence_hints: ["下载的 results.yaml"]
+
+      - id: SOP-26-P03
+        polarity: positive
+        title: 导入测试岗结果文件登记为人工轮次
+        actor: 测试同事
+        priority: P0
+        refs: ["I6"]
+        verify: api
+        initial_state: ["测试看板以模拟 Jira 配置启动", "批次 demo 的场景中有 TC_DEMO_LOGIN_001 与 TC_DEMO_LOGIN_002"]
+        steps: ["导入 results.yaml：TC_DEMO_LOGIN_001 passed，TC_DEMO_LOGIN_002 failed 且 jira_issue 为 ABC-1，另一条 skipped；tested_at 不带时区"]
+        expected: ["返回 200，imported 2，skipped 列出那条 skipped 的编号", "新增一个人工轮次，含两条结果", "失败那条的 finding 为 ABC-1 的完整链接", "执行时间按看板所在机器的本地时区解释"]
+        forbidden_effects: []
+        evidence_hints: ["请求与响应原文", "该轮次接口", "SQLite 结果行"]
+
+      - id: SOP-26-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 不合格的结果文件整体被拒绝
+        actor: 测试同事
+        priority: P1
+        refs: ["I6"]
+        verify: api
+        initial_state: ["批次 demo 的场景中有 TC_DEMO_LOGIN_001"]
+        steps: ["导入一个结果文件：一项 failed 缺少 jira_issue，一项 case_id 没有对应场景，顶层缺 environment"]
+        expected: ["返回 422，error_code 为 results-invalid，逐项列出三个问题"]
+        forbidden_effects: ["SQLite 新增轮次"]
+        evidence_hints: ["请求与响应原文", "SQLite 轮次数"]
