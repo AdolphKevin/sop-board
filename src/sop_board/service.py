@@ -46,6 +46,7 @@ class Service:
         self.writable_repos = writable_repos or {}
         self.workspace_problems = {}
         self.merge_callback = None
+        self.execution_callback = None
         # 发现与合并落地共享锁，防止看板写入在登记版本前被自己的扫描发现。
         self.workspace_lock = threading.RLock()
         self.jira_url = jira_url.rstrip("/")
@@ -101,6 +102,10 @@ class Service:
             etag += '-w' + hashlib.sha256(canonical(problems).encode()).hexdigest()[:12]
         if batch['project'] in self.writable_repos:
             etag += '-e' + hashlib.sha256(canonical(self.entries(batch['project'])).encode()).hexdigest()[:12]
+        tasks = [dict(r) for r in db.execute("SELECT id,status,scope_json,started_at,finished_at,error,void_reason,rounds_json FROM tasks "
+            "WHERE project=? AND batch=? AND kind IN ('execute','check') ORDER BY id", (batch['project'], batch['name']))]
+        if tasks:
+            etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
         return '"' + etag + '"'
 
     def state(self, key, name):
@@ -295,7 +300,15 @@ class Service:
         result = calculate(db, batch)
         result.pop("scenarios")
         version = self.latest_version(db, batch)
+        tasks = []
+        for row in db.execute("SELECT id,kind,trigger,status,scope_json,started_at,finished_at,error,void_reason,rounds_json "
+                              "FROM tasks WHERE project=? AND batch=? AND kind IN ('execute','check') ORDER BY id", (batch['project'], batch['name'])):
+            task = dict(row)
+            task['scope'] = json.loads(task.pop('scope_json'))
+            task['rounds'] = json.loads(task.pop('rounds_json'))
+            tasks.append(task)
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
+                    execution_tasks=tasks,
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
                     dirty=bool(version["dirty"]) if version else None,
@@ -518,6 +531,12 @@ class Service:
                            (batch_id, scenario["id"], fingerprint(scenario), node,
                            scenario["title"], scenario["polarity"], scenario["priority"], scenario["verify"],
                            canonical(scenario.get("regression")), canonical(scenario)))
-        if self.merge_callback and not body['pushed_by'].startswith('看板合并 #'):
+        landed = body['pushed_by'].startswith('看板合并 #')
+        with self.store.connection() as db:
+            has_cases = bool(self.case_union(db, self.batch(db, key, batch)))
+        if self.execution_callback and key in self.writable_repos and (landed or not has_cases):
+            self.execution_callback(key, batch, scope=[dict(scenario=s, reason='new' if s in added else 'changed')
+                for s in computed if s in added or s in changed], trigger='合并写入' if landed else '场景版本')
+        if self.merge_callback and not landed:
             self.merge_callback(key, batch, trigger='场景文件变化')
         return dict(ok=True, version=version, added=added, changed=changed, removed=removed, unchanged=False)

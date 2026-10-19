@@ -32,6 +32,7 @@ args = sys.argv[1:]
 root = pathlib.Path.cwd()
 report = dict(argv=args, cwd=str(root), env=entry_environment,
               values={k: os.environ.get(k) for k in ('LC_ALL', 'CODEX_HOME') if k in os.environ},
+              addresses={k: os.environ[k] for k in config.get('address_names', []) if k in os.environ},
               stdin_eof=(sys.stdin.buffer.read() == b''),
               stdin_null=stat.S_ISCHR(os.fstat(0).st_mode) and os.fstat(0).st_rdev == os.stat(os.devnull).st_rdev,
               pid=os.getpid(), started=time.time())
@@ -45,6 +46,30 @@ if config.get('child'):
     (root/'child.pid').write_text(str(child.pid))
 time.sleep(config.get('delay', 0))
 import yaml
+if 'resume' not in args and '-s' in args and args[args.index('-s')+1] == 'workspace-write':
+    from datetime import datetime, timezone
+    document = yaml.safe_load((root/'scenarios.yaml').read_text())
+    selected = [s['id'] for n in document['sops'] for s in n['scenarios']]
+    selected = config.get('result_ids', selected)
+    if config.get('evidence_root'):
+        (root/'evidence').rmdir()
+        (root/'evidence').symlink_to(config['evidence_root'], target_is_directory=True)
+    rows = []
+    for sid in selected:
+        status = config.get('status', 'pass')
+        evidence = config.get('evidence_path', 'evidence/'+sid+'.txt')
+        row = dict(scenario=sid, status=status, actual='fixture observed '+sid,
+                   executed_at=datetime.now(timezone.utc).isoformat(), executor='fixture', evidence=[evidence])
+        if status in ('blocked', 'skip') and not config.get('no_finding'):
+            row['finding'] = 'fixture finding'
+        if 'evidence_path' not in config:
+            (root/evidence).write_text('observed '+sid)
+        rows.append(row)
+    if not config.get('no_results'):
+        (root/'results.jsonl').write_text(config.get('raw_results', '\n'.join(json.dumps(r) for r in rows)))
+    report['finished'] = time.time()
+    (root/'invocation.json').write_text(json.dumps(report))
+    sys.exit(config.get('exit', 0))
 snapshot = json.loads((root/'input.json').read_text()) if (root/'input.json').exists() else {}
 cases = snapshot.get('cases', [])
 entries = snapshot.get('entries', {}).get('entries', {})
@@ -86,9 +111,13 @@ def mode(directory, **settings):
 def task_board(board_factory, fake_codex, repo=None, **env):
     import os
     command = [str(ROOT / '.venv/bin/sop-board'), '--writable-repo', f'github.com/demo-org/demo-app={repo}'] if repo else None
-    return board_factory(command=command, env={'SOP_BOARD_ADMIN_TOKEN': 'isolated-admin',
+    environment = {'SOP_BOARD_ADMIN_TOKEN': 'isolated-admin',
                               'PATH': str(fake_codex) + os.pathsep + os.defpath,
-                              'JIRA_API_TOKEN': 'isolated-jira', **env})
+                              'JIRA_API_TOKEN': 'isolated-jira', **env}
+    if repo:
+        from prepared_board_helpers import prepared_board
+        return prepared_board(board_factory, command, repo, environment)
+    return board_factory(command=command, env=environment)
 
 
 def create_task(board, base=BASE):
@@ -96,7 +125,7 @@ def create_task(board, base=BASE):
     current = board.request('GET', base + '/cases', auth=False)[1]
     if not current.get('cases'):
         upload_cases(board, base=base)
-        return board.request('GET', '/api/v1/tasks?project=' + base.split('/')[4] + '&batch=' + base.split('/')[6], auth=False)[1]['tasks'][-1]
+        return [t for t in board.request('GET', '/api/v1/tasks?project=' + base.split('/')[4] + '&batch=' + base.split('/')[6], auth=False)[1]['tasks'] if t['kind'] == 'merge'][-1]
     status, response, _ = board.request('POST', base + '/merges', {}, headers=ADMIN)
     assert status == 200, response
     return response['task']

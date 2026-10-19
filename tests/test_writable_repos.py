@@ -27,7 +27,10 @@ def repo(tmp_path):
     (path / 'docs/sop/demo.yaml').write_text(yaml.safe_dump(demo(), allow_unicode=True, sort_keys=False))
     (path / 'docs/sop/entries.yaml').write_text(yaml.safe_dump({'entries': {'自定义入口': dict(surface='http', operate='调用接口', observe=['响应'], evidence=['响应原文'], isolation='临时目录')}}, allow_unicode=True))
     git(path, 'add', '.')
-    git(path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
+    tree = git(path, 'write-tree')
+    commit = git(path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'commit-tree', tree, '-m', 'fixture')
+    git(path, 'update-ref', 'HEAD', commit)
     return path
 
 

@@ -83,8 +83,9 @@ def test_running_snapshot_changes_void_without_registering(board_factory, check_
     assert reason in done['void_reason'] and done['rounds'] == []
     if change == 'head':
         assert '产品指纹' in done['void_reason']
-    assert board.sql('SELECT COUNT(*) FROM rounds') == [(0,)]
-    assert not list((board.data / 'worktrees').iterdir())
+    # 新场景版本可另起执行；只核对这个失效快照没有登记或遗留自己的目录。
+    assert board.sql('SELECT COUNT(*) FROM results WHERE session=?', (str(task['id']),)) == [(0,)]
+    assert not (board.data / 'worktrees' / str(task['id'])).exists()
 
 
 def test_queued_invalid_entries_wait_and_resume_automatically(board_factory, check_repo):
@@ -124,4 +125,8 @@ def test_waiting_check_with_obsolete_scope_fails_before_launch(board_factory, ch
     (repo / 'src/app.py').write_text('print(1)\n')
     done = settle_check(board, task)
     assert done['status'] == '失败' and '范围' in done['error'], done
-    assert done['rounds'] == [] and not (presets / 'junit-calls.jsonl').exists()
+    assert done['rounds'] == [] and not (board.data / 'tasks' / str(task['id']) / 'checks').exists()
+    calls = presets / 'junit-calls.jsonl'
+    if calls.exists():
+        assert all(call['output'] != str(board.data / 'tasks' / str(task['id']) / 'checks/junit')
+                   for call in map(json.loads, calls.read_text().splitlines()))

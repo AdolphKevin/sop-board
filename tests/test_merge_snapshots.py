@@ -14,7 +14,7 @@ from test_writable_repos import repo, wait_for
 
 
 def task_list(board):
-    return board.request('GET', f'/api/v1/tasks?project={KEY}&batch=demo', auth=False)[1]['tasks']
+    return [t for t in board.request('GET', f'/api/v1/tasks?project={KEY}&batch=demo', auth=False)[1]['tasks'] if t['kind'] == 'merge']
 
 
 def test_snapshots_use_config_then_file_and_freeze_sources(board_factory, fake_codex, repo):

@@ -24,6 +24,10 @@ def test_check_runs_while_all_three_codex_slots_are_busy(board_factory, check_re
         body['content'] = body['content'].replace('batch: demo', 'batch: ' + name)
         base = BASE.replace('/demo', '/' + name)
         assert board.request('PUT', base + '/scenario-file', body)[0] == 200
+        # 此处测三个合并会话；准备版本自动触发的执行先放弃，保持原有前置条件。
+        for task in board.request('GET', '/api/v1/tasks', auth=False)[1]['tasks']:
+            if task['kind'] == 'execute' and task['batch'] == name and task['status'] in ('排队中','运行中','待提交','等待浏览器'):
+                assert board.request('POST', f"/api/v1/tasks/{task['id']}/cancel", {}, headers=ADMIN)[0] == 200
         merges.append(create_task(board, base))
     wait_for(lambda: all(read_task(board, t)['status'] == '运行中' for t in merges))
     done = settle_check(board, start_check(board))

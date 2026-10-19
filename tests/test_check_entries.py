@@ -11,8 +11,9 @@ from codex_helpers import ADMIN
 
 
 def declared_board(factory, repo, **env):
-    return factory(command=[str(ROOT / '.venv/bin/sop-board'), '--writable-repo', f'{IDENTITY}={repo}'],
-                   env={'SOP_BOARD_ADMIN_TOKEN': 'isolated-admin', **env})
+    from prepared_board_helpers import prepared_board
+    return prepared_board(factory, [str(ROOT / '.venv/bin/sop-board'), '--writable-repo', f'{IDENTITY}={repo}'],
+                          repo, {'SOP_BOARD_ADMIN_TOKEN': 'isolated-admin', **env})
 
 
 def declarations(repo):

@@ -57,6 +57,11 @@ def ratio(value):
 
 
 def agent_state(data):
+    running = [t for t in data.get('execution_tasks', []) if t['kind'] == 'execute' and t['status'] == '运行中']
+    if running:
+        return f"执行中（{len(running)} 个会话，开始于 {local_time(running[0]['started_at'])}，任务 #{running[0]['id']}）"
+    if any(t['kind'] == 'execute' and t['status'] == '待提交' for t in data.get('execution_tasks', [])):
+        return '待提交：工作区有未提交的产品改动'
     if data["version"] is None:
         return "尚无场景"
     if data["queue_counts"]["pending"]:
@@ -66,6 +71,20 @@ def agent_state(data):
     submitted = time_tag(execution["submitted_at"]) if execution["submitted_at"] else "无"
     return (f"Agent 已测完 · 最近 Agent 轮次提交时间：{submitted} · "
             f"通过 {counts['pass']}、失败 {counts['fail']}、受阻 {counts['blocked']}、跳过 {counts['skip']}")
+
+
+def execution_list(data):
+    if not data.get('execution_tasks'):
+        return ''
+    rows = ''.join(f"<tr><th>#{t['id']}</th><td>{'执行' if t['kind'] == 'execute' else '检查'}</td>"
+        f"<td>{text(t['trigger'])}</td><td>{len(t['scope'])}</td><td>{text(t['status'])}</td>"
+        f"<td>{time_tag(t['started_at']) if t['started_at'] else ''}</td>"
+        f"<td>{time_tag(t['finished_at']) if t['finished_at'] else ''}</td>"
+        f"<td>{text(t['void_reason'] or t['error'])}</td><td>{text('、'.join('第 '+str(n)+' 轮' for n in t['rounds']))}</td></tr>"
+        for t in data['execution_tasks'])
+    return ('<section><h2>执行任务</h2><div class="table-scroll"><table><thead><tr><th>编号</th><th>种类</th>'
+        '<th>触发原因</th><th>范围条数</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>原因</th><th>轮次</th>'
+        '</tr></thead><tbody>' + rows + '</tbody></table></div></section>')
 
 
 def batch(project, data):
@@ -79,7 +98,7 @@ def batch(project, data):
         workspace += "<section><h2>工作区场景文件不合格</h2>" + "".join(
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
             for p in data["workspace_problems"]) + "</section>"
-    report_link = workspace + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
+    report_link = workspace + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
     if data["version"] is None:
         return layout("批次 " + data["name"], batch_nav(project, data["name"], "overview") +
                       f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"
@@ -436,13 +455,13 @@ def merges(project, name, tasks, selected=None):
         content += '</ul>'
         if result.get('problems'):
             content += '<h3>核对问题（check.json）</h3><pre>' + text(json.dumps(result['problems'], ensure_ascii=False, indent=2)) + '</pre>'
-        if task['status'] in ('已完成', '待同步'):
+        if task['kind'] == 'merge' and task['status'] in ('已完成', '待同步'):
             content += f"<p><a href='{text(api)}/merges/{task['id']}/scenario-file' download>下载合并场景</a> " + f"<a href='{text(api)}/merges/{task['id']}/pairs.json' download>下载配对文件</a></p>"
         for name_, url in task['files'].items():
             content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
-        if task['status'] in ('失败', '已中断', 'Codex 不可用'):
+        if task['status'] in ('失败', '已中断', 'Codex 不可用', '已作废'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
-        if task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充'):
+        if task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
         content += '</section>'
     return layout('任务', content)

@@ -92,7 +92,8 @@ def test_product_digest_changes_only_for_product_files_at_all_four_states(board_
     """SOP-31-P08：F1/F2/F3/F4 各与 sop-verify 对照，场景、入口及忽略文件不改变指纹。"""
     (repo / '.gitignore').write_text('build/\n')
     git(repo, 'add', '.gitignore')
-    git(repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'ignore fixture')
+    from check_helpers import record_commit
+    record_commit(repo)
     (repo / 'src/app.py').write_text('print(2)\n')
     (repo / 'notes.txt').write_text('untracked\n')
     (repo / 'build').mkdir()

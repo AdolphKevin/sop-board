@@ -43,15 +43,17 @@ def invalid_judgment_constant(value):
     raise ValueError(f'最终 JSON 消息含非有限数字：{value}')
 
 
-def start_codex(directory, prompt, sandbox='read-only'):
+def start_codex(directory, prompt, sandbox='read-only', environment=None):
     """可替换的启动边界；子进程只得到白名单环境及独立进程组。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
     stderr = (directory / 'stderr.txt').open('wb')
     try:
-        return subprocess.Popen(['codex', 'exec', '--json', '-s', sandbox, '--skip-git-repo-check',
-            '-C', str(directory), '--output-schema', str(directory / 'schema.json'),
-            '-o', str(directory / 'final.json'), prompt], cwd=directory, env=codex_environment(),
+        options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
+        schema = ['--output-schema', str(directory / 'schema.json')] if (directory / 'schema.json').is_file() else []
+        return subprocess.Popen(['codex', 'exec', '--json', '-s', sandbox, *options, '--skip-git-repo-check',
+            '-C', str(directory), *schema,
+            '-o', str(directory / 'final.json'), prompt], cwd=directory, env=environment if environment is not None else codex_environment(),
             stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
     finally:
         events.close()
@@ -112,14 +114,19 @@ class Tasks:
         self.workers = {}
         self.check_workers = set()
         self.processes = {}
+        self.candidate_processes = {}
+        self.browser_owner = None
         self.starting = None
         self.timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT')) if timeout is None else timeout
         with self.store.transaction() as db:
-            db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE status IN ('排队中','待提交','运行中')", (now(),))
+            db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE status IN ('排队中','待提交','等待浏览器','运行中')", (now(),))
         self.availability_error = codex_available()
         from .checks import Checks
         self.checks = Checks(self)
         self.checks.cleanup_worktrees()
+        from .executions import Executions
+        self.executions = Executions(self)
+        service.execution_callback = self.executions.enqueue
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 
@@ -200,6 +207,9 @@ class Tasks:
                     hashlib.sha256(canonical(scope).encode()).hexdigest(), canonical(scope), now())).lastrowid
         return dict(ok=True, task=self.read(task_id))
 
+    def enqueue_execution(self, key, name):
+        return self.executions.enqueue(key, name)
+
     def list(self, project=None, batch=None):
         with self.store.connection() as db:
             ids = [r[0] for r in db.execute('SELECT id FROM tasks WHERE (? IS NULL OR project=?) AND (? IS NULL OR batch=?) ORDER BY id',
@@ -250,8 +260,8 @@ class Tasks:
         with self.lock:
             task = self.read(task_id)
             allowed = ('失败', '已中断', 'Codex 不可用') if action == 'retry' else ('排队中', '运行中', '已中断', '待同步', '待补充')
-            if task['kind'] == 'check':
-                allowed += ('已作废',) if action == 'retry' else ('待提交',)
+            if task['kind'] in ('check', 'execute'):
+                allowed += ('已作废',) if action == 'retry' else ('待提交', '等待浏览器')
             if task['status'] not in allowed:
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持此操作')
             if action == 'cancel':
@@ -259,13 +269,16 @@ class Tasks:
                 process = self.processes.get(task_id)
                 if process:
                     terminate_group(process)
+                self.executions.candidates.close(task_id)
+                if self.browser_owner == task_id:
+                    self.browser_owner = None
             else:
                 directory = self.directory(task_id)
                 if directory.exists():
                     archive = directory / ('attempt-' + str(task['attempt']))
                     archive.mkdir()
                     for path in directory.iterdir():
-                        if path.is_file() or (task['kind'] == 'check' and path != archive and not path.name.startswith('attempt-')):
+                        if path.is_file() or (task['kind'] in ('check', 'execute') and path != archive and not path.name.startswith('attempt-')):
                             path.rename(archive / path.name)
                 self.checks.next_review.pop(task_id, None)
                 self.update(task_id, status='排队中', started_at=None, finished_at=None,
@@ -433,28 +446,59 @@ class Tasks:
                         self.workers[task['id']] = worker
                         self.check_workers.add(task['id'])
                         worker.start()
-                if self.starting is not None or len(self.workers) - len(self.check_workers) >= 3:
-                    continue
                 with self.store.connection() as db:
-                    row = db.execute("SELECT * FROM tasks WHERE kind='merge' AND status='排队中' ORDER BY id LIMIT 1").fetchone()
-                if not row or self.stopping.is_set():
-                    continue
-                task = dict(row)
-                self.availability_error = codex_available()
-                if self.availability_error:
-                    self.update(task['id'], status='Codex 不可用', finished_at=now(), error=self.availability_error)
-                    continue
-                self.update(task['id'], status='运行中', started_at=now())
-                self.starting = task['id']
-                worker = threading.Thread(target=self.execute, args=(task,), daemon=True)
-                self.workers[task['id']] = worker
-                worker.start()
+                    queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','execute') "
+                        "AND status IN ('排队中','待提交','等待浏览器') ORDER BY id")]
+                    running_batches = {(r['project'], r['batch']) for r in db.execute("SELECT project,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
+                for task in queued:
+                    if self.stopping.is_set():
+                        break
+                    checks_only = False
+                    if task['kind'] == 'execute':
+                        if (task['project'], task['batch']) in running_batches:
+                            continue
+                        try:
+                            if not self.checks.prepare(task):
+                                continue
+                        except (OSError, ValueError, KeyError, APIError, subprocess.SubprocessError) as error:
+                            self.update(task['id'], status='失败', finished_at=now(), error=f'无法准备执行快照：{error}')
+                            continue
+                        scenes = json.loads(task['input_json'])['scenes']
+                        checks_only = all((s.get('regression') or {}).get('check') for s in scenes)
+                        declarations = json.loads(task['input_json'])['declarations']
+                        web = any(not (s.get('regression') or {}).get('check') and declarations['entries'][s['verify']]['surface'] == 'web' for s in scenes)
+                        if web and self.browser_owner not in (None, task['id']):
+                            self.update(task['id'], status='等待浏览器')
+                            continue
+                        if web:
+                            self.browser_owner = task['id']
+                    if not checks_only and (self.starting is not None or len(self.workers) - len(self.check_workers) >= 3):
+                        self.update(task['id'], status='排队中')
+                        continue
+                    if task['kind'] == 'merge':
+                        self.availability_error = codex_available()
+                        if self.availability_error:
+                            self.update(task['id'], status='Codex 不可用', finished_at=now(), error=self.availability_error)
+                            continue
+                    self.update(task['id'], status='运行中', started_at=now())
+                    if not checks_only:
+                        self.starting = task['id']
+                    else:
+                        self.check_workers.add(task['id'])
+                    worker = threading.Thread(target=self.executions.execute if task['kind'] == 'execute' else self.execute,
+                                              args=(task,), daemon=True)
+                    self.workers[task['id']] = worker
+                    if task['kind'] == 'execute':
+                        running_batches.add((task['project'], task['batch']))
+                    worker.start()
 
     def close(self):
         self.stopping.set()
         with self.lock:
             for process in list(self.processes.values()):
                 terminate_group(process)
+            for task_id in list(self.candidate_processes):
+                self.executions.candidates.close(task_id)
         self.thread.join()
         for worker in self.workers.values():
             worker.join()

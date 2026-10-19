@@ -33,7 +33,7 @@ def answer(document=None, original=None, verify='自定义入口'):
 
 def upload_merge(board, document=None, base=BASE):
     upload_cases(board, cases_body(document or merge_cases()), base=base)
-    return board.request('GET', '/api/v1/tasks?project=' + base.split('/')[4] + '&batch=' + base.split('/')[6], auth=False)[1]['tasks'][-1]
+    return [t for t in board.request('GET', '/api/v1/tasks?project=' + base.split('/')[4] + '&batch=' + base.split('/')[6], auth=False)[1]['tasks'] if t['kind'] == 'merge'][-1]
 
 
 def settled(board, task):

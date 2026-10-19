@@ -120,8 +120,12 @@ def upload_task(board, name='demo'):
         body = push_body()
         body['content'] = body['content'].replace('batch: demo', 'batch: ' + name)
         assert board.request('PUT', base + '/scenario-file', body)[0] == 200
+        # 本用例验证合并队列；先放弃准备版本触发的独立执行，避免占用被测名额。
+        for task in board.request('GET', f'/api/v1/tasks?project={KEY}&batch={name}', auth=False)[1]['tasks']:
+            if task['kind'] == 'execute' and task['status'] in ('排队中','运行中','待提交','等待浏览器'):
+                assert board.request('POST', f"/api/v1/tasks/{task['id']}/cancel", {}, headers=ADMIN)[0] == 200
     upload_cases(board, base=base)
-    return board.request('GET', f'/api/v1/tasks?project={KEY}&batch={name}', auth=False)[1]['tasks'][-1]
+    return [t for t in board.request('GET', f'/api/v1/tasks?project={KEY}&batch={name}', auth=False)[1]['tasks'] if t['kind'] == 'merge'][-1]
 
 
 def settled(board, task):

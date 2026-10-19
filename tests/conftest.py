@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import socket
@@ -74,6 +75,11 @@ class Board:
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False).encode()
             headers["Content-Type"] = "application/json"
+        if isinstance(body, bytes) and len(body) > 1024 * 1024:
+            # urllib 对文件对象按小块发送，保留长度，避免一次 sendall 触发 macOS ENOBUFS。
+            if not any(name.lower() == 'content-length' for name in headers):
+                headers['Content-Length'] = str(len(body))
+            body = BytesIO(body)
         req = Request(f"http://127.0.0.1:{self.port}{path}", data=body,
                       headers=headers, method=method)
         try:

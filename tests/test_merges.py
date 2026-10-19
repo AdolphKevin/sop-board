@@ -333,7 +333,9 @@ def test_inferred_entries_initial_state_and_exemption_are_marked(board_factory, 
     import time
     time.sleep(10.2)
     assert board.sql('SELECT version,pushed_by FROM versions') == before
-    assert board.sql('SELECT COUNT(*) FROM tasks') == [(1,)]
+    # 写入按新约定触发一项执行；扫描不能再次建立合并或执行任务。
+    assert board.sql('SELECT kind,trigger,COUNT(*) FROM tasks GROUP BY kind,trigger ORDER BY kind') == [
+        ('execute', '合并写入', 1), ('merge', '上传用例', 1)]
 
 
 def test_preconditions_override_model_initial_state_with_note(board_factory, fake_codex):
