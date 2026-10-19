@@ -51,6 +51,17 @@ class Service:
         self.workspace_lock = threading.RLock()
         self.jira_url = jira_url.rstrip("/")
 
+    def automation_paused(self, db):
+        row = db.execute("SELECT value FROM settings WHERE key='automation_paused'").fetchone()
+        return bool(row and row['value'] == 'true')
+
+    def set_automation_paused(self, paused):
+        # 与调度共用锁：响应完成后，尚未开始的任务不会越过暂停边界。
+        with self.workspace_lock, self.store.transaction() as db:
+            db.execute("INSERT INTO settings(key,value) VALUES ('automation_paused',?) "
+                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ('true' if paused else 'false',))
+        return dict(ok=True, paused=paused)
+
     def upload(self, raw, name):
         with self.store.transaction() as db:
             return self.store.save_evidence(db, raw, name)
@@ -106,6 +117,8 @@ class Service:
             "WHERE project=? AND batch=? AND kind IN ('execute','check') ORDER BY id", (batch['project'], batch['name']))]
         if tasks:
             etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
+        if self.automation_paused(db):
+            etag += '-a1'
         return '"' + etag + '"'
 
     def state(self, key, name):
@@ -308,7 +321,7 @@ class Service:
             task['rounds'] = json.loads(task.pop('rounds_json'))
             tasks.append(task)
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
-                    execution_tasks=tasks,
+                    execution_tasks=tasks, automation_paused=self.automation_paused(db),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
                     dirty=bool(version["dirty"]) if version else None,
@@ -338,7 +351,7 @@ class Service:
                 projects.append(dict(key=project["key"], id=project["identity"], name=project["name"],
                     defect_prefix=project["defect_prefix"], writable=project["key"] in self.writable_repos, batches=[self.summary(db, batch) for batch in db.execute(
                         "SELECT * FROM batches WHERE project=? ORDER BY name", (project["key"],))]))
-            return dict(ok=True, projects=projects)
+            return dict(ok=True, projects=projects, automation_paused=self.automation_paused(db))
 
     def read_round(self, key, name, number):
         with self.store.connection() as db:

@@ -108,6 +108,16 @@
           const data = await response.json();
           if (!response.ok || !data.ok) {
             show(message, (data.error_code || "操作失败") + "：" + (data.problems || []).map(p => p.problem).join("；"), "error");
+          } else if (typeof data.paused === "boolean") {
+            const notice = document.getElementById("automation-state");
+            notice.textContent = data.paused ? "自动任务已暂停" : "";
+            notice.hidden = !data.paused;
+            button.dataset.developerAction = "/api/v1/automation/" + (data.paused ? "resume" : "pause");
+            button.textContent = data.paused ? "恢复自动任务" : "暂停自动任务";
+            [...document.querySelectorAll("[data-agent-state]"), ...document.querySelectorAll("#agent-state")].forEach(state => {
+              state.textContent = state.textContent.replace(/ · 已暂停$/, "") + (data.paused ? " · 已暂停" : "");
+            });
+            show(message, data.paused ? "自动任务已暂停" : "自动任务已恢复");
           } else {
             show(message, "任务 #" + data.task.id + "：" + data.task.status + "。刷新页面可查看最新状态。");
           }

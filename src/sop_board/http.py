@@ -51,6 +51,7 @@ class Handler(BaseHTTPRequestHandler):
             if method in ("POST", "PUT"):
                 authorization = self.headers.get("Authorization", "")
                 developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel)", path) or
+                                 re.fullmatch(r"/api/v1/automation/(pause|resume)", path) or
                                  re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/(merges|checks|executions)", path))
                 if developer and hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
                     reject(403, "admin-required", "Authorization", "此操作需要开发者令牌")
@@ -116,7 +117,9 @@ class Handler(BaseHTTPRequestHandler):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
                 self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario), service.jira_url).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and path == "/api/v1/tasks":
+            if method == "POST" and (match := re.fullmatch(r"/api/v1/automation/(pause|resume)", path)):
+                result = service.set_automation_paused(match[1] == 'pause')
+            elif method == "GET" and path == "/api/v1/tasks":
                 query = parse_qs(urlsplit(self.path).query)
                 result = self.server.tasks.list(query.get('project', [None])[0], query.get('batch', [None])[0])
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)", path)):

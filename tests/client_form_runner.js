@@ -156,7 +156,59 @@ function assertSaved(status, round = 2) {
   assert.equal(currentUrl.href, input.location);
 }
 async function main() {
-  if (input.case === "admin-rework") {
+  if (input.case === "automation-tasks") {
+    const execute = qa("[data-developer-action]").find(b => b.dataset.developerAction.endsWith("/executions"));
+    const check = qa("[data-developer-action]").find(b => b.dataset.developerAction.endsWith("/checks"));
+    assert.ok(execute); assert.ok(check);
+    assert.equal(execute.textContent, "执行待执行场景"); assert.equal(check.textContent, "运行回归检查");
+    for (const button of [execute, check]) {
+      await click(button);
+      assert.equal(q("#developer-message").textContent, "请先在身份栏填写开发者令牌");
+      assert.equal(requests.length, 0);
+    }
+    const admin = identity.querySelector("[name='admin-token']");
+    admin.value = "isolated-admin"; await admin.dispatch("input");
+    assert.equal(saved.get("sop-board.admin-token"), "isolated-admin");
+    await click(execute); await click(check);
+    assert.equal(requests.length, 2);
+    assert.ok(requests[0].url.endsWith("/executions")); assert.ok(requests[1].url.endsWith("/checks"));
+    assert.ok(requests.every(r => r.options.headers.Authorization === "Bearer isolated-admin" && r.options.method === "POST"));
+    assert.match(q("#developer-message").textContent, /任务 #\d+：排队中/);
+    const fresh = deserialize(input.document);
+    const freshDocument = {...document, querySelector: s => fresh.querySelector(s), querySelectorAll: s => fresh.querySelectorAll(s), getElementById: id => fresh.querySelector("#" + id)};
+    vm.runInNewContext(input.script, {document: freshDocument, localStorage: storage, fetch, window, history, location, URL, setInterval, DOMParser});
+    assert.equal(freshDocument.querySelector("[name='admin-token']").value, "isolated-admin");
+  } else if (input.case === "automation-toggle" || input.case === "automation-errors") {
+    const toggle = q("[data-automation-toggle]");
+    assert.ok(toggle);
+    await click(toggle);
+    assert.equal(requests.length, 0);
+    assert.equal(q("#developer-message").textContent, "请先在身份栏填写开发者令牌");
+    assert.equal(q("#automation-state").textContent, "自动任务已暂停");
+    identity.querySelector("[name='admin-token']").value = "isolated-admin";
+    if (input.case === "automation-errors") {
+      for (const reply of [{status: 401, body: {ok: false, error_code: "unauthorized"}}, new Error("disconnected")]) {
+        responses.push(reply); await click(toggle);
+        assert.equal(q("#automation-state").textContent, "自动任务已暂停");
+        assert.equal(toggle.dataset.developerAction, "/api/v1/automation/resume");
+        assert.equal(toggle.disabled, false);
+        assert.equal(q("#developer-message").dataset.state, "error");
+      }
+    } else {
+      await click(toggle);
+      assert.equal(q("#automation-state").hidden, true);
+      assert.ok(!q("main").textContent.includes("已暂停"));
+      assert.equal(toggle.dataset.developerAction, "/api/v1/automation/pause");
+      assert.equal(toggle.textContent, "暂停自动任务");
+      await click(toggle);
+      assert.equal(q("#automation-state").hidden, false);
+      assert.equal(q("#automation-state").textContent, "自动任务已暂停");
+      assert.equal(toggle.textContent, "恢复自动任务");
+      assert.deepEqual(requests.map(r => r.url), ["/api/v1/automation/resume", "/api/v1/automation/pause"]);
+      assert.ok(requests.every(r => r.options.headers.Authorization === "Bearer isolated-admin"));
+    }
+    assert.equal(saved.get("sop-board.admin-token"), "isolated-admin");
+  } else if (input.case === "admin-rework") {
     const admin = identity.querySelector("[name='admin-token']");
     const buttons = qa("[data-developer-action]");
     const merge = buttons.find(b => b.dataset.developerAction.endsWith("/merges"));

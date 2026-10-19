@@ -7,6 +7,9 @@ import threading
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, project TEXT NOT NULL REFERENCES projects(key),
     batch TEXT NOT NULL, status TEXT NOT NULL, trigger TEXT NOT NULL, input_digest TEXT NOT NULL,

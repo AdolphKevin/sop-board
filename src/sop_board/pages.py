@@ -46,10 +46,11 @@ def home(data):
     projects = []
     for project in data["projects"]:
         batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
-                          f"{text(batch['name'])}</a> · {agent_state(batch)}</li>" for batch in project["batches"])
+                          f"{text(batch['name'])}</a> · <span data-agent-state=''>{agent_state(batch)}</span></li>" for batch in project["batches"])
         projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
                         f"<p>{'可写' if project.get('writable') else '只读'}</p><ul>{batches}</ul></section>")
-    return layout("项目与批次", "<h1>项目与批次</h1>" + ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>"))
+    return layout("项目与批次", automation_controls(data) + "<h1>项目与批次</h1>" +
+                  ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>") + identity_bar())
 
 
 def ratio(value):
@@ -57,6 +58,11 @@ def ratio(value):
 
 
 def agent_state(data):
+    state = execution_state(data)
+    return state + (' · 已暂停' if data.get('automation_paused') else '')
+
+
+def execution_state(data):
     running = [t for t in data.get('execution_tasks', []) if t['kind'] == 'execute' and t['status'] == '运行中']
     if running:
         return f"执行中（{len(running)} 个会话，开始于 {local_time(running[0]['started_at'])}，任务 #{running[0]['id']}）"
@@ -71,6 +77,14 @@ def agent_state(data):
     submitted = time_tag(execution["submitted_at"]) if execution["submitted_at"] else "无"
     return (f"Agent 已测完 · 最近 Agent 轮次提交时间：{submitted} · "
             f"通过 {counts['pass']}、失败 {counts['fail']}、受阻 {counts['blocked']}、跳过 {counts['skip']}")
+
+
+def automation_controls(data):
+    paused = data.get('automation_paused', False)
+    notice = "<p id='automation-state' role='status'>自动任务已暂停</p>" if paused else "<p id='automation-state' role='status' hidden></p>"
+    return ("<section>" + notice + f"<button type='button' data-automation-toggle='' data-developer-action='/api/v1/automation/{'resume' if paused else 'pause'}'>"
+            f"{'恢复自动任务' if paused else '暂停自动任务'}</button>"
+            "<p id='developer-message' role='status' aria-live='polite'></p></section>")
 
 
 def execution_list(data):
@@ -99,6 +113,10 @@ def batch(project, data):
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
             for p in data["workspace_problems"]) + "</section>"
     report_link = workspace + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
+    if data.get('writable'):
+        report_link += (f"<p><button type='button' data-developer-action='{text(api)}/executions'>执行待执行场景</button> "
+                        f"<button type='button' data-developer-action='{text(api)}/checks'>运行回归检查</button></p>")
+    report_link += automation_controls(data) + identity_bar()
     if data["version"] is None:
         return layout("批次 " + data["name"], batch_nav(project, data["name"], "overview") +
                       f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"

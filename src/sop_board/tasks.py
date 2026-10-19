@@ -433,6 +433,8 @@ class Tasks:
                 self.workers = {i: w for i, w in self.workers.items() if w.is_alive()}
                 self.check_workers.intersection_update(self.workers)
                 with self.store.connection() as db:
+                    if self.service.automation_paused(db):
+                        continue
                     checks = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind='check' AND status IN ('排队中','待提交') ORDER BY id")]
                 for task in checks:
                     try:
@@ -455,13 +457,15 @@ class Tasks:
                         break
                     checks_only = False
                     if task['kind'] == 'execute':
-                        if (task['project'], task['batch']) in running_batches:
-                            continue
                         try:
                             if not self.checks.prepare(task):
                                 continue
                         except (OSError, ValueError, KeyError, APIError, subprocess.SubprocessError) as error:
                             self.update(task['id'], status='失败', finished_at=now(), error=f'无法准备执行快照：{error}')
+                            if self.browser_owner == task['id']:
+                                self.browser_owner = None
+                            continue
+                        if (task['project'], task['batch']) in running_batches:
                             continue
                         scenes = json.loads(task['input_json'])['scenes']
                         checks_only = all((s.get('regression') or {}).get('check') for s in scenes)

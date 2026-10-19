@@ -11,7 +11,8 @@ def get(board, path):
 
 def test_empty_batch_ratios_and_scenario_read_contract(board):
     """I3, D2; SOP-02-P01: zero denominators and all pending scenarios."""
-    assert get(board, "/api/v1/projects") == dict(ok=True, projects=[])
+    # I4 的首页共用暂停状态；全新数据目录默认未暂停，空项目列表仍为空。
+    assert get(board, "/api/v1/projects") == dict(ok=True, projects=[], automation_paused=False)
     pushed, _ = push(board)
     summary = get(board, BASE)
     assert summary["version"] == 1 and summary["scenario_count"] == 4
