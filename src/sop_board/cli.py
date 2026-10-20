@@ -33,7 +33,7 @@ def main():
         from .playwright import guide
         sys.stdout.write('\n' + guide())
         return 0
-    parser = argparse.ArgumentParser(description={'serve': '启动工作区 SOP 验证协作看板', 'check': '自检工作区适配', 'init': '登记工作区名称和仓库'}[action])
+    parser = argparse.ArgumentParser(description={'serve': '启动 Flow Board 流程验收看板', 'check': '自检工作区适配', 'init': '登记工作区名称和仓库'}[action])
     parser.add_argument('workspace', nargs=None if action == 'init' else '?', help='工作区名称')
     if action == 'init':
         parser.add_argument('repositories', nargs='+', type=Path)
