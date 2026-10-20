@@ -10,6 +10,27 @@ def ratio(numerator, denominator):
                 rate=numerator / denominator if denominator else None)
 
 
+def pending_scope(db, batch, summary, product_digest):
+    """按钮计数与手动入队共用；失败也须重跑，不改变展示队列的口径。"""
+    scope = []
+    for scene in summary['scenarios']:
+        agent = scene['latest_agent']
+        latest = max((r for r in (agent, scene['latest_manual']) if r),
+                     key=lambda r: r['number'], default=None)
+        reason = None
+        if latest is None:
+            prior = db.execute('SELECT 1 FROM scenarios WHERE batch=? AND scenario=? AND fingerprint!=? LIMIT 1',
+                               (batch['id'], scene['scenario'], scene['fingerprint'])).fetchone()
+            reason = 'changed' if prior else 'new'
+        elif latest['status'] == 'fail':
+            reason = 'failed'
+        elif agent and agent['status'] == 'pass' and latest['status'] == 'pass' and agent['product_digest'] != product_digest:
+            reason = 'source-changed'
+        if reason:
+            scope.append(dict(scenario=scene['scenario'], reason=reason))
+    return scope
+
+
 def calculate(db, batch):
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]

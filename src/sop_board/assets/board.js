@@ -4,7 +4,16 @@
   let pendingRefresh = false;
   let refreshing = false;
   let polling = false;
+  let executionPolling = false;
   let writes = 0;
+  const executionMessages = new Map();
+  const renderExecutionMessage = controls => {
+    const saved = executionMessages.get(controls.dataset.executionUrl);
+    if (!saved) return;
+    const message = controls.querySelector("[data-execution-message]");
+    message.textContent = saved.text;
+    message.dataset.state = saved.state;
+  };
   window.addEventListener("popstate", () => applyCurrentFilter());
   const hasDraft = () => Array.from(document.querySelectorAll(".review-form")).some(form =>
     !form.querySelector("[data-review-fields]").hidden &&
@@ -36,6 +45,7 @@
   };
   const initialize = () => {
     applyCurrentFilter = () => {};
+    document.querySelectorAll("[data-execution-url]").forEach(renderExecutionMessage);
     const jiraBase = document.querySelector("[data-jira-url]")?.dataset.jiraUrl || "";
     const hydrateJira = root => {
       if (!jiraBase) return;
@@ -96,17 +106,24 @@
     });
     document.querySelectorAll("[data-developer-action]").forEach(button => {
       button.addEventListener("click", async () => {
-        const message = document.getElementById("developer-message");
+        const controls = button.closest("[data-execution-url]");
+        const message = controls?.querySelector("[data-execution-message]") || document.getElementById("developer-message");
+        if (controls) delete message.dataset.taskId;
         saveIdentity();
+        writes += 1;
+        if (controls) controls.dataset.busy = "true";
         button.disabled = true;
         try {
           const response = await fetch(button.dataset.developerAction, {
             method: "POST", headers: {"Content-Type": "application/json"},
-            body: button.dataset.developerNote !== undefined ? JSON.stringify({note: document.getElementById("developer-note")?.value || ""}) : "{}",
+            body: button.dataset.executionScope ? JSON.stringify({scope: button.dataset.executionScope}) :
+              button.dataset.developerNote !== undefined ? JSON.stringify({note: document.getElementById("developer-note")?.value || ""}) : "{}",
           });
           const data = await response.json();
           if (!response.ok || !data.ok) {
-            show(message, (data.error_code || "操作失败") + "：" + (data.problems || []).map(p => p.problem).join("；"), "error");
+            const hint = response.status === 409 && data.error_code === "nothing-to-execute" ?
+              "；可改用“重新验证全部场景”。" : "";
+            show(message, (data.error_code || "操作失败") + "：" + (data.problems || []).map(p => p.problem).join("；") + hint, "error");
           } else if (typeof data.paused === "boolean") {
             const notice = document.getElementById("automation-state");
             notice.textContent = data.paused ? "自动任务已暂停" : "";
@@ -118,7 +135,8 @@
             });
             show(message, data.paused ? "自动任务已暂停" : "自动任务已恢复");
           } else {
-            show(message, "任务 #" + data.task.id + "：" + data.task.status + "。刷新页面可查看最新状态。");
+            show(message, "任务 #" + data.task.id + "：" + data.task.status);
+            if (controls) message.dataset.taskId = String(data.task.id);
             if (button.dataset.caseFlow !== undefined) {
               button.textContent = "已指定单独成场景";
               button.dataset.choiceSaved = "true";
@@ -126,7 +144,16 @@
           }
         } catch {
           show(message, "连接失败，请重试。", "error");
-        } finally {button.disabled = button.dataset.choiceSaved === "true";}
+        } finally {
+          writes -= 1;
+          if (controls) {
+            delete controls.dataset.busy;
+            executionMessages.set(controls.dataset.executionUrl, {
+              text: message.textContent, state: message.dataset.state, taskId: message.dataset.taskId,
+            });
+            button.disabled = Boolean(controls.querySelector(`[data-execution-reason="${button.dataset.executionScope}"]`).textContent);
+          } else button.disabled = button.dataset.choiceSaved === "true";
+        }
       });
     });
     const filterLinks = document.querySelectorAll("[data-filter]");
@@ -355,6 +382,40 @@
     });
   };
   initialize();
+  setInterval(async () => {
+    const controls = Array.from(document.querySelectorAll("[data-execution-url]"));
+    if (!controls.length || executionPolling || writes || refreshing) return;
+    executionPolling = true;
+    try {
+      const home = document.querySelector("[data-execution-home]");
+      const response = await fetch(home ? "/api/v1/workspaces" : controls[0].dataset.executionUrl, {cache: "no-store"});
+      if (!response.ok) return;
+      const data = await response.json();
+      if (!data.ok || writes || refreshing) return;
+      const batches = home ? new Map(data.workspaces.flatMap(workspace => workspace.batches.map(batch =>
+        ["/api/v1/workspaces/" + encodeURIComponent(workspace.key) + "/batches/" + encodeURIComponent(batch.name), batch]))) :
+        new Map([[controls[0].dataset.executionUrl, data]]);
+      controls.forEach(group => {
+        const batch = batches.get(group.dataset.executionUrl);
+        if (!group.isConnected || group.dataset.busy || !batch?.execution) return;
+        for (const scope of ["pending", "all"]) {
+          const button = group.querySelector(`[data-execution-scope="${scope}"]`);
+          const reason = batch.execution[scope + "_reason"];
+          button.disabled = Boolean(reason);
+          button.textContent = (scope === "pending" ? "执行待执行场景（" + batch.execution.pending_count :
+            "重新验证全部场景（" + batch.execution.total_count) + " 条）";
+          group.querySelector(`[data-execution-reason="${scope}"]`).textContent = reason;
+        }
+        const saved = executionMessages.get(group.dataset.executionUrl);
+        const task = batch.execution_tasks?.find(task => String(task.id) === saved?.taskId);
+        if (task) {
+          saved.text = "任务 #" + task.id + "：" + task.status;
+          renderExecutionMessage(group);
+        }
+      });
+    } catch { /* Keep the last server-provided counts until the next successful read. */ }
+    finally {executionPolling = false;}
+  }, 3000);
   if (document.querySelector("main[data-state-url]")) setInterval(async () => {
     if (polling || refreshing) return;
     polling = true;

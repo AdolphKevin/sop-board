@@ -9,7 +9,7 @@ import sqlite3
 import sys
 
 from .adapters import Environment
-from .workspace import Workspace
+from .workspace import Workspace, initialize
 from .service import Service
 from .storage import Store
 from .tasks import Tasks, parse_timeout
@@ -21,15 +21,17 @@ from .repositories import Discovery
 
 def main():
     argv = sys.argv[1:]
-    action = argv.pop(0) if argv and argv[0] in ('guide', 'check') else 'serve'
+    action = argv.pop(0) if argv and argv[0] in ('guide', 'check', 'init') else 'serve'
     if action == 'guide':
         if argv:
             print('用法：sop-board guide', file=sys.stderr)
             return 2
         sys.stdout.write(files('sop_board').joinpath('guide.md').read_text(encoding='utf-8'))
         return 0
-    parser = argparse.ArgumentParser(description='启动工作区 SOP 验证协作看板' if action == 'serve' else '自检工作区适配')
-    parser.add_argument('workspace', nargs='?', type=Path, default=Path.cwd())
+    parser = argparse.ArgumentParser(description={'serve': '启动工作区 SOP 验证协作看板', 'check': '自检工作区适配', 'init': '登记工作区名称和仓库'}[action])
+    parser.add_argument('workspace', nargs=None if action == 'init' else '?', help='工作区名称')
+    if action == 'init':
+        parser.add_argument('repositories', nargs='+', type=Path)
     parser.add_argument('--data', type=Path)
     if action == 'serve':
         parser.add_argument('--port', type=int, default=8787)
@@ -37,6 +39,15 @@ def main():
     args = parser.parse_args(argv)
     environment = tasks = discovery = server = None
     try:
+        if action == 'init':
+            data, identities = initialize(args.workspace, args.repositories, args.data)
+            print('数据目录：' + str(data))
+            for alias, identity in identities.items():
+                print(alias + '：' + identity)
+            print('继续搭建：')
+            for line in Workspace(data=data).setup_instructions():
+                print(line)
+            return 0
         timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT'))
         workspace = Workspace(args.workspace, args.data)
         environment = Environment(workspace)
@@ -54,8 +65,9 @@ def main():
         with store.transaction() as db:
             identity = next(iter(workspace.identities.values()), '')
             prefix = f'https://{identity}/issues/' if identity.startswith('github.com/') else None
-            db.execute('INSERT OR IGNORE INTO workspaces(key,root,name,defect_prefix) VALUES (?,?,?,?)',
-                       (workspace.name, str(workspace.root), workspace.name, prefix))
+            db.execute('INSERT INTO workspaces(key,root,name,defect_prefix) VALUES (?,?,?,?) '
+                       'ON CONFLICT(key) DO UPDATE SET root=excluded.root,name=excluded.name',
+                       (workspace.name, str(workspace.data), workspace.name, prefix))
         service = server.service = Service(store, workspace, environment, jira_url=os.environ.get('JIRA_URL', ''))
         server.jira = service.jira = Jira(os.environ.get('JIRA_URL', ''), os.environ.get('JIRA_EMAIL', ''),
                                         os.environ.get('JIRA_API_TOKEN', ''), timeout=os.environ.get('JIRA_TIMEOUT_SECONDS', '10'))
@@ -86,7 +98,7 @@ def main():
             server.handle_request()
         return 0
     except (OSError, ValueError, sqlite3.Error) as error:
-        print('无法运行看板：' + str(error), file=sys.stderr)
+        print(('无法登记工作区：' if action == 'init' else '无法运行看板：') + str(error), file=sys.stderr)
         return 1
     finally:
         if environment:

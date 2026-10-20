@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS fix_validations (
     batch TEXT NOT NULL, version INTEGER NOT NULL REFERENCES versions(id),
     repositories_json TEXT NOT NULL, product_digest TEXT NOT NULL, session_id TEXT NOT NULL,
     status TEXT NOT NULL, reason TEXT NOT NULL, results_json TEXT NOT NULL,
-    evidence_json TEXT NOT NULL, promoted_round INTEGER,
+    evidence_json TEXT NOT NULL, promoted_round INTEGER, skill_digest TEXT,
     PRIMARY KEY(task,attempt,validation,batch),
     FOREIGN KEY(task,attempt) REFERENCES fix_attempts(task,number)
 );
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS rounds (
     id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
     number INTEGER NOT NULL, kind TEXT NOT NULL, version INTEGER NOT NULL REFERENCES versions(id),
     product_commit TEXT, product_digest TEXT, product_dirty INTEGER,
-    implementer TEXT, submitted_by TEXT NOT NULL, submitted_at TEXT NOT NULL,
+    skill_digest TEXT, implementer TEXT, submitted_by TEXT NOT NULL, submitted_at TEXT NOT NULL,
     idempotency_key TEXT, body_sha256 TEXT, UNIQUE(batch,number), UNIQUE(batch,idempotency_key)
 );
 CREATE TABLE IF NOT EXISTS results (
@@ -146,12 +146,12 @@ class Store:
         with self.connection() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
             tables = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
-            if tables and version != 4:
-                raise ValueError('数据格式不是当前用例分层版本，请使用新的数据目录；不读取或迁移旧库')
+            if tables and version != 5:
+                raise ValueError('数据格式不是当前验证技能版本，请用 sop-board init 新建数据目录；不读取或迁移旧库')
             db.execute("PRAGMA journal_mode=WAL")
             # 新格式数据库的建表保持事务完整；不读取或升级旧数据库。
             try:
-                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nPRAGMA user_version=4;")
+                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nPRAGMA user_version=5;")
                 db.commit()
             except BaseException:
                 db.rollback()

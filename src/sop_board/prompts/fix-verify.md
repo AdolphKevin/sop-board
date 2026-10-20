@@ -4,7 +4,8 @@
 只在任务目录写结果与 evidence/，不改仓库，不写测试，不提交或推送。
 
 读取 retest.json（batch、scenario、scene）、entries.json（入口与地址）、snapshot.json、cases.json。
-retest.json 包含问题场景，以及所有声明涉及改动仓库的场景（保守覆盖可能受影响范围）。通过各入口 operate 逐条执行并核对预期，不遗漏跨批次场景。使用入口声明的 driver；缺省 web 使用 playwright-acceptance，http/db 使用 verify-backend-sop-db，agent 使用 build-scenario-validation-loop，cli 经命令行执行。
+retest.json 包含问题场景，以及所有声明涉及改动仓库的场景（保守覆盖可能受影响范围）。通过各入口 operate 逐条执行并核对预期，不遗漏跨批次场景。先读取并遵循项目验证技能：$skill_path
+入口声明了 driver 时，再读取并使用 entries.json 中该入口 driver_path 给出的辅助技能绝对路径；未声明时按项目验证技能操作。
 不能把阅读源码或测试程序的结果当作场景通过；不得沿用原通过结果。
 
 写 results.jsonl，每个 batch + scenario 恰好一行，不得有范围外结果。

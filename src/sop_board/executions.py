@@ -13,7 +13,7 @@ import yaml
 from .errors import APIError, reject
 from .repositories import git
 from .service import canonical, fingerprint, now
-from .statistics import calculate
+from .statistics import calculate, pending_scope
 from .tasks import terminate_group, judgment_object, invalid_judgment_constant, codex_failure
 from .validation import validate_round
 
@@ -23,7 +23,7 @@ class Executions:
         self.tasks, self.service, self.store = tasks, tasks.service, tasks.store
         self.next_review = {}
 
-    def enqueue(self, key, name, scope=None, trigger='开发者发起'):
+    def enqueue(self, key, name, scope=None, trigger='开发者发起', selection='pending'):
         with self.tasks.lock:
             manual = scope is None
             if manual:
@@ -36,26 +36,20 @@ class Executions:
                     product = self.service.workspace.product(self.service.workspace.aliases(document))
                     db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product['product_digest'], batch['id']))
                     batch = self.service.batch(db, key, name)
-                    scope = []
-                    for scene in calculate(db, batch)['scenarios']:
-                        agent = scene['latest_agent']
-                        latest = max((r for r in (agent, scene['latest_manual']) if r), key=lambda r: r['number'], default=None)
-                        prior = db.execute('SELECT 1 FROM scenarios WHERE batch=? AND scenario=? AND fingerprint!=? LIMIT 1',
-                            (batch['id'], scene['scenario'], scene['fingerprint'])).fetchone()
-                        reason = (('changed' if prior else 'new') if latest is None else 'failed' if latest['status'] == 'fail' else
-                                  'source-changed' if agent and agent['status'] == 'pass' and latest['status'] == 'pass' and
-                                  agent['product_digest'] != batch['product_digest'] else None)
-                        if reason:
-                            scope.append(dict(scenario=scene['scenario'], reason=reason))
+                    summary = calculate(db, batch)
+                    scope = ([dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios']]
+                             if selection == 'all' else pending_scope(db, batch, summary, product['product_digest']))
                 if not scope:
                     if manual:
-                        reject(409, 'nothing-to-execute', 'scenarios', '没有待执行场景')
+                        reject(409, 'nothing-to-execute', 'scenarios', '尚无场景' if selection == 'all' else '没有待执行场景')
                     return None
                 previous = db.execute("SELECT id,scope_json FROM tasks WHERE kind='execute' AND workspace=? AND batch=? "
                     "AND status IN ('排队中','待提交','等待浏览器') ORDER BY id LIMIT 1", (key, name)).fetchone()
                 if previous:
                     combined = {s['scenario']: s for s in json.loads(previous['scope_json'])}
-                    combined.update({s['scenario']: s for s in scope})
+                    for scene in scope:
+                        if combined.get(scene['scenario'], {}).get('reason') != 'rerun':
+                            combined[scene['scenario']] = scene
                     task_id = previous['id']
                     db.execute('UPDATE tasks SET scope_json=? WHERE id=?', (canonical(list(combined.values())), task_id))
                 else:
@@ -81,10 +75,10 @@ class Executions:
         product = workspace.product(aliases)
         source = workspace.scenario_path(task['batch'])
         snapshot = dict(scenario_file_sha256=version['sha256'], scenarios={s['id']: fingerprint(s) for s in scenes},
-                        config_digest=workspace.config_digest, cases_digest=hashlib.sha256(canonical(cases).encode()).hexdigest(),
+                        config_digest=workspace.config_digest, skill_digest=workspace.skill_digest(), cases_digest=hashlib.sha256(canonical(cases).encode()).hexdigest(),
                         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest() if source.is_file() else '', **product)
         previous = {sid: details[sid]['latest_agent'] for sid in scope if details[sid]['latest_agent']}
-        inputs = dict(document=document, scenes=scenes, entries=workspace.entries, aliases=aliases, previous=previous, cases=cases)
+        inputs = dict(document=document, scenes=scenes, entries=workspace.execution_entries(), aliases=aliases, previous=previous, cases=cases)
         return snapshot, inputs
 
     def prepare(self, task):
@@ -111,6 +105,8 @@ class Executions:
 
     def changes(self, task, snapshot):
         self.service.workspace.reload()
+        if self.service.workspace.skill_changed(snapshot):
+            return '验证技能变化'
         if not self.service.environment.approved() or snapshot['config_digest'] != self.service.workspace.config_digest:
             return '工作区配置或自检状态变化'
         current, _ = self.freeze(task)
@@ -158,7 +154,7 @@ class Executions:
                     diff = '旧提交不可读取，不能仅据此沿用结果'
                 changes[alias]['previous'].append(dict(commit=sha, files=diff))
         (directory / 'changes.json').write_text(canonical(changes), encoding='utf-8')
-        prompt = Template(files('sop_board').joinpath('prompts/execute.md').read_text(encoding='utf-8')).substitute(task_directory=directory)
+        prompt = Template(files('sop_board').joinpath('prompts/execute.md').read_text(encoding='utf-8')).substitute(task_directory=directory, skill_path=self.service.workspace.skill)
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 
@@ -183,6 +179,9 @@ class Executions:
             if not isinstance(sid, str) or sid not in selected or sid in seen:
                 raise ValueError('结果重复或不在本轮范围内：' + str(sid))
             seen.add(sid)
+            note = row.get('note') or ''
+            if scope.get(sid) == 'rerun' and isinstance(note, str) and note.startswith('沿用：'):
+                raise ValueError(sid + ' 须实际执行并保存新证据，不得沿用')
             evidence = row.get('evidence')
             if not isinstance(evidence, list):
                 raise ValueError(sid + ' evidence 应为路径数组')
@@ -197,7 +196,8 @@ class Executions:
                 if not p.is_file():
                     raise ValueError(sid + ' 证据文件不存在')
                 prepared.append(p)
-            note = row.get('note') or ''
+            if scope.get(sid) == 'rerun' and not prepared:
+                raise ValueError(sid + ' 须实际执行并保存新证据')
             if isinstance(note, str) and note.startswith('沿用：'):
                 previous = inputs.get('previous', {}).get(sid)
                 if (scope.get(sid) != 'source-changed' or not previous or previous['status'] != 'pass'
@@ -237,6 +237,9 @@ class Executions:
                 except subprocess.TimeoutExpired:
                     terminate_group(process)
                     raise ValueError(f'Codex 运行超时（{self.tasks.timeout:g} 秒）')
+                void_reason = self.changes(task, snapshot)
+                if void_reason:
+                    return
                 if code:
                     raise ValueError(codex_failure(directory, code))
                 for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
@@ -264,7 +267,7 @@ class Executions:
                     body = dict(idempotency_key=f"execute-{task['id']}-{task['attempt']}", scenario_file_sha256=snapshot['scenario_file_sha256'],
                         submitted_by=session, product=dict(commit=snapshot['commit'], digest=snapshot['product_digest'], dirty=False), results=rows)
                     validate_round(db, body)
-                    rounds = [self.service.insert_round(db, batch, version, body)]
+                    rounds = [self.service.insert_round(db, batch, version, body, skill_digest=snapshot['skill_digest'])]
         except APIError as problem:
             error = '；'.join(p['problem'] for p in problem.problems)
         except (OSError, ValueError, KeyError, TypeError, RecursionError, sqlite3.Error, subprocess.SubprocessError) as problem:
@@ -272,6 +275,19 @@ class Executions:
         finally:
             if process:
                 terminate_group(process)
+                self.service.workspace.reload()
+                if not rounds and self.service.workspace.skill_changed(snapshot):
+                    void_reason = '验证技能变化'
+                events = directory / 'events.jsonl'
+                if events.is_file():
+                    for line in events.read_text(encoding='utf-8', errors='replace').splitlines():
+                        try:
+                            event = json.loads(line)
+                            if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
+                                session = event['thread_id']
+                                break
+                        except ValueError:
+                            continue
             with self.tasks.lock:
                 self.tasks.processes.pop(task['id'], None)
                 if self.tasks.starting == task['id']:

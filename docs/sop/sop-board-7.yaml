@@ -1,16 +1,19 @@
 # SOP-BOARD-7：v9 主流程的验收场景
 # 预期依据 docs/proposals/2026-10-20-v9-workspace.md（v9 修订 2）D30–D35 与 docs/designs/SOP-BOARD-7.md（修订 2）。只写业务流程；验收只以本文件的场景经真实入口执行为准。
-# "单仓工作区"：执行者把本仓 clone 到临时目录作为被测项目；"多仓演示工作区"：执行者新建的临时目录，含两个 Git 仓库 app（HTTP 服务，引用 lib）与 lib（被 app 调用的函数，含一处植入缺陷），主工作区均在 main 且干净。
+# "单仓工作区"：执行者把本仓 clone 到临时目录作为被测项目；"多仓演示工作区"：以名称登记的两个可分散在任意位置的临时 Git 仓库 app（HTTP 服务，引用 lib）与 lib（被 app 调用的函数，含一处植入缺陷），两仓基线均在 main 且干净；用 sop-board init <名称> <仓库目录>... 登记，不要求共同的外层目录。
 # 搭建由新开的代理会话按 `sop-board guide` 完成；执行者在搭建完成前不手写配置。SOP-76 为真实项目轮次，由 AdolphKevin 执行，流程与缺陷到时由他确认。
 
 metadata:
   requirement: "sop-board v9：工作区与项目适配、免令牌、跨仓修复、用例分层"
   batch: "sop-board-7"
-  version: 3
+  version: 4
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-20-v9-workspace.md 的 D30–D35"
       version: "v9 修订 3（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-8.md 的 D37–D38"
+      version: "修订 1（2026-10-20）"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "v9"]
 
@@ -18,7 +21,7 @@ sops:
   - id: SOP-71
     title: 代理搭建并启动看板
     actor: 开发者
-    entry: 在工作区打开的代理会话与 sop-board 命令
+    entry: 在仓库中打开并按 init 提示进入数据目录的代理会话与 sop-board 命令
     scenarios:
       - id: SOP-71-P01
         polarity: positive
@@ -27,7 +30,7 @@ sops:
         priority: P0
         verify: agent
         initial_state: ["单仓工作区已准备，本机没有该工作区的看板目录", "sop-board 候选版可用 uv tool install 从本地检出安装"]
-        steps: ["在单仓工作区打开新的代理会话，说：按 sop-board 的安装说明为这个工作区安装并搭建", "回答代理的提问", "代理报告后运行 sop-board check，再运行 sop-board"]
+        steps: ["在单仓工作区打开新的代理会话，说：按 sop-board 的安装说明为这个工作区安装并搭建", "回答工作区名称、全部仓库目录及搭建提问，代理运行 sop-board init 后按输出进入数据目录会话继续", "代理报告后运行 sop-board check <名称>，再运行 sop-board <名称>"]
         expected: ["代理运行了 sop-board guide，并只在 ~/.sop-board/<工作区名>/ 下写文件", "代理就 worktree 的建法与开发者确认后才写入适配，报告写明适配依赖的外部工具", "sop-board check 五步全部通过，退出码 0", "代理的报告分为已验证的事实、推断及依据、待回答的问题", "sop-board 启动后页面显示环境就绪，页面与启动过程没有任何令牌输入"]
         forbidden_effects: ["工作区内的仓库出现新文件或改动", "执行者手写配置"]
       - id: SOP-71-N01
@@ -38,7 +41,7 @@ sops:
         priority: P1
         verify: cli
         initial_state: ["SOP-71-P01 的搭建已完成", "另一个进程监听适配声明的端口"]
-        steps: ["运行 sop-board check", "运行 sop-board 并打开页面"]
+        steps: ["运行 sop-board check <名称>", "运行 sop-board <名称> 并打开页面"]
         expected: ["自检的端口一步失败，写出占用端口的进程，退出码 1", "页面显示自检未通过，执行与修复保持停用"]
         forbidden_effects: ["看板结束或改动占用端口的进程"]
 

@@ -18,10 +18,6 @@ from .repositories import git
 from .worktrees import Worktrees, WorktreeError, is_board_input
 
 
-DRIVERS = {'web': 'playwright-acceptance', 'http': 'verify-backend-sop-db',
-           'db': 'verify-backend-sop-db', 'agent': 'build-scenario-validation-loop'}
-
-
 def stamp():
     return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
 
@@ -309,8 +305,9 @@ class Environment:
         approved = self.approved()
         checking = bool(self.check_thread and self.check_thread.is_alive())
         instructions = [] if approved else [
-            '尚未搭建或配置变化后尚未自检。请在工作区打开 Codex 或 Claude Code，先运行 sop-board guide，按指引搭建适配并运行 sop-board check。',
-            '执行与修复停用；搭建完成后再开始。']
+            '工作区 ' + self.workspace.name + ' 尚未搭建完成，或配置变化后尚未自检。在以数据目录为工作目录的代理会话中，按 sop-board guide 继续搭建或修正下列问题：',
+            *self.workspace.setup_instructions(),
+            '搭建后运行 sop-board check ' + self.workspace.name + ' --data ' + str(self.workspace.data) + '；通过后启用执行与修复。']
         result = dict(status=state['status'], enabled=approved and not checking, checking=checking,
                       checked_at=record['finished_at'] if record else None, check_passed=approved,
                       setup_instructions=instructions,
@@ -342,8 +339,9 @@ class Environment:
                     result['ok'] = False
                     result['steps'].append(dict(name=name, status='失败', message=str(error), log=getattr(error, 'log', str(self.log) if self.log else None)))
             def config():
-                if not self.workspace.configured:
-                    raise ValueError('；'.join(p['field'] + '：' + p['problem'] for p in self.workspace.problems))
+                problems = [p for p in self.workspace.problems if p not in self.workspace.skill_problems]
+                if problems:
+                    raise ValueError('；'.join(p['field'] + '：' + p['problem'] for p in problems))
                 for path in self.workspace.repos.values():
                     git(path, 'rev-parse', '--verify', 'HEAD')
                 return '配置和仓库路径合格', None
@@ -394,21 +392,16 @@ class Environment:
                 if failure:
                     raise failure
                 return '已建立并核对各仓工作树，环境就绪并清理；建立日志：' + str(build_log) + '；清理日志：' + str(cleanup_log), log
-            def drivers():
-                root = Path(os.environ.get('SOP_BOARD_SKILLS_DIR', str(Path.home() / '.agents/skills'))).expanduser().resolve()
-                used = []
-                for name, entry in self.workspace.entries.items():
-                    driver = entry.get('driver') or DRIVERS.get(entry['surface'])
-                    if not driver:
-                        if entry['surface'] != 'cli':
-                            raise ValueError('入口 ' + name + ' 须声明 driver')
-                        used.append(name + '：命令行入口')
-                    elif not (root / driver).resolve().is_relative_to(root) or not (root / driver / 'SKILL.md').is_file():
-                        raise ValueError('入口 ' + name + ' 的驱动技能不存在：' + driver)
-                    else:
-                        used.append(name + '：' + driver)
+            def skills():
+                self.workspace.reload()
+                if self.workspace.skill_problems:
+                    raise ValueError('；'.join(p['field'] + '：' + p['problem'] for p in self.workspace.skill_problems))
+                used = ['验证技能：' + str(self.workspace.skill)]
+                for name in self.workspace.entries:
+                    helper = self.workspace.driver_paths.get(name)
+                    used.append(name + ('；辅助技能：' + helper if helper else '；辅助技能：无'))
                 return '；'.join(used), None
-            for name, action in [('配置与仓库', config), ('端口', ports), ('基线环境', baseline), ('临时工作树环境', worktrees), ('驱动技能', drivers)]:
+            for name, action in [('配置与仓库', config), ('端口', ports), ('基线环境', baseline), ('临时工作树环境', worktrees), ('验证技能', skills)]:
                 step(name, action)
             if self.workspace.reload() or result['config_digest'] != self.workspace.config_digest:
                 result['ok'] = False

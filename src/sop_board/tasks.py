@@ -234,8 +234,10 @@ class Tasks:
                                      (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
         return dict(ok=True, task=self.read(task_id))
 
-    def enqueue_execution(self, key, name):
-        return self.executions.enqueue(key, name)
+    def enqueue_execution(self, key, name, scope='pending'):
+        if not isinstance(scope, str) or scope not in ('pending', 'all'):
+            reject(422, 'invalid-scope', 'scope', '执行范围应为 pending 或 all')
+        return self.executions.enqueue(key, name, selection=scope)
 
     def list(self, workspace=None, batch=None):
         with self.store.connection() as db:
@@ -499,7 +501,7 @@ class Tasks:
         temporary.replace(source)
         case_hashes = {c['id']: hashlib.sha256(canonical(c).encode()).hexdigest() for c in snapshot['cases']}
         self.service.push(workspace.name, task['batch'], dict(workspace=dict(name=workspace.name),
-            path=str(source.relative_to(workspace.root)), content=raw, pushed_by=f"看板合并 #{task['id']}",
+            path=workspace.display_path(source), content=raw, pushed_by=f"看板合并 #{task['id']}",
             commit=info['commit'], dirty=info['dirty'], product_digest=info['product_digest'],
             fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}),
             pairings=[dict(p, case_sha256=case_hashes[p['case']]) for p in check['pairs']])

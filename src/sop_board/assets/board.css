@@ -38,6 +38,11 @@ input:not([type=hidden]), select, textarea { display: block; width: 100%; paddin
 textarea { resize: vertical; }
 button { font: inherit; cursor: pointer; background: #215fc4; color: white; border: 0; padding: 10px 18px; border-radius: 6px; }
 button:disabled { opacity: .6; cursor: wait; }
+.execution-controls { margin: 14px 0; white-space: normal; }
+.execution-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0; }
+.execution-choice button:disabled { cursor: not-allowed; }
+[data-execution-reason] { color: #52617a; }
+[data-execution-message] { white-space: pre-wrap; overflow-wrap: anywhere; }
 #save-identity { background: #e9eff9; color: #1f4a88; }
 :focus-visible { outline: 3px solid #739cde; outline-offset: 3px; }
 @media (max-width: 720px) { .metrics, .queues { grid-template-columns: 1fr; } header { gap: 12px; flex-wrap: wrap; } main { padding: 20px 14px 40px; } section { padding: 18px; } }

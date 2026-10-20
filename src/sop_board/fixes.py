@@ -352,7 +352,13 @@ class Fixes:
             number = task['attempt'] + 1
             with self.store.transaction() as db:
                 db.execute('UPDATE fix_attempts SET validation_json=? WHERE task=? AND number=?', (canonical(validation), task['id'], number))
-            if validation['status'] == 'fail':
+            if validation['status'] == 'void':
+                with self.store.transaction() as db:
+                    db.execute("UPDATE fix_attempts SET outcome='已作废',reason=?,finished_at=? WHERE task=? AND number=?",
+                        (validation['reason'], now(), task['id'], number))
+                    db.execute("UPDATE fix_tasks SET retry_reason='preparation' WHERE task=?", (task['id'],))
+                self.tasks.update(task['id'], status='待开发者处理', error=validation['reason'], void_reason=validation['reason'])
+            elif validation['status'] == 'fail':
                 if additional:
                     validation['reason'] = '合入基线后的追加验证未通过：' + validation.get('reason', '验证未通过')
                 answer = self.tasks.read(task['id'])['result']
@@ -478,7 +484,7 @@ class Fixes:
                         implementer=task['session_id'], product=dict(commit=product['commit'], digest=product['product_digest'], dirty=False), results=rows)
                     from .validation import validate_round
                     validate_round(db, body)
-                    number = self.service.insert_round(db, batch, version, body)
+                    number = self.service.insert_round(db, batch, version, body, skill_digest=record['skill_digest'])
                     db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product['product_digest'], batch['id']))
                 db.execute('UPDATE fix_validations SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
                     (number, task['id'], task['attempt'], record['validation'], record['batch']))

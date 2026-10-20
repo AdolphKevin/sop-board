@@ -60,13 +60,19 @@ def read_sop_sources(workspace, raw):
     sources = {}
     for source in document.get('metadata', {}).get('sources', []):
         for token in source['ref'].split():
-            path = workspace.root / token
-            repository = next((root for root in workspace.repos.values() if path.resolve().is_relative_to(root)), None)
-            if Path(token).is_absolute() or '..' in Path(token).parts or repository is None or not path.is_file():
+            alias, separator, relative = token.partition(':')
+            if not separator:
+                alias, relative = workspace.scenario_repo, token
+            repository = workspace.repos.get(alias)
+            if repository is None or Path(relative).is_absolute() or '..' in Path(relative).parts:
+                continue
+            path = (repository / relative).resolve()
+            if not path.is_relative_to(repository) or not path.is_file():
                 continue
             content = path.read_text(encoding='utf-8')
             commit = git(repository, 'rev-parse', '--verify', 'HEAD').decode().strip()
-            sources[token] = dict(path=token, ref=source['ref'], content=content, commit=commit,
+            label = alias + ':' + path.relative_to(repository).as_posix()
+            sources[label] = dict(path=label, ref=source['ref'], content=content, commit=commit,
                                   sha256=hashlib.sha256(content.encode()).hexdigest(), confirmed_by=source['confirmed_by'])
             break
     return [sources[name] for name in sorted(sources)]
@@ -114,12 +120,12 @@ class Discovery:
                             db.execute('UPDATE batches SET product_digest=? WHERE id=?', (info['product_digest'], batch['id']))
                     else:
                         self.service.push(workspace.name, name, dict(workspace=dict(name=workspace.name),
-                            path=str(path.relative_to(workspace.root)), content=raw, pushed_by='工作区', sop_sources=sources,
+                            path=workspace.display_path(path), content=raw, pushed_by='工作区', sop_sources=sources,
                             commit=info['commit'], dirty=info['dirty'], product_digest=info['product_digest'],
                             fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}))
                 except (APIError, ValueError, OSError, subprocess.SubprocessError) as error:
                     problems = error.problems if isinstance(error, APIError) else [dict(field='content', problem=str(error), line=1)]
-                    errors[(workspace.name, name)] = [dict(p, path=str(path.relative_to(workspace.root))) for p in problems]
+                    errors[(workspace.name, name)] = [dict(p, path=workspace.display_path(path)) for p in problems]
             with self.service.store.transaction() as db:
                 for (key, name), problems in errors.items():
                     db.execute("INSERT OR IGNORE INTO batches(workspace,name,path,product_digest) VALUES (?,?,?,'')",
