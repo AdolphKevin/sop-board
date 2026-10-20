@@ -403,6 +403,11 @@ class Environment:
                         if entry['surface'] != 'cli':
                             raise ValueError('入口 ' + name + ' 须声明 driver')
                         used.append(name + '：命令行入口')
+                    elif driver == 'playwright-acceptance':
+                        from .playwright import driver_skill
+                        if not (driver_skill() / 'SKILL.md').is_file():
+                            raise ValueError('内置 Web 驱动不存在')
+                        used.append(name + '：' + str(driver_skill()))
                     elif not (root / driver).resolve().is_relative_to(root) or not (root / driver / 'SKILL.md').is_file():
                         raise ValueError('入口 ' + name + ' 的驱动技能不存在：' + driver)
                     else:

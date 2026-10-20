@@ -15,6 +15,10 @@ sop-board guide
 
 按指引调查实际服务与依赖、确认工作区范围，并与开发者确认正确的工作树建立/删除方法：已有仓库脚本、团队工具、个人习惯，以及被忽略配置和生成代码怎样带过去。确认后把配置与适配写入看板数据目录，再运行 `sop-board check`。向开发者报告已验证的事实、推断及依据、待回答的问题，并列出适配依赖的外部工具及其来源（仓库内、团队共用或仅本机）；团队成员共用适配前须各自具备。开发者确认后启动。Codex 与 Claude Code 使用同一份指引，不向产品仓库写搭建文件，不记录凭证值，不生成测试。
 
+## 内置 Web 验收
+
+Web 技能、模板和转换器随包发行，统一维护于 `src/sop_board/skills/playwright-acceptance/`，无需 team-workflow。`sop-board guide` 保留工作区搭建全文并提供 Web 入口；`sop-board playwright guide` 查看 Web 专用操作，`scope`、`convert`、`tags` 为本地命令，`submit` 将手工试跑结果登记到原工作区和批次。自动任务只写 results.jsonl，由看板登记。详见 [Web 验收集成](docs/playwright-acceptance.md)。
+
 ## 安装和启动
 
 需要 Python 3.10 以上、uv、Git，以及支持 POSIX 进程组的本机环境。定位占用端口的进程使用 `lsof`。仓库内开发可运行：

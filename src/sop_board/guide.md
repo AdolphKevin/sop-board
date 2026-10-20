@@ -50,7 +50,7 @@ adapter:
 - `repos`：别名到相对工作区的 Git 仓库根路径。别名以小写字母开头，只含小写字母、数字、连字符；不能越出工作区或重复指向同一目录。仓库须有 origin，看板据此显示规范化身份。
 - `scenarios`：相对工作区的场景目录，位于已声明仓库内且不能等于仓库根目录。文件为 `<批次>.yaml`，metadata.batch 与文件名一致；metadata.repos 指定涉及仓库，省略时为全部。
 - `entries`：必填 surface、operate、observe（数组）、evidence（数组）、isolation，可选 address_env 和 driver。address_env 指明地址环境变量，可从启动看板的环境或工作树适配返回的 env 取得。不要在操作说明或地址中写密钥。
-- `driver`：技能目录名，不是路径。缺省 web 使用 playwright-acceptance，http/db 使用 verify-backend-sop-db，agent 使用 build-scenario-validation-loop；cli 使用命令行入口；其他 surface 须声明技能。默认技能目录为 `~/.agents/skills/`，可用 SOP_BOARD_SKILLS_DIR 指定。
+- `driver`：技能目录名，不是路径。缺省 web 使用 playwright-acceptance，http/db 使用 verify-backend-sop-db，agent 使用 build-scenario-validation-loop；cli 使用命令行入口；其他 surface 须声明技能。Web 默认驱动随 sop-board 包发行，用 `sop-board playwright guide` 查看；其余技能目录默认为 `~/.agents/skills/`，可用 SOP_BOARD_SKILLS_DIR 指定。该目录中存在 playwright-acceptance 时可显式覆盖内置 Web 驱动。
 - `adapter`：仅含 worktree、cleanup、env、ports、ready_timeout。worktree 和 cleanup 各自可省略，env 必填；声明的命令均为非空数组，不经 shell。命令的工作目录及参数中的相对路径相对数据目录；管道等逻辑写入适配脚本。
 - `ports`：不重复的 TCP 端口数组，可为空。ready_timeout 是正整数秒数，缺省 180；建立和清理命令也须在此时限内结束。
 

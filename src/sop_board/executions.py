@@ -16,6 +16,7 @@ from .service import canonical, fingerprint, now
 from .statistics import calculate
 from .tasks import terminate_group, judgment_object, invalid_judgment_constant, codex_failure
 from .validation import validate_round
+from .playwright import driver_skill, write_scope
 
 
 class Executions:
@@ -125,6 +126,9 @@ class Executions:
         document = dict(inputs['document'], sops=[dict(n, scenarios=[s for s in n['scenarios'] if s['id'] in selected])
                          for n in inputs['document']['sops'] if any(s['id'] in selected for s in n['scenarios'])])
         (directory / 'scenarios.yaml').write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        web_scenes = [s for s in inputs['scenes'] if inputs['entries'][s['verify']]['surface'] == 'web' and inputs['entries'][s['verify']].get('driver') in (None, 'playwright-acceptance')]
+        write_scope(directory, task['workspace'], task['batch'], directory / 'scenarios.yaml', web_scenes)
+        (directory / 'web-pending.json').write_text(canonical([dict(scenario=s['id']) for s in web_scenes]), encoding='utf-8')
         addresses = {}
         for name, entry in inputs['entries'].items():
             variable = entry.get('address_env')
@@ -158,7 +162,7 @@ class Executions:
                     diff = '旧提交不可读取，不能仅据此沿用结果'
                 changes[alias]['previous'].append(dict(commit=sha, files=diff))
         (directory / 'changes.json').write_text(canonical(changes), encoding='utf-8')
-        prompt = Template(files('sop_board').joinpath('prompts/execute.md').read_text(encoding='utf-8')).substitute(task_directory=directory)
+        prompt = Template(files('sop_board').joinpath('prompts/execute.md').read_text(encoding='utf-8')).substitute(task_directory=directory, playwright_skill=driver_skill() / 'SKILL.md')
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 

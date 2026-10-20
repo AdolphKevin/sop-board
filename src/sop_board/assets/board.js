@@ -27,6 +27,8 @@
       const next = parsed.querySelector("main[data-state-url]");
       if (!next) return;
       if (hasDraft() || writes) {deferRefresh(); return;}
+      const disclosures = Array.from(document.querySelectorAll("details[data-disclosure][open]"), item => item.dataset.disclosure);
+      next.querySelectorAll("details[data-disclosure]").forEach(item => {item.open = disclosures.includes(item.dataset.disclosure);});
       document.querySelector("main").replaceWith(next);
       pendingRefresh = false;
       initialize();
@@ -79,6 +81,10 @@
     const identity = document.getElementById("review-identity");
     if (!identity) return;
     const marker = identity.querySelector("[name='marker']");
+    const focusIdentity = field => {
+      identity.querySelector("details")?.setAttribute("open", "");
+      field?.focus();
+    };
     const show = (element, value, state = "success") => {
       element.textContent = value;
       element.dataset.state = state;
@@ -177,7 +183,7 @@
         problems.replaceChildren();
         if (!marker.value.trim()) {
           show(message, "请先在身份栏填写标记人", "error");
-          marker.focus();
+          focusIdentity(marker);
           return;
         }
         const file = fileInput.files[0];
@@ -279,7 +285,7 @@
       const checkIdentity = () => {
         if (marker.value.trim()) return true;
         show(message, "请先在身份栏填写标记人", "error");
-        marker.focus();
+        focusIdentity(marker);
         return false;
       };
       const collapse = () => {
