@@ -5,13 +5,14 @@ import re
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import threading
 from importlib.resources import files
 from urllib.parse import quote
 
 from .errors import reject, APIError
-from .drafts import SCHEMA, assemble, section
+from .drafts import SCHEMA, assemble, section, schema_problems, normalize_judgment
 
 import yaml
 from .service import canonical, now
@@ -43,6 +44,42 @@ def invalid_judgment_constant(value):
     raise ValueError(f'最终 JSON 消息含非有限数字：{value}')
 
 
+def read_merge_output(raw):
+    result = json.loads(raw, object_pairs_hook=judgment_object, parse_constant=invalid_judgment_constant)
+    problems = schema_problems(result)
+    if problems:
+        raise ValueError('输出模式：' + '；'.join(problems))
+    return normalize_judgment(result)
+
+
+def codex_failure(directory, code, label='Codex'):
+    """失败事件的最近错误优先；摘要限 300 字，不以日志读取失败覆盖退出码。"""
+    messages = []
+    try:
+        with (Path(directory) / 'events.jsonl').open(encoding='utf-8', errors='replace') as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(event, dict) or event.get('type') not in ('error', 'turn.failed'):
+                    continue
+                error = event.get('error')
+                message = (error.get('message') if isinstance(error, dict) else error) or event.get('message')
+                if isinstance(message, str) and message.strip():
+                    message = ' '.join(message.split())[:300]
+                    if message in messages:
+                        messages.remove(message)
+                    messages.insert(0, message)
+                    messages = messages[:3]
+    except OSError:
+        pass
+    summary = '；'.join(messages)
+    if len(summary) > 300:
+        summary = summary[:299] + '…'
+    return f'{label} 退出码 {code}' + ('：' + summary if summary else '')
+
+
 def start_codex(directory, prompt, sandbox='read-only', environment=None, work_directory=None):
     """可替换的启动边界；子进程只得到白名单环境及独立进程组。"""
     directory = Path(directory).resolve()
@@ -60,7 +97,7 @@ def start_codex(directory, prompt, sandbox='read-only', environment=None, work_d
         stderr.close()
 
 
-def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None):
+def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None, environment=None):
     """续接指定会话；resume 的沙箱参数位于 Codex 根命令层。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
@@ -69,7 +106,7 @@ def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directo
         options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
         return subprocess.Popen(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
             '--skip-git-repo-check', '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory,
-            env=codex_environment(), stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
+            env=environment if environment is not None else codex_environment(), stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
     finally:
         events.close()
         stderr.close()
@@ -90,20 +127,8 @@ def codex_available():
 
 
 def terminate_group(process):
-    # Kill the group even if its leader already exited: grandchildren may still run.
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=.2)
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+    from .adapters import stop_process
+    stop_process(process, grace=.2)
 
 
 class Tasks:
@@ -113,9 +138,8 @@ class Tasks:
         self.lock = service.workspace_lock
         self.stopping = threading.Event()
         self.workers = {}
-        self.check_workers = set()
         self.processes = {}
-        self.candidate_processes = {}
+        self.prepared_environments = {}
         self.browser_owner = None
         self.starting = None
         self.timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT')) if timeout is None else timeout
@@ -124,19 +148,23 @@ class Tasks:
                 "(kind!='fix' AND status IN ('排队中','待提交','等待浏览器','运行中')) OR "
                 "(kind='fix' AND status IN ('分析中','修复中','复测中','待合入'))", (now(),))
         self.availability_error = codex_available()
-        from .checks import Checks
-        self.checks = Checks(self)
-        self.checks.cleanup_worktrees()
         from .executions import Executions
         self.executions = Executions(self)
         service.execution_callback = self.executions.enqueue
         from .fixes import Fixes
         self.fixes = Fixes(self)
-        self.fixes.recover_promotions()
+        if self.service.workspace.configured:
+            self.fixes.recover_promotions()
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 
     def enqueue_merge(self, key, name, trigger="重新合并"):
+        workspace = self.service.workspace
+        if not workspace.configured:
+            if trigger == '重新合并':
+                reject(409, 'workspace-not-ready', 'workspace', '尚未搭建，请先配置工作区')
+            return None
+        workspace.scenario_path(name)
         with self.lock, self.store.transaction() as db:
             batch = self.service.batch(db, key, name)
             version = self.service.latest_version(db, batch)
@@ -146,17 +174,9 @@ class Tasks:
             if not cases:
                 reject(409, 'cases-missing', 'cases', '批次没有用例，无法重新合并')
             upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
-            source = db.execute('SELECT content FROM batch_entries WHERE batch=?', (batch['id'],)).fetchone()
-            entries = json.loads(source['content']) if source else {}
-            sop_sources = [dict(row) for row in db.execute(
-                'SELECT path,ref,commit_id AS "commit",sha256,confirmed_by,content FROM sop_versions v WHERE batch=? '
-                'AND NOT EXISTS (SELECT 1 FROM sop_versions newer WHERE newer.batch=v.batch AND newer.path=v.path AND newer.version>v.version) ORDER BY path',
-                (batch['id'],))]
-            if key in self.service.writable_repos:
-                from .repositories import read_entries, read_sop_sources
-                declared, _ = read_entries(self.service.writable_repos[key])
-                entries = dict(entries=declared)
-                sop_sources = read_sop_sources(self.service.writable_repos[key], version['content'] if version else '')
+            from .repositories import read_sop_sources
+            entries = dict(entries=workspace.entries)
+            sop_sources = read_sop_sources(workspace, version['content'] if version else '')
             nodes = {r['section']: r['node'] for r in db.execute('SELECT section,node FROM node_numbers WHERE batch=?', (batch['id'],))}
             for case in cases:
                 name_ = section(case)
@@ -165,11 +185,11 @@ class Tasks:
                     db.execute('INSERT INTO node_numbers VALUES (?,?,?)', (batch['id'], name_, nodes[name_]))
             snapshot = dict(cases=cases, scenarios=version['content'] if version else '', entries=entries,
                             batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'], nodes=nodes,
-                            writable=key in self.service.writable_repos)
+                            config_digest=workspace.config_digest)
             # 只继承已有记录证明曾经并入、且仍在当前场景中的禁止副作用。
             # 任意外来用例场景上的额外断言不因此成为确定字段的输入。
             transferred = {}
-            for row in db.execute("SELECT result_json FROM tasks WHERE project=? AND batch=? AND status IN ('已完成','待同步') ORDER BY id",
+            for row in db.execute("SELECT result_json FROM tasks WHERE workspace=? AND batch=? AND status IN ('已完成','待同步') ORDER BY id",
                                   (key, name)):
                 for disposition in json.loads(row['result_json']).get('scenarios', []):
                     if disposition['action'] == 'duplicate':
@@ -180,46 +200,30 @@ class Tasks:
                 for node in original.get('sops', []) for scene in node['scenarios'] if scene['id'] in transferred}
             snapshot['sop_sources'] = sop_sources
             scenario_sha = version['sha256'] if version else ''
-            # 排版、上传序号和已分配节点不是业务输入；按规定的四种内容组成摘要。
+            # 上传序号和已分配节点不是业务输入；配置改变也必须生成新快照。
             inputs = dict(cases=dict(metadata=snapshot['case_metadata'], test_cases=cases),
-                          scenarios=scenario_sha, entries=entries,
+                          scenarios=scenario_sha, entries=entries, config_digest=snapshot['config_digest'],
                           sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
             digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
-            states = ('排队中', '运行中') if trigger == '重新合并' else ('已完成', '待同步', '待补充', '排队中', '运行中')
+            states = ('排队中', '运行中') if trigger == '重新合并' else (
+                '已完成', '待同步', '待补充', '排队中', '运行中', '失败', 'Codex 不可用', '已中断', '已放弃')
             placeholders = ','.join('?' for _ in states)
-            previous = db.execute(f"SELECT id FROM tasks WHERE project=? AND batch=? AND input_digest=? AND status IN ({placeholders}) ORDER BY id LIMIT 1",
+            previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND input_digest=? AND status IN ({placeholders}) ORDER BY id LIMIT 1",
                                   (key, name, digest, *states)).fetchone()
             if previous:
                 task_id = previous['id']
             else:
-                task_id = db.execute("INSERT INTO tasks(kind,project,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at) VALUES ('merge',?,?,'排队中',?,?,?,?,?)",
+                task_id = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at) VALUES ('merge',?,?,'排队中',?,?,?,?,?)",
                                      (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
-        return dict(ok=True, task=self.read(task_id))
-
-    def enqueue_check(self, key, name):
-        with self.lock:
-            declarations = self.service.entries(key)
-            if not declarations['ok']:
-                raise APIError(409, 'entries-invalid', declarations['problems'])
-            with self.store.transaction() as db:
-                batch = self.service.batch(db, key, name)
-                scope = [dict(scenario=r['scenario'], reason='regression') for r in db.execute(
-                    'SELECT scenario,regression FROM scenarios WHERE batch=? AND current=1 ORDER BY id', (batch['id'],))
-                    if (json.loads(r['regression']) or {}).get('check')]
-                if not scope:
-                    reject(409, 'nothing-to-check', 'scenarios', '批次没有声明回归的场景')
-                task_id = db.execute("INSERT INTO tasks(kind,project,batch,status,trigger,input_digest,input_json,scope_json,created_at) "
-                    "VALUES ('check',?,?,'排队中','开发者发起',?,'{}',?,?)", (key, name,
-                    hashlib.sha256(canonical(scope).encode()).hexdigest(), canonical(scope), now())).lastrowid
         return dict(ok=True, task=self.read(task_id))
 
     def enqueue_execution(self, key, name):
         return self.executions.enqueue(key, name)
 
-    def list(self, project=None, batch=None):
+    def list(self, workspace=None, batch=None):
         with self.store.connection() as db:
-            ids = [r[0] for r in db.execute('SELECT id FROM tasks WHERE (? IS NULL OR project=?) AND (? IS NULL OR batch=?) ORDER BY id',
-                                           (project, project, batch, batch))]
+            ids = [r[0] for r in db.execute('SELECT id FROM tasks WHERE (? IS NULL OR workspace=?) AND (? IS NULL OR batch=?) ORDER BY id',
+                                           (workspace, workspace, batch, batch))]
         return dict(ok=True, tasks=[self.read(i) for i in ids])
 
     def directory(self, task_id):
@@ -234,6 +238,7 @@ class Tasks:
         task.pop('input_json')
         task['result'] = json.loads(task.pop('result_json'))
         task['gaps'] = task['result'].get('gaps', [])
+        task['reused_count'] = task['result'].get('reused_count', 0)
         for field in ('scope', 'snapshot', 'rounds'):
             task[field] = json.loads(task.pop(field + '_json'))
         directory = self.directory(task_id)
@@ -253,7 +258,7 @@ class Tasks:
 
     def merge_result(self, key, name, task_id):
         task = self.read(task_id)
-        if task['project'] != key or task['batch'] != name:
+        if task['workspace'] != key or task['batch'] != name:
             reject(404, 'merge-result-not-found', 'task', '没有合并结果')
         path = self.directory(task_id) / 'scenario-file.yaml'
         if task['status'] not in ('已完成', '待同步') or not path.is_file():
@@ -270,7 +275,7 @@ class Tasks:
             if task['kind'] == 'fix':
                 return self.fixes.action(task, action)
             allowed = ('失败', '已中断', 'Codex 不可用') if action == 'retry' else ('排队中', '运行中', '已中断', '待同步', '待补充')
-            if task['kind'] in ('check', 'execute'):
+            if task['kind'] == 'execute':
                 allowed += ('已作废',) if action == 'retry' else ('待提交', '等待浏览器')
             if task['status'] not in allowed:
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持此操作')
@@ -279,7 +284,6 @@ class Tasks:
                 process = self.processes.get(task_id)
                 if process:
                     terminate_group(process)
-                self.executions.candidates.close(task_id)
                 if self.browser_owner == task_id:
                     self.browser_owner = None
             else:
@@ -288,9 +292,9 @@ class Tasks:
                     archive = directory / ('attempt-' + str(task['attempt']))
                     archive.mkdir()
                     for path in directory.iterdir():
-                        if path.is_file() or (task['kind'] in ('check', 'execute') and path != archive and not path.name.startswith('attempt-')):
+                        if path.is_file() or (task['kind'] == 'execute' and path != archive and not path.name.startswith('attempt-')):
                             path.rename(archive / path.name)
-                self.checks.next_review.pop(task_id, None)
+                self.executions.next_review.pop(task_id, None)
                 self.update(task_id, status='排队中', started_at=None, finished_at=None,
                             session_id=None, error='', result_digest=None, result_json='{}', snapshot_json='{}',
                             void_reason='', rounds_json='[]', attempt=task['attempt'] + 1)
@@ -334,13 +338,12 @@ class Tasks:
                 code = process.returncode
                 error = f'Codex 运行超时（{self.timeout:g} 秒）'
             if code:
-                error = error or f'Codex 退出码 {code}'
+                error = error or codex_failure(directory, code)
             try:
                 final = (directory / 'final.json').read_text(encoding='utf-8')
                 if not final.strip():
                     raise FileNotFoundError()
-                result = json.loads(final, object_pairs_hook=judgment_object,
-                                    parse_constant=invalid_judgment_constant)
+                result = read_merge_output(final)
                 if not error:
                     raw, check = assemble(snapshot, result)
                     if check['ok']:
@@ -358,17 +361,21 @@ class Tasks:
                             if not self.stopping.is_set() and self.read(task['id'])['status'] == '运行中':
                                 try:
                                     outcome = self.land(task, raw, check)
-                                except (OSError, ValueError, APIError) as problem:
+                                except (OSError, ValueError, sqlite3.Error, APIError) as problem:
                                     error = f'合并结果无法写入工作区：{problem}'
             except FileNotFoundError:
                 error = error or 'Codex 没有写出最终输出'
-            except (OSError, ValueError, RecursionError):
+            except (OSError, json.JSONDecodeError, RecursionError):
                 error = error or '最终消息不是 JSON 对象'
+            except ValueError as problem:
+                error = error or str(problem)
             except (KeyError, TypeError):
                 error = error or '最终消息不符合输出模式'
         except FileNotFoundError:
             error = 'Codex 启动失败：命令或任务文件不存在'
             unavailable = process is None
+        except sqlite3.Error as problem:
+            error = '任务记录无法保存：' + str(problem)
         except (OSError, subprocess.SubprocessError):
             error = 'Codex 运行失败：无法启动进程或读取任务文件'
         except (KeyError, TypeError, ValueError):
@@ -402,115 +409,90 @@ class Tasks:
                                 result_digest=hashlib.sha256((directory / 'final.json').read_bytes()).hexdigest() if (directory / 'final.json').is_file() else None)
 
     def land(self, task, raw, check):
-        root = self.service.writable_repos.get(task['project'])
-        if not root:
-            return '已完成'
-        source = root / 'docs/sop' / (task['batch'] + '.yaml')
-        if source.parent != root / 'docs/sop' or source.is_symlink() or root not in source.resolve().parents:
-            raise ValueError('场景文件路径必须位于授权仓库的 docs/sop 目录内')
-        if source.exists() and hashlib.sha256(source.read_bytes()).hexdigest() != task['scenario_file_sha256']:
+        workspace = self.service.workspace
+        snapshot = json.loads(task['input_json'])
+        workspace.reload()
+        if not workspace.configured or snapshot['config_digest'] != workspace.config_digest:
+            check['problems'] = ['工作区配置变化，请重新合并']
+            return '待同步'
+        source = workspace.scenario_path(task['batch'])
+        current = hashlib.sha256(source.read_bytes()).hexdigest() if source.exists() else ''
+        if current != task['scenario_file_sha256']:
             check['workspace_changed'] = True
             return '待同步'
-        from .repositories import product, read_entries
         from .service import fingerprint
-        if check.get('inferred_entries'):
-            entry_file = root / 'docs/sop/entries.yaml'
-            if root not in entry_file.resolve().parents or entry_file.exists():
-                check['workspace_changed'] = True
-                return '待同步'
-            entry_file.parent.mkdir(parents=True, exist_ok=True)
-            with entry_file.open('x', encoding='utf-8') as stream:
-                stream.write('# 待确认：以下入口由 Codex 根据本次输入推断，请开发者核实。\n')
-                stream.write(yaml.safe_dump(check['inferred_entries'], allow_unicode=True, sort_keys=False))
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text(raw, encoding='utf-8')
-        _, entry_path = read_entries(root)
         document = yaml.safe_load(raw)
-        with self.store.connection() as db:
-            project = dict(db.execute('SELECT * FROM projects WHERE key=?', (task['project'],)).fetchone())
-        self.service.push(task['project'], task['batch'], dict(
-            project=dict(id=project['identity'], name=project['name']),
-            path=str(source.relative_to(root)), content=raw, pushed_by=f"看板合并 #{task['id']}",
-            **product(root, source, entry_path),
-            fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}),
-            preserve_project_name=True)
-        check['draft'] = False
+        info = workspace.product(workspace.aliases(document))
+        source.parent.mkdir(parents=True, exist_ok=True)
+        temporary = source.with_suffix('.yaml.tmp')
+        temporary.write_text(raw, encoding='utf-8')
+        temporary.replace(source)
+        self.service.push(workspace.name, task['batch'], dict(workspace=dict(name=workspace.name),
+            path=str(source.relative_to(workspace.root)), content=raw, pushed_by=f"看板合并 #{task['id']}",
+            commit=info['commit'], dirty=info['dirty'], product_digest=info['product_digest'],
+            fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}))
         return '已完成'
 
     def run(self):
-        while not self.stopping.wait(.05):
+        while not self.stopping.wait(.1):
             with self.lock:
                 self.workers = {i: w for i, w in self.workers.items() if w.is_alive()}
-                self.check_workers.intersection_update(self.workers)
-                self.fixes.discover()
+                checking = self.service.environment.check_thread
+                if checking and checking.is_alive():
+                    continue
+                if self.service.environment.approved():
+                    self.fixes.discover()
                 with self.store.connection() as db:
                     if self.service.automation_paused(db):
                         continue
-                    checks = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind='check' AND status IN ('排队中','待提交') ORDER BY id")]
-                for task in checks:
-                    try:
-                        prepared = self.checks.prepare(task)
-                    except (OSError, ValueError, KeyError, APIError, subprocess.SubprocessError) as error:
-                        self.update(task['id'], status='失败', finished_at=now(), error=f'无法准备检查快照：{error}')
-                        continue
-                    if prepared:
-                        self.update(task['id'], status='运行中', started_at=now())
-                        worker = threading.Thread(target=self.checks.execute, args=(task,), daemon=True)
-                        self.workers[task['id']] = worker
-                        self.check_workers.add(task['id'])
-                        worker.start()
-                with self.store.connection() as db:
                     queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','execute','fix') "
                         "AND status IN ('排队中','待提交','等待浏览器') ORDER BY id")]
-                    running_batches = {(r['project'], r['batch']) for r in db.execute("SELECT project,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
+                    running_batches = {(r['workspace'], r['batch']) for r in db.execute("SELECT workspace,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
                 for task in queued:
                     if self.stopping.is_set():
                         break
                     if task['kind'] == 'fix':
-                        self.fixes.schedule(task)
+                        if self.service.environment.approved():
+                            self.fixes.schedule(task)
                         continue
-                    checks_only = False
                     if task['kind'] == 'execute':
-                        if self.fixes.blocks_execution(task['project']):
-                            self.update(task['id'], status='排队中', error='等待同一仓库的修复任务')
+                        if self.fixes.blocks_execution(task['workspace']):
+                            self.update(task['id'], status='排队中', error='等待同一工作区的修复任务')
                             continue
                         try:
-                            if not self.checks.prepare(task):
+                            if not self.executions.prepare(task):
                                 continue
                         except (OSError, ValueError, KeyError, APIError, subprocess.SubprocessError) as error:
                             self.update(task['id'], status='失败', finished_at=now(), error=f'无法准备执行快照：{error}')
                             if self.browser_owner == task['id']:
                                 self.browser_owner = None
                             continue
-                        if (task['project'], task['batch']) in running_batches:
+                        if (task['workspace'], task['batch']) in running_batches:
                             continue
-                        scenes = json.loads(task['input_json'])['scenes']
-                        checks_only = all((s.get('regression') or {}).get('check') for s in scenes)
-                        declarations = json.loads(task['input_json'])['declarations']
-                        web = any(not (s.get('regression') or {}).get('check') and declarations['entries'][s['verify']]['surface'] == 'web' for s in scenes)
-                        if web and self.browser_owner not in (None, task['id']):
-                            self.update(task['id'], status='等待浏览器')
-                            continue
-                        if web:
+                        inputs = json.loads(task['input_json'])
+                        if any(inputs['entries'][s['verify']]['surface'] == 'web' for s in inputs['scenes']):
+                            if self.browser_owner not in (None, task['id']):
+                                self.update(task['id'], status='等待浏览器')
+                                continue
                             self.browser_owner = task['id']
-                    if not checks_only and (self.starting is not None or len(self.workers) - len(self.check_workers) >= 3):
-                        self.update(task['id'], status='排队中')
+                    if self.starting is not None or len(self.workers) >= 3:
                         continue
-                    if task['kind'] == 'merge':
-                        self.availability_error = codex_available()
-                        if self.availability_error:
-                            self.update(task['id'], status='Codex 不可用', finished_at=now(), error=self.availability_error)
-                            continue
-                    self.update(task['id'], status='运行中', started_at=now())
-                    if not checks_only:
-                        self.starting = task['id']
-                    else:
-                        self.check_workers.add(task['id'])
+                    if task['kind'] == 'merge' and not self.service.workspace.configured:
+                        self.update(task['id'], error='尚未搭建，等待配置工作区')
+                        continue
+                    error = codex_available()
+                    if error:
+                        self.update(task['id'], status='Codex 不可用', finished_at=now(), error=error)
+                        if self.browser_owner == task['id']:
+                            self.browser_owner = None
+                        continue
+                    self.update(task['id'], status='运行中', started_at=now(), error='')
+                    self.starting = task['id']
                     worker = threading.Thread(target=self.executions.execute if task['kind'] == 'execute' else self.execute,
                                               args=(task,), daemon=True)
                     self.workers[task['id']] = worker
                     if task['kind'] == 'execute':
-                        running_batches.add((task['project'], task['batch']))
+                        running_batches.add((task['workspace'], task['batch']))
                     worker.start()
 
     def close(self):
@@ -518,8 +500,6 @@ class Tasks:
         with self.lock:
             for process in list(self.processes.values()):
                 terminate_group(process)
-            for task_id in list(self.candidate_processes):
-                self.executions.candidates.close(task_id)
         self.thread.join()
         for worker in self.workers.values():
             worker.join()

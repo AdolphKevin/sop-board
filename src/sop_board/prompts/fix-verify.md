@@ -1,15 +1,12 @@
 你是新会话，独立复测已提交的产品修复，不参与修复。
 任务目录：$task_directory
-候选代码目录（只读访问）：$candidate_directory
-会话工作目录是任务目录；只在任务目录中写结果与 evidence/ 证据，不能在候选代码目录写文件。
+看板已经停止基线环境，并通过 adapter.env 启动包含修复工作树的同一套环境；不要自行启停环境。
+只在任务目录写结果与 evidence/，不改仓库，不写测试，不提交或推送。
 
-读取任务目录中的 retest.json（每项 batch、scenario、scene）、entries.json（入口及候选地址与目录）、
-snapshot.json 和 cases.json。仅执行 retest.json 指定的问题场景；按各入口 operate 操作，核对 scene 中的预期。
-web 入口使用 playwright-acceptance；http、db 使用 verify-backend-sop-db；agent 使用 build-scenario-validation-loop；
-cli 使用临时 HOME，其他入口遵循入口操作说明。不得修改产品、场景、入口声明、测试预期，不提交、不推送。
+读取 retest.json（batch、scenario、scene）、entries.json（入口与地址）、snapshot.json、cases.json。
+通过各入口 operate 执行指定的问题场景并核对预期。使用入口声明的 driver；缺省 web 使用 playwright-acceptance，http/db 使用 verify-backend-sop-db，agent 使用 build-scenario-validation-loop，cli 经命令行执行。
+不能把阅读源码或测试程序的结果当作场景通过；不得沿用原通过结果。
 
-在任务目录写 results.jsonl，每个 batch + scenario 恰好一行，不得含范围外结果。
-字段为 batch、scenario、status（pass/fail/blocked/skip）、actual、executed_at（带时区 ISO 8601）、
-evidence（相对任务目录 evidence/ 下的文件路径数组），可选 finding、note。
-blocked、skip 必须说明 finding；pass、fail 必须有实际证据文件。
-内容指纹和执行者由看板记录。完成后写最终消息。
+写 results.jsonl，每个 batch + scenario 恰好一行，不得有范围外结果。
+字段：batch、scenario、status（pass/fail/blocked/skip）、actual、executed_at（带时区 ISO 8601）、evidence（任务目录 evidence/ 下实际文件的相对路径数组），可选 finding、note。
+blocked/skip 必须说明 finding；pass/fail 必须有实际证据文件。指纹与执行者由看板绑定。

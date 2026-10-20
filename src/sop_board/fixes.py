@@ -1,10 +1,11 @@
-"""每个授权仓库一个修复任务；范围、判定与尝试独立保存。"""
+"""每个工作区一个修复任务；T2 仅为首个涉及仓库建立修复工作树；范围、判定与尝试独立保存。"""
 import json
 import time
 from importlib.resources import files
 from pathlib import Path
 import shutil
 from string import Template
+import sqlite3
 import subprocess
 import re
 import hashlib
@@ -16,8 +17,8 @@ from .errors import reject, APIError
 from .defect_links import ISSUE_KEY
 from .service import canonical, now
 from .statistics import calculate
-from .repositories import git, product_files
-from .tasks import codex_available, codex_environment, resume_codex, terminate_group, judgment_object, invalid_judgment_constant
+from .repositories import git
+from .tasks import codex_available, codex_environment, resume_codex, terminate_group, judgment_object, invalid_judgment_constant, codex_failure
 
 
 ACTIVE = ('排队中', '分析中', '修复中', '复测中', '待合入')
@@ -44,22 +45,30 @@ class Fixes:
         self.tasks, self.service, self.store = tasks, tasks.service, tasks.store
         self.next_scan = 0
 
-    def blocks_execution(self, key):
-        root = self.service.writable_repos[key]
+    def root(self, task):
         with self.store.connection() as db:
-            return bool(db.execute("SELECT 1 FROM fix_tasks f JOIN tasks t ON t.id=f.task WHERE repository=? "
-                "AND status IN ('排队中','待提交','分析中','修复中','复测中','待合入')", (str(root),)).fetchone())
+            row = db.execute('SELECT repository FROM fix_tasks WHERE task=?', (task['id'],)).fetchone()
+        return Path(row[0])
+
+    def directories(self, task):
+        info = self.tasks.read(task['id'])
+        return dict(self.service.workspace.repos, **{info['repo_alias']: Path(info['worktree'])})
+
+    def blocks_execution(self, key):
+        with self.store.connection() as db:
+            return bool(db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='fix' "
+                "AND status IN ('排队中','待提交','分析中','修复中','复测中','待合入')", (key,)).fetchone())
 
     def schedule(self, task):
         with self.store.connection() as db:
-            running = [self.service.writable_repos[r[0]] for r in db.execute("SELECT project FROM tasks WHERE kind='execute' AND status='运行中'")]
+            running = [r[0] for r in db.execute("SELECT workspace FROM tasks WHERE kind='execute' AND status='运行中'")]
         if task['id'] in self.tasks.workers:
             return
-        root = self.service.writable_repos[task['project']]
-        if root in running:
-            self.tasks.update(task['id'], status='排队中', error='等待同一仓库的执行任务结束')
+        root = self.root(task)
+        if task['workspace'] in running:
+            self.tasks.update(task['id'], status='排队中', error='等待同一工作区的执行任务结束')
             return
-        if self.tasks.starting is not None or len(self.tasks.workers) - len(self.tasks.check_workers) >= 3:
+        if self.tasks.starting is not None or len(self.tasks.workers) >= 3:
             self.tasks.update(task['id'], status='排队中', error='等待 Codex 名额')
             return
         error = codex_available()
@@ -69,7 +78,7 @@ class Fixes:
         try:
             if not self.prepare(task):
                 return
-        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError, APIError) as error:
             self.tasks.update(task['id'], status='待开发者处理', error=f'无法准备修复：{error}')
             return
         self.tasks.update(task['id'], status='分析中' if task['attempt'] == 0 else '修复中', started_at=now(), error='修复会话运行中')
@@ -80,15 +89,23 @@ class Fixes:
         worker.start()
 
     def prepare(self, task):
-        root = self.service.writable_repos[task['project']]
-        declarations = self.service.entries(task['project'])
+        root = self.root(task)
+        declarations = self.service.entries(task['workspace'])
         if not declarations['ok']:
             self.tasks.update(task['id'], status='排队中', error='入口声明不合格')
             return False
-        entry = '.tw/config.json' if declarations['source'] == 'tw-config' else 'docs/sop/entries.yaml'
-        current = product_files(root, root / 'docs/sop', root / entry)
-        committed = product_files(root, root / 'docs/sop', root / entry, head=True)
-        if current != committed:
+        workspace = self.service.workspace
+        self.service.require_ready(task['workspace'])
+        with self.store.connection() as db:
+            pending = self.unresolved(db, task['workspace'])
+            aliases = []
+            for problem in pending:
+                batch = self.service.batch(db, task['workspace'], problem['batch'])
+                document = yaml.safe_load(self.service.latest_version(db, batch)['content'])
+                for alias in workspace.aliases(document):
+                    if alias not in aliases:
+                        aliases.append(alias)
+        if workspace.product(aliases)['dirty']:
             self.tasks.update(task['id'], status='待提交', error='工作区有未提交的产品改动')
             return False
         info = self.tasks.read(task['id'])
@@ -120,18 +137,12 @@ class Fixes:
             if pending and task['input_json'] != '{}':
                 db.execute("UPDATE fix_attempts SET outcome='运行中',finished_at=NULL WHERE task=? AND number=?", (task['id'], number))
                 return True
-        if info['attempt'] and self.in_place(info):
-            # 原地替换的每次新尝试都从基线重建，只移动本任务自有分支。
-            expected = self.store.data.resolve() / 'worktrees' / f"fix-{task['id']}"
-            if worktree != expected or info['fix_branch'] != f"sop-board/fix/{task['id']}":
-                raise ValueError('修复工作目录或分支不属于此任务')
-            latest = git(root, 'rev-parse', 'refs/heads/' + info['baseline_branch']).decode().strip()
-            git(root, 'worktree', 'remove', '--force', str(worktree))
-            git(root, 'branch', '-f', info['fix_branch'], latest)
-            git(root, 'worktree', 'add', str(worktree), info['fix_branch'])
-        snapshot = dict(entries=declarations, entry_path=entry, batches={}, cases={})
+        snapshot = dict(entries=declarations, config_digest=workspace.config_digest, batches={}, cases={},
+                        aliases=aliases, repositories=workspace.product(aliases)['repos'], repo_alias=info['repo_alias'])
+        self.tasks.prepared_environments[task['id']] = self.service.environment.prepare(
+            dict(workspace.repos, **{info['repo_alias']: worktree}), workspace.data / 'prepare' / f"fix-{task['id']}-{number}.log")
         with self.store.transaction() as db:
-            fresh = self.unresolved(db, task['project'])
+            fresh = self.unresolved(db, task['workspace'])
             added = []
             for problem in fresh:
                 previous = db.execute('SELECT * FROM fix_problems WHERE task=? AND batch=? AND scenario=?',
@@ -158,7 +169,7 @@ class Fixes:
                 if not previous or content_changed or previous['category'] not in ('', 'product'):
                     added.append(dict(batch=problem['batch'], scenario=problem['scenario']))
             problems = [json.loads(r[0]) for r in db.execute("SELECT input_json FROM fix_problems WHERE task=? AND category IN ('','product') ORDER BY id", (task['id'],))]
-            for batch in db.execute('SELECT * FROM batches WHERE project=? ORDER BY id', (task['project'],)):
+            for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY id', (task['workspace'],)):
                 version = self.service.latest_version(db, batch)
                 if version:
                     snapshot['batches'][batch['name']] = dict(content=version['content'], sha256=version['sha256'], path=batch['path'])
@@ -230,7 +241,7 @@ class Fixes:
                     products = None
             if products:
                 self.verify(task, products)
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
             with self.tasks.lock:
                 if not self.tasks.stopping.is_set():
                     self.tasks.update(task['id'], status='待开发者处理', error=str(error))
@@ -251,8 +262,11 @@ class Fixes:
                 if not self.live(task):
                     return ''
                 session = self.tasks.read(task['id'])['session_id']
-                process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', work_directory=worktree) if not session else resume_codex(
-                    directory, session, prompt, sandbox='workspace-write', work_directory=worktree)
+                if task['id'] not in self.tasks.prepared_environments:
+                    self.tasks.prepared_environments[task['id']] = self.service.environment.prepare(self.directories(task), self.service.workspace.data / 'prepare' / f"resume-{task['id']}.log")
+                environment = self.service.environment.agent_environment(self.directories(task), self.tasks.prepared_environments[task['id']])
+                process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment, work_directory=worktree) if not session else resume_codex(
+                    directory, session, prompt, sandbox='workspace-write', environment=environment, work_directory=worktree)
                 self.tasks.processes[task['id']] = process
                 self.tasks.starting = None
             deadline = time.monotonic() + self.tasks.timeout
@@ -263,7 +277,7 @@ class Fixes:
                 time.sleep(.05)
             session = self.session(task, directory)
             if process.returncode:
-                return f'Codex 退出码 {process.returncode}'
+                return codex_failure(directory, process.returncode)
             path = directory / 'final.json'
             if not path.is_file() or path.is_symlink() or not path.read_text(encoding='utf-8').strip():
                 return 'Codex 没有写出最终输出'
@@ -308,8 +322,9 @@ class Fixes:
         if len(returned) != len(set(returned)) or set(returned) != expected:
             raise ValueError('问题重复或不在本次范围内')
         changed = self.changed(task)
-        entry = json.loads(task['snapshot_json'])['entry_path']
-        if any(path.startswith('docs/sop/') or path == entry for path in changed):
+        workspace = self.service.workspace
+        excluded = workspace.scenarios.relative_to(root) if workspace.scenarios.is_relative_to(root := self.root(task)) else None
+        if any(excluded is not None and Path(path).is_relative_to(excluded) for path in changed):
             self.restore(task)
             self.failed(task, '修复改动涉及场景文件或入口声明', answer)
             return
@@ -334,10 +349,10 @@ class Fixes:
         for p in selected:
             if (p['batch'], p['scenario']) not in {(r['batch'], r['scenario']) for r in product}:
                 continue
-            label = p.get('jira_key') or p['defect_url'] if p['source'] == 'manual' else '回归检查失败' if p['source'] == 'check' else 'Agent 失败'
+            label = p.get('jira_key') or p['defect_url'] if p['source'] == 'manual' else 'Agent 失败'
             lines.append(f"{p['batch']} {p['scenario']} {label}")
         message = f"sop-board 修复 #{task['id']} 第 {number} 次尝试\n\n" + '\n'.join(lines)
-        root = self.service.writable_repos[task['project']]
+        root = self.root(task)
         author = git(root, 'config', 'user.name').decode().strip()
         email = git(root, 'config', 'user.email').decode().strip()
         try:
@@ -355,13 +370,12 @@ class Fixes:
             pending = dict(status='pending', reason='等待验证', evidence=[], scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in product])
             db.execute("UPDATE fix_attempts SET commit_id=?,outcome='待验证',result_json=?,validation_json=? WHERE task=? AND number=?",
                 (commit, canonical(answer), canonical(pending), task['id'], number))
-        self.tasks.update(task['id'], attempt=number, status='复测中', error='复测产品问题并运行回归检查', result_json=canonical(answer))
+        self.tasks.update(task['id'], attempt=number, status='复测中', error='使用适配环境复测产品问题', result_json=canonical(answer))
         return product
 
     def verify(self, task, problems, additional=False):
         info = self.tasks.read(task['id'])
-        in_place = self.in_place(info)
-        validation = self.validate(info, problems, phase='checks' if in_place else 'candidate')
+        validation = self.validate(info, problems)
         if validation is None:
             return
         with self.tasks.lock:
@@ -376,40 +390,25 @@ class Fixes:
                 answer = self.tasks.read(task['id'])['result']
                 self.failed(task, validation.get('reason', '验证未通过'), answer, validation)
             elif validation['status'] == 'pass':
-                if not in_place:
-                    with self.store.transaction() as db:
-                        db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=? WHERE task=? AND number=?", (now(), task['id'], number))
+                with self.store.transaction() as db:
+                    db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=? WHERE task=? AND number=?", (now(), task['id'], number))
                 self.tasks.update(task['id'], status='待合入', error='验证通过，核对基线与工作区后快进合入')
             self.archive(task)
         if validation['status'] == 'pass':
             self.merge(task, problems)
 
-    def in_place(self, task):
-        snapshot = task['snapshot']
-        for problem in task['problems']:
-            document = yaml.safe_load(snapshot['batches'][problem['batch']]['content'])
-            scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
-            if snapshot['entries']['entries'][scene['verify']]['candidate'] == 'in-place':
-                return True
-        return False
-
     def baseline_directory(self, task):
-        root = self.service.writable_repos[task['project']]
-        directory = None
-        for field in git(root, 'worktree', 'list', '--porcelain', '-z').decode().split('\0'):
-            if field.startswith('worktree '):
-                directory = Path(field[9:])
-            elif field == 'branch refs/heads/' + task['baseline_branch']:
-                return directory
+        root = self.root(task)
+        return root if git(root, 'branch', '--show-current').decode().strip() == task['baseline_branch'] else None
 
     def merge(self, task, problems):
         info = self.tasks.read(task['id'])
-        root = self.service.writable_repos[task['project']]
+        root = self.root(task)
         worktree = Path(info['worktree'])
         baseline = git(root, 'rev-parse', 'refs/heads/' + info['baseline_branch']).decode().strip()
-        candidate = git(worktree, 'rev-parse', 'HEAD').decode().strip()
+        repair_commit = git(worktree, 'rev-parse', 'HEAD').decode().strip()
         try:
-            git(root, 'merge-base', '--is-ancestor', baseline, candidate)
+            git(root, 'merge-base', '--is-ancestor', baseline, repair_commit)
         except subprocess.CalledProcessError as error:
             if error.returncode != 1:
                 raise
@@ -425,7 +424,7 @@ class Fixes:
                 return
             with self.store.transaction() as db:
                 db.execute("UPDATE fix_attempts SET outcome='待验证',finished_at=NULL WHERE task=? AND number=?", (task['id'], info['attempt']))
-            self.tasks.update(task['id'], status='复测中', error='基线已前进，验证合入基线后的候选提交')
+            self.tasks.update(task['id'], status='复测中', error='基线已前进，验证合入基线后的修复提交')
             self.verify(task, problems, additional=True)
             return
         directory = self.baseline_directory(info)
@@ -436,6 +435,9 @@ class Fixes:
         branch = git(directory, 'branch', '--show-current').decode().strip()
         if branch != info['baseline_branch']:
             self.tasks.update(task['id'], status='待开发者合入', error='基线工作目录当前分支为 ' + branch)
+            return
+        if self.service.workspace.product(info['snapshot']['aliases'])['dirty']:
+            self.tasks.update(task['id'], status='待开发者合入', error='工作区有未提交的产品改动')
             return
         try:
             git(directory, 'merge', '--ff-only', info['fix_branch'], capture_stderr=True)
@@ -451,89 +453,21 @@ class Fixes:
             db.execute('UPDATE fix_attempts SET merged_commit=? WHERE task=? AND number=?', (merged, task['id'], info['attempt']))
         if not self.tasks.stopping.is_set():
             reason = '工作区含未经验收的修改' if dirty else '验证通过，已快进合入基线'
-            if self.in_place(info):
-                self.retest_in_place(task, problems, reason)
-            else:
-                self.promote(info, merged, reason)
-
-    def retest_in_place(self, task, problems, success_reason):
-        info = self.tasks.read(task['id'])
-        root = self.service.writable_repos[task['project']]
-        self.tasks.update(task['id'], status='复测中', error='已替换代码，运行重载命令后复测运行环境')
-        directory = self.tasks.directory(task['id']) / 'reloads' / str(info['attempt'])
-        directory.mkdir(parents=True, exist_ok=True)
-        entries = info['snapshot']['entries']['entries']
-        used = []
-        for problem in info['problems']:
-            document = yaml.safe_load(info['snapshot']['batches'][problem['batch']]['content'])
-            scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
-            if scene['verify'] not in used:
-                used.append(scene['verify'])
-        logs = []
-        reason = ''
-        for index, name in enumerate(used):
-            entry = entries[name]
-            if entry['candidate'] != 'in-place' or not entry.get('reload'):
-                continue
-            path = directory / f'{index}.txt'
-            logs.append(str(path))
-            environment = codex_environment()
-            variable = entry.get('address_env')
-            if variable and os.environ.get(variable):
-                environment[variable] = os.environ[variable]
-            process = None
-            try:
-                with path.open('wb') as stream, self.tasks.lock:
-                    if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '复测中':
-                        return
-                    process = subprocess.Popen(entry['reload'], cwd=root, env=environment, stdin=subprocess.DEVNULL,
-                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
-                    self.tasks.processes[task['id']] = process
-                code = process.wait(timeout=self.tasks.timeout)
-                if code:
-                    reason = f'reload {name} 退出码 {code}：' + path.read_text(encoding='utf-8', errors='replace')
-            except (OSError, subprocess.SubprocessError) as error:
-                reason = f'reload {name} 未通过：{error}'
-            finally:
-                if process:
-                    terminate_group(process)
-                with self.tasks.lock:
-                    self.tasks.processes.pop(task['id'], None)
-            if reason:
-                break
-        validation = dict(status='fail', reason=reason, evidence=logs) if reason else self.validate(self.tasks.read(task['id']), problems, phase='runtime')
-        if validation is None:
-            return
-        checked = info['attempts'][-1]['validation']
-        validation['checks'] = checked.get('checks', [])
-        validation['evidence'] = list(dict.fromkeys([*checked.get('evidence', []), *logs, *validation['evidence']]))
-        with self.tasks.lock:
-            if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '复测中':
-                return
-            if validation['status'] == 'fail':
-                self.failed(task, validation['reason'], info['result'], validation)
-            else:
-                with self.store.transaction() as db:
-                    db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=?,validation_json=? WHERE task=? AND number=?",
-                        (now(), canonical(validation), task['id'], info['attempt']))
-                self.tasks.update(task['id'], status='已合入', finished_at=now(), error=success_reason)
-                self.archive(task)
-                self.complete(task['id'])
+            with self.service.environment.operation:
+                self.service.environment.ensure_baseline()
+            self.promote(info, merged, reason)
 
     def promote(self, task, merged, reason):
-        root = self.service.writable_repos[task['project']]
-        entry = task['snapshot']['entry_path']
-        manifest = product_files(root, root / 'docs/sop', root / entry, head=True, revision=merged)
-        product_digest = hashlib.sha256(canonical(manifest).encode()).hexdigest()
+        root = self.root(task)
         with self.store.transaction() as db:
-            records = list(db.execute('SELECT * FROM fix_candidates WHERE task=? AND attempt=? AND validation='
-                '(SELECT MAX(validation) FROM fix_candidates WHERE task=? AND attempt=?) ORDER BY batch',
+            records = list(db.execute('SELECT * FROM fix_validations WHERE task=? AND attempt=? AND validation='
+                '(SELECT MAX(validation) FROM fix_validations WHERE task=? AND attempt=?) ORDER BY batch',
                 (task['id'], task['attempt'], task['id'], task['attempt'])))
             if not records or any(r['status'] != 'pass' for r in records):
-                raise ValueError('没有可提升的通过候选记录')
+                raise ValueError('没有可提升的通过的修复验证记录')
             rounds = []
             for record in records:
-                batch = self.service.batch(db, task['project'], record['batch'])
+                batch = self.service.batch(db, task['workspace'], record['batch'])
                 key = f"fix-{task['id']}-{task['attempt']}-{record['batch']}"
                 existing = db.execute('SELECT number FROM rounds WHERE batch=? AND idempotency_key=?', (batch['id'], key)).fetchone()
                 if existing:
@@ -543,14 +477,15 @@ class Fixes:
                     for row in rows:
                         row['executor'] = record['session_id']
                     version = db.execute('SELECT * FROM versions WHERE id=?', (record['version'],)).fetchone()
+                    document = yaml.safe_load(version['content'])
+                    info = self.service.workspace.product(self.service.workspace.aliases(document))
                     body = dict(idempotency_key=key, scenario_file_sha256=version['sha256'], submitted_by=record['session_id'],
-                        implementer=task['session_id'], product=dict(commit=merged, digest=product_digest, dirty=False), results=rows)
+                        implementer=task['session_id'], product=dict(commit=info['commit'], digest=info['product_digest'], dirty=False), results=rows)
                     from .validation import validate_round
                     validate_round(db, body)
-                    number = self.service.insert_round(db, batch, version, body,
-                        result_checks={r['scenario']: r['regression_check'] for r in rows if r.get('regression_check')})
-                    db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product_digest, batch['id']))
-                db.execute('UPDATE fix_candidates SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
+                    number = self.service.insert_round(db, batch, version, body)
+                    db.execute('UPDATE batches SET product_digest=? WHERE id=?', (info['product_digest'], batch['id']))
+                db.execute('UPDATE fix_validations SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
                     (number, task['id'], task['attempt'], record['validation'], record['batch']))
                 rounds.append(dict(batch=record['batch'], round=number))
             db.execute('UPDATE fix_tasks SET merged_commit=? WHERE task=?', (merged, task['id']))
@@ -560,7 +495,7 @@ class Fixes:
 
     def complete(self, task_id):
         task = self.tasks.read(task_id)
-        root = self.service.writable_repos[task['project']]
+        root = self.root(task)
         expected = self.store.data.resolve() / 'worktrees' / f'fix-{task_id}'
         if task['worktree'] != str(expected) or task['fix_branch'] != f'sop-board/fix/{task_id}':
             raise ValueError('修复工作目录或分支不属于此任务')
@@ -574,7 +509,7 @@ class Fixes:
             '改动文件：' + '、'.join(dict.fromkeys(f for a in task['attempts'] for f in a['result'].get('changed_files', []))),
             '修复提交：' + '、'.join(a['commit_id'] for a in task['attempts'] if a['commit_id']),
             '合入的本机基线分支：' + task['baseline_branch'] + '；合入提交：' + task['merged_commit'],
-            '复测场景与结果：' + '；'.join(f"{c['batch']} {r['scenario']} {r['status']}" for c in task['candidates']
+            '复测场景与结果：' + '；'.join(f"{c['batch']} {r['scenario']} {r['status']}" for c in task['validations']
                 if c['attempt'] == task['attempt'] for r in c['results']), '尚未部署到测试环境']
         for key in keys:
             with self.store.transaction() as db:
@@ -590,30 +525,31 @@ class Fixes:
 
     def recover_promotions(self):
         with self.store.connection() as db:
-            ids = [r[0] for r in db.execute("SELECT DISTINCT t.id FROM tasks t JOIN fix_candidates c ON c.task=t.id "
+            ids = [r[0] for r in db.execute("SELECT DISTINCT t.id FROM tasks t JOIN fix_validations c ON c.task=t.id "
                 "JOIN fix_attempts a ON a.task=t.id AND a.number=t.attempt "
                 "WHERE t.kind='fix' AND t.status IN ('已中断','待合入','待开发者合入','已合入') "
                 "AND a.outcome='通过' AND c.attempt=t.attempt AND c.promoted_round IS NULL "
-                "AND c.validation=(SELECT MAX(latest.validation) FROM fix_candidates latest WHERE latest.task=t.id AND latest.attempt=t.attempt)")]
+                "AND c.validation=(SELECT MAX(latest.validation) FROM fix_validations latest WHERE latest.task=t.id AND latest.attempt=t.attempt)")]
         for task_id in ids:
             task = self.tasks.read(task_id)
-            if task['project'] not in self.service.writable_repos:
+            if not self.service.workspace.configured:
                 continue
-            latest = max(c['validation'] for c in task['candidates'] if c['attempt'] == task['attempt'])
-            records = [c for c in task['candidates'] if c['attempt'] == task['attempt'] and c['validation'] == latest]
+            latest = max(c['validation'] for c in task['validations'] if c['attempt'] == task['attempt'])
+            records = [c for c in task['validations'] if c['attempt'] == task['attempt'] and c['validation'] == latest]
             if any(c['status'] != 'pass' for c in records):
                 continue
-            root = self.service.writable_repos[task['project']]
+            root = self.root(task)
             try:
                 merged = git(root, 'rev-parse', 'refs/heads/' + task['baseline_branch']).decode().strip()
-                git(root, 'merge-base', '--is-ancestor', records[0]['commit_id'], merged)
+                if records[0]['commit_id'] != merged:
+                    continue
             except subprocess.CalledProcessError:
                 continue
-            self.promote(task, merged, '重启后确认候选已在基线中，已补做结果提升')
+            self.promote(task, merged, '重启后确认修复提交已在基线中，已补做结果提升')
         with self.store.connection() as db:
             merged_ids = [r[0] for r in db.execute("SELECT id FROM tasks WHERE kind='fix' AND status='已合入'")]
         for task_id in merged_ids:
-            if self.tasks.read(task_id)['project'] in self.service.writable_repos:
+            if self.service.workspace.configured:
                 self.complete(task_id)
 
     def live(self, task):
@@ -658,15 +594,17 @@ class Fixes:
             error='连续三次未通过：' + reason if exhausted else reason, result_json=canonical(answer or {}))
         self.archive(task)
 
-    def validate(self, task, problems, phase='candidate'):
+    def validate(self, task, problems):
         from .fix_validation import FixValidation
-        return FixValidation(self).run(task, problems, phase=phase)
+        return FixValidation(self).run(task, problems)
 
     def action(self, task, action, note=''):
         with self.tasks.lock:
             return self._action(self.tasks.read(task['id']), action, note)
 
     def _action(self, task, action, note):
+        if action in ('approve', 'retry'):
+            self.service.require_ready(task['workspace'])
         if task['kind'] != 'fix':
             reject(409, 'task-state-invalid', 'kind', '此任务不支持批准修复方案')
         if action == 'approve':
@@ -689,10 +627,10 @@ class Fixes:
             process = self.tasks.processes.get(task['id'])
             if process:
                 terminate_group(process)
-            root = self.service.writable_repos[task['project']]
+            root = self.root(task)
             with self.store.transaction() as db:
                 if not task['problems']:
-                    for problem in self.unresolved(db, task['project']):
+                    for problem in self.unresolved(db, task['workspace']):
                         db.execute('INSERT OR IGNORE INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) VALUES (?,?,?,?,?,0,?)',
                             (task['id'], problem['batch'], problem['scenario'], problem['fingerprint'], problem['result_id'], canonical(problem)))
             if task['worktree'] and Path(task['worktree']).exists():
@@ -710,7 +648,7 @@ class Fixes:
         for task in self.tasks.list(key)['tasks']:
             if task['status'] == '已放弃':
                 continue
-            url = f"/p/{key}/fixes" if task['kind'] == 'fix' else f"/p/{key}/b/{task['batch']}/merges" if task['kind'] == 'merge' else f"/p/{key}/b/{task['batch']}"
+            url = f"/w/{key}/fixes" if task['kind'] == 'fix' else f"/w/{key}/b/{task['batch']}/merges" if task['kind'] == 'merge' else f"/w/{key}/b/{task['batch']}"
             base = dict(task=task['id'], batch=task['batch'], url=origin + url,
                 resume='codex resume ' + task['session_id'] if task['session_id'] else '')
             if task['status'] in mapping or task.get('attention'):
@@ -724,20 +662,20 @@ class Fixes:
 
     def unresolved(self, db, key):
         problems = []
-        for batch in db.execute('SELECT * FROM batches WHERE project=? ORDER BY id', (key,)):
+        for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY id', (key,)):
             for scene in calculate(db, batch)['scenarios']:
                 rows = [r for r in (scene['latest_manual'], scene['latest_agent']) if r]
                 latest = max(rows, key=lambda r: r['number'], default=None)
                 if not latest or not (latest['kind'] == 'manual' and latest['status'] in ('fail', 'blocked') and latest['finding'] or
                                       latest['kind'] == 'agent' and latest['status'] == 'fail'):
                     continue
-                suppressed = db.execute("SELECT 1 FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.project=? "
+                suppressed = db.execute("SELECT 1 FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.workspace=? "
                     "AND p.batch=? AND p.scenario=? AND p.fingerprint=? AND p.result_id=? "
                     "AND (t.status='已放弃' OR p.category NOT IN ('','product')) LIMIT 1",
                     (key, batch['name'], scene['scenario'], scene['fingerprint'], latest['id'])).fetchone()
                 if suppressed:
                     continue
-                source = 'manual' if latest['kind'] == 'manual' else 'check' if latest['regression_check'] else 'agent'
+                source = 'manual' if latest['kind'] == 'manual' else 'agent'
                 problems.append(dict(batch=batch['name'], scenario=scene['scenario'], fingerprint=scene['fingerprint'],
                     result_id=latest['id'], source=source, scene=scene['body'], latest_result=latest,
                     previous_agent=scene['latest_agent'], defect_url=latest['finding'] if source == 'manual' else '',
@@ -745,21 +683,22 @@ class Fixes:
         return problems
 
     def discover(self):
-        if time.monotonic() < self.next_scan:
+        if time.monotonic() < self.next_scan or not self.service.environment.approved():
             return
         self.next_scan = time.monotonic() + 5
+        workspace = self.service.workspace
         with self.store.transaction() as db:
-            for key, root in self.service.writable_repos.items():
-                if db.execute("SELECT 1 FROM fix_tasks f JOIN tasks t ON t.id=f.task WHERE repository=? "
-                              "AND status NOT IN ('已合入','已放弃')", (str(root),)).fetchone():
-                    continue
-                if not self.unresolved(db, key):
-                    continue
-                task_id = db.execute("INSERT INTO tasks(kind,project,batch,status,trigger,input_digest,input_json,created_at,attempt,error) "
-                    "VALUES ('fix',?,'','排队中','未解决问题','','{}',?,0,'等待开始修复')", (key, now())).lastrowid
-                db.execute('INSERT INTO fix_tasks(task,repository) VALUES (?,?)', (task_id, str(root)))
-                if any(self.service.writable_repos[r[0]] == root for r in db.execute("SELECT project FROM tasks WHERE kind='execute' AND status='运行中'")):
-                    db.execute('UPDATE tasks SET error=? WHERE id=?', ('等待同一仓库的执行任务结束', task_id))
+            if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='fix' AND status NOT IN ('已合入','已放弃')", (workspace.name,)).fetchone():
+                return
+            problems = self.unresolved(db, workspace.name)
+            if not problems:
+                return
+            batch = self.service.batch(db, workspace.name, problems[0]['batch'])
+            document = yaml.safe_load(self.service.latest_version(db, batch)['content'])
+            alias = workspace.aliases(document)[0]
+            task_id = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,created_at,attempt,error) "
+                "VALUES ('fix',?,'','排队中','未解决问题','','{}',?,0,'等待开始修复')", (workspace.name, now())).lastrowid
+            db.execute('INSERT INTO fix_tasks(task,repository,repo_alias) VALUES (?,?,?)', (task_id, str(workspace.repos[alias]), alias))
 
     def details(self, task):
         with self.store.connection() as db:
@@ -776,19 +715,19 @@ class Fixes:
                     attempt[field] = json.loads(attempt.pop(field + '_json'))
                 task['attempts'].append(attempt)
             task['merged_commits'] = [a['merged_commit'] for a in task['attempts'] if a['merged_commit']]
-            task['candidates'] = []
-            for row in db.execute('SELECT * FROM fix_candidates WHERE task=? ORDER BY attempt,validation,batch', (task['id'],)):
-                candidate = dict(row)
+            task['validations'] = []
+            for row in db.execute('SELECT * FROM fix_validations WHERE task=? ORDER BY attempt,validation,batch', (task['id'],)):
+                record = dict(row)
                 for field in ('results', 'evidence'):
-                    candidate[field] = json.loads(candidate.pop(field + '_json'))
-                task['candidates'].append(candidate)
+                    record[field] = json.loads(record.pop(field + '_json'))
+                task['validations'].append(record)
             task['jira'] = [dict(r) for r in db.execute('SELECT issue,comment,transition,reason FROM fix_jira WHERE task=? ORDER BY issue', (task['id'],))]
         task['attention'] = [p for p in task['problems'] if p['category'] not in ('', 'product')]
         return task
 
     def list(self, key):
         with self.store.connection() as db:
-            if not db.execute('SELECT 1 FROM projects WHERE key=?', (key,)).fetchone():
-                reject(404, 'project-not-found', 'project', '项目不存在')
-            ids = [r[0] for r in db.execute("SELECT id FROM tasks WHERE kind='fix' AND project=? ORDER BY id", (key,))] if key in self.service.writable_repos else []
+            if not db.execute('SELECT 1 FROM workspaces WHERE key=?', (key,)).fetchone():
+                reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+            ids = [r[0] for r in db.execute("SELECT id FROM tasks WHERE kind='fix' AND workspace=? ORDER BY id", (key,))]
         return dict(ok=True, tasks=[self.tasks.read(i) for i in ids])

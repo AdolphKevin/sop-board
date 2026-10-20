@@ -1,4 +1,4 @@
-"""任务的只读判断核对与草稿生成；不写项目仓库。"""
+"""任务的只读判断核对与草稿生成；不写工作区仓库。"""
 from copy import deepcopy
 from importlib.resources import files
 import json
@@ -20,15 +20,17 @@ def section(case):
 def schema_problems(value, schema=SCHEMA, path='$'):
     """校验随包模式用到的 JSON Schema 子集，服务端不依赖 Codex 自行核对。"""
     problems = []
-    kind = schema.get('type')
+    kinds = schema.get('type')
+    kinds = kinds if isinstance(kinds, list) else [kinds]
     valid = {'object': isinstance(value, dict), 'array': isinstance(value, list),
-             'string': isinstance(value, str), 'boolean': type(value) is bool}
-    if kind in valid and not valid[kind]:
-        label = {'object': 'JSON 对象', 'array': '数组', 'string': '字符串', 'boolean': '布尔值'}[kind]
+             'string': isinstance(value, str), 'boolean': type(value) is bool, 'null': value is None}
+    if not any(valid.get(kind, False) for kind in kinds):
+        labels = {'object': 'JSON 对象', 'array': '数组', 'string': '字符串', 'boolean': '布尔值', 'null': 'null'}
+        label = '或'.join(labels[kind] for kind in kinds)
         return [f'{path} 应为 {label}']
     if 'enum' in schema and value not in schema['enum']:
         problems.append(f'{path} 取值不在枚举内：{value}')
-    if kind == 'object':
+    if isinstance(value, dict):
         properties = schema.get('properties', {})
         problems += [f'{path} 缺少 {key}' for key in schema.get('required', []) if key not in value]
         for key, child in value.items():
@@ -37,10 +39,25 @@ def schema_problems(value, schema=SCHEMA, path='$'):
                 problems.append(f'{path}.{key} 格式外字段')
             elif isinstance(subschema, dict):
                 problems += schema_problems(child, subschema, f'{path}.{key}')
-    elif kind == 'array':
+    elif isinstance(value, list):
         for i, child in enumerate(value):
             problems += schema_problems(child, schema['items'], f'{path}[{i}]')
     return problems
+
+
+def normalize_judgment(result):
+    """严格输出已核对后，将可选 null 和固定形状的移动记录转为业务输入。"""
+    result = deepcopy(result)
+    for group in ('cases', 'nodes', 'scenarios', 'negative_exempt'):
+        result[group] = [{key: value for key, value in item.items() if value is not None}
+                         for item in result[group]]
+    moves = {}
+    for move in result['relocate']:
+        if move['scenario'] in moves:
+            raise ValueError('relocate 重复场景：' + move['scenario'])
+        moves[move['scenario']] = move['node']
+    result['relocate'] = moves
+    return result
 
 
 def judgment_problems(snapshot, result):
@@ -76,11 +93,6 @@ def judgment_problems(snapshot, result):
         if item['action'] == 'duplicate' and sid in old:
             if 'forbidden_effects' not in item or set(item['forbidden_effects']) != set(old[sid]['forbidden_effects']):
                 problems.append(f'{sid} forbidden_effects 必须完整且仅包含原有禁止副作用')
-            if 'transfer_regression' not in item:
-                problems.append(f'{sid} 缺少 transfer_regression 判断')
-            original_target = next((s for n in original.get('sops', []) for s in n['scenarios'] if s['id'] == item.get('target')), {})
-            if 'regression' in old[sid] and 'regression' not in original_target and not item.get('transfer_regression'):
-                problems.append(f'{sid} regression 不可丢失：应转移回归声明')
     problems += [f'{sid} 没有去向' for sid in sorted(old.keys() - seen)]
     for sid in old:
         if sid.startswith('TC_'):
@@ -124,30 +136,10 @@ def destinations(snapshot, result, problems):
 
 
 def assemble(snapshot, result):
-    """只用快照和判断组装；不让模型改写用例，所有核对通过后才返回原文。"""
-    problems = schema_problems(result)
-    if problems:
-        return None, dict(ok=False, problems=['输出模式：' + p for p in problems])
-    inferred_entries = None
-    if not snapshot.get('entries', {}).get('entries'):
-        if not snapshot.get('writable'):
-            return None, dict(ok=False, problems=['缺少入口声明：请随场景文件推送 entries'])
-        inferred_entries = result.get('entries')
-        entries = (inferred_entries or {}).get('entries', {})
-        if not entries:
-            problems.append('授权仓库缺少入口声明，entries 未提供推断的入口')
-        for name, entry in entries.items():
-            if not name.strip() or any(not entry[k].strip() for k in ('surface', 'operate', 'isolation')):
-                problems.append(f'推断入口 {name} 的名称或文字不能为空')
-            if any(not entry[k] or any(not v.strip() for v in entry[k]) for k in ('observe', 'evidence')):
-                problems.append(f'推断入口 {name} 的 observe 和 evidence 应为非空字符串数组')
-            if 'address_env' in entry and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', entry['address_env']):
-                problems.append(f'推断入口 {name} 的 address_env 应为环境变量名')
-        if problems:
-            return None, dict(ok=False, problems=problems)
-        snapshot = dict(snapshot, entries=inferred_entries)
-    elif 'entries' in result:
-        return None, dict(ok=False, problems=['已有入口声明时应省略 entries 推断字段'])
+    """使用入口已核对并规范化的判断；不让模型改写用例。"""
+    entries = snapshot['entries']['entries']
+    if not entries:
+        return None, dict(ok=False, problems=['工作区缺少入口声明，请先搭建适配'])
     problems = judgment_problems(snapshot, result)
     nodes, routes, positive = destinations(snapshot, result, problems)
     original = yaml.safe_load(snapshot['scenarios']) or {}
@@ -199,16 +191,12 @@ def assemble(snapshot, result):
                      forbidden_effects=deepcopy(snapshot['merged_forbidden_effects'].get(case['id'], [])))
         if scene['polarity'] == 'negative':
             scene['negative_type'] = decision['negative_type']
-        if 'regression' in original_scenarios.get(case['id'], {}):
-            scene['regression'] = deepcopy(original_scenarios[case['id']]['regression'])
         generated[case['id']] = scene
         groups[routes[section(case)]]['scenarios'].append(scene)
     for sid, item in dispositions.items():
         if item['action'] == 'duplicate':
             target = generated[item['target']]
             target['forbidden_effects'] = list(dict.fromkeys(target['forbidden_effects'] + item['forbidden_effects']))
-            if item['transfer_regression'] and 'regression' not in target and 'regression' in original_scenarios[sid]:
-                target['regression'] = deepcopy(original_scenarios[sid]['regression'])
 
     by_node = {n['id']: n for n in groups.values()}
     used_moves = set()
@@ -253,15 +241,14 @@ def assemble(snapshot, result):
                                  batch=snapshot['batch'], version=snapshot['upload'], owner=meta['owner'],
                                  sources=[source] + [s for s in old_sources if s != source]),
                     sops=list(groups.values()) + kept_nodes)
+    if 'repos' in original.get('metadata', {}):
+        document['metadata']['repos'] = original['metadata']['repos']
     raw = annotated_yaml(document, inferences)
     try:
         load_scenarios(raw, entries=set(entries))
     except APIError as error:
         return None, dict(ok=False, problems=error.problems)
-    if inferred_entries:
-        inferences.append(dict(id='entries', field='entries', content='入口声明由 Codex 推断：' + '、'.join(entries)))
-    return raw, dict(ok=True, problems=[], gaps=[], draft=True, notes=notes, inferences=inferences,
-                     inferred_entries=inferred_entries)
+    return raw, dict(ok=True, problems=[], gaps=[], notes=notes, inferences=inferences)
 
 
 def annotated_yaml(document, inferences):

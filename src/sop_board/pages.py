@@ -15,8 +15,8 @@ def text(value):
     return escape(str(value), quote=True)
 
 
-def batch_url(project, batch):
-    return f"/p/{quote(project, safe='')}/b/{quote(batch, safe='')}"
+def batch_url(workspace, batch):
+    return f"/w/{quote(workspace, safe='')}/b/{quote(batch, safe='')}"
 
 
 def time_tag(value, element_id=None):
@@ -28,8 +28,8 @@ def layout(title, content, jira_url="", watch=None, scripts=()):
     jira = f" data-jira-url='{text(jira_url)}'" if jira_url else ""
     polling = ""
     if watch:
-        project, name, etag = watch
-        api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}/state"
+        workspace, name, etag = watch
+        api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}/state"
         polling = f" data-state-url='{text(api)}' data-etag='{text(etag)}'"
         content = "<p id='refresh-message' class='notice' role='status' aria-live='polite' hidden></p>" + content
     extra_scripts = ''.join(f"<script src='{text(src)}' defer></script>" for src in scripts)
@@ -42,16 +42,48 @@ def layout(title, content, jira_url="", watch=None, scripts=()):
             f"<main{jira}{polling}>{content}</main></body></html>")
 
 
-def home(data, *, local=False):
-    projects = []
-    for project in data["projects"]:
-        batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
-                          f"{text(batch['name'])}</a> · <span data-agent-state=''>{agent_state(batch)}</span></li>" for batch in project["batches"])
-        projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
-                        f"<p>{'可写' if project.get('writable') else '只读'}</p><ul>{batches}</ul>" +
-                        ''.join(f"<p><a href='/p/{text(project['key'])}/fixes?task={t['id']}'>修复任务 #{t['id']}</a> · {text(t['status'])} · {text(t['error'])}</p>" for t in project.get('fix_tasks', [])) + '</section>')
-    return layout("项目与批次", automation_controls(data, local=local) + "<h1>项目与批次</h1>" +
-                  ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>") + identity_bar())
+def environment_panel(data, local):
+    if data is None:
+        return ''
+    content = ("<section id='environment-panel' data-environment-url='/api/v1/environment'>"
+               "<h2>环境</h2><p id='environment-state'>环境" + text(data['status']) + '</p>' +
+               "<p id='environment-check-state'>" + ('最近自检通过' if data['check_passed'] else '尚未通过自检') +
+               (' · ' + text(data['checked_at']) if data['checked_at'] else '') + '</p>' +
+               "<p id='environment-ports'>环境端口：" + text('、'.join(map(str, data['ports'])) or '未声明') + '</p>')
+    instructions = data['setup_instructions']
+    hidden = '' if instructions else ' hidden'
+    content += (f"<div id='environment-setup'{hidden}>" +
+                ''.join('<p>' + text(line) + '</p>' for line in instructions) + '</div>')
+    if local:
+        content += ''.join('<p>' + text(p['field'] + '：' + p['problem']) + '</p>' for p in data.get('problems', []))
+        content += ("<button type='button' data-environment-action='/api/v1/environment/check'>自检</button> "
+                    "<button type='button' data-environment-action='/api/v1/environment/restart'>重启环境</button>"
+                    "<p id='environment-message' role='status'></p><h3>最近 50 行环境日志</h3><pre id='environment-log'>" +
+                    text('\n'.join(data.get('log_lines', []))) + '</pre>')
+        record = data.get('latest_check')
+        if record:
+            content += "<ol id='environment-check-steps'>" + ''.join('<li>' + text(step['name'] + '：' + step['status'] + ' · ' + step['message']) + '</li>' for step in record['steps']) + '</ol>'
+        if not record:
+            content += "<ol id='environment-check-steps'></ol>"
+        for alias, repo in data.get('state', {}).get('repositories', {}).items():
+            content += '<p>' + text(alias + '：' + repo['directory'] + ' · ' + repo['commit']) + '</p>'
+    return content + '</section>'
+
+
+def home(data, *, environment=None, local=False):
+    cards = []
+    for workspace in data['workspaces']:
+        batches = ''.join(f"<li><a href='{text(batch_url(workspace['key'], batch['name']))}'>{text(batch['name'])}</a> · {agent_state(batch)}</li>" for batch in workspace['batches'])
+        repositories = ''.join(f"<p>{text(repo['alias'])}：{text(repo['identity'])}</p>" for repo in workspace['repositories'])
+        cards.append(f"<section><h2>{text(workspace['name'])}</h2>{repositories}<ul>{batches}</ul>" +
+            ''.join(f"<p><a href='/w/{text(workspace['key'])}/fixes?task={t['id']}'>修复任务 #{t['id']}</a> · {text(t['status'])}</p>" for t in workspace['fix_tasks']) +
+            f"<form id='cases-upload' data-workspace-key='{text(workspace['key'])}'>"
+            "<h3>上传批次用例</h3><label>批次名称<input name='batch' required></label>"
+            "<label>用例文件<input type='file' name='file' accept='.yaml,.yml' required></label>"
+            "<button type='submit'>上传用例</button><p data-cases-message='' role='status'></p>"
+            "<ul data-cases-problems=''></ul></form></section>")
+    return layout('工作区与批次', environment_panel(environment, local) + automation_controls(data, local=local) +
+                  '<h1>工作区与批次</h1>' + identity_bar() + ''.join(cards))
 
 
 def ratio(value):
@@ -93,42 +125,42 @@ def automation_controls(data, *, local=False):
 def execution_list(data):
     if not data.get('execution_tasks'):
         return ''
-    rows = ''.join(f"<tr><th>#{t['id']}</th><td>{'执行' if t['kind'] == 'execute' else '检查'}</td>"
+    rows = ''.join(f"<tr><th>#{t['id']}</th><td>执行</td>"
         f"<td>{text(t['trigger'])}</td><td>{len(t['scope'])}</td><td>{text(t['status'])}</td>"
         f"<td>{time_tag(t['started_at']) if t['started_at'] else ''}</td>"
         f"<td>{time_tag(t['finished_at']) if t['finished_at'] else ''}</td>"
-        f"<td>{text(t['void_reason'] or t['error'])}</td><td>{text('、'.join('第 '+str(n)+' 轮' for n in t['rounds']))}</td></tr>"
+        f"<td>{text(t['void_reason'] or t['error'])}</td><td>{t['reused_count']}</td><td>{text('、'.join('第 '+str(n)+' 轮' for n in t['rounds']))}</td></tr>"
         for t in data['execution_tasks'])
     return ('<section><h2>执行任务</h2><div class="table-scroll"><table><thead><tr><th>编号</th><th>种类</th>'
-        '<th>触发原因</th><th>范围条数</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>原因</th><th>轮次</th>'
+        '<th>触发原因</th><th>范围条数</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>原因</th><th>沿用</th><th>轮次</th>'
         '</tr></thead><tbody>' + rows + '</tbody></table></div></section>')
 
 
-def batch(project, data, *, local=False):
-    base = batch_url(project, data["name"])
-    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
-    workspace = f"<p>{'可写' if data.get('writable') else '只读'}</p>"
+def batch(workspace, data, *, environment=None, local=False):
+    base = batch_url(workspace, data["name"])
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(data['name'], safe='')}"
+    workspace_info = "<p>" + ("工作区已搭建" if data.get("configured") else "尚未搭建") + "</p>"
     if data.get('entry_problems'):
-        workspace += '<section><h2>入口声明不合格</h2>' + ''.join(
+        workspace_info += '<section><h2>入口声明不合格</h2>' + ''.join(
             f"<p>{text(p['problem'])}</p>" for p in data['entry_problems']) + '</section>'
     if data.get("workspace_problems"):
-        workspace += "<section><h2>工作区场景文件不合格</h2>" + "".join(
+        workspace_info += "<section><h2>工作区场景文件不合格</h2>" + "".join(
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
             for p in data["workspace_problems"]) + "</section>"
-    report_link = workspace + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
-    if local and data.get('writable'):
-        report_link += (f"<p><button type='button' data-developer-action='{text(api)}/executions'>执行待执行场景</button> "
-                        f"<button type='button' data-developer-action='{text(api)}/checks'>运行回归检查</button></p>")
+    report_link = environment_panel(environment, local) + workspace_info + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
+    if local:
+        disabled = '' if data.get('enabled') else ' disabled'
+        report_link += f"<p><button type='button' data-requires-ready='' data-developer-action='{text(api)}/executions'{disabled}>执行待执行场景</button></p>"
     report_link += automation_controls(data, local=local) + identity_bar()
     if data.get('fix_statistics', {}).get('tasks'):
         from .reports import FIX_METRICS
         report_link += '<section><h2>自动修复统计</h2>' + ''.join(
             f"<p>{label}：{data['fix_statistics'][key]}</p>" for key, label in FIX_METRICS) + '</section>'
     if data["version"] is None:
-        return layout("批次 " + data["name"], batch_nav(project, data["name"], "overview") +
+        return layout("批次 " + data["name"], batch_nav(workspace, data["name"], "overview") +
                       f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"
                       f"<p id='agent-state'>{agent_state(data)}</p>{report_link}"
-                      f"<a href='{text(base + '/cases')}'>用例页</a>", watch=(project, data["name"], data["etag"]))
+                      f"<a href='{text(base + '/cases')}'>用例页</a>", watch=(workspace, data["name"], data["etag"]))
     metrics = "".join(f"<div id='metric-{key}'><dt>{label}</dt><dd>{ratio(data['statistics'][key])}</dd></div>"
                       for key, label in [("agent_pass_rate", "Agent 验收通过率"), ("manual_pass_rate", "人工复测通过率"),
                       ("retest_coverage", "复测覆盖率"), ("first_pass_rate", "一次通过率"),
@@ -148,8 +180,8 @@ def batch(project, data, *, local=False):
                        f"<td><a href='{text(item['defect_url'])}'>{text(item['defect_url'])}</a></td>"
                        f"<td>{text(item['agent_executor'])}</td><td>{text(item['marker'])}</td></tr>"
                        for item in data["misjudgments"])
-    content = (f"<nav><a href='/'>全部项目</a></nav>{batch_nav(project, data['name'], 'overview')}<h1>批次 {text(data['name'])}</h1>"
-               f"<p>场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条</p>"
+    content = (f"<nav><a href='/'>全部工作区</a></nav>{batch_nav(workspace, data['name'], 'overview')}<h1>批次 {text(data['name'])}</h1>"
+               f"<p>场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条 · 沿用 {data['reused_count']} 条</p>"
                f"<p id='agent-state'>{agent_state(data)}</p>{report_link}"
                f"<p>场景文件推送时间：{time_tag(data['pushed_at'], 'pushed-at')}</p>"
                f"<dl class='metrics'>{metrics}</dl><div class='queues'>{''.join(queues)}</div>"
@@ -159,7 +191,7 @@ def batch(project, data, *, local=False):
                f"<section id='misjudgments'><h2>误判明细 <span id='misjudgment-count'>{len(data['misjudgments'])}</span></h2>"
                "<div class='table-scroll'><table><thead><tr><th>场景</th><th>缺陷链接</th><th>Agent 执行者</th><th>标记人</th></tr></thead>"
                f"<tbody>{findings}</tbody></table></div></section>")
-    return layout("批次 " + data["name"], content, watch=(project, data["name"], data["etag"]))
+    return layout("批次 " + data["name"], content, watch=(workspace, data["name"], data["etag"]))
 
 
 STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
@@ -189,7 +221,7 @@ def evidence_preview(evidence):
 
 
 def scenario(data, jira_url=""):
-    base = batch_url(data["project"], data["batch"])
+    base = batch_url(data["workspace"], data["batch"])
     titles = {}
     for source in data.get('sop_sources', []):
         _, headings = render_sop(source['content'], source['path'])
@@ -205,8 +237,8 @@ def scenario(data, jira_url=""):
         refs = ''.join('<li>' + (f'<a href="{text(titles[ref])}">{text(ref)}</a>' if ref in titles else text(ref)) + '</li>'
                        for ref in group['body'].get('refs', []))
         fields.append('<h3>来源引用</h3>' + ('<ul>' + refs + '</ul>' if refs else '<p>未声明</p>'))
-        fields.append(fix_badges(data['project'], group['fix_tasks']))
-        fields.append(''.join(f"<p><a href='/p/{text(data['project'])}/fixes?task={t['id']}'>所属修复任务 #{t['id']}</a></p>" for t in group['fix_tasks']))
+        fields.append(fix_badges(data['workspace'], group['fix_tasks']))
+        fields.append(''.join(f"<p><a href='/w/{text(data['workspace'])}/fixes?task={t['id']}'>所属修复任务 #{t['id']}</a></p>" for t in group['fix_tasks']))
         results = []
         for result in group["results"]:
             kind = "Agent" if result["kind"] == "agent" else "人工"
@@ -230,12 +262,12 @@ def scenario(data, jira_url=""):
     removed = "<p class='notice'>已从场景文件移除</p>" if not data["current"] else ""
     summary = data.get("summary")
     review = (f"<article class='scenario-card' data-scenario='{text(data['scenario'])}'>"
-              f"{scenario_summary(summary)}{review_controls(data['project'], data['batch'], data)}</article>" if data["current"] else "")
-    body = (f"<nav><a href='{text(base)}'>返回批次总览</a></nav>{batch_nav(data['project'], data['batch'], 'scenarios')}<h1>{text(data['scenario'])} · {text(data['title'])}</h1>"
+              f"{scenario_summary(summary)}{review_controls(data['workspace'], data['batch'], data)}</article>" if data["current"] else "")
+    body = (f"<nav><a href='{text(base)}'>返回批次总览</a></nav>{batch_nav(data['workspace'], data['batch'], 'scenarios')}<h1>{text(data['scenario'])} · {text(data['title'])}</h1>"
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
             f"<p>验证入口：{text(data['verify'])}</p>"
             f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}{review}{''.join(sections)}")
-    return layout(data["scenario"], body, jira_url, watch=(data["project"], data["batch"], data["etag"]))
+    return layout(data["scenario"], body, jira_url, watch=(data["workspace"], data["batch"], data["etag"]))
 
 
 def identity_bar():
@@ -245,8 +277,8 @@ def identity_bar():
             "<p id='identity-message' role='status' aria-live='polite'></p></section>")
 
 
-def review_controls(project, name, item):
-    action = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}/marks"
+def review_controls(workspace, name, item):
+    action = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}/marks"
     buttons = "".join(f"<button type='button' data-mark-status='{value}' aria-expanded='false'>{label}</button>"
                       for value, label in [("pass", "通过"), ("fail", "失败"), ("blocked", "受阻")])
     return (f"<form class='review-form' action='{text(action)}' method='post' novalidate>"
@@ -265,8 +297,8 @@ FILTERS = [("all", "全部"), ("unreviewed", "未人工复核"), ("agent-pass", 
            ("fail", "不通过"), ("blocked", "受阻")]
 
 
-def batch_nav(project, name, current):
-    base = batch_url(project, name)
+def batch_nav(workspace, name, current):
+    base = batch_url(workspace, name)
     return "<nav aria-label='批次导航'>" + "".join(
         f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
         for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
@@ -296,9 +328,9 @@ def sop_diff(before, after):
             '<th>变化</th><th>内容</th></tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div>')
 
 
-def sop(project, name, sources, query=None):
+def sop(workspace, name, sources, query=None):
     query = query or {}
-    content = batch_nav(project, name, 'sop') + f'<h1>批次 {text(name)} · SOP</h1>'
+    content = batch_nav(workspace, name, 'sop') + f'<h1>批次 {text(name)} · SOP</h1>'
     if not sources:
         content += '<p>尚无 SOP 原文</p>'
     for path, versions in sources.items():
@@ -313,7 +345,7 @@ def sop(project, name, sources, query=None):
                         f'<td>{text(version["confirmed_by"])}</td><td>{time_tag(version["recorded_at"])}</td></tr>')
         content += '</tbody></table></div>'
         if len(versions) > 1:
-            content += (f'<form method="get" action="{text(batch_url(project, name) + "/sop")}">' +
+            content += (f'<form method="get" action="{text(batch_url(workspace, name) + "/sop")}">' +
                         f'<input type="hidden" name="path" value="{text(path)}">')
             for key, label, default in [('from', '旧版本', versions[1]['version']), ('to', '新版本', versions[0]['version'])]:
                 selected = query.get(key, str(default)) if query.get('path') == path else str(default)
@@ -334,7 +366,7 @@ def sop(project, name, sources, query=None):
     return layout('SOP · ' + name, content, scripts=('/assets/vendor/mermaid/mermaid.min.js', '/assets/sop.js'))
 
 
-def progress(project, data, coverage):
+def progress(workspace, data, coverage):
     def metric(key, label, value):
         return f"<div id='metric-{key}'><dt>{label}</dt><dd>{value}</dd></div>"
 
@@ -345,17 +377,17 @@ def progress(project, data, coverage):
     for key, label in [("reviewed_progress", "已复核进度"), ("manual_pass_rate", "人工复测通过率")]:
         testing += metric(key, label, ratio(data["statistics"][key]))
     testing += metric("misjudgments", "误判", len(data["misjudgments"]))
-    content = (batch_nav(project, data["name"], "progress") + f"<h1>批次 {text(data['name'])} · 进度</h1>"
+    content = (batch_nav(workspace, data["name"], "progress") + f"<h1>批次 {text(data['name'])} · 进度</h1>"
                f"<div class='progress-columns'><section><h2>开发侧</h2><dl>{development}</dl></section>"
                f"<section><h2>测试侧</h2><dl>{testing}</dl></section></div>"
                f"<dl>{metric('coverage', '用例覆盖', ratio(coverage))}</dl>")
-    return layout("进度 · " + data["name"], content, watch=(project, data["name"], data["etag"]))
+    return layout("进度 · " + data["name"], content, watch=(workspace, data["name"], data["etag"]))
 
 
-def cases(project, name, data, scenarios):
-    base = batch_url(project, name)
-    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}"
-    content = (batch_nav(project, name, "cases") + f"<h1>批次 {text(name)} · 用例</h1>" + identity_bar() +
+def cases(workspace, name, data, scenarios):
+    base = batch_url(workspace, name)
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
+    content = (batch_nav(workspace, name, "cases") + f"<h1>批次 {text(name)} · 用例</h1>" + identity_bar() +
                f"<form id='cases-upload' action='{text(api + '/cases')}' method='post' novalidate>"
                "<label>选择用例 YAML 文件<input name='file' type='file' accept='.yaml,.yml,text/yaml'></label>"
                "<button type='submit'>上传用例</button><p data-cases-message='' role='status' aria-live='polite'></p>"
@@ -388,7 +420,7 @@ def cases(project, name, data, scenarios):
         content += "</section>"
     if not groups:
         content += "<p>尚无用例，请选择文件上传。</p>"
-    return layout("用例 · " + name, content, watch=(project, name, data["etag"]))
+    return layout("用例 · " + name, content, watch=(workspace, name, data["etag"]))
 
 
 def scenario_fields(body):
@@ -397,9 +429,6 @@ def scenario_fields(body):
                        ("forbidden_effects", "禁止产生的影响"), ("refs", "来源引用")]:
         values = "".join(f"<li>{text(v)}</li>" for v in body.get(key, []))
         parts.append(f"<h3>{label}</h3><ul>{values}</ul>" if values else f"<h3>{label}</h3><p>未声明</p>")
-    regression = body.get("regression")
-    parts.append("<h3>回归声明</h3><pre>" + text(json.dumps(regression, ensure_ascii=False, indent=2)) + "</pre>"
-                 if regression else "<h3>回归声明</h3><p>未声明</p>")
     return "".join(parts)
 
 
@@ -419,18 +448,18 @@ def scenario_summary(item):
             f"<p data-queue=''>所在队列：{QUEUE[item['queue']]}</p>")
 
 
-def fix_badges(project, tasks):
-    return ''.join(f"<p><a href='/p/{text(project)}/fixes?task={t['id']}'>{'待开发者处理' if t['category'] not in ('', 'product') or t['status'] == '待开发者处理' else '修复中'} #{t['id']}</a></p>"
+def fix_badges(workspace, tasks):
+    return ''.join(f"<p><a href='/w/{text(workspace)}/fixes?task={t['id']}'>{'待开发者处理' if t['category'] not in ('', 'product') or t['status'] == '待开发者处理' else '修复中'} #{t['id']}</a></p>"
         for t in tasks if t['status'] not in ('已合入', '已放弃'))
 
 
-def scenarios(project, name, data, jira_url=""):
-    base = batch_url(project, name)
+def scenarios(workspace, name, data, jira_url=""):
+    base = batch_url(workspace, name)
     by_id = {item["scenario"]: item for item in data["scenarios"]}
-    content = batch_nav(project, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
+    content = batch_nav(workspace, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
     if not data["has_version"]:
         content += f"<p>尚无场景，测试岗上传用例后由合并生成</p><a href='{text(base + '/cases')}'>用例页</a>"
-        return layout("SOP 场景 · " + name, content, watch=(project, name, data["etag"]))
+        return layout("SOP 场景 · " + name, content, watch=(workspace, name, data["etag"]))
     content += identity_bar()
     content += "<nav aria-label='场景筛选'>" + "".join(
         f"<a href='?filter={key}' data-filter='{key}'>{label} <span>{data['filters'][key]}</span></a>"
@@ -440,21 +469,20 @@ def scenarios(project, name, data, jira_url=""):
                     f"<p>角色：{text(node['actor'])} · 入口：{text(node['entry'])}</p>")
         for source in node["scenarios"]:
             item = by_id[source["id"]]
-            regression = {'passed': '检查通过', 'failed': '检查失败', 'pending': '检查待运行'}.get(item.get('regression_status'), '')
             content += (f"<article class='scenario-card' data-scenario='{text(source['id'])}' "
                         f"data-status='{text(item['status'] or '')}' data-agent-pass='{str(bool(item['latest_agent'] and item['latest_agent']['status'] == 'pass')).lower()}' "
                         f"data-unreviewed='{str(item['latest_manual'] is None).lower()}'>"
                         f"<h3><a href='{text(base + '/s/' + quote(source['id'], safe=''))}'>{text(source['id'])}</a> · {text(source['title'])}</h3>"
                         f"<p>{'正向' if source['polarity'] == 'positive' else '反向'} · 优先级：{text(source['priority'])} · 角色：{text(source['actor'])} · 验证入口：{text(source['verify'])}</p>"
-                        f"<p>{regression}</p>{fix_badges(project, item['fix_tasks'])}{scenario_fields(source)}{scenario_summary(item)}{review_controls(project, name, item)}</article>")
+                        f"{fix_badges(workspace, item['fix_tasks'])}{scenario_fields(source)}{scenario_summary(item)}{review_controls(workspace, name, item)}</article>")
         content += "</section>"
-    return layout("SOP 场景 · " + name, content, jira_url, watch=(project, name, data["etag"]))
+    return layout("SOP 场景 · " + name, content, jira_url, watch=(workspace, name, data["etag"]))
 
 
-def merges(project, name, tasks, selected=None, *, local=False):
-    api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}"
-    content = (batch_nav(project, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" + identity_bar() +
-               "<p>未授权项目保存草稿；授权项目核对磁盘版本后写入工作区。待同步时请核对工作区的修改。</p>" +
+def merges(workspace, name, tasks, selected=None, *, local=False):
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
+    content = (batch_nav(workspace, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" + identity_bar() +
+               "<p>合并结果写入配置的场景目录。待同步时请核对工作区的修改或配置变化。</p>" +
                (f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" if local else "") +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
     current = next((t for t in tasks if str(t['id']) == selected), tasks[-1] if tasks else None)
@@ -497,7 +525,7 @@ def merges(project, name, tasks, selected=None, *, local=False):
     return layout('任务', content)
 
 
-def fixes(project, tasks, selected=None, *, local=False):
+def fixes(workspace, tasks, selected=None, *, local=False):
     content = ("<h1>修复任务</h1>" + identity_bar() +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
     if not tasks:

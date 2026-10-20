@@ -28,12 +28,12 @@ def markdown(data, generated_at):
     version = data["version"]
     summary = data["summary"]
     scenarios = {item["scenario"]: item for item in summary["scenarios"]}
-    project = data["project"]
+    workspace = data["workspace"]
     sections = ["# 验收报告\n\n## 头部\n\n" + "\n".join("- " + label + "：" + cell(value) for label, value in [
-        ("项目", f"{project['name']}（{project['identity']}）"), ("批次", data["batch"]["name"]),
+        ("工作区", workspace["name"]), ("仓库", "、".join(r["alias"] + "：" + r["identity"] for r in workspace["repositories"])), ("批次", data["batch"]["name"]),
         ("场景版本", version["version"] if version else "无"), ("推送提交号", version["commit_id"] if version else "无"),
         ("用例并集的最新上传序号", data["latest_upload"] or "无"),
-        ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("生成时间", generated_at)])]
+        ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("沿用场景", summary["reused_count"]), ("生成时间", generated_at)])]
     matched, unmatched = [], []
     for case in data["cases"]:
         item = scenarios.get(case["id"])

@@ -16,7 +16,10 @@
             "type": "string"
           },
           "negative_type": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "enum": [
               "empty-input",
               "over-length",
@@ -33,11 +36,15 @@
               "interrupted",
               "stale-input",
               "tampered-input",
-              "other"
+              "other",
+              null
             ]
           },
           "initial_state": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "string"
             }
@@ -46,7 +53,9 @@
         "required": [
           "id",
           "actor",
-          "verify"
+          "verify",
+          "negative_type",
+          "initial_state"
         ],
         "additionalProperties": false
       }
@@ -66,13 +75,17 @@
             "type": "string"
           },
           "merge_into": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "section",
           "actor",
-          "entry"
+          "entry",
+          "merge_into"
         ],
         "additionalProperties": false
       }
@@ -94,24 +107,33 @@
             ]
           },
           "target": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "forbidden_effects": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "string"
             }
-          },
-          "transfer_regression": {
-            "type": "boolean"
           }
         },
         "required": [
           "id",
-          "action"
+          "action",
+          "target",
+          "reason",
+          "forbidden_effects"
         ],
         "additionalProperties": false
       }
@@ -128,12 +150,16 @@
             "type": "string"
           },
           "inferred": {
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [
           "section",
-          "reason"
+          "reason",
+          "inferred"
         ],
         "additionalProperties": false
       }
@@ -151,59 +177,23 @@
       }
     },
     "relocate": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "string"
-      }
-    },
-    "entries": {
-      "type": "object",
-      "properties": {
-        "entries": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "surface": {
-                "type": "string"
-              },
-              "operate": {
-                "type": "string"
-              },
-              "isolation": {
-                "type": "string"
-              },
-              "address_env": {
-                "type": "string"
-              },
-              "observe": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "evidence": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "surface",
-              "operate",
-              "observe",
-              "evidence",
-              "isolation"
-            ],
-            "additionalProperties": false
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scenario": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
           }
-        }
-      },
-      "required": [
-        "entries"
-      ],
-      "additionalProperties": false
+        },
+        "required": [
+          "scenario",
+          "node"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [

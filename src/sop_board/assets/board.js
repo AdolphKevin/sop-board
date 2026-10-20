@@ -64,6 +64,18 @@
       });
     };
     hydrateJira(document);
+    document.querySelectorAll("[data-environment-action]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const message = document.getElementById("environment-message");
+        button.disabled = true;
+        try {
+          const response = await fetch(button.dataset.environmentAction, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+          const data = await response.json();
+          message.textContent = data.ok ? (data.checking ? "自检已开始" : "环境" + data.status) : (data.problems || []).map(p => p.problem).join("；");
+        } catch {message.textContent = "请求失败，请查看环境状态后重试。";}
+        finally {button.disabled = false;}
+      });
+    });
     const identity = document.getElementById("review-identity");
     if (!identity) return;
     const marker = identity.querySelector("[name='marker']");
@@ -175,7 +187,13 @@
         saveIdentity();
         try {
           const content = await file.text();
-          const response = await fetch(uploadForm.action, {method: "POST",
+          const batch = uploadForm.elements.namedItem("batch")?.value.trim();
+          if (uploadForm.dataset.workspaceKey && !batch) {
+            show(message, "请填写批次名称", "error");
+            return;
+          }
+          const target = uploadForm.dataset.workspaceKey ? "/api/v1/workspaces/" + encodeURIComponent(uploadForm.dataset.workspaceKey) + "/batches/" + encodeURIComponent(batch) + "/cases" : uploadForm.action;
+          const response = await fetch(target, {method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify({filename: file.name, content, uploaded_by: marker.value.trim()})});
           const data = await response.json();
@@ -348,5 +366,35 @@
     } catch {
       // Transient network failures leave the page usable; the next poll retries.
     } finally {polling = false;}
+  }, 3000);
+  setInterval(async () => {
+    const panel = document.getElementById("environment-panel");
+    if (!panel) return;
+    try {
+      const response = await fetch(panel.dataset.environmentUrl, {cache: "no-store"});
+      const data = await response.json();
+      document.getElementById("environment-state").textContent = "环境" + data.status;
+      document.getElementById("environment-ports").textContent = "环境端口：" + (data.ports.join("、") || "未声明");
+      document.getElementById("environment-check-state").textContent = data.checking ? "自检中" : (data.check_passed ? "最近自检通过" : "尚未通过自检") + (data.checked_at ? " · " + data.checked_at : "");
+      const setup = document.getElementById("environment-setup");
+      setup.replaceChildren(...data.setup_instructions.map(instruction => {
+        const line = document.createElement("p");
+        line.textContent = instruction;
+        return line;
+      }));
+      setup.hidden = data.setup_instructions.length === 0;
+      const steps = document.getElementById("environment-check-steps");
+      if (steps && data.latest_check) {
+        steps.replaceChildren();
+        for (const step of data.latest_check.steps) {
+          const line = document.createElement("li");
+          line.textContent = step.name + "：" + step.status + " · " + step.message;
+          steps.appendChild(line);
+        }
+      }
+      const log = document.getElementById("environment-log");
+      if (log) log.textContent = (data.log_lines || []).join("\n");
+      document.querySelectorAll("[data-requires-ready]").forEach(button => {button.disabled = !data.enabled;});
+    } catch { /* Preserve the last visible state while reconnecting. */ }
   }, 3000);
 })();

@@ -67,7 +67,8 @@ class Handler(BaseHTTPRequestHandler):
             if method in ("POST", "PUT"):
                 developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel|approve)", path) or
                                  re.fullmatch(r"/api/v1/automation/(pause|resume)", path) or
-                                 re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/(merges|checks|executions)", path))
+                                 re.fullmatch(r"/api/v1/environment/(check|restart)", path) or
+                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/(merges|executions)", path))
                 if developer and not local:
                     reject(403, "local-only", "client", "此操作仅限本机")
                 origin = self.headers.get("Origin")
@@ -96,93 +97,105 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, UnicodeError):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
-                self.respond(200, pages.home(service.projects(), local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.home(service.workspaces(), environment=service.environment.public(local), local=local).encode(), "text/html; charset=utf-8")
                 return
-            if method == 'GET' and (match := re.fullmatch(r'/p/([^/]+)/fixes', path)):
+            if method == 'GET' and (match := re.fullmatch(r'/w/([^/]+)/fixes', path)):
                 key = unquote(match[1])
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
                 self.respond(200, pages.fixes(key, self.server.tasks.fixes.list(key)['tasks'], selected, local=local).encode(), 'text/html; charset=utf-8')
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.batch(key, service.read_batch(key, batch), local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.batch(key, service.read_batch(key, batch), environment=service.environment.public(local), local=local).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/scenarios", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/scenarios", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True), service.jira_url).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/cases", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 data = service.read_cases(key, batch, include_state=True)
                 scenarios = service.read_batch(key, batch, scenarios=True)["scenarios"]
                 self.respond(200, pages.cases(key, batch, data, scenarios).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/merges", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/merges", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 service.read_batch(key, batch)
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
                 self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], selected, local=local).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/sop", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/sop", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-src 'none'"
                 query = {key: values[0] for key, values in parse_qs(urlsplit(self.path).query).items()}
                 self.respond(200, pages.sop(key, batch, service.read_sop(key, batch), query).encode(), "text/html; charset=utf-8",
                              [('Content-Security-Policy', policy)])
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/progress", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/progress", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 data = service.read_batch(key, batch)
                 coverage = service.read_cases(key, batch)["coverage"]
                 self.respond(200, pages.progress(key, data, coverage).encode(), "text/html; charset=utf-8")
                 return
-            if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
                 self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario), service.jira_url).encode(), "text/html; charset=utf-8")
                 return
-            if method == "POST" and (match := re.fullmatch(r"/api/v1/automation/(pause|resume)", path)):
+            if method == 'GET' and path == '/api/v1/environment':
+                result = dict(ok=True, **service.environment.public(local))
+            elif method == 'POST' and path in ('/api/v1/environment/check', '/api/v1/environment/restart'):
+                try:
+                    if path.endswith('/check'):
+                        service.environment.start_check()
+                    else:
+                        service.environment.restart()
+                except ValueError as error:
+                    reject(409, 'environment-unavailable', 'environment', str(error))
+                result = dict(ok=True, **service.environment.public(local))
+            elif method == 'GET' and path == '/api/v1/guide':
+                self.respond(200, files('sop_board').joinpath('guide.md').read_bytes(), 'text/plain; charset=utf-8')
+                return
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/automation/(pause|resume)", path)):
                 result = service.set_automation_paused(match[1] == 'pause')
             elif method == "GET" and path == "/api/v1/tasks":
                 query = parse_qs(urlsplit(self.path).query)
-                result = self.server.tasks.list(query.get('project', [None])[0], query.get('batch', [None])[0])
+                result = self.server.tasks.list(query.get('workspace', [None])[0], query.get('batch', [None])[0])
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)", path)):
                 result = dict(ok=True, task=self.server.tasks.read(int(match[1])))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/files/(.+)", path)):
                 raw = self.server.tasks.file(int(match[1]), unquote(match[2]))
                 self.respond(200, raw, "application/octet-stream", [("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges/([0-9]+)/(scenario-file|pairs\.json)", path)):
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges/([0-9]+)/(scenario-file|pairs\.json)", path)):
                 raw = self.server.tasks.merge_result(unquote(match[1]), unquote(match[2]), int(match[3]))
                 if match[4] == 'pairs.json':
                     raw = self.server.tasks.file(int(match[3]), 'pairs.json')
                 self.respond(200, raw, 'application/json; charset=utf-8' if match[4] == 'pairs.json' else 'text/yaml; charset=utf-8')
                 return
-            elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/merges", path)):
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
-            elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/checks", path)):
-                result = self.server.tasks.enqueue_check(unquote(match[1]), unquote(match[2]))
-            elif method == "POST" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/executions", path)):
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/executions", path)):
                 result = self.server.tasks.enqueue_execution(unquote(match[1]), unquote(match[2]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/(retry|cancel)", path)):
                 result = self.server.tasks.action(int(match[1]), match[2])
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/approve", path)):
                 result = self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', body.get('note', '')) if isinstance(body, dict) else self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', None)
-            elif method == "GET" and path == "/api/v1/projects":
-                result = service.projects()
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/entries", path)):
+            elif method == "GET" and path == "/api/v1/workspaces":
+                result = service.workspaces()
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/entries", path)):
                 result = service.entries(unquote(match[1]))
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/fixes", path)):
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/fixes", path)):
                 result = self.server.tasks.fixes.list(unquote(match[1]))
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/attention", path)):
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/attention", path)):
                 result = self.server.tasks.fixes.attention(unquote(match[1]), 'http://' + self.headers.get('Host', 'localhost'))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/jira/([^/]+)", path)):
                 result = self.server.jira.summary(unquote(match[1]))
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):
+            elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):
                 key, batch, number = unquote(match[1]), unquote(match[2]), int(match[3])
                 self.respond(200, service.export_round(key, batch, number), "application/zip",
                              [("Content-Disposition", f"attachment; filename=round-{number}.zip")])
                 return
-            elif method == "PUT" and (match := re.fullmatch(r"/api/v1/projects/([^/]+)", path)):
+            elif method == "PUT" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)", path)):
                 result = service.settings(unquote(match[1]), body)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/evidence/([^/]+)", path)):
                 raw, name = service.evidence(unquote(match[1]))
@@ -193,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
                               ("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
-            elif match := re.fullmatch(r"/api/v1/projects/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
+            elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]
                 if method == "PUT" and action == "scenario-file" and number is None:
                     result = service.push(key, batch, body)

@@ -1,4 +1,4 @@
-"""按 Jira 配置和项目的既有前缀核对新登记的缺陷链接。"""
+"""按 Jira 配置和工作区的既有前缀核对新登记的缺陷链接。"""
 
 import re
 
@@ -19,7 +19,7 @@ def normalize(value, jira_url, prefix):
     if prefix and value.casefold().startswith(prefix.casefold()):
         return value
     if not jira_url and not prefix:
-        message = "请先设置项目的缺陷链接前缀或配置 JIRA_URL；缺陷单号需填写完整链接"
+        message = "请先设置工作区的缺陷链接前缀或配置 JIRA_URL；缺陷单号需填写完整链接"
     else:
         accepted = []
         if jira_url:

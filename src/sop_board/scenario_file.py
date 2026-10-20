@@ -98,7 +98,7 @@ def load_scenarios(raw, entries=None, check_entry_references=True):
 
     if shape(value, (), {"metadata", "sops"}):
         meta = value.get("metadata")
-        if shape(meta, ("metadata",), {"requirement", "batch", "version", "owner", "sources"}, {"tags"}):
+        if shape(meta, ("metadata",), {"requirement", "batch", "version", "owner", "sources"}, {"tags", "repos"}):
             for key in ("requirement", "batch", "owner"):
                 text(meta.get(key), ("metadata", key))
             if type(meta.get("version")) not in (int, float):
@@ -109,6 +109,8 @@ def load_scenarios(raw, entries=None, check_entry_references=True):
                     for key in ("ref", "version", "confirmed_by"):
                         if key != "version" or type(source.get(key)) not in (int, float):
                             text(source.get(key), path + (key,))
+            if "repos" in meta:
+                texts(meta["repos"], ("metadata", "repos"), True)
             if "tags" in meta:
                 texts(meta["tags"], ("metadata", "tags"))
         nodes, scenarios = set(), set()
@@ -131,7 +133,7 @@ def load_scenarios(raw, entries=None, check_entry_references=True):
             for j, row in enumerate(array(node.get("scenarios"), path + ("scenarios",))):
                 p = path + ("scenarios", j)
                 if not shape(row, p, {"id", "polarity", "title", "actor", "priority", "verify", *CONTENT_FIELDS},
-                             {"negative_type", "refs", "evidence_hints", "tags", "regression"}):
+                             {"negative_type", "refs", "evidence_hints", "tags"}):
                     continue
                 for key in ("id", "title", "actor", "priority", "verify"):
                     text(row.get(key), p + (key,))
@@ -152,16 +154,6 @@ def load_scenarios(raw, entries=None, check_entry_references=True):
                 for key in (*CONTENT_FIELDS, "refs", "evidence_hints", "tags"):
                     if key in CONTENT_FIELDS or key in row:
                         texts(row.get(key), p + (key,), key in CONTENT_FIELDS[:3])
-                if "regression" in row:
-                    r = row["regression"]
-                    if not isinstance(r, dict) or set(r) not in ({"check", "cases"}, {"manual", "owner", "trigger"}, {"pending"}):
-                        add(p + ("regression",), "回归声明格式不合法")
-                    else:
-                        for key in r:
-                            if key == "cases":
-                                texts(r[key], p + ("regression", key), True)
-                            else:
-                                text(r[key], p + ("regression", key))
             if "positive" not in polarities:
                 add(path, f"节点 {identifier} 缺少正向场景")
             if "negative" not in polarities and not (isinstance(node.get("negative_exempt"), str) and node["negative_exempt"].strip()):

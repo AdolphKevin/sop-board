@@ -1,5 +1,4 @@
-"""复用执行与检查运行器；候选独立保存，运行环境复测直接登记。"""
-import hashlib
+"""将首仓修复工作树交给同一个适配环境，由新会话经真实入口复测。"""
 import json
 from importlib.resources import files
 from pathlib import Path
@@ -8,18 +7,14 @@ import subprocess
 
 import yaml
 
-from .candidates import Candidates
-from .checks import Checks
 from .errors import APIError
 from .executions import Executions
-from .repositories import git, product, product_files
 from .service import canonical, fingerprint
-from .tasks import judgment_object, invalid_judgment_constant, terminate_group
+from .tasks import terminate_group, codex_failure
 from .validation import validate_round
 
 
 class ValidationContext:
-    """为共用运行器提供本次验证目录，生命周期仍由原修复任务管理。"""
     def __init__(self, tasks, directory):
         self.tasks, self.path = tasks, directory
 
@@ -29,120 +24,83 @@ class ValidationContext:
     def directory(self, task_id):
         return self.path
 
-    def read(self, task_id):
-        task = self.tasks.read(task_id)
-        return dict(task, status='运行中' if task['status'] == '复测中' else task['status'])
-
 
 class FixValidation:
     def __init__(self, fixes):
         self.fixes, self.tasks, self.store = fixes, fixes.tasks, fixes.store
 
-    def run(self, task, problems, phase='candidate'):
+    def run(self, task, problems):
+        workspace = self.fixes.service.workspace
+        snapshot = task['snapshot']
+        workspace.reload()
+        if snapshot['config_digest'] != workspace.config_digest:
+            return dict(status='fail', reason='工作区配置变化', evidence=[], scenarios=[])
         number = task['attempt']
         with self.store.connection() as db:
-            sequence = db.execute('SELECT COALESCE(MAX(validation),0)+1 FROM fix_candidates WHERE task=? AND attempt=?',
-                (task['id'], number)).fetchone()[0]
+            sequence = db.execute('SELECT COALESCE(MAX(validation),0)+1 FROM fix_validations WHERE task=? AND attempt=?', (task['id'], number)).fetchone()[0]
         directory = self.tasks.directory(task['id']) / 'validations' / str(number) / str(sequence)
         directory.mkdir(parents=True)
         (directory / 'evidence').mkdir()
-        context = ValidationContext(self.tasks, directory)
-        candidates = Candidates(context)
-        worktree = self.fixes.service.writable_repos[task['project']] if phase == 'runtime' else Path(task['worktree'])
-        snapshot = task['snapshot']
-        declarations = snapshot['entries']
+        directories = self.fixes.directories(task)
         selected = []
         for problem in problems:
-            batch = problem['batch']
-            document = yaml.safe_load(snapshot['batches'][batch]['content'])
+            document = yaml.safe_load(snapshot['batches'][problem['batch']]['content'])
             scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
-            selected.append(dict(scene, batch=batch))
-        if phase == 'checks':
-            selected = []
-        elif phase == 'runtime':
-            # 混合入口也使用已替换的运行环境，不启动或检出另一个候选。
-            declarations = dict(declarations, entries={name: dict(entry, candidate='in-place')
-                for name, entry in declarations['entries'].items()})
-        commit = git(worktree, 'rev-parse', 'HEAD').decode().strip()
-        if phase == 'runtime':
-            manifest = product_files(worktree, worktree / 'docs/sop', worktree / snapshot['entry_path'], head=True, revision=commit)
-            info = dict(product_digest=hashlib.sha256(canonical(manifest).encode()).hexdigest())
-        else:
-            info = product(worktree, worktree / 'docs/sop', worktree / snapshot['entry_path'])
+            selected.append(dict(scene, batch=problem['batch']))
         rows, session, reason = [], '', ''
-        guarded = [] if phase == 'runtime' else [dict(scene, batch=batch) for batch, data in snapshot['batches'].items()
-            for node in yaml.safe_load(data['content'])['sops'] for scene in node['scenarios']
-            if (scene.get('regression') or {}).get('check')]
-        check_rows = []
         process = None
-        valid_results = True
+        info = workspace.product(snapshot['aliases'], directories)
+        if info['dirty']:
+            return dict(status='fail', reason='复测目录有未提交的产品改动', evidence=[], scenarios=[])
         try:
-            if any(declarations['entries'][s['verify']]['surface'] == 'web' for s in selected):
+            if any(snapshot['entries']['entries'][s['verify']]['surface'] == 'web' for s in selected):
                 while self.active(task):
                     with self.tasks.lock:
                         if self.tasks.browser_owner in (None, task['id']):
                             self.tasks.browser_owner = task['id']
-                            self.tasks.update(task['id'], error='复测产品问题并运行回归检查')
                             break
-                        self.tasks.update(task['id'], error='等待测试浏览器')
-                    self.tasks.stopping.wait(.05)
+                        self.tasks.update(task['id'], error='等待验收浏览器')
+                    self.tasks.stopping.wait(.1)
+            with self.fixes.service.environment.use_repair(directories, workspace.data / 'prepare' / f"verify-{task['id']}-{number}-{sequence}.log") as environment:
                 if not self.active(task):
                     return
-            prepared = candidates.prepare(task, selected, declarations, worktree)
-            if prepared is None:
-                return
-            scenes, failed, environment, targets = prepared
-            if phase == 'runtime':
-                for target in targets.values():
-                    target['directory'] = str(worktree)
-            for row in failed:
-                # 同一场景编号可以属于多个批次；入口失败按原顺序归属。
-                matches = [s for s in selected if s['id'] == row['scenario'] and not any(
-                    r['batch'] == s['batch'] and r['scenario'] == s['id'] for r in rows)]
-                row['batch'] = matches[0]['batch']
-                row['fingerprint'] = fingerprint({k:v for k,v in matches[0].items() if k != 'batch'})
-                rows.append(row)
-            (directory / 'retest.json').write_text(canonical([dict(batch=s['batch'], scenario=s['id'], scene={k:v for k,v in s.items() if k != 'batch'}) for s in scenes]), encoding='utf-8')
-            (directory / 'entries.json').write_text(canonical(dict(declarations, targets=targets)), encoding='utf-8')
-            (directory / 'snapshot.json').write_text(canonical(dict(snapshot, candidate_commit=commit)), encoding='utf-8')
-            (directory / 'cases.json').write_text(canonical(snapshot['cases']), encoding='utf-8')
-            prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(
-                task_directory=directory, candidate_directory=worktree)
-            (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
-            if scenes:
+                addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items() if entry.get('address_env') and entry['address_env'] in environment}
+                (directory / 'retest.json').write_text(canonical([dict(batch=s['batch'], scenario=s['id'], scene={k:v for k,v in s.items() if k != 'batch'}) for s in selected]), encoding='utf-8')
+                (directory / 'entries.json').write_text(canonical(dict(entries=workspace.entries, addresses=addresses)), encoding='utf-8')
+                (directory / 'snapshot.json').write_text(canonical(dict(snapshot, repositories=info['repos'])), encoding='utf-8')
+                (directory / 'cases.json').write_text(canonical(snapshot['cases']), encoding='utf-8')
+                prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(task_directory=directory)
+                (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
                 with self.tasks.lock:
-                    if not self.active(task):
-                        return
                     process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
                     self.tasks.processes[task['id']] = process
                 try:
                     code = process.wait(timeout=self.tasks.timeout)
                 except subprocess.TimeoutExpired:
-                    raise ValueError(f'复测会话超时（{self.tasks.timeout:g} 秒）')
+                    terminate_group(process)
+                    raise ValueError('复测会话超时')
                 if code:
-                    raise ValueError(f'复测会话退出码 {code}')
+                    raise ValueError(codex_failure(directory, code, label='复测会话'))
                 for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
                     event = json.loads(line)
                     if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
                         session = event['thread_id']
                         break
                 if not session or session == task['session_id']:
-                    raise ValueError('复测未返回独立的新会话编号')
-                # 复用执行结果的证据路径、重复行、遗漏行与字段核对。
-                executions = Executions(context)
-                for batch in dict.fromkeys(s['batch'] for s in scenes):
-                    group = [s for s in scenes if s['batch'] == batch]
-                    bound = dict(task, snapshot_json=canonical(dict(scenarios={s['id']: fingerprint({k:v for k,v in s.items() if k != 'batch'}) for s in group})))
-                    rows.extend(dict(row, batch=batch) for row in executions.read_results(bound, group, session, batch=batch))
-                raw = [json.loads(line, object_pairs_hook=judgment_object, parse_constant=invalid_judgment_constant)
-                    for line in (directory / 'results.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
-                allowed = {(s['batch'], s['id']) for s in scenes}
-                if any((r.get('batch'), r.get('scenario')) not in allowed for r in raw):
-                    raise ValueError('复测结果含范围外批次或场景')
-            bad = [r for r in rows if r['status'] != 'pass']
-            reason = '；'.join(r['actual'] for r in bad)
-        except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.SubprocessError, APIError) as error:
-            valid_results = False
+                    raise ValueError('复测没有独立的新会话编号')
+                executions = Executions(ValidationContext(self.tasks, directory))
+                for batch in dict.fromkeys(s['batch'] for s in selected):
+                    group = [s for s in selected if s['batch'] == batch]
+                    bound = dict(task, input_json='{}', scope_json='[]', snapshot_json=canonical(dict(scenarios={s['id']: fingerprint(s) for s in group})))
+                    rows.extend(executions.read_results(bound, group, session, batch=batch))
+                raw = [json.loads(line) for line in (directory / 'results.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
+                if any((r.get('batch'), r.get('scenario')) not in {(s['batch'], s['id']) for s in selected} for r in raw):
+                    raise ValueError('复测结果有范围外批次或场景')
+                workspace.reload()
+                if workspace.config_digest != snapshot['config_digest'] or workspace.product(snapshot['aliases'], directories) != info:
+                    raise ValueError('复测期间配置或代码变化')
+                reason = '；'.join(r['actual'] for r in rows if r['status'] != 'pass')
+        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, APIError) as error:
             reason = '；'.join(p['problem'] for p in error.problems) if isinstance(error, APIError) else str(error)
         finally:
             if process:
@@ -151,80 +109,26 @@ class FixValidation:
                 self.tasks.processes.pop(task['id'], None)
                 if self.tasks.browser_owner == task['id']:
                     self.tasks.browser_owner = None
-            candidates.close(task['id'])
         if not self.active(task):
             return
-        collected = [] if phase == 'runtime' else Checks(context).collect(task, worktree, guarded, declarations)
-        if collected is None:
-            return
-        for name, results, paths in collected:
-            for row in results:
-                row['evidence'] = paths
-                row['regression_check'] = name
-                check_rows.append(row)
-        failed_checks = [r['actual'] for r in check_rows if r['status'] != 'pass']
-        reason = '；'.join(filter(None, [reason, *failed_checks]))
-        # 同一场景复测与守护都通过才通过；每批每场景只保留一条用于提升。
-        combined = {(r['batch'], r['scenario']): r for r in rows}
-        for row in check_rows:
-            key = row['batch'], row['scenario']
-            prior = combined.get(key)
-            if prior is None:
-                combined[key] = row
-            else:
-                if row['status'] != 'pass':
-                    prior.update(status=row['status'], actual=row['actual'], **({'finding': row['finding']} if 'finding' in row else {}))
-                prior['evidence'].extend(row['evidence'])
-                prior['regression_check'] = row['regression_check']
-        rows = list(combined.values())
-        if phase == 'runtime':
-            for row in rows:
-                row['note'] = '运行环境按 HEAD 记录，未经核实'
-        evidence = [str(p) for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink()]
+        evidence = [str(p) for p in directory.rglob('*') if p.is_file() and not p.is_symlink()]
         with self.tasks.lock, self.store.transaction() as db:
-            if not self.active(task):
-                return
             for row in rows:
                 row['evidence'] = [dict(name=p.name, sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
-            groups = []
-            for batch in dict.fromkeys([p['batch'] for p in problems] + [s['batch'] for s in guarded]):
-                results = [r for r in rows if r['batch'] == batch]
-                version = db.execute('SELECT id FROM versions WHERE batch=(SELECT id FROM batches WHERE project=? AND name=?) AND sha256=? ORDER BY id DESC LIMIT 1',
-                    (task['project'], batch, snapshot['batches'][batch]['sha256'])).fetchone()[0]
-                if results:
-                    try:
-                        validate_round(db, dict(idempotency_key='candidate', scenario_file_sha256=snapshot['batches'][batch]['sha256'],
-                            product=dict(commit=commit, digest=info['product_digest'], dirty=False), submitted_by=session or '候选启动', results=results))
-                    except APIError as error:
-                        valid_results = False
-                        reason = '；'.join(filter(None, [reason, *(p['problem'] for p in error.problems)]))
-                groups.append((batch, version, results))
-            status = 'fail' if reason else 'pass'
-            for batch, version, results in groups:
-                db.execute('INSERT INTO fix_candidates(task,attempt,validation,batch,version,commit_id,product_digest,session_id,status,reason,results_json,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                    (task['id'], number, sequence, batch, version, commit, info['product_digest'], session, status, reason, canonical(results), canonical(evidence)))
-            if phase == 'runtime' and valid_results:
-                registered = []
-                for batch, version, results in groups:
-                    if not results:
-                        continue
-                    batch_row = self.fixes.service.batch(db, task['project'], batch)
-                    key = f"fix-runtime-{task['id']}-{number}-{batch}"
-                    existing = db.execute('SELECT number FROM rounds WHERE batch=? AND idempotency_key=?', (batch_row['id'], key)).fetchone()
-                    body = dict(idempotency_key=key, submitted_by=session or '入口准备', implementer=task['session_id'],
-                        product=dict(commit=commit, digest=info['product_digest'], dirty=False), results=results)
-                    round_number = existing[0] if existing else self.fixes.service.insert_round(db, batch_row,
-                        db.execute('SELECT * FROM versions WHERE id=?', (version,)).fetchone(), body)
-                    db.execute('UPDATE fix_candidates SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
-                        (round_number, task['id'], number, sequence, batch))
-                    db.execute('UPDATE batches SET product_digest=? WHERE id=?', (info['product_digest'], batch_row['id']))
-                    registered.append(dict(batch=batch, round=round_number))
-                prior = json.loads(db.execute('SELECT rounds_json FROM tasks WHERE id=?', (task['id'],)).fetchone()[0])
-                db.execute('UPDATE tasks SET rounds_json=? WHERE id=?',
-                    (canonical(prior + [r for r in registered if r not in prior]), task['id']))
-        return dict(status=status, reason=reason, evidence=evidence, candidate_commit=commit, session_id=session,
-                    checks=[dict(name=name, status='pass' if all(r['status'] == 'pass' for r in results) else 'fail') for name, results, _ in collected],
-                    scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in problems])
+            for batch in dict.fromkeys(p['batch'] for p in problems):
+                group = [r for r in rows if r['batch'] == batch]
+                version = db.execute('SELECT id FROM versions WHERE batch=(SELECT id FROM batches WHERE workspace=? AND name=?) AND sha256=? ORDER BY id DESC LIMIT 1',
+                    (task['workspace'], batch, snapshot['batches'][batch]['sha256'])).fetchone()[0]
+                try:
+                    validate_round(db, dict(idempotency_key='repair', scenario_file_sha256=snapshot['batches'][batch]['sha256'],
+                        product=dict(commit=info['commit'], digest=info['product_digest'], dirty=False), submitted_by=session, results=group))
+                except APIError as error:
+                    reason = '；'.join(filter(None, [reason, *(p['problem'] for p in error.problems)]))
+                db.execute('INSERT INTO fix_validations(task,attempt,validation,batch,version,commit_id,product_digest,session_id,status,reason,results_json,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (task['id'], number, sequence, batch, version, info['repos'][task['repo_alias']]['commit'], info['product_digest'], session,
+                     'fail' if reason else 'pass', reason, canonical(group), canonical(evidence)))
+        return dict(status='fail' if reason else 'pass', reason=reason, evidence=evidence,
+                    session_id=session, repositories=info['repos'], scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in problems])
 
     def active(self, task):
         return not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == '复测中'

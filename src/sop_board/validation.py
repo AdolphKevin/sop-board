@@ -29,70 +29,6 @@ class Problems:
             raise APIError(422, self.code, self.items)
 
 
-def validate_entries(value, p):
-    if not isinstance(value, dict):
-        p.add('entries', '应为入口声明对象')
-        return
-    for key in value.keys() - {'entries', 'checks'}:
-        p.add('entries.' + key, '格式外字段')
-    entries = value.get('entries')
-    if not isinstance(entries, dict) or not entries:
-        p.add('entries.entries', '应为非空入口对象')
-        return
-    required = {'surface', 'operate', 'observe', 'evidence', 'isolation'}
-    for name, entry in entries.items():
-        field = 'entries.entries.' + name
-        if not name.strip() or not isinstance(entry, dict):
-            p.add(field, '入口名应为非空字符串，入口内容应为对象')
-            continue
-        for key in entry.keys() - required - {'address_env', 'candidate', 'start', 'reload'}:
-            p.add(field + '.' + key, '格式外字段')
-        for key in ('surface', 'operate', 'isolation'):
-            p.text(entry.get(key), field + '.' + key)
-        for key in ('observe', 'evidence'):
-            values = entry.get(key)
-            if not isinstance(values, list) or not values or not all(nonempty(v) for v in values):
-                p.add(field + '.' + key, '应为非空字符串数组')
-        if 'address_env' in entry and (not isinstance(entry['address_env'], str) or
-                                      not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', entry['address_env'])):
-            p.add(field + '.address_env', '应为环境变量名')
-        if 'candidate' in entry and entry['candidate'] not in ('checkout', 'start', 'in-place'):
-            p.add(field + '.candidate', '应为 checkout、start 或 in-place')
-        if entry.get('candidate') == 'start' and 'address_env' not in entry:
-            p.add(field + '.address_env', '启动候选环境时须声明地址环境变量')
-        for key in ('start', 'reload'):
-            if key in entry or (key == 'start' and entry.get('candidate') == 'start'):
-                values = entry.get(key)
-                if not isinstance(values, list) or not values or not all(nonempty(v) for v in values):
-                    p.add(field + '.' + key, '应为非空字符串数组')
-    checks = value.get('checks', {})
-    if not isinstance(checks, dict):
-        p.add('entries.checks', '应为检查对象')
-        return
-    check_fields = {'argv', 'cwd', 'timeout', 'format', 'report', 'required_env', 'purpose', 'required_cases',
-                    'environment', 'coverage', 'artifacts', 'review', 'repository', 'revision_sensitive'}
-    for name, check in checks.items():
-        field = 'entries.checks.' + name
-        if not name.strip() or not isinstance(check, dict):
-            p.add(field, '检查编号应非空，检查内容应为对象')
-            continue
-        for key in check.keys() - check_fields:
-            p.add(field + '.' + key, '格式外字段')
-        for key in ('argv', 'required_env'):
-            if key == 'argv' or key in check:
-                values = check.get(key)
-                if not isinstance(values, list) or (key == 'argv' and not values) or not all(nonempty(v) for v in values):
-                    p.add(field + '.' + key, '应为字符串数组，argv 不能为空')
-        if 'cwd' in check and not isinstance(check['cwd'], str):
-            p.add(field + '.cwd', '应为字符串')
-        if type(check.get('timeout')) is not int or check['timeout'] <= 0:
-            p.add(field + '.timeout', '应为正整数')
-        if check.get('format') not in ('junit', 'go-json'):
-            p.add(field + '.format', '应为 junit 或 go-json')
-        if 'report' in check or check.get('format') == 'junit':
-            p.text(check.get('report'), field + '.report')
-
-
 def validate_sop_sources(sources, p):
     if not isinstance(sources, list):
         p.add('sop_sources', '应为 SOP 原文数组')
@@ -131,17 +67,19 @@ def validate_push(body):
             p.text(body.get(key), key)
         if type(body.get("dirty")) is not bool:
             p.add("dirty", "应为布尔值")
-        project = body.get("project")
-        if not isinstance(project, dict):
-            p.add("project", "应含 id 与 name 的对象")
+        workspace = body.get("workspace")
+        if not isinstance(workspace, dict):
+            p.add("workspace", "应含 name 的对象")
         else:
-            for key in ("id", "name"):
-                p.text(project.get(key), "project." + key)
+            for extra in workspace.keys() - {"name"}:
+                p.add("workspace." + str(extra), "格式外字段")
+            for key in ("name",):
+                p.text(workspace.get(key), "workspace." + key)
         fingerprints = body.get("fingerprints")
         if not isinstance(fingerprints, dict) or not all(isinstance(v, str) for v in fingerprints.values()):
             p.add("fingerprints", "应为场景编号到指纹字符串的对象")
-        if 'entries' in body:
-            validate_entries(body['entries'], p)
+        if "entries" in body:
+            p.add("entries", "入口只从工作区 config.yaml 读取")
         if 'sop_sources' in body:
             validate_sop_sources(body['sop_sources'], p)
     for item in p.items:

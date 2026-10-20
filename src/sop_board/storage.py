@@ -11,18 +11,18 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY, value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, project TEXT NOT NULL REFERENCES projects(key),
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, workspace TEXT NOT NULL REFERENCES workspaces(key),
     batch TEXT NOT NULL, status TEXT NOT NULL, trigger TEXT NOT NULL, input_digest TEXT NOT NULL,
     input_json TEXT NOT NULL, scenario_file_sha256 TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
     attempt INTEGER NOT NULL DEFAULT 1, session_id TEXT, error TEXT NOT NULL DEFAULT '', result_digest TEXT,
     result_json TEXT NOT NULL DEFAULT '{}', scope_json TEXT NOT NULL DEFAULT '[]',
     snapshot_json TEXT NOT NULL DEFAULT '{}', void_reason TEXT NOT NULL DEFAULT '', rounds_json TEXT NOT NULL DEFAULT '[]'
 );
-CREATE TABLE IF NOT EXISTS projects (
-    key TEXT PRIMARY KEY, identity TEXT NOT NULL, name TEXT NOT NULL, defect_prefix TEXT
+CREATE TABLE IF NOT EXISTS workspaces (
+    key TEXT PRIMARY KEY, root TEXT NOT NULL, name TEXT NOT NULL, defect_prefix TEXT
 );
 CREATE TABLE IF NOT EXISTS fix_tasks (
-    task INTEGER PRIMARY KEY REFERENCES tasks(id), repository TEXT NOT NULL,
+    task INTEGER PRIMARY KEY REFERENCES tasks(id), repository TEXT NOT NULL, repo_alias TEXT NOT NULL,
     baseline_branch TEXT NOT NULL DEFAULT '', baseline_commit TEXT NOT NULL DEFAULT '',
     fix_branch TEXT NOT NULL DEFAULT '', worktree TEXT NOT NULL DEFAULT '',
     developer_note TEXT NOT NULL DEFAULT '', retry_reason TEXT NOT NULL DEFAULT '',
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS fix_attempts (
     validation_json TEXT NOT NULL DEFAULT '{}', added_json TEXT NOT NULL DEFAULT '[]',
     interruptions_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(task,number)
 );
-CREATE TABLE IF NOT EXISTS fix_candidates (
+CREATE TABLE IF NOT EXISTS fix_validations (
     task INTEGER NOT NULL, attempt INTEGER NOT NULL, validation INTEGER NOT NULL,
     batch TEXT NOT NULL, version INTEGER NOT NULL REFERENCES versions(id),
     commit_id TEXT NOT NULL, product_digest TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -60,9 +60,9 @@ CREATE TABLE IF NOT EXISTS fix_jira (
     PRIMARY KEY(task,issue)
 );
 CREATE TABLE IF NOT EXISTS batches (
-    id INTEGER PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(key),
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key),
     name TEXT NOT NULL, path TEXT NOT NULL, product_digest TEXT NOT NULL,
-    UNIQUE(project, name)
+    UNIQUE(workspace, name)
 );
 CREATE TABLE IF NOT EXISTS versions (
     id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS scenarios (
     id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
     scenario TEXT NOT NULL, fingerprint TEXT NOT NULL, node TEXT NOT NULL,
     title TEXT NOT NULL, polarity TEXT NOT NULL, priority TEXT NOT NULL,
-    verify TEXT NOT NULL, regression TEXT, body TEXT NOT NULL, current INTEGER NOT NULL,
+    verify TEXT NOT NULL, body TEXT NOT NULL, current INTEGER NOT NULL,
     UNIQUE(batch, scenario, fingerprint)
 );
 CREATE TABLE IF NOT EXISTS evidence (
@@ -87,12 +87,6 @@ CREATE TABLE IF NOT EXISTS rounds (
     implementer TEXT, submitted_by TEXT NOT NULL, submitted_at TEXT NOT NULL,
     idempotency_key TEXT, body_sha256 TEXT, UNIQUE(batch,number), UNIQUE(batch,idempotency_key)
 );
-CREATE TABLE IF NOT EXISTS check_rounds (
-    round_id INTEGER PRIMARY KEY REFERENCES rounds(id), check_name TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS check_results (
-    result_id INTEGER PRIMARY KEY REFERENCES results(id), check_name TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY, round_id INTEGER NOT NULL REFERENCES rounds(id),
     scenario TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL,
@@ -104,9 +98,6 @@ CREATE TABLE IF NOT EXISTS result_evidence (
     result_id INTEGER NOT NULL REFERENCES results(id), ordinal INTEGER NOT NULL,
     name TEXT NOT NULL, sha256 TEXT NOT NULL REFERENCES evidence(sha256),
     PRIMARY KEY(result_id,ordinal)
-);
-CREATE TABLE IF NOT EXISTS batch_entries (
-    batch INTEGER PRIMARY KEY REFERENCES batches(id), content TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS node_numbers (
     batch INTEGER NOT NULL REFERENCES batches(id), section TEXT NOT NULL, node TEXT NOT NULL,
@@ -140,7 +131,7 @@ class Store:
         self.lock = threading.RLock()
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
-            # executescript 默认逐条提交；补表必须作为一个事务，失败时不留部分升级。
+            # 新格式数据库的建表保持事务完整；不读取或升级旧数据库。
             try:
                 db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
                 db.commit()
@@ -150,7 +141,7 @@ class Store:
 
     @contextmanager
     def connection(self):
-        db = sqlite3.connect(self.data / "board.sqlite3", timeout=30)
+        db = sqlite3.connect(self.data / "workspace.sqlite3", timeout=30)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         try:
