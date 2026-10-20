@@ -1,4 +1,4 @@
-# sop-board 开发约定
+# Flow Board 开发约定
 
 ## 当前入口
 

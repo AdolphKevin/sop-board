@@ -35,11 +35,13 @@ def layout(title, content, jira_url="", watch=None, scripts=()):
     extra_scripts = ''.join(f"<script src='{text(src)}' defer></script>" for src in scripts)
     return ("<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            f"<title>{text(title)} · sop-board</title>"
+            f"<title>{text(title)} · Flow Board</title>"
             "<link rel='stylesheet' href='/assets/board.css'><script src='/assets/board.js' defer></script>"
             f"{extra_scripts}</head><body>"
-            "<header><a href='/'>sop-board</a><span>SOP 验证协作看板</span></header>"
-            f"<main{jira}{polling}>{content}</main></body></html>")
+            "<a class='skip-link' href='#board-main'>跳到主要内容</a>"
+            "<header class='app-header'><div class='brand'><a href='/'>Flow Board</a>"
+            "<span>流程验收看板</span></div><span class='header-caption'>验收工作台</span></header>"
+            f"<main id='board-main'{jira}{polling}>{content}</main></body></html>")
 
 
 def environment_panel(data, local):

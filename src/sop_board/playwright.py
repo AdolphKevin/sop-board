@@ -38,7 +38,7 @@ def write_scope(directory, project, batch, source, scenes, output=None):
 
 
 def guide():
-    return f"""sop-board Web 场景验收
+    return f"""Flow Board Web 场景验收
 
 内置技能：{bundled_skill() / 'SKILL.md'}
 当前执行驱动：{driver_skill() / 'SKILL.md'}
