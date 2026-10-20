@@ -1,16 +1,16 @@
 # SOP-BOARD-7：v9 主流程的验收场景
-# 预期依据 docs/proposals/2026-10-20-v9-workspace.md（v9）D30–D35 与 docs/designs/SOP-BOARD-7.md（修订 1）。按验证分级只写业务流程；页面文案、接口字段等细节由快速组测试覆盖。
+# 预期依据 docs/proposals/2026-10-20-v9-workspace.md（v9 修订 2）D30–D35 与 docs/designs/SOP-BOARD-7.md（修订 2）。只写业务流程；验收只以本文件的场景经真实入口执行为准。
 # "单仓工作区"：执行者把本仓 clone 到临时目录作为被测项目；"多仓演示工作区"：执行者新建的临时目录，含两个 Git 仓库 app（HTTP 服务，引用 lib）与 lib（被 app 调用的函数，含一处植入缺陷），主工作区均在 main 且干净。
 # 搭建由新开的代理会话按 `sop-board guide` 完成；执行者在搭建完成前不手写配置。SOP-76 为真实项目轮次，由 AdolphKevin 执行，流程与缺陷到时由他确认。
 
 metadata:
   requirement: "sop-board v9：工作区与项目适配、免令牌、跨仓修复、用例分层"
   batch: "sop-board-7"
-  version: 1
+  version: 2
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-20-v9-workspace.md 的 D30–D35"
-      version: "v9（2026-10-20）"
+      version: "v9 修订 2（2026-10-20）"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "v9"]
 
@@ -28,7 +28,7 @@ sops:
         verify: agent
         initial_state: ["单仓工作区已准备，本机没有该工作区的看板目录", "sop-board 候选版可用 uv tool install 从本地检出安装"]
         steps: ["在单仓工作区打开新的代理会话，说：按 sop-board 的安装说明为这个工作区安装并搭建", "回答代理的提问", "代理报告后运行 sop-board check，再运行 sop-board"]
-        expected: ["代理运行了 sop-board guide，并只在 ~/.sop-board/<工作区名>/ 下写文件", "sop-board check 六步全部通过，退出码 0", "代理的报告分为已验证的事实、推断及依据、待回答的问题", "sop-board 启动后页面显示环境就绪，页面与启动过程没有任何令牌输入"]
+        expected: ["代理运行了 sop-board guide，并只在 ~/.sop-board/<工作区名>/ 下写文件", "sop-board check 五步全部通过，退出码 0", "代理的报告分为已验证的事实、推断及依据、待回答的问题", "sop-board 启动后页面显示环境就绪，页面与启动过程没有任何令牌输入"]
         forbidden_effects: ["工作区内的仓库出现新文件或改动", "执行者手写配置"]
       - id: SOP-71-N01
         polarity: negative
@@ -109,7 +109,7 @@ sops:
         verify: web
         initial_state: ["多仓演示工作区已由代理搭建并启动看板", "一条调用 lib 的场景因植入缺陷执行失败"]
         steps: ["测试同事把该场景标为不通过并填缺陷链接", "等待修复任务结束"]
-        expected: ["任务目录含 app 与 lib 两个 worktree，适配准备已运行", "根因分析指出 lib 中的文件，只有 lib 产生提交", "lib 的快速检查通过后，环境用 worktree 启动，新会话复测通过", "lib 的 main 快进到修复提交，app 的 main 不变，环境用基线目录重启", "场景回到复测队列"]
+        expected: ["任务目录含 app 与 lib 两个 worktree，适配准备已运行", "根因分析指出 lib 中的文件，只有 lib 产生提交", "环境用 worktree 启动，新会话复测通过；修复提交中没有新增测试文件", "lib 的 main 快进到修复提交，app 的 main 不变，环境用基线目录重启", "场景回到复测队列"]
         forbidden_effects: ["复测通过前任何仓库的 main 改变", "推送到远端"]
       - id: SOP-74-N01
         polarity: negative
@@ -135,21 +135,31 @@ sops:
         forbidden_effects: ["产生代码提交", "页面或报告中出现配置文件里的凭证值"]
 
   - id: SOP-75
-    title: 用例分层与报告
+    title: 细节用例并入流程场景，产品变化后重跑受影响的场景
     actor: 测试同事、开发者
     entry: 看板页面
-    negative_exempt: "分类错误由开发者在合并页改类别，属于 P01 的一部分；格式校验由快速组测试覆盖"
+    negative_exempt: "判定错误由开发者在合并页改为单独成场景，属于 P01 的一部分"
     scenarios:
       - id: SOP-75-P01
         polarity: positive
-        title: 细节类用例列入交给单元测试，报告列出它们
+        title: 细节用例并入所属流程场景，报告写明对应关系
         actor: 测试同事
         priority: P1
         verify: web
         initial_state: ["SOP-72-P01 的看板运行中"]
-        steps: ["上传含 3 条流程类与 2 条字段格式类用例的文件", "开发者把一条被判为细节类的用例改为流程类", "导出报告"]
-        expected: ["合并页两栏显示两类用例，每条附理由；细节类不生成场景", "改类别后重新合并，该用例生成场景", "报告的用例覆盖标出细节类用例，未验证范围列出它们"]
-        forbidden_effects: ["细节类用例进入执行"]
+        steps: ["上传含 3 条流程类与 2 条字段格式类用例的文件", "开发者把其中一条细节用例改为单独成场景", "导出报告"]
+        expected: ["合并后只有 3 条流程场景，2 条细节用例的预期写进所属场景，合并页列出并入关系与理由", "改为单独成场景后重新合并，该用例生成同编号场景", "报告的用例覆盖写明每条细节用例并入的场景"]
+        forbidden_effects: ["细节用例被丢弃而不出现在任何场景或报告中"]
+      - id: SOP-75-P02
+        polarity: positive
+        title: 产品变化后只重跑受影响的场景，其余写明沿用理由
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["SOP-72-P01 的场景全部通过", "执行者提交一个只影响其中一条场景的产品改动"]
+        steps: ["点执行待执行场景", "查看执行任务与场景页"]
+        expected: ["受影响的场景被重跑并登记新结果", "其余场景记为沿用，每条写明依据的改动范围与理由"]
+        forbidden_effects: ["没有理由的沿用"]
 
   - id: SOP-76
     title: 真实多仓项目上的主流程
