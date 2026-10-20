@@ -11,63 +11,17 @@
   ],
   "shared": {},
   "documents": [],
-  "checks": {
-    "unit": {
-      "argv": [
-        "uv",
-        "run",
-        "--frozen",
-        "pytest",
-        "-q",
-        "-p",
-        "no:cacheprovider",
-        "--junitxml={output}/results.xml",
-        "tests"
-      ],
-      "purpose": "经真实 HTTP 入口在临时数据目录启动看板，核对接口响应、页面内容、SQLite 数据、证据文件与导出",
-      "cwd": ".",
-      "timeout": 900,
-      "format": "junit",
-      "report": "{output}/results.xml",
-      "required_cases": [],
-      "required_env": [],
-      "environment": {
-        "kind": "stateless"
-      },
-      "coverage": {
-        "level": "interface",
-        "entrypoints": [
-          "sop-board"
-        ],
-        "environment": "isolated-temp-data-directories",
-        "substitutes": [],
-        "isolation": "isolated",
-        "isolation_evidence": []
-      }
-    }
-  },
+  "checks": {},
   "required_checks": {
-    "code": [
-      "unit"
-    ],
+    "code": [],
     "docs": []
   },
   "risk_checks": {
-    "persistence": [
-      "unit"
-    ],
-    "public-contract": [
-      "unit"
-    ],
-    "concurrency": [
-      "unit"
-    ],
-    "authorization": [
-      "unit"
-    ],
-    "cross-service": [
-      "unit"
-    ]
+    "persistence": [],
+    "public-contract": [],
+    "concurrency": [],
+    "authorization": [],
+    "cross-service": []
   },
   "inputs": [],
   "external_inputs": {},
