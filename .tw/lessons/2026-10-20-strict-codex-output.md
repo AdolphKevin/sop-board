@@ -2,6 +2,7 @@
 title: "合并输出必须满足严格对象模式"
 scope: ["self:src/sop_board/prompts/**", "self:src/sop_board/drafts.py", "self:src/sop_board/tasks.py"]
 source: ["self:docs/verification.md"]
+guards: ["self:docs/sop/sop-board-7.yaml#SOP-75-P01"]
 verified: {"self": {"commit": "119c05fcbe8bfc239d99b14dd0f379d4374ec3c6", "date": "2026-10-20"}}
 ---
 # 合并输出必须满足严格对象模式

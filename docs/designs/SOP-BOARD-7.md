@@ -1,7 +1,7 @@
 ---
 design: "D-sop-board-7"
 task: "SOP-BOARD-7"
-revision: 2
+revision: 3
 assessment: {"complexity":"complex","risks":["persistence","public-contract","concurrency","authorization","cross-service"],"effort":"约三个工作日代理时长，分四段","drivers":["去掉令牌，开发者操作只在本机","工作区由多个仓库组成，项目差异写在代理生成的适配里","执行与复测使用适配启动的整套环境","修复跨仓库提交，全部可快进后一起合入"],"uncertainties":[],"required_skills":["Python","SQLite","子进程与进程组","Git worktree 与合并","HTML 与原生 JavaScript"]}
 roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner":"AdolphKevin"}
 ---
@@ -10,7 +10,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 > 本文件是 tw 任务 SOP-BOARD-7 的方案原文。行为依据是已批准的 [v9 方案](../proposals/2026-10-20-v9-workspace.md) D30–D36，本文只写实现时需要定下的接口；两处说法不同时以 v9 为准并修正本文。验收只以场景经真实入口执行为准，开发中不写单元、接口与集成测试。
 >
-> 状态：修订 2。修订 1 于 2026-10-20 经 AdolphKevin 批准；修订 2 按 v9 修订 2 改为只以场景验收：删除现有测试与回归检查运行器，开发中不写测试，细节用例并入流程场景。
+> 状态：修订 2。修订 1 于 2026-10-20 经 AdolphKevin 批准；修订 2 按 v9 修订 2 改为只以场景验收：删除现有测试与回归检查运行器，开发中不写测试，细节用例并入流程场景；修订 3 按 v9 修订 3 改为由适配建立与删除 worktree。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -39,7 +39,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 ## 适配环境与自检
 <!-- tw-section id=I3 type=interface depends=scope-global,I2 -->
-按 v9 D33 的契约。环境变量名 `SOP_REPO_<别名>` 中别名转大写、连字符转下划线；`SOP_BASE_<别名>` 同理。适配运行器在独立进程组运行 `adapter.env`，在时限内等待标准输出出现 `sop-board: ready`；停止时 SIGTERM，10 秒后 SIGKILL；标准输出与错误输出写入数据目录 `env/<序号>.log`。同一时间只有一套环境，记录本次使用的各仓库目录与提交号。
+按 v9 D33 的契约。环境变量名 `SOP_REPO_<别名>` 中别名转大写、连字符转下划线；`SOP_BASE_<别名>` 同理。`adapter.worktree` 与 `adapter.cleanup` 的输入、输出与缺省行为按 v9 D33；看板核对 worktree 输出的每个路径：是该路径所在工作树的根目录、与对应基线仓库共用同一个 Git 仓库、当前分支等于 `SOP_FIX_BRANCH`，任一不符时本次建立失败并写明原因。适配运行器在独立进程组运行 `adapter.env`，在时限内等待标准输出出现 `sop-board: ready`；停止时 SIGTERM，10 秒后 SIGKILL；标准输出与错误输出写入数据目录 `env/<序号>.log`。同一时间只有一套环境，记录本次使用的各仓库目录与提交号。
 
 自检五步按 v9 D33，结果写入数据目录 `checks/<时间>.json`（每步状态、说明、日志路径），`sop-board check` 以退出码 0/1 表示全部通过与否；页面"环境"栏显示最近一次自检、环境状态、最近 50 行日志（仅本机页面）与"重启环境"。自检全部通过且配置未变化时，看板启动时用基线目录启动环境。
 
@@ -49,7 +49,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 ## 跨仓修复
 <!-- tw-section id=I5 type=interface depends=scope-global,I3,I4 -->
-按 v9 D34：每个涉及仓库建 worktree 与分支 `sop-board/fix/<编号>` 于任务目录 `repos/<别名>`，运行 `adapter.prepare` 并把其 `env` 用于修复会话与环境；修复会话以任务目录为工作目录，只改产品代码、不写测试；有改动的仓库各提交一次；用 worktree 重启环境，由新会话复测问题场景及受影响的场景；全部可快进后逐仓 `git merge --ff-only`，再用基线目录重启环境；任一仓库不可快进时都不合入，转"待开发者合入"并逐仓列原因。修复会话的判定类别与转开发者沿用现有规则。
+按 v9 D34：用 `adapter.worktree`（未声明时由看板用 `git worktree add` 建于任务目录 `repos/<别名>`）为每个涉及仓库建 `sop-board/fix/<编号>` 分支的 worktree 并核对，把其 `env` 用于修复会话与环境；结束时按 `adapter.cleanup`（未声明时用 `git worktree remove`）删除；修复会话以任务目录为工作目录，只改产品代码、不写测试；有改动的仓库各提交一次；用 worktree 重启环境，由新会话复测问题场景及受影响的场景；全部可快进后逐仓 `git merge --ff-only`，再用基线目录重启环境；任一仓库不可快进时都不合入，转"待开发者合入"并逐仓列原因。修复会话的判定类别与转开发者沿用现有规则。
 
 ## 用例分层与报告
 <!-- tw-section id=I6 type=interface depends=scope-global -->
