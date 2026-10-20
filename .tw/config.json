@@ -84,7 +84,7 @@
   "acceptance_entries": {
     "cli": {
       "surface": "cli",
-      "operate": "在 clone 的检出目录用 uv run sop-board 启动、停止看板",
+      "operate": "在临时工作区运行 sop-board、sop-board check、sop-board guide",
       "observe": [
         "标准输出",
         "错误输出",
@@ -103,7 +103,7 @@
     "api": {
       "surface": "http",
       "address_env": "SOP_BOARD_URL",
-      "operate": "用 curl 按接口发送请求，写入请求带 SOP_BOARD_TOKEN",
+      "operate": "用 curl 按接口发送请求，分别从本机地址与内网地址发出",
       "observe": [
         "状态码",
         "响应正文",
@@ -132,6 +132,23 @@
         "SQLite 查询与输出"
       ],
       "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
+    },
+    "agent": {
+      "surface": "agent",
+      "operate": "在临时工作区新开 Codex 或 Claude Code 会话，用自然语言请它按 sop-board 的安装说明安装并搭建，按需回答提问",
+      "observe": [
+        "会话记录",
+        "~/.sop-board/<工作区名>/ 下的文件",
+        "sop-board check 的输出与退出码",
+        "工作区仓库的 git status"
+      ],
+      "evidence": [
+        "会话记录导出",
+        "生成的配置与适配文件（凭证脱敏）",
+        "自检结果 JSON",
+        "git status 输出"
+      ],
+      "isolation": "每轮使用新的临时工作区与新的看板目录，留证后停止看板并删除两者"
     }
   }
 }
