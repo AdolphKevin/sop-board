@@ -68,7 +68,8 @@ class Handler(BaseHTTPRequestHandler):
                 developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel|approve)", path) or
                                  re.fullmatch(r"/api/v1/automation/(pause|resume)", path) or
                                  re.fullmatch(r"/api/v1/environment/(check|restart)", path) or
-                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/(merges|executions)", path))
+                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/(merges|executions)", path) or
+                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/cases/[^/]+/flow", path))
                 if developer and not local:
                     reject(403, "local-only", "client", "此操作仅限本机")
                 origin = self.headers.get("Origin")
@@ -115,14 +116,13 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 data = service.read_cases(key, batch, include_state=True)
-                scenarios = service.read_batch(key, batch, scenarios=True)["scenarios"]
-                self.respond(200, pages.cases(key, batch, data, scenarios).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.cases(key, batch, data).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/merges", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 service.read_batch(key, batch)
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
-                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], selected, local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], service.read_cases(key, batch), selected, local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/sop", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -172,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
                     raw = self.server.tasks.file(int(match[3]), 'pairs.json')
                 self.respond(200, raw, 'application/json; charset=utf-8' if match[4] == 'pairs.json' else 'text/yaml; charset=utf-8')
                 return
+            elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/cases/([^/]+)/flow", path)):
+                result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]), trigger='开发者指定独立场景', force_case=unquote(match[3]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/executions", path)):

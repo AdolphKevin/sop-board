@@ -119,10 +119,14 @@
             show(message, data.paused ? "自动任务已暂停" : "自动任务已恢复");
           } else {
             show(message, "任务 #" + data.task.id + "：" + data.task.status + "。刷新页面可查看最新状态。");
+            if (button.dataset.caseFlow !== undefined) {
+              button.textContent = "已指定单独成场景";
+              button.dataset.choiceSaved = "true";
+            }
           }
         } catch {
           show(message, "连接失败，请重试。", "error");
-        } finally {button.disabled = false;}
+        } finally {button.disabled = button.dataset.choiceSaved === "true";}
       });
     });
     const filterLinks = document.querySelectorAll("[data-filter]");

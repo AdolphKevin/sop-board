@@ -384,7 +384,7 @@ def progress(workspace, data, coverage):
     return layout("进度 · " + data["name"], content, watch=(workspace, data["name"], data["etag"]))
 
 
-def cases(workspace, name, data, scenarios):
+def cases(workspace, name, data):
     base = batch_url(workspace, name)
     api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
     content = (batch_nav(workspace, name, "cases") + f"<h1>批次 {text(name)} · 用例</h1>" + identity_bar() +
@@ -400,7 +400,7 @@ def cases(workspace, name, data, scenarios):
     content += ("<section><h2>上传记录</h2><div class='table-scroll'><table><thead><tr><th>序号</th><th>文件名</th>"
                 "<th>上传人</th><th>上传时间</th><th>条数</th><th>新增</th><th>更新</th></tr></thead>"
                 f"<tbody>{rows}</tbody></table></div></section>")
-    current = {s["scenario"] for s in scenarios}
+    pairings = {p["case"]: p for p in data["pairings"]}
     groups = {}
     types = dict(functional="功能", ui="界面", security="安全", performance="性能", accessibility="无障碍")
     for item in data["cases"]:
@@ -414,8 +414,13 @@ def cases(workspace, name, data, scenarios):
             for field, label in [("preconditions", "前置条件"), ("steps", "步骤"), ("expected_results", "预期")]:
                 values = "".join(f"<li>{text(v)}</li>" for v in item.get(field, []))
                 content += f"<h4>{label}</h4><ul>{values}</ul>" if values else f"<h4>{label}</h4><p>未声明</p>"
-            content += (f"<a href='{text(base + '/s/' + quote(item['id'], safe=''))}'>已有对应场景</a>"
-                        if item["id"] in current else "<p>尚无对应场景</p>")
+            pair = pairings.get(item['id'])
+            if pair:
+                target = pair['scenarios'][0]
+                label = '细节用例并入 ' if pair['kind'] == 'detail' else '流程场景 '
+                content += f"<a href='{text(base + '/s/' + quote(target, safe=''))}'>{text(label + target)}</a><p>{text(pair['kind_reason'])}</p>"
+            else:
+                content += '<p>尚无当前用例的有效配对，等待合并</p>'
             content += "</article>"
         content += "</section>"
     if not groups:
@@ -479,13 +484,33 @@ def scenarios(workspace, name, data, jira_url=""):
     return layout("SOP 场景 · " + name, content, jira_url, watch=(workspace, name, data["etag"]))
 
 
-def merges(workspace, name, tasks, selected=None, *, local=False):
+def merges(workspace, name, tasks, case_data, selected=None, *, local=False):
     api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
     content = (batch_nav(workspace, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" + identity_bar() +
                "<p>合并结果写入配置的场景目录。待同步时请核对工作区的修改或配置变化。</p>" +
                (f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" if local else "") +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
-    current = next((t for t in tasks if str(t['id']) == selected), tasks[-1] if tasks else None)
+    groups = {}
+    for pair in case_data['pairings']:
+        groups.setdefault(pair['scenarios'][0], []).append(pair)
+    choices = set(case_data['flow_choices'])
+    content += '<section><h2>当前流程场景与用例归属</h2>'
+    for scenario, pairs in sorted(groups.items()):
+        content += f"<h3>流程场景 {text(scenario)}</h3><ul>"
+        for pair in sorted(pairs, key=lambda p: (p['kind'] != 'flow', p['case'])):
+            label = '并入的细节用例' if pair['kind'] == 'detail' else '流程用例'
+            content += f"<li>{text(label)} {text(pair['case'])}：{text(pair['kind_reason'])}"
+            if pair['case'] in choices:
+                content += '<span> · 已指定单独成场景' + ('，等待重新合并' if pair['kind'] == 'detail' else '') + '</span>'
+            elif local and pair['kind'] == 'detail':
+                action = api + '/cases/' + quote(pair['case'], safe='') + '/flow'
+                content += f" <button type='button' data-case-flow='' data-developer-action='{text(action)}'>改为单独成场景</button>"
+            content += '</li>'
+        content += '</ul>'
+    if not groups:
+        content += '<p>尚无有效配对，请完成合并。</p>'
+    content += '</section>'
+    current = next((t for t in tasks if str(t['id']) == selected), next((t for t in reversed(tasks) if t['kind'] == 'merge'), None))
     content += "<table><thead><tr><th>任务</th><th>触发原因</th><th>状态</th><th>创建时间</th></tr></thead><tbody>"
     for task in tasks:
         content += (f"<tr><td><a href='?task={task['id']}'>#{task['id']}</a></td><td>{text(task['trigger'])}</td>" +
@@ -499,7 +524,7 @@ def merges(workspace, name, tasks, selected=None, *, local=False):
         result = task['result']
         content += '<h3>用例到场景</h3><ul>'
         for pair in result.get('pairs', []):
-            content += f"<li>{text(pair['case'])} → {text('、'.join(pair['scenarios']))}</li>"
+            content += f"<li>{text(pair['case'])} → {text('、'.join(pair['scenarios']))} · {text('细节' if pair['kind'] == 'detail' else '流程')} · {text(pair['kind_reason'])}</li>"
         content += '</ul><h3>原有场景的去向</h3><ul>'
         for item in result.get('scenarios', []):
             action = {'kept': '保留', 'duplicate': '重复', 'conflict': '冲突'}[item['action']]

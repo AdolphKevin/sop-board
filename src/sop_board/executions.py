@@ -84,7 +84,7 @@ class Executions:
                         config_digest=workspace.config_digest, cases_digest=hashlib.sha256(canonical(cases).encode()).hexdigest(),
                         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest() if source.is_file() else '', **product)
         previous = {sid: details[sid]['latest_agent'] for sid in scope if details[sid]['latest_agent']}
-        inputs = dict(document=document, scenes=scenes, entries=workspace.entries, aliases=aliases, previous=previous)
+        inputs = dict(document=document, scenes=scenes, entries=workspace.entries, aliases=aliases, previous=previous, cases=cases)
         return snapshot, inputs
 
     def prepare(self, task):
@@ -133,6 +133,8 @@ class Executions:
                     raise ValueError('入口 ' + name + ' 缺少地址环境变量 ' + variable)
                 addresses[name] = environment[variable]
         (directory / 'entries.json').write_text(canonical(dict(entries=inputs['entries'], addresses=addresses)), encoding='utf-8')
+        referenced = {ref for scene in inputs['scenes'] for ref in scene['refs']}
+        (directory / 'cases.json').write_text(canonical([case for case in inputs['cases'] if case['id'] in referenced]), encoding='utf-8')
         (directory / 'pending.json').write_text(task['scope_json'], encoding='utf-8')
         (directory / 'previous-results.json').write_text(canonical(inputs['previous']), encoding='utf-8')
         (directory / 'evidence').mkdir(exist_ok=True)

@@ -35,22 +35,26 @@ def markdown(data, generated_at):
         ("用例并集的最新上传序号", data["latest_upload"] or "无"),
         ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("沿用场景", summary["reused_count"]), ("生成时间", generated_at)])]
     matched, unmatched = [], []
+    pairings = {p["case"]: p for p in data["pairings"]}
     for case in data["cases"]:
-        item = scenarios.get(case["id"])
+        pair = pairings.get(case["id"])
+        item = scenarios.get(pair["scenarios"][0]) if pair else None
         if item is None:
             unmatched.append([case["id"], case["title"]])
         else:
             a, m = item["latest_agent"], item["latest_manual"]
-            matched.append([case["id"], case["title"], item["scenario"], STATUS[a["status"]] if a else "尚无 Agent 结果",
+            matched.append([case["id"], case["title"], "细节并入" if pair["kind"] == "detail" else "流程", item["scenario"], pair["kind_reason"], STATUS[a["status"]] if a else "尚无 Agent 结果",
                             MANUAL[m["status"]] if m else "尚无人工结果"])
     sections.append("## 用例覆盖\n\n用例覆盖：" + fraction(data["coverage"]) + "\n\n" +
-                    table(["用例", "标题", "对应场景", "Agent 结果", "人工结果"], matched) +
+                    table(["用例", "标题", "类别", "对应场景", "分类理由", "Agent 结果", "人工结果"], matched) +
                     "\n### 尚无对应场景\n\n" + table(["用例", "标题"], unmatched))
     stats = summary["statistics"]
     sections.append("## Agent 统计\n\nAgent 验收通过率：" + fraction(stats["agent_pass_rate"]) +
                     "\n\n一次通过率：" + fraction(stats["first_pass_rate"]) + "\n\n" +
-                    table(["轮次", "种类", "每轮通过率"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
-                                                               fraction(r["pass_rate"])] for r in summary["rounds"]]))
+                    table(["轮次", "种类", "每轮通过率", "沿用场景数"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
+                                                               fraction(r["pass_rate"]), r["reused_count"]] for r in summary["rounds"]]))
+    sections.append("## 沿用明细\n\n按执行轮次列出沿用场景及理由。\n\n" + table(["轮次", "场景", "沿用理由"],
+        [[r["number"], item["scenario"], item["reason"]] for r in summary["rounds"] for item in r["reused_scenarios"]]))
     sections.append("## 人工复测\n\n人工复测通过率：" + fraction(stats["manual_pass_rate"]) +
                     "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
                     table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]

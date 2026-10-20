@@ -67,6 +67,8 @@ def judgment_problems(snapshot, result):
     old = {s['id']: s for n in original.get('sops', []) for s in n['scenarios'] if s['id'] not in cases}
     entries = snapshot.get('entries', {}).get('entries', {})
     seen = set()
+    judgments = {item['id']: item for item in result['cases']}
+    flows = {item['id'] for item in result['cases'] if item['kind'] == 'flow'}
     for item in result['cases']:
         sid = item['id']
         if sid not in cases or sid in seen:
@@ -76,8 +78,21 @@ def judgment_problems(snapshot, result):
             problems.append(f'{sid} actor 不能为空')
         if item['verify'] not in entries:
             problems.append(f"{sid} verify {item['verify']} 不在入口声明中")
-        if sid in cases and 'negative' in cases[sid]['tags'] and item.get('negative_type') not in NEGATIVE_TYPES:
-            problems.append(f'{sid} negative_type 不在枚举内')
+        if not item['kind_reason'].strip():
+            problems.append(f'{sid} 缺少分类理由')
+        if item['kind'] == 'flow':
+            if 'merged_into' in item:
+                problems.append(f'{sid} flow 的 merged_into 必须为 null')
+            if sid in cases and 'negative' in cases[sid]['tags'] and item.get('negative_type') not in NEGATIVE_TYPES:
+                problems.append(f'{sid} negative_type 不在枚举内')
+        else:
+            target = item.get('merged_into')
+            if target not in flows or target not in cases:
+                problems.append(f'{sid} merged_into 必须指向本次生成的流程场景')
+            elif (item['actor'], item['verify']) != (judgments[target]['actor'], judgments[target]['verify']):
+                problems.append(f'{sid} 与所属流程的角色或验收入口不一致，不能并入')
+        if sid in snapshot['forced_flow'] and item['kind'] != 'flow':
+            problems.append(f'{sid} 已被开发者指定为独立流程场景')
     problems += [f'cases 缺少用例 {sid}' for sid in sorted(cases.keys() - seen)]
     seen = set()
     for item in result['scenarios']:
@@ -86,8 +101,8 @@ def judgment_problems(snapshot, result):
             problems.append(f'scenarios 未知或重复场景：{sid}')
         seen.add(sid)
         if item['action'] != 'kept':
-            if item.get('target') not in cases:
-                problems.append(f"{sid} target {item.get('target')} 不存在")
+            if item.get('target') not in flows:
+                problems.append(f"{sid} target {item.get('target')} 不是本次流程场景")
             if not item.get('reason', '').strip():
                 problems.append(f'{sid} 缺少去向理由')
         if item['action'] == 'duplicate' and sid in old:
@@ -106,8 +121,9 @@ def judgment_problems(snapshot, result):
 
 
 def destinations(snapshot, result, problems):
-    sections = {section(c) for c in snapshot['cases']}
-    positive = {section(c) for c in snapshot['cases'] if 'negative' not in c['tags']}
+    flows = {item['id'] for item in result['cases'] if item['kind'] == 'flow'}
+    sections = {section(c) for c in snapshot['cases'] if c['id'] in flows}
+    positive = {section(c) for c in snapshot['cases'] if c['id'] in flows and 'negative' not in c['tags']}
     nodes = {}
     for item in result['nodes']:
         name = item['section']
@@ -176,6 +192,8 @@ def assemble(snapshot, result):
     generated, inferences, notes = {}, [], list(result['notes'])
     for case in sorted(snapshot['cases'], key=lambda c: c['id']):
         decision = judgments[case['id']]
+        if decision['kind'] != 'flow':
+            continue
         initial = case.get('preconditions') or decision.get('initial_state')
         if not isinstance(initial, list) or not initial or any(not v.strip() for v in initial):
             problems.append(f"{case['id']} 缺少 initial_state")
@@ -193,6 +211,13 @@ def assemble(snapshot, result):
             scene['negative_type'] = decision['negative_type']
         generated[case['id']] = scene
         groups[routes[section(case)]]['scenarios'].append(scene)
+    for case in sorted(snapshot['cases'], key=lambda c: c['id']):
+        decision = judgments[case['id']]
+        if decision['kind'] == 'detail':
+            target = generated[decision['merged_into']]
+            target['expected'].extend('[用例 ' + case['id'] + '] ' + value for value in case['expected_results'])
+            target['refs'].append(case['id'])
+            target['forbidden_effects'] = list(dict.fromkeys(target['forbidden_effects'] + snapshot['merged_forbidden_effects'].get(case['id'], [])))
     for sid, item in dispositions.items():
         if item['action'] == 'duplicate':
             target = generated[item['target']]
@@ -248,7 +273,9 @@ def assemble(snapshot, result):
         load_scenarios(raw, entries=set(entries))
     except APIError as error:
         return None, dict(ok=False, problems=error.problems)
-    return raw, dict(ok=True, problems=[], gaps=[], notes=notes, inferences=inferences)
+    pairs = [dict(case=item['id'], scenarios=[item['id'] if item['kind'] == 'flow' else item['merged_into']],
+                  kind=item['kind'], kind_reason=item['kind_reason'], note=item['kind_reason']) for item in result['cases']]
+    return raw, dict(ok=True, problems=[], gaps=[], notes=notes, inferences=inferences, pairs=pairs, scenarios=result['scenarios'])
 
 
 def annotated_yaml(document, inferences):

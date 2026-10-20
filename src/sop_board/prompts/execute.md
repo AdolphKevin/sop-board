@@ -1,7 +1,8 @@
 # 经工作区适配环境执行 SOP 场景
 
 任务目录：$task_directory
-读取 scenarios.yaml、entries.json、pending.json、snapshot.json、changes.json 与 previous-results.json。
+读取 scenarios.yaml、cases.json、entries.json、pending.json、snapshot.json、changes.json 与 previous-results.json。
+场景 expected 中标注“[用例 编号]”的细节预期也必须核对；cases.json 提供这些来源用例的前置条件、步骤和原始预期，应在所属流程的本次执行中验证，不另建场景或遗漏细节。
 看板已经用工作区配置启动了实际环境；按 entries.json 的 operate、observe 和 evidence 操作。
 声明了 driver 时使用该技能；否则 web 使用 playwright-acceptance，http/db 使用 verify-backend-sop-db，agent 使用 build-scenario-validation-loop，cli 经命令行执行。
 地址从 entries.json 的 addresses 取得；各仓库目录由 SOP_REPO_<别名> 环境变量提供。

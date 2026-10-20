@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS sop_versions (
     sha256 TEXT NOT NULL, confirmed_by TEXT NOT NULL, content TEXT NOT NULL, recorded_at TEXT NOT NULL,
     UNIQUE(batch, path, version)
 );
+CREATE TABLE IF NOT EXISTS case_flow_choices (
+    batch INTEGER NOT NULL REFERENCES batches(id), case_id TEXT NOT NULL,
+    chosen_at TEXT NOT NULL, PRIMARY KEY(batch,case_id)
+);
+CREATE TABLE IF NOT EXISTS case_pairings (
+    version INTEGER NOT NULL REFERENCES versions(id), case_id TEXT NOT NULL,
+    case_sha256 TEXT NOT NULL, scenario TEXT NOT NULL, kind TEXT NOT NULL,
+    kind_reason TEXT NOT NULL, PRIMARY KEY(version,case_id)
+);
 CREATE TABLE IF NOT EXISTS case_uploads (
     id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
     number INTEGER NOT NULL, filename TEXT NOT NULL, uploaded_by TEXT NOT NULL,
@@ -137,12 +146,12 @@ class Store:
         with self.connection() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
             tables = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
-            if tables and version != 3:
-                raise ValueError('数据格式不是当前跨仓版本，请使用新的数据目录；不读取或迁移旧库')
+            if tables and version != 4:
+                raise ValueError('数据格式不是当前用例分层版本，请使用新的数据目录；不读取或迁移旧库')
             db.execute("PRAGMA journal_mode=WAL")
             # 新格式数据库的建表保持事务完整；不读取或升级旧数据库。
             try:
-                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nPRAGMA user_version=3;")
+                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nPRAGMA user_version=4;")
                 db.commit()
             except BaseException:
                 db.rollback()

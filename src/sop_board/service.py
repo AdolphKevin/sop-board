@@ -132,6 +132,7 @@ class Service:
             (batch['workspace'], batch['name']))]
         if fixes:
             etag += '-f' + hashlib.sha256(canonical(fixes).encode()).hexdigest()[:12]
+        etag += '-pairs' + hashlib.sha256(canonical([self.case_pairings(db, batch), self.flow_choices(db, batch)]).encode()).hexdigest()[:12]
         etag += '-env' + hashlib.sha256(canonical(self.environment.public()).encode()).hexdigest()[:12]
         if self.automation_paused(db):
             etag += '-a1'
@@ -146,7 +147,7 @@ class Service:
     def report_data(self, db, batch):
         summary = calculate(db, batch)
         cases = self.case_union(db, batch)
-        ids = {s["scenario"] for s in summary["scenarios"]}
+        pairings = self.case_pairings(db, batch, cases)
         merge = db.execute("SELECT id,result_json FROM tasks WHERE workspace=? AND batch=? AND kind='merge' AND status='已完成' ORDER BY id DESC LIMIT 1",
                            (batch['workspace'], batch['name'])).fetchone()
         fixes, fix_statistics = self.batch_fixes(db, batch)
@@ -154,7 +155,7 @@ class Service:
                     fixes=fixes, fix_statistics=fix_statistics,
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
-                    coverage=ratio(sum(c["id"] in ids for c in cases), len(cases)),
+                    pairings=pairings, coverage=ratio(len(pairings), len(cases)),
                     latest_upload=db.execute("SELECT COALESCE(MAX(number),0) FROM case_uploads WHERE batch=?", (batch["id"],)).fetchone()[0])
 
     def report(self, key, name):
@@ -195,7 +196,7 @@ class Service:
         if not name or name in ('.', '..') or any(c in name for c in ('/', '\\', '\0')):
             reject(422, 'batch-invalid', 'batch', '批次名称不能含路径分隔符')
         document = load_cases(body)
-        with self.store.transaction() as db:
+        with self.workspace_lock, self.store.transaction() as db:
             if not db.execute("SELECT 1 FROM workspaces WHERE key=?", (key,)).fetchone():
                 reject(404, "workspace-not-found", "workspace", "工作区不存在")
             db.execute("INSERT OR IGNORE INTO batches(workspace,name,path,product_digest) VALUES (?,?,'','')", (key, name))
@@ -228,6 +229,25 @@ class Service:
             "(SELECT 1 FROM case_versions newer WHERE newer.batch=v.batch AND newer.case_id=v.case_id AND newer.upload>v.upload) "
             "ORDER BY v.case_id", (batch["id"],))]
 
+    def flow_choices(self, db, batch):
+        return [r[0] for r in db.execute('SELECT case_id FROM case_flow_choices WHERE batch=? ORDER BY case_id', (batch['id'],))]
+
+    def case_pairings(self, db, batch, cases=None):
+        cases = self.case_union(db, batch) if cases is None else cases
+        hashes = {c['id']: hashlib.sha256(canonical(c).encode()).hexdigest() for c in cases}
+        version = self.latest_version(db, batch)
+        if not version:
+            return []
+        current = {r[0] for r in db.execute('SELECT scenario FROM scenarios WHERE batch=? AND current=1', (batch['id'],))}
+        return [dict(case=r['case_id'], scenarios=[r['scenario']], kind=r['kind'], kind_reason=r['kind_reason'], note=r['kind_reason'])
+                for r in db.execute('SELECT * FROM case_pairings WHERE version=? ORDER BY case_id', (version['id'],))
+                if r['scenario'] in current and hashes.get(r['case_id']) == r['case_sha256']]
+
+    def save_case_pairings(self, db, version, pairs):
+        db.execute('DELETE FROM case_pairings WHERE version=?', (version,))
+        db.executemany('INSERT INTO case_pairings(version,case_id,case_sha256,scenario,kind,kind_reason) VALUES (?,?,?,?,?,?)',
+            [(version, p['case'], p['case_sha256'], p['scenarios'][0], p['kind'], p['kind_reason']) for p in pairs])
+
     def read_cases(self, key, name, include_state=False):
         with self.store.connection() as db:
             db.execute("BEGIN")
@@ -236,8 +256,8 @@ class Service:
                             uploaded_at=row["uploaded_at"], case_count=row["case_count"], added=row["added"], updated=row["updated"])
                        for row in db.execute("SELECT * FROM case_uploads WHERE batch=? ORDER BY number", (batch["id"],))]
             cases = self.case_union(db, batch)
-            scenarios = {row[0] for row in db.execute("SELECT scenario FROM scenarios WHERE batch=? AND current=1", (batch["id"],))}
-            return dict(uploads=uploads, cases=cases, coverage=ratio(sum(item["id"] in scenarios for item in cases), len(cases)),
+            pairings = self.case_pairings(db, batch, cases)
+            return dict(uploads=uploads, cases=cases, pairings=pairings, flow_choices=self.flow_choices(db, batch), coverage=ratio(len(pairings), len(cases)),
                         **(dict(etag=self.batch_etag(db, batch)) if include_state else {}))
 
     def cases_yaml(self, key, name):
@@ -543,7 +563,7 @@ class Service:
             scenario = next(item for item in summary["scenarios"] if item["scenario"] == body["scenario"])
             return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"])
 
-    def push(self, key, batch, body):
+    def push(self, key, batch, body, *, pairings=None):
         validate_push(body)
         document = load_scenarios(body["content"])
         if document["metadata"]["batch"] != batch:
@@ -564,7 +584,7 @@ class Service:
                       for s in sorted(computed.keys() | supplied.keys()) if computed.get(s) != supplied.get(s)]
         if mismatches:
             raise APIError(409, "fingerprint-mismatch", mismatches)
-        with self.store.transaction() as db:
+        with self.workspace_lock, self.store.transaction() as db:
             db.execute("INSERT INTO batches(workspace,name,path,product_digest) VALUES (?,?,?,?) "
                        "ON CONFLICT(workspace,name) DO UPDATE SET path=excluded.path, product_digest=excluded.product_digest",
                        (key, batch, body["path"], body["product_digest"]))
@@ -572,6 +592,8 @@ class Service:
             self.save_sop_sources(db, batch_id, body.get('sop_sources', []))
             previous = db.execute("SELECT * FROM versions WHERE batch=? ORDER BY version DESC LIMIT 1", (batch_id,)).fetchone()
             if previous and previous["content"] == body["content"]:
+                if pairings is not None:
+                    self.save_case_pairings(db, previous["id"], pairings)
                 return dict(ok=True, version=previous["version"], added=[], changed=[], removed=[], unchanged=True)
             version = previous["version"] + 1 if previous else 1
             old = {row["scenario"]: row["fingerprint"] for row in db.execute(
@@ -583,6 +605,9 @@ class Service:
                        "VALUES (?,?,?,?,?,?,?,?,?)", (batch_id, version, body["content"],
                        hashlib.sha256(body["content"].encode()).hexdigest(), body["path"],
                        body["commit"], body["dirty"], body["pushed_by"], now()))
+            if pairings is not None:
+                version_id = db.execute('SELECT id FROM versions WHERE batch=? AND version=?', (batch_id, version)).fetchone()[0]
+                self.save_case_pairings(db, version_id, pairings)
             db.execute("UPDATE scenarios SET current=0 WHERE batch=?", (batch_id,))
             for node, scenario in scenarios:
                 db.execute("INSERT INTO scenarios(batch,scenario,fingerprint,node,title,polarity,priority,verify,body,current) "
@@ -592,7 +617,7 @@ class Service:
                            (batch_id, scenario["id"], fingerprint(scenario), node,
                            scenario["title"], scenario["polarity"], scenario["priority"], scenario["verify"],
                            canonical(scenario)))
-        landed = body['pushed_by'].startswith('看板合并 #')
+        landed = pairings is not None
         with self.store.connection() as db:
             has_cases = bool(self.case_union(db, self.batch(db, key, batch)))
         if self.execution_callback and self.workspace.configured and (landed or not has_cases):

@@ -88,6 +88,7 @@ def calculate(db, batch):
         results = [r for r in rows if r["round_id"] == item["id"]]
         item["pass_rate"] = ratio(sum(r["status"] == "pass" for r in results), len(results))
         item["reused_count"] = sum(r["reused"] for r in results)
+        item["reused_scenarios"] = [dict(scenario=r["scenario"], reason=r["note"][3:].strip()) for r in results if r["reused"]]
         rounds.append(item)
     latest_agent = next((r for r in reversed(rounds) if r["kind"] == "agent"), None)
     return dict(reused_count=sum(bool(s["latest_agent"] and s["latest_agent"]["reused"]) for s in details), statistics=statistics, queues=queues, queue_counts={k: len(v) for k, v in queues.items()},

@@ -15,8 +15,10 @@ STATUS_IN = {value: key for key, value in STATUS_OUT.items()}
 def export_results(data, jira_url):
     scenarios = {item["scenario"]: item for item in data["summary"]["scenarios"]}
     results = []
+    pairings = {p["case"]: p for p in data["pairings"]}
     for case in data["cases"]:
-        scenario = scenarios.get(case["id"])
+        pair = pairings.get(case["id"])
+        scenario = scenarios.get(pair["scenarios"][0]) if pair else None
         if scenario is None:
             continue
         latest = max((r for r in [scenario["latest_agent"], scenario["latest_manual"]] if r),
@@ -27,7 +29,7 @@ def export_results(data, jira_url):
                    executor=latest["executor"], tested_at=latest["executed_at"])
         finding = latest.get("finding") or ""
         jira = re.fullmatch(re.escape(jira_url) + r"/browse/(" + ISSUE_KEY + r")(?:[?#].*)?", finding) if jira_url else None
-        notes = []
+        notes = (["细节用例并入场景 " + scenario["scenario"] + "；此行引用该流程的结果"] if pair["kind"] == "detail" else [])
         if jira:
             row["jira_issue"] = jira[1]
         elif finding.startswith(("http://", "https://")):

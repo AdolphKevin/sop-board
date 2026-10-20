@@ -158,10 +158,11 @@ class Tasks:
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 
-    def enqueue_merge(self, key, name, trigger="重新合并"):
+    def enqueue_merge(self, key, name, trigger="重新合并", force_case=None):
         workspace = self.service.workspace
+        workspace.reload()
         if not workspace.configured:
-            if trigger == '重新合并':
+            if trigger == '重新合并' or force_case is not None:
                 reject(409, 'workspace-not-ready', 'workspace', '尚未搭建，请先配置工作区')
             return None
         workspace.scenario_path(name)
@@ -173,6 +174,15 @@ class Tasks:
                 return None
             if not cases:
                 reject(409, 'cases-missing', 'cases', '批次没有用例，无法重新合并')
+            if force_case is not None:
+                if force_case not in {c['id'] for c in cases}:
+                    reject(404, 'case-not-found', 'case', '用例不存在')
+                known = force_case in self.service.flow_choices(db, batch)
+                pair = next((p for p in self.service.case_pairings(db, batch, cases) if p['case'] == force_case), None)
+                if not known and (not pair or pair['kind'] != 'detail'):
+                    reject(409, 'case-kind-invalid', 'case', '当前合并中此用例不是细节用例')
+                db.execute('INSERT OR IGNORE INTO case_flow_choices(batch,case_id,chosen_at) VALUES (?,?,?)', (batch['id'], force_case, now()))
+            forced_flow = self.service.flow_choices(db, batch)
             upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
             from .repositories import read_sop_sources
             entries = dict(entries=workspace.entries)
@@ -185,7 +195,7 @@ class Tasks:
                     db.execute('INSERT INTO node_numbers VALUES (?,?,?)', (batch['id'], name_, nodes[name_]))
             snapshot = dict(cases=cases, scenarios=version['content'] if version else '', entries=entries,
                             batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'], nodes=nodes,
-                            config_digest=workspace.config_digest)
+                            config_digest=workspace.config_digest, forced_flow=forced_flow)
             # 只继承已有记录证明曾经并入、且仍在当前场景中的禁止副作用。
             # 任意外来用例场景上的额外断言不因此成为确定字段的输入。
             transferred = {}
@@ -195,14 +205,17 @@ class Tasks:
                     if disposition['action'] == 'duplicate':
                         transferred.setdefault(disposition['target'], set()).update(disposition['forbidden_effects'])
             original = yaml.safe_load(snapshot['scenarios']) or {}
+            existing = {scene['id']: scene for node in original.get('sops', []) for scene in node['scenarios']}
+            owners = {r['case_id']: r['scenario'] for r in db.execute('SELECT case_id,scenario FROM case_pairings WHERE version=?',
+                     (version['id'],))} if version else {}
             snapshot['merged_forbidden_effects'] = {
-                scene['id']: [effect for effect in scene['forbidden_effects'] if effect in transferred[scene['id']]]
-                for node in original.get('sops', []) for scene in node['scenarios'] if scene['id'] in transferred}
+                case: [effect for effect in existing[owners[case]]['forbidden_effects'] if effect in effects]
+                for case, effects in transferred.items() if case in owners and owners[case] in existing}
             snapshot['sop_sources'] = sop_sources
             scenario_sha = version['sha256'] if version else ''
             # 上传序号和已分配节点不是业务输入；配置改变也必须生成新快照。
             inputs = dict(cases=dict(metadata=snapshot['case_metadata'], test_cases=cases),
-                          scenarios=scenario_sha, entries=entries, config_digest=snapshot['config_digest'],
+                          scenarios=scenario_sha, entries=entries, config_digest=snapshot['config_digest'], forced_flow=forced_flow,
                           sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
             digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
             states = ('排队中', '运行中') if trigger == '重新合并' else (
@@ -308,6 +321,27 @@ class Tasks:
                             void_reason='', rounds_json='[]', attempt=task['attempt'] + 1)
         return dict(ok=True, task=self.read(task_id))
 
+    def prepare_merge(self, task):
+        directory = self.directory(task['id'])
+        directory.mkdir(parents=True, exist_ok=True)
+        snapshot = json.loads(task['input_json'])
+        prompt = files('sop_board').joinpath('prompts/merge.md').read_text(encoding='utf-8')
+        (directory / 'cases.yaml').write_text(yaml.safe_dump(dict(metadata=snapshot['case_metadata'], test_cases=snapshot['cases']), allow_unicode=True), encoding='utf-8')
+        (directory / 'scenarios.yaml').write_text(snapshot['scenarios'], encoding='utf-8')
+        (directory / 'entries.yaml').write_text(yaml.safe_dump(snapshot['entries'], allow_unicode=True), encoding='utf-8')
+        (directory / 'nodes.json').write_text(canonical(snapshot['nodes']), encoding='utf-8')
+        for source in snapshot['sop_sources']:
+            target = directory / 'sop' / source['path']
+            if directory not in target.resolve().parents or '..' in Path(source['path']).parts:
+                raise ValueError('SOP 原文路径越界')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source['content'], encoding='utf-8')
+        (directory / 'case_choices.json').write_text(canonical(dict(forced_flow=snapshot['forced_flow'])), encoding='utf-8')
+        (directory / 'input.json').write_text(task['input_json'], encoding='utf-8')
+        (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
+        (directory / 'schema.json').write_text(canonical(SCHEMA), encoding='utf-8')
+        return prompt
+
     def execute(self, task):
         directory = self.directory(task['id'])
         process = None
@@ -318,21 +352,7 @@ class Tasks:
         outcome = "已完成"
         try:
             directory.mkdir(parents=True, exist_ok=True)
-            snapshot = json.loads(task['input_json'])
-            prompt = files('sop_board').joinpath('prompts/merge.md').read_text(encoding='utf-8')
-            (directory / 'cases.yaml').write_text(yaml.safe_dump(dict(metadata=snapshot['case_metadata'], test_cases=snapshot['cases']), allow_unicode=True), encoding='utf-8')
-            (directory / 'scenarios.yaml').write_text(snapshot['scenarios'], encoding='utf-8')
-            (directory / 'entries.yaml').write_text(yaml.safe_dump(snapshot['entries'], allow_unicode=True), encoding='utf-8')
-            (directory / 'nodes.json').write_text(canonical(snapshot['nodes']), encoding='utf-8')
-            for source in snapshot['sop_sources']:
-                target = directory / 'sop' / source['path']
-                if directory not in target.resolve().parents or '..' in Path(source['path']).parts:
-                    raise ValueError('SOP 原文路径越界')
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(source['content'], encoding='utf-8')
-            (directory / 'input.json').write_text(task['input_json'], encoding='utf-8')
-            (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
-            (directory / 'schema.json').write_text(canonical(SCHEMA), encoding='utf-8')
+            prompt = self.prepare_merge(task)
             with self.lock:
                 if self.stopping.is_set() or self.read(task['id'])['status'] != '运行中':
                     return
@@ -348,29 +368,10 @@ class Tasks:
             if code:
                 error = error or codex_failure(directory, code)
             try:
-                final = (directory / 'final.json').read_text(encoding='utf-8')
-                if not final.strip():
-                    raise FileNotFoundError()
-                result = read_merge_output(final)
                 if not error:
-                    raw, check = assemble(snapshot, result)
-                    if check['ok']:
-                        check['pairs'] = [dict(case=c['id'], scenarios=[c['id']], note='同编号用例场景') for c in snapshot['cases']]
-                        check['scenarios'] = result['scenarios']
+                    outcome, check = self.consume_merge_output(task)
                     if not check['ok']:
                         error = '; '.join(str(p) for p in check['problems'])
-                    elif check.get('gaps'):
-                        outcome = '待补充'
-                    elif raw is not None:
-                        (directory / 'scenario-file.yaml').write_text(raw, encoding='utf-8')
-                        pairs = dict(covered=[dict(case=c['id'], scenarios=[c['id']], note='同编号用例场景') for c in snapshot['cases']], conflict=[], disposed=[])
-                        (directory / 'pairs.json').write_text(canonical(pairs), encoding='utf-8')
-                        with self.lock:
-                            if not self.stopping.is_set() and self.read(task['id'])['status'] == '运行中':
-                                try:
-                                    outcome = self.land(task, raw, check)
-                                except (OSError, ValueError, sqlite3.Error, APIError) as problem:
-                                    error = f'合并结果无法写入工作区：{problem}'
             except FileNotFoundError:
                 error = error or 'Codex 没有写出最终输出'
             except (OSError, json.JSONDecodeError, RecursionError):
@@ -416,12 +417,44 @@ class Tasks:
                                 result_json=canonical(check),
                                 result_digest=hashlib.sha256((directory / 'final.json').read_bytes()).hexdigest() if (directory / 'final.json').is_file() else None)
 
+    def consume_merge_output(self, task):
+        directory = self.directory(task['id'])
+        final = (directory / 'final.json').read_text(encoding='utf-8')
+        if not final.strip():
+            raise FileNotFoundError('Codex 没有写出最终输出')
+        snapshot = json.loads(task['input_json'])
+        result = read_merge_output(final)
+        raw, check = assemble(snapshot, result)
+        if not check['ok']:
+            return '失败', check
+        if check.get('gaps'):
+            return '待补充', check
+        (directory / 'scenario-file.yaml').write_text(raw, encoding='utf-8')
+        (directory / 'pairs.json').write_text(canonical(dict(covered=check['pairs'], conflict=[], disposed=[])), encoding='utf-8')
+        with self.lock:
+            if self.stopping.is_set() or self.read(task['id'])['status'] != '运行中':
+                return '已中断', dict(check, ok=False, problems=['合并任务已停止，未写入工作区'])
+            try:
+                return self.land(task, raw, check), check
+            except (OSError, ValueError, sqlite3.Error, APIError) as problem:
+                return '失败', dict(check, ok=False, problems=[f'合并结果无法写入工作区：{problem}'])
+
     def land(self, task, raw, check):
         workspace = self.service.workspace
         snapshot = json.loads(task['input_json'])
         workspace.reload()
         if not workspace.configured or snapshot['config_digest'] != workspace.config_digest:
             check['problems'] = ['工作区配置变化，请重新合并']
+            return '待同步'
+        with self.store.connection() as db:
+            batch = self.service.batch(db, task['workspace'], task['batch'])
+            cases = self.service.case_union(db, batch)
+            metadata = json.loads(db.execute('SELECT metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()[0])
+            choices = self.service.flow_choices(db, batch)
+            version = self.service.latest_version(db, batch)
+        if (canonical(cases) != canonical(snapshot['cases']) or metadata != snapshot['case_metadata']
+                or choices != snapshot['forced_flow'] or (version['content'] if version else '') != snapshot['scenarios']):
+            check['problems'] = ['用例、场景或开发者分类选择变化，请重新合并']
             return '待同步'
         source = workspace.scenario_path(task['batch'])
         current = hashlib.sha256(source.read_bytes()).hexdigest() if source.exists() else ''
@@ -435,10 +468,12 @@ class Tasks:
         temporary = source.with_suffix('.yaml.tmp')
         temporary.write_text(raw, encoding='utf-8')
         temporary.replace(source)
+        case_hashes = {c['id']: hashlib.sha256(canonical(c).encode()).hexdigest() for c in snapshot['cases']}
         self.service.push(workspace.name, task['batch'], dict(workspace=dict(name=workspace.name),
             path=str(source.relative_to(workspace.root)), content=raw, pushed_by=f"看板合并 #{task['id']}",
             commit=info['commit'], dirty=info['dirty'], product_digest=info['product_digest'],
-            fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}))
+            fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}),
+            pairings=[dict(p, case_sha256=case_hashes[p['case']]) for p in check['pairs']])
         return '已完成'
 
     def run(self):

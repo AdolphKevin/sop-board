@@ -48,6 +48,22 @@
             "items": {
               "type": "string"
             }
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "flow",
+              "detail"
+            ]
+          },
+          "kind_reason": {
+            "type": "string"
+          },
+          "merged_into": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -55,7 +71,10 @@
           "actor",
           "verify",
           "negative_type",
-          "initial_state"
+          "initial_state",
+          "kind",
+          "kind_reason",
+          "merged_into"
         ],
         "additionalProperties": false
       }
