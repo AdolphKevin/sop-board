@@ -161,16 +161,28 @@ def batch(workspace, data, *, environment=None, local=False):
                       f"<h1>批次 {text(data['name'])}</h1><p>尚无场景，测试岗上传用例后由合并生成</p>"
                       f"<p id='agent-state'>{agent_state(data)}</p>{report_link}"
                       f"<a href='{text(base + '/cases')}'>用例页</a>", watch=(workspace, data["name"], data["etag"]))
-    metrics = "".join(f"<div id='metric-{key}'><dt>{label}</dt><dd>{ratio(data['statistics'][key])}</dd></div>"
-                      for key, label in [("agent_pass_rate", "Agent 验收通过率"), ("manual_pass_rate", "人工复测通过率"),
-                      ("retest_coverage", "复测覆盖率"), ("first_pass_rate", "一次通过率"),
-                      ("executed_progress", "已执行进度"), ("reviewed_progress", "已复核进度")])
+    def metrics_for(items):
+        return "".join(f"<div id='metric-{key}'><dt>{label}</dt><dd>{ratio(data['statistics'][key])}</dd></div>"
+                       for key, label in items)
+
+    metrics = metrics_for([("executed_progress", "已执行进度"), ("agent_pass_rate", "Agent 验收通过率"),
+                           ("reviewed_progress", "已复核进度")])
+    more_metrics = metrics_for([("manual_pass_rate", "人工复测通过率"), ("retest_coverage", "复测覆盖率"),
+                                ("first_pass_rate", "一次通过率")])
+    scenario_names = data.get('scenario_titles', {})
+    descriptions = {'pending': '尚未完成执行的场景', 'issues': '失败或受阻，需要跟进', 'retest': 'Agent 已通过，等待人工复核'}
+    active_queue = next((key for key in ('issues', 'pending', 'retest') if data['queue_counts'][key]), 'retest')
     queues = []
     for key, label in [("pending", "待执行"), ("issues", "问题"), ("retest", "复测")]:
-        links = "".join(f"<li><a data-scenario='{text(s)}' href='{text(base + '/s/' + quote(s, safe=''))}'>{text(s)}</a></li>"
+        links = "".join(f"<li><a data-scenario='{text(s)}' href='{text(base + '/s/' + quote(s, safe=''))}'>"
+                        f"<strong class='queue-title'>{text(scenario_names.get(s, s))}</strong>"
+                        f"<small class='queue-id'>{text(s)}</small></a></li>"
                         for s in data["queues"][key])
-        queues.append(f"<section id='queue-{key}'><h2>{label} <span data-count='{key}'>{data['queue_counts'][key]}</span></h2>"
-                      f"<ul>{links}</ul>" + ("" if links else "<p>暂无场景</p>") + "</section>")
+        emphasis = ' queue-active' if key == active_queue else ''
+        queues.append(f"<section id='queue-{key}' class='queue-panel{emphasis}'><div class='section-heading'>"
+                      f"<h2>{label} <span data-count='{key}'>{data['queue_counts'][key]}</span></h2>"
+                      f"<p>{descriptions[key]}</p></div><ul class='queue-list'>{links}</ul>" +
+                      ("" if links else "<p class='empty-state'>暂无场景</p>") + "</section>")
     rounds = "".join(f"<tr data-round='{r['number']}'><th scope='row'>第 {r['number']} 轮</th>"
                      f"<td>{'Agent' if r['kind'] == 'agent' else '人工'}</td><td>{r['version']}</td>"
                      f"<td>{text(r['submitted_by'])}</td><td>{time_tag(r['submitted_at'])}</td>"
@@ -180,17 +192,28 @@ def batch(workspace, data, *, environment=None, local=False):
                        f"<td><a href='{text(item['defect_url'])}'>{text(item['defect_url'])}</a></td>"
                        f"<td>{text(item['agent_executor'])}</td><td>{text(item['marker'])}</td></tr>"
                        for item in data["misjudgments"])
-    content = (f"<nav><a href='/'>全部工作区</a></nav>{batch_nav(workspace, data['name'], 'overview')}<h1>批次 {text(data['name'])}</h1>"
-               f"<p>场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条 · 沿用 {data['reused_count']} 条</p>"
-               f"<p id='agent-state'>{agent_state(data)}</p>{report_link}"
-               f"<p>场景文件推送时间：{time_tag(data['pushed_at'], 'pushed-at')}</p>"
-               f"<dl class='metrics'>{metrics}</dl><div class='queues'>{''.join(queues)}</div>"
-               "<section><h2>轮次记录</h2><div class='table-scroll'><table><thead><tr><th>轮次</th><th>种类</th>"
+    access = '工作区已搭建' if data.get('configured') else '尚未搭建'
+    rounds = rounds or '<tr><td colspan="7" class="empty-state">尚无执行轮次</td></tr>'
+    findings = findings or '<tr><td colspan="4" class="empty-state">暂无误判记录</td></tr>'
+    content = ("<nav class='breadcrumbs' aria-label='位置'><a href='/'>全部工作区</a><span>/</span><span>批次总览</span></nav>"
+               f"<div class='page-heading'><div><h1>验收总览</h1><p class='batch-id'>{text(data['name'])}</p>"
+               f"<p class='batch-meta'><span class='access-badge'>{access}</span> 场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条 · 沿用 {data['reused_count']} 条</p></div>"
+               f"<div class='page-actions'><a class='button button-primary' href='{text(base + '/scenarios')}'>查看场景</a>"
+               f"<a class='button button-secondary' href='{text(api + '/report.md')}'>导出报告</a></div></div>"
+               f"{batch_nav(workspace, data['name'], 'overview')}"
+               f"<div class='execution-banner'><span class='status-label'>执行状态</span><p id='agent-state'>{agent_state(data)}</p></div>"
+               f"<dl class='metrics primary-metrics'>{metrics}</dl>"
+               "<details class='metric-details' data-disclosure='metrics'><summary>更多验收指标</summary>"
+               f"<dl class='metrics'>{more_metrics}</dl></details>"
+               f"<div class='workspace-heading'><h2>场景工作区</h2><span>{data['scenario_count']} 条场景</span></div>"
+               f"<div class='queues'>{''.join(queues)}</div>"
+               "<section class='rounds-panel'><h2>轮次记录</h2><div class='table-scroll' tabindex='0' role='region' aria-label='轮次记录表'><table><thead><tr><th>轮次</th><th>种类</th>"
                "<th>场景版本</th><th>提交人</th><th>提交时间</th><th>每轮通过率</th><th>导出</th></tr></thead>"
                f"<tbody>{rounds}</tbody></table></div></section>"
-               f"<section id='misjudgments'><h2>误判明细 <span id='misjudgment-count'>{len(data['misjudgments'])}</span></h2>"
+               f"<section id='misjudgments' class='misjudgments-panel'><h2>误判明细 <span id='misjudgment-count'>{len(data['misjudgments'])}</span></h2>"
                "<div class='table-scroll'><table><thead><tr><th>场景</th><th>缺陷链接</th><th>Agent 执行者</th><th>标记人</th></tr></thead>"
-               f"<tbody>{findings}</tbody></table></div></section>")
+               f"<tbody>{findings}</tbody></table></div></section>"
+               f"{report_link}<p class='page-footnote'>场景文件推送时间：{time_tag(data['pushed_at'], 'pushed-at')}</p>")
     return layout("批次 " + data["name"], content, watch=(workspace, data["name"], data["etag"]))
 
 
@@ -271,10 +294,12 @@ def scenario(data, jira_url=""):
 
 
 def identity_bar():
-    return ("<section id='review-identity'><h2>复核身份</h2><fieldset><legend>标记人（可随时更换）</legend>"
+    return ("<section id='review-identity' class='identity-panel'><details data-disclosure='identity'>"
+            "<summary><span>复核身份</span><span class='disclosure-hint'>标记人设置</span></summary>"
+            "<div class='identity-content'><fieldset><legend>标记人（可随时更换）</legend>"
             "<label>标记人<input name='marker' autocomplete='off'></label>"
             "<button type='button' id='save-identity'>保存标记人</button></fieldset>"
-            "<p id='identity-message' role='status' aria-live='polite'></p></section>")
+            "<p id='identity-message' role='status' aria-live='polite'></p></div></details></section>")
 
 
 def review_controls(workspace, name, item):
