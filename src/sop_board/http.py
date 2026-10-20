@@ -111,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/scenarios", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True), service.jira_url).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True), service.jira_url, local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -177,7 +177,9 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/executions", path)):
-                result = self.server.tasks.enqueue_execution(unquote(match[1]), unquote(match[2]))
+                if not isinstance(body, dict) or body.keys() - {'scope'}:
+                    reject(422, 'invalid-scope', 'body', '执行请求只接受 scope 字段')
+                result = self.server.tasks.enqueue_execution(unquote(match[1]), unquote(match[2]), body.get('scope', 'pending'))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/(retry|cancel)", path)):
                 result = self.server.tasks.action(int(match[1]), match[2])
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/approve", path)):

@@ -1,0 +1,161 @@
+# SOP-BOARD-8：分散仓库的工作区、项目验证技能与一键验证的验收场景
+# 预期依据 docs/designs/SOP-BOARD-8.md（修订 1）的 D37–D39。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# "分散双仓"：执行者在两个互不包含的临时目录各建一个 Git 仓库，app（HTTP 服务，调用 lib）位于 <临时根>/a/app，lib 位于 <临时根>/b/lib；两仓都在 main 且干净，origin 为明确标注的演示地址。
+# 搭建由新开的代理会话按 `sop-board guide` 完成；执行者在搭建完成前不手写配置、不手写验证技能。
+
+metadata:
+  requirement: "sop-board：分散仓库的工作区、搭建时生成项目验证技能、一键增量与全量验证"
+  batch: "sop-board-8"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/designs/SOP-BOARD-8.md 的 D37–D39"
+      version: "修订 1（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "workspace", "verification-skill"]
+
+sops:
+  - id: SOP-81
+    title: 为分散的仓库登记工作区并搭建
+    actor: 开发者
+    entry: 开发者打开的 Codex 会话与 sop-board 命令
+    scenarios:
+      - id: SOP-81-P01
+        polarity: positive
+        title: 在一个仓库的 Codex 会话里请代理安装，指定另一处的仓库，登记后在数据目录会话中完成搭建并启动
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["分散双仓已准备，本机没有名为 demo 的看板数据目录", "sop-board 候选版可用 uv tool install 从本地检出安装"]
+        steps: ["在 app 目录打开新的 Codex 会话，说：按 sop-board 的安装说明安装并搭建", "代理询问工作区名称和仓库时，回答 demo，以及 app 与 lib 的绝对路径", "按代理给出的命令新开会话继续，回答它的提问", "代理报告后，在任意目录运行 sop-board check demo，再运行 sop-board demo"]
+        expected: ["代理运行了 sop-board init demo 并给出两个仓库路径，init 输出数据目录、app 与 lib 的别名和身份，以及 codex -C <数据目录> 的继续命令", "继续搭建的会话以数据目录为工作目录，代理写入的文件都在 ~/.sop-board/demo/ 下", "config.yaml 的 repos 为两个绝对路径，scenarios 为 {repo, path} 对象", "sop-board check demo 五步全部通过，退出码 0", "页面显示工作区 demo、app 与 lib 两个仓库身份，环境就绪"]
+        forbidden_effects: ["app 或 lib 出现新文件或改动（git status 不干净）", "执行者手写配置"]
+      - id: SOP-81-P02
+        polarity: positive
+        title: 在已登记仓库内不带名称启动时自动找到所属工作区
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-81-P01 已完成，看板已停止"]
+        steps: ["在 lib 仓库的子目录运行 sop-board check", "在 lib 仓库根目录运行 sop-board --port <空闲端口>"]
+        expected: ["两条命令都使用工作区 demo 及其数据目录", "自检报告写入 ~/.sop-board/demo/checks/", "启动输出的工作区为 demo"]
+        forbidden_effects: ["新建另一个数据目录"]
+      - id: SOP-81-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 登记的目录不是仓库根目录或没有 origin 时拒绝登记
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["分散双仓已准备，另有一个没有 origin 的临时 Git 仓库 noorigin，本机没有名为 bad 的数据目录"]
+        steps: ["运行 sop-board init bad <app 的子目录 src> <noorigin 的路径>"]
+        expected: ["退出码 1", "输出逐个说明：src 不是 Git 工作树根目录，noorigin 没有可用的 origin"]
+        forbidden_effects: ["创建 ~/.sop-board/bad/", "改动 app 或 noorigin"]
+      - id: SOP-81-N02
+        polarity: negative
+        negative_type: not-found
+        title: 当前目录不属于任何工作区时提示登记
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["一个未在任何工作区 config.yaml 中声明的临时 Git 仓库 other"]
+        steps: ["在 other 目录运行 sop-board"]
+        expected: ["退出码 1", "输出提示用 sop-board init <名称> <仓库目录>... 登记，或用 sop-board <名称> 指定已有工作区"]
+        forbidden_effects: ["启动看板或创建数据目录"]
+      - id: SOP-81-N03
+        polarity: negative
+        negative_type: duplicate
+        title: 当前仓库属于多个工作区时要求指定名称
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["SOP-81-P01 已完成", "执行者另用 sop-board init demo2 <lib 的路径> 登记了第二个工作区"]
+        steps: ["在 lib 目录运行 sop-board check"]
+        expected: ["退出码 1", "输出列出 demo 与 demo2，请开发者指定名称"]
+        forbidden_effects: ["对任一工作区运行自检或启动环境"]
+
+  - id: SOP-82
+    title: 搭建时生成项目验证技能，执行与复测按它操作
+    actor: 开发者
+    entry: 搭建会话、sop-board check 与本机看板页面
+    scenarios:
+      - id: SOP-82-P01
+        polarity: positive
+        title: 代理按项目实际情况写出验证技能，其他成员不需要个人通用技能也能自检通过并执行
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["SOP-81-P01 的搭建会话进行中", "执行者用空目录作为 SOP_BOARD_SKILLS_DIR 运行看板与自检，模拟没有个人技能的成员"]
+        steps: ["回答代理关于入口、登录、数据核对和清理的提问", "代理报告后查看 ~/.sop-board/demo/skills/ 与搭建报告", "运行 sop-board check demo，启动看板，上传 2 条用例并等待合并", "在批次概览页点执行待执行场景，等待完成"]
+        expected: ["config.yaml 的 skill 指向 skills/<名称>/SKILL.md，文件头有 name 与 description，每个入口一个含入口名的二级标题", "技能写明各入口的操作工具、地址变量、登录方式与由谁登录、观察位置、留证与清理方法，账号与凭据只写位置和变量名", "搭建报告单独列出技能内容摘要并请开发者确认", "自检第 5 步为验证技能并通过，列出技能路径与各入口", "执行任务的 prompt.md 要求先读取该技能，会话事件中有读取该 SKILL.md 的记录，每条场景有结果与证据"]
+        forbidden_effects: ["技能或报告中出现凭据值", "自检要求 playwright-acceptance、verify-backend-sop-db 等个人技能", "技能文件写入 app 或 lib"]
+      - id: SOP-82-N01
+        polarity: negative
+        negative_type: not-found
+        title: 验证技能缺失或漏写入口时工作区不就绪
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["SOP-82-P01 已完成，看板运行中"]
+        steps: ["把 SKILL.md 中一个入口的二级标题删除", "等待页面轮询，查看批次概览页", "恢复该标题后再删除整个 SKILL.md，运行 sop-board check demo"]
+        expected: ["页面显示尚未搭建，问题写明缺少该入口的说明，两个验证按钮停用并写明原因", "直接请求执行接口返回 409 workspace-not-ready", "自检第 5 步失败并写明验证技能不存在，退出码 1"]
+        forbidden_effects: ["创建执行任务"]
+      - id: SOP-82-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 执行期间验证技能被修改时本轮作废
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state: ["SOP-82-P01 已完成，SKILL.md 已恢复，自检通过", "批次有待执行场景"]
+        steps: ["点执行待执行场景", "执行会话运行中时，在 SKILL.md 末尾追加一行说明", "等待任务结束"]
+        expected: ["任务为已作废，原因含验证技能变化", "没有登记新的轮次"]
+        forbidden_effects: ["登记本轮结果"]
+
+  - id: SOP-83
+    title: 本机一键增量或全量验证
+    actor: 开发者
+    entry: 本机看板页面
+    scenarios:
+      - id: SOP-83-P01
+        polarity: positive
+        title: 在首页批次条目点执行待执行场景，启动 Codex 只验证待执行的场景
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["SOP-82-P01 已完成，看板运行中，环境就绪", "执行者修改场景文件中一条场景的预期并提交，使其成为待执行"]
+        steps: ["打开本机首页，查看该批次条目的两个按钮", "点执行待执行场景（1 条）"]
+        expected: ["首页批次条目、批次概览页和 SOP 场景页都有两个按钮，数量为待执行 1 条与全部场景条数", "页面就地显示任务编号与状态，不跳转", "执行完成后只有该场景有新结果与证据"]
+        forbidden_effects: ["其他场景出现新结果"]
+      - id: SOP-83-P02
+        polarity: positive
+        title: 没有待执行场景时重新验证全部场景，新轮次全部实际执行
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["SOP-83-P01 已完成，批次全部场景已通过，待执行为 0"]
+        steps: ["在首页批次条目点重新验证全部场景", "等待完成后查看执行任务、场景页与导出报告"]
+        expected: ["执行待执行场景按钮停用并写明没有待执行场景", "执行任务的范围为全部场景，原因均为 rerun", "新轮次每条场景都有实际结果与新证据，沿用数量为 0", "报告的该轮次记录技能摘要前 12 位"]
+        forbidden_effects: ["以沿用代替执行"]
+      - id: SOP-83-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网与跨站请求不能发起验证
+        actor: 内网同事
+        priority: P0
+        verify: api
+        initial_state: ["看板以 --lan 运行，执行者用本机的内网地址访问"]
+        steps: ["用内网地址打开首页、批次概览页与 SOP 场景页", "用内网地址 POST 执行接口，正文 {\"scope\":\"all\"}", "用本机地址 POST 同一接口，带另一个站点的 Origin"]
+        expected: ["内网页面不显示两个验证按钮", "两次请求分别返回 403 local-only 与 403 cross-origin"]
+        forbidden_effects: ["新增执行任务或轮次"]
+      - id: SOP-83-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 不支持的验证范围被拒绝
+        actor: 开发者
+        priority: P2
+        verify: api
+        initial_state: ["看板运行中，环境就绪"]
+        steps: ["用本机地址 POST 执行接口，正文 {\"scope\":\"some\"}"]
+        expected: ["返回 422 invalid-scope"]
+        forbidden_effects: ["新增执行任务"]

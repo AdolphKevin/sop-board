@@ -51,8 +51,8 @@ def markdown(data, generated_at):
     stats = summary["statistics"]
     sections.append("## Agent 统计\n\nAgent 验收通过率：" + fraction(stats["agent_pass_rate"]) +
                     "\n\n一次通过率：" + fraction(stats["first_pass_rate"]) + "\n\n" +
-                    table(["轮次", "种类", "每轮通过率", "沿用场景数"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
-                                                               fraction(r["pass_rate"]), r["reused_count"]] for r in summary["rounds"]]))
+                    table(["轮次", "种类", "每轮通过率", "沿用场景数", "验证技能摘要"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
+                                                               fraction(r["pass_rate"]), r["reused_count"], (r["skill_digest"] or "")[:12] or "无记录"] for r in summary["rounds"]]))
     sections.append("## 沿用明细\n\n按执行轮次列出沿用场景及理由。\n\n" + table(["轮次", "场景", "沿用理由"],
         [[r["number"], item["scenario"], item["reason"]] for r in summary["rounds"] for item in r["reused_scenarios"]]))
     sections.append("## 人工复测\n\n人工复测通过率：" + fraction(stats["manual_pass_rate"]) +

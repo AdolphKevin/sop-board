@@ -135,6 +135,11 @@ textarea { resize: vertical; }
 .review-actions [data-mark-status=blocked] { background: var(--surface); color: var(--warning); border-color: #dfc7a5; }
 .review-form { margin-top: 16px; }
 .review-form [data-review-fields] { padding: 16px; margin-top: 12px; background: var(--subtle); border-radius: 6px; }
+.execution-controls { margin: 12px 0; white-space: normal; }
+.execution-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0; }
+.execution-choice button:disabled { cursor: not-allowed; }
+[data-execution-reason] { color: var(--muted); font-size: 12px; }
+[data-execution-message] { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-review-message], #identity-message { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-state=error] { color: var(--danger); }
 [data-state=success] { color: var(--accent); }

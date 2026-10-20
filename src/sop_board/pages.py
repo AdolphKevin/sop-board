@@ -75,7 +75,8 @@ def environment_panel(data, local):
 def home(data, *, environment=None, local=False):
     cards = []
     for workspace in data['workspaces']:
-        batches = ''.join(f"<li><a href='{text(batch_url(workspace['key'], batch['name']))}'>{text(batch['name'])}</a> · {agent_state(batch)}</li>" for batch in workspace['batches'])
+        batches = ''.join(f"<li><a href='{text(batch_url(workspace['key'], batch['name']))}'>{text(batch['name'])}</a> · {agent_state(batch)}" +
+                          execution_controls(workspace['key'], batch['name'], batch, local=local) + '</li>' for batch in workspace['batches'])
         repositories = ''.join(f"<p>{text(repo['alias'])}：{text(repo['identity'])}</p>" for repo in workspace['repositories'])
         cards.append(f"<section><h2>{text(workspace['name'])}</h2>{repositories}<ul>{batches}</ul>" +
             ''.join(f"<p><a href='/w/{text(workspace['key'])}/fixes?task={t['id']}'>修复任务 #{t['id']}</a> · {text(t['status'])}</p>" for t in workspace['fix_tasks']) +
@@ -85,7 +86,7 @@ def home(data, *, environment=None, local=False):
             "<button type='submit'>上传用例</button><p data-cases-message='' role='status'></p>"
             "<ul data-cases-problems=''></ul></form></section>")
     return layout('工作区与批次', environment_panel(environment, local) + automation_controls(data, local=local) +
-                  '<h1>工作区与批次</h1>' + identity_bar() + ''.join(cards))
+                  '<h1>工作区与批次</h1>' + identity_bar() + "<div data-execution-home=''>" + ''.join(cards) + '</div>')
 
 
 def ratio(value):
@@ -124,6 +125,23 @@ def automation_controls(data, *, local=False):
             "<p id='developer-message' role='status' aria-live='polite'></p></section>")
 
 
+def execution_controls(workspace, name, data, *, local=False):
+    if not local:
+        return ''
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
+    options = data['execution']
+    content = f"<div class='execution-controls' data-execution-url='{text(api)}'>"
+    for scope, label, count in [('pending', '执行待执行场景', options['pending_count']),
+                                ('all', '重新验证全部场景', options['total_count'])]:
+        reason = options[scope + '_reason']
+        reason_id = 'execution-' + quote(workspace, safe='') + '-' + quote(name, safe='') + '-' + scope
+        content += (f"<div class='execution-choice'><button type='button' data-developer-action='{text(api)}/executions' "
+                    f"data-execution-scope='{scope}' aria-describedby='{text(reason_id)}'" +
+                    (' disabled' if reason else '') + f">{label}（{count} 条）</button>"
+                    f"<span id='{text(reason_id)}' data-execution-reason='{scope}'>{text(reason)}</span></div>")
+    return content + "<p data-execution-message='' role='status' aria-live='polite'></p></div>"
+
+
 def execution_list(data):
     if not data.get('execution_tasks'):
         return ''
@@ -150,9 +168,7 @@ def batch(workspace, data, *, environment=None, local=False):
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
             for p in data["workspace_problems"]) + "</section>"
     report_link = environment_panel(environment, local) + workspace_info + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
-    if local:
-        disabled = '' if data.get('enabled') else ' disabled'
-        report_link += f"<p><button type='button' data-requires-ready='' data-developer-action='{text(api)}/executions'{disabled}>执行待执行场景</button></p>"
+    report_link += execution_controls(workspace, data['name'], data, local=local)
     report_link += automation_controls(data, local=local) + identity_bar()
     if data.get('fix_statistics', {}).get('tasks'):
         from .reports import FIX_METRICS
@@ -485,14 +501,14 @@ def fix_badges(workspace, tasks):
         for t in tasks if t['status'] not in ('已合入', '已放弃'))
 
 
-def scenarios(workspace, name, data, jira_url=""):
+def scenarios(workspace, name, data, jira_url="", *, local=False):
     base = batch_url(workspace, name)
     by_id = {item["scenario"]: item for item in data["scenarios"]}
     content = batch_nav(workspace, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
+    content += execution_controls(workspace, name, data, local=local) + identity_bar()
     if not data["has_version"]:
         content += f"<p>尚无场景，测试岗上传用例后由合并生成</p><a href='{text(base + '/cases')}'>用例页</a>"
         return layout("SOP 场景 · " + name, content, watch=(workspace, name, data["etag"]))
-    content += identity_bar()
     content += "<nav aria-label='场景筛选'>" + "".join(
         f"<a href='?filter={key}' data-filter='{key}'>{label} <span>{data['filters'][key]}</span></a>"
         for key, label in FILTERS) + "</nav>"

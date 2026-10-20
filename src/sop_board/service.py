@@ -18,7 +18,7 @@ from .evidence_types import content_type, is_text
 from .scenario_file import load_scenarios
 from .reports import markdown
 from .result_files import export_results, load_results
-from .statistics import calculate, ratio
+from .statistics import calculate, pending_scope, ratio
 from .validation import Problems, validate_mark, validate_push, validate_round
 
 
@@ -297,14 +297,14 @@ class Service:
                            (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
                             source['sha256'], source['confirmed_by'], source['content'], now()))
 
-    def insert_round(self, db, batch, version, body, kind="agent"):
+    def insert_round(self, db, batch, version, body, kind="agent", skill_digest=None):
         number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
         product = body["product"]
         cursor = db.execute("INSERT INTO rounds(batch,number,kind,version,product_commit,product_digest,product_dirty,"
-                            "implementer,submitted_by,submitted_at,idempotency_key,body_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "implementer,submitted_by,submitted_at,idempotency_key,body_sha256,skill_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (batch["id"], number, kind, version["id"], product["commit"], product["digest"], product["dirty"],
                              body.get("implementer"), body["submitted_by"], now(), body.get("idempotency_key"),
-                             hashlib.sha256(canonical(body).encode()).hexdigest()))
+                             hashlib.sha256(canonical(body).encode()).hexdigest(), skill_digest))
         round_id = cursor.lastrowid
         for row in body["results"]:
             implementer = body.get("implementer")
@@ -347,8 +347,21 @@ class Service:
         if problems:
             raise APIError(409, "scenario-stale", problems)
 
+    def execution_options(self, db, batch, summary):
+        # 产品指纹取发现线程每 5 秒更新的批次记录，页面与轮询不重读仓库文件；点击入队时再按当时内容精确计算。
+        problems = self.entries(batch['workspace'])['problems']
+        reason = '尚未搭建：' + problems[0]['problem'] if problems else ''
+        count = len(pending_scope(db, batch, summary, batch['product_digest']))
+        if not reason and not self.environment.approved():
+            reason = '自检未通过'
+        if not reason and not summary['scenario_count']:
+            reason = '尚无场景'
+        return dict(pending_count=count, total_count=summary['scenario_count'],
+                    pending_reason=reason or ('没有待执行场景' if not count else ''), all_reason=reason)
+
     def summary(self, db, batch):
         result = calculate(db, batch)
+        execution = self.execution_options(db, batch, result)
         result['scenario_titles'] = {scene['scenario']: scene['title'] for scene in result.pop('scenarios')}
         version = self.latest_version(db, batch)
         _, fix_statistics = self.batch_fixes(db, batch)
@@ -361,7 +374,7 @@ class Service:
             task['rounds'] = json.loads(task.pop('rounds_json'))
             tasks.append(task)
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
-                    execution_tasks=tasks, fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
+                    execution=execution, execution_tasks=tasks, fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
                     dirty=bool(version["dirty"]) if version else None,
@@ -382,11 +395,13 @@ class Service:
                 version = self.latest_version(db, batch)
                 nodes = yaml.safe_load(version["content"])["sops"] if version else []
                 return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
+                            execution=self.execution_options(db, batch, summary),
                             has_version=version is not None, etag=self.batch_etag(db, batch))
             return self.summary(db, batch)
 
     def workspaces(self):
         with self.store.connection() as db:
+            db.execute("BEGIN")
             row = db.execute('SELECT * FROM workspaces WHERE key=?', (self.workspace.name,)).fetchone()
             workspace = dict(key=self.workspace.name, name=self.workspace.name, **{
                 'repositories': self.workspace.public()['repositories'], 'configured': self.workspace.configured,
@@ -573,7 +588,7 @@ class Service:
         if self.workspace.configured:
             try:
                 self.workspace.aliases(document)
-                self.workspace.scenario_path(batch)
+                body = dict(body, path=self.workspace.display_path(self.workspace.scenario_path(batch)))
             except ValueError as error:
                 reject(422, 'scenario-file-invalid', 'metadata.repos', str(error))
         scenarios = [(node["id"], scenario) for node in document["sops"]

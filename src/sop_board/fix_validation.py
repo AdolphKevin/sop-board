@@ -37,6 +37,7 @@ class FixValidation:
         if stale:
             return dict(status='fail', reason=stale, evidence=[], scenarios=[])
         try:
+            snapshot = dict(snapshot, skill_digest=workspace.skill_digest())
             self.tasks.worktree_environments[task['id']] = self.fixes.repositories.ensure(task['id'], snapshot['aliases'])
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             return dict(status='fail', reason='复测前工作树核对失败：' + str(error), evidence=[], scenarios=[])
@@ -83,7 +84,7 @@ class FixValidation:
                     return
                 addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items() if entry.get('address_env') and entry['address_env'] in environment}
                 (directory / 'retest.json').write_text(canonical([dict(batch=s['batch'], scenario=s['id'], scene={k:v for k,v in s.items() if k != 'batch'}) for s in selected]), encoding='utf-8')
-                (directory / 'entries.json').write_text(canonical(dict(entries=workspace.entries, addresses=addresses)), encoding='utf-8')
+                (directory / 'entries.json').write_text(canonical(dict(entries=workspace.execution_entries(), addresses=addresses)), encoding='utf-8')
                 (directory / 'snapshot.json').write_text(canonical(dict(snapshot, repositories=info['repos'])), encoding='utf-8')
                 (directory / 'cases.json').write_text(canonical(snapshot['cases']), encoding='utf-8')
                 web_scopes = []
@@ -102,8 +103,11 @@ class FixValidation:
                     scope_file = write_scope(folder, task['workspace'], batch, source, batch_scenes)
                     web_scopes.append(dict(batch=batch, scope=str(scope_file), scenarios=str(source)))
                 (directory / 'playwright-scopes.json').write_text(canonical(web_scopes), encoding='utf-8')
-                prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(task_directory=directory, playwright_skill=driver_skill() / 'SKILL.md')
+                prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(task_directory=directory, skill_path=workspace.skill,
+                    playwright_skill=driver_skill() / 'SKILL.md')
                 (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
+                if workspace.skill_changed(snapshot):
+                    return dict(status='void', reason='验证技能变化', evidence=[], scenarios=[])
                 with self.tasks.lock:
                     process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
                     self.tasks.processes[task['id']] = process
@@ -112,6 +116,8 @@ class FixValidation:
                 except subprocess.TimeoutExpired:
                     terminate_group(process)
                     raise ValueError('复测会话超时')
+                if workspace.skill_changed(snapshot):
+                    raise ValueError('验证技能变化')
                 if code:
                     raise ValueError(codex_failure(directory, code, label='复测会话'))
                 for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
@@ -131,6 +137,8 @@ class FixValidation:
                     raise ValueError('复测结果有范围外批次或场景')
                 workspace.reload()
                 stale = self.fixes.snapshot_changes(task)
+                if workspace.skill_changed(snapshot):
+                    raise ValueError('验证技能变化')
                 if stale or workspace.product(aliases, directories) != info:
                     raise ValueError(stale or '复测期间仓库代码变化')
                 failed = [r for r in rows if r.get('status') != 'pass']
@@ -148,6 +156,9 @@ class FixValidation:
             return
         evidence = [str(p) for p in directory.rglob('*') if p.is_file() and not p.is_symlink()]
         with self.tasks.lock, self.store.transaction() as db:
+            workspace.reload()
+            if workspace.skill_changed(snapshot):
+                return dict(status='void', reason='验证技能变化', evidence=evidence, scenarios=[], skill_digest=snapshot['skill_digest'])
             for row in rows:
                 row['evidence'] = [dict(name=p.name, sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
             for batch in dict.fromkeys(s['batch'] for s in selected):
@@ -159,14 +170,14 @@ class FixValidation:
                         product=dict(commit=info['commit'], digest=info['product_digest'], dirty=False), submitted_by=session, results=group))
                 except APIError as error:
                     reason = '；'.join(filter(None, [reason, *(p['problem'] for p in error.problems)]))
-                db.execute('INSERT INTO fix_validations(task,attempt,validation,batch,version,repositories_json,product_digest,session_id,status,reason,results_json,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                db.execute('INSERT INTO fix_validations(task,attempt,validation,batch,version,repositories_json,product_digest,session_id,status,reason,results_json,evidence_json,skill_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (task['id'], number, sequence, batch, version, canonical(info['repos']), info['product_digest'], session,
-                     'fail' if reason else 'pass', reason, canonical(group), canonical(evidence)))
+                     'fail' if reason else 'pass', reason, canonical(group), canonical(evidence), snapshot['skill_digest']))
             if reason:
                 db.execute("UPDATE fix_validations SET status='fail',reason=? WHERE task=? AND attempt=? AND validation=?",
                            (reason, task['id'], number, sequence))
         return dict(status='fail' if reason else 'pass', reason=reason, evidence=evidence,
-                    session_id=session, repositories=info['repos'], scenarios=[dict(batch=s['batch'], scenario=s['id']) for s in selected])
+                    session_id=session, skill_digest=snapshot['skill_digest'], repositories=info['repos'], scenarios=[dict(batch=s['batch'], scenario=s['id']) for s in selected])
 
     def active(self, task):
         return not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == '复测中'
