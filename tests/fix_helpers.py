@@ -35,8 +35,8 @@ def fix_codex(tmp_path):
     driver.write_text((ROOT / 'tests/fix_codex_driver.py').read_text())
     executable = directory / 'codex'
     if sys.platform == 'darwin':
-        executable.write_text('#!/usr/bin/perl\nuse JSON::PP; exec ' + json.dumps(sys.executable) +
-            ', ' + json.dumps(str(driver)) + ', encode_json([sort keys %ENV]), @ARGV;\n')
+        executable.write_text('#!/usr/bin/perl\nuse JSON::PP; exec ' + json.dumps(sys.executable, ensure_ascii=False) +
+            ', ' + json.dumps(str(driver), ensure_ascii=False) + ', encode_json([sort keys %ENV]), @ARGV;\n')
     else:
         executable.write_text('#!' + sys.executable + '\n' + driver.read_text())
     executable.chmod(0o755)

@@ -42,7 +42,7 @@ def start_entry(repo, tmp_path):
     (repo / 'serve.py').write_text(SERVER)
     if sys.platform == 'darwin':
         launcher = repo / 'serve'
-        launcher.write_text('#!/usr/bin/perl\nuse JSON::PP; use FindBin; exec '+json.dumps(sys.executable)+
+        launcher.write_text('#!/usr/bin/perl\nuse JSON::PP; use FindBin; exec '+json.dumps(sys.executable, ensure_ascii=False)+
             ', "$FindBin::Bin/serve.py", @ARGV, encode_json([sort keys %ENV]);\n')
         launcher.chmod(0o755)
         command = ['./serve', str(preset)]

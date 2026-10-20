@@ -58,7 +58,7 @@ def check_repo(repo, tmp_path):
     if sys.platform == 'darwin':
         # 和假 Codex 一样，在 Python 为 macOS 添加变量前观察实际 exec 环境。
         wrapper = repo / 'scripts/check'
-        wrapper.write_text('#!/usr/bin/perl\nuse JSON::PP; use FindBin; exec ' + json.dumps(sys.executable) +
+        wrapper.write_text('#!/usr/bin/perl\nuse JSON::PP; use FindBin; exec ' + json.dumps(sys.executable, ensure_ascii=False) +
             ', "$FindBin::Bin/$ARGV[0].py", @ARGV, encode_json([sort keys %ENV]);\n')
         wrapper.chmod(0o755)
     value = declarations(repo)
