@@ -62,7 +62,7 @@ adapter:
 - `scenarios`：仅含 repo、path。repo 是已声明别名；path 是该仓内不含 `..` 的相对目录，不能等于仓库根目录。文件为 `<批次>.yaml`，metadata.batch 与文件名一致；metadata.repos 指定涉及仓库，省略时为全部。来源 metadata.sources[].ref 中的路径相对场景所在仓库；`<别名>:<仓内路径>` 可引用其他已声明仓库。批次、版本及问题记录的路径显示为 `<别名>:<仓内路径>`。
 - `skill`：必填技能目录名，指向数据目录 `skills/<skill>/SKILL.md`；写法见下一步。
 - `entries`：必填 surface、operate、observe（数组）、evidence（数组）、isolation，可选 address_env 和 driver。address_env 指明地址环境变量，可从启动看板的环境或工作树适配返回的 env 取得。不要在操作说明或地址中写密钥。
-- `driver`：可选辅助技能目录名。声明时先找数据目录 `skills/<driver>/SKILL.md`，再找 SOP_BOARD_SKILLS_DIR（缺省 `~/.agents/skills/`）；都没有则配置不合格。不按 surface 自动选择技能；未声明的入口只遵循项目验证技能。skill 与 driver 名只含字母、数字、下划线、点、连字符，不能为 `.` 或 `..`。
+- `driver`：可选辅助技能目录名。Web 入口未声明 driver 或声明 `playwright-acceptance` 时，使用随 sop-board 包发行的 Web 技能（`sop-board playwright guide` 查看），SOP_BOARD_SKILLS_DIR 中存在同名技能时可覆盖。其他声明的 driver 先找数据目录 `skills/<driver>/SKILL.md`，再找 SOP_BOARD_SKILLS_DIR（缺省 `~/.agents/skills/`）；都没有则配置不合格。除 Web 外不按 surface 自动选择技能，未声明的入口只遵循项目验证技能。skill 与 driver 名只含字母、数字、下划线、点、连字符，不能为 `.` 或 `..`。
 - `adapter`：仅含 worktree、cleanup、env、ports、ready_timeout。worktree 和 cleanup 各自可省略，env 必填；声明的命令均为非空数组，不经 shell。命令的工作目录及参数中的相对路径相对数据目录；管道等逻辑写入适配脚本。
 - `ports`：不重复的 TCP 端口数组，可为空。ready_timeout 是正整数秒数，缺省 180；建立和清理命令也须在此时限内结束。
 

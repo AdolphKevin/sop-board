@@ -17,6 +17,10 @@ sop-board guide
 
 调查实际服务与依赖、确认范围，并与开发者确认正确的工作树建立/删除方法：已有仓库脚本、团队工具、个人习惯，以及被忽略配置和生成代码怎样带过去。确认后把配置、适配和项目验证技能写入数据目录，再运行 `sop-board check <名称>`。报告单独列出验证技能内容摘要，请开发者确认各入口的操作、登录、观察、留证、隔离与清理方法。向开发者报告已验证的事实、推断及依据、待回答的问题，并列出适配依赖的外部工具及其来源（仓库内、团队共用或仅本机）；团队成员共用适配前须各自具备。开发者确认后启动。Codex 与 Claude Code 使用同一份指引，不向产品仓库写搭建文件，不记录凭证值，不生成测试。
 
+## 内置 Web 验收
+
+Web 技能、模板和转换器随包发行，统一维护于 `src/sop_board/skills/playwright-acceptance/`，无需 team-workflow。`sop-board guide` 保留工作区搭建全文并提供 Web 入口；`sop-board playwright guide` 查看 Web 专用操作，`scope`、`convert`、`tags` 为本地命令，`submit` 将手工试跑结果登记到原工作区和批次。自动任务只写 results.jsonl，由看板登记。详见 [Web 验收集成](docs/playwright-acceptance.md)。
+
 ## 安装和启动
 
 需要 Python 3.10 以上、uv、Git，以及支持 POSIX 进程组的本机环境。定位占用端口的进程使用 `lsof`。仓库内开发可运行：
@@ -55,7 +59,7 @@ sop-board guide
 - `repos`：仓库别名到工作树根目录的绝对路径或 `~/` 路径；身份从各仓库 origin 规范化得到，并在页面显示。
 - `scenarios`：`{repo: <已声明别名>, path: <仓内相对目录>}`，path 不含 `..` 且不能等于仓库根目录。每批次保存为 `<批次>.yaml`。来源 ref 路径相对该仓库，也可用 `<别名>:<仓内路径>` 引用其他仓库；批次、版本和问题的路径按此形式显示。
 - `skill`：必填项目验证技能目录名，文件为数据目录 `skills/<skill>/SKILL.md`。须有 YAML 文件头且 name、description 为非空文字，每个入口须有含其名称的二级标题；技能目录内不允许符号链接。
-- `entries`：验收入口，包含 `surface`、`operate`、`observe`、`evidence`、`isolation`，可选 `address_env`、`driver`。driver 是辅助技能目录名，先找数据目录 skills，再找 SOP_BOARD_SKILLS_DIR（缺省 `~/.agents/skills`）；未声明时只按项目验证技能执行，不按 surface 使用缺省技能。
+- `entries`：验收入口，包含 `surface`、`operate`、`observe`、`evidence`、`isolation`，可选 `address_env`、`driver`。driver 是辅助技能目录名，先找数据目录 skills，再找 SOP_BOARD_SKILLS_DIR（缺省 `~/.agents/skills`）；Web 入口未声明 driver 或声明 `playwright-acceptance` 时使用随包 Web 技能（SOP_BOARD_SKILLS_DIR 中的同名技能可覆盖）；其他入口未声明时只按项目验证技能执行，不按 surface 使用缺省技能。
 - `adapter.worktree`：可选命令数组，按开发者确认的方式建立工作树；最后一个非空输出行返回 `{"repos": {别名: 路径}, "env": {...}}`。
 - `adapter.cleanup`：可选命令数组，删除这些工作树；缺省分别使用 Git 建立和删除命令。
 - `adapter.env`：启动整套服务并保持前台的命令数组；就绪时输出并刷新 `sop-board: ready`。

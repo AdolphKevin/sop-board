@@ -105,7 +105,19 @@ def verification_skills(data, skill, entries):
             problems.append(dict(field='skill', problem=str(error)))
     external = Path(os.environ.get('SOP_BOARD_SKILLS_DIR', str(Path.home() / '.agents/skills'))).expanduser()
     for name, entry in entries.items():
-        if not isinstance(entry, dict) or 'driver' not in entry or not skill_name(entry['driver']):
+        if not isinstance(entry, dict):
+            continue
+        driver = entry.get('driver')
+        if driver == 'playwright-acceptance' or (driver is None and entry.get('surface') == 'web'):
+            # Web 缺省与显式声明都用随包技能；SOP_BOARD_SKILLS_DIR 中的同名技能可覆盖。
+            from .playwright import driver_skill
+            candidate = driver_skill() / 'SKILL.md'
+            if candidate.is_file():
+                drivers[name] = str(candidate.resolve())
+            else:
+                problems.append(dict(field='entries.' + name + '.driver', problem='入口 ' + name + ' 的随包 Web 技能不存在'))
+            continue
+        if driver is None or not skill_name(driver):
             continue
         for root in (data / 'skills', external):
             candidate = root / entry['driver'] / 'SKILL.md'

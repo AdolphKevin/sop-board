@@ -1,7 +1,7 @@
 ---
 design: "D-sop-board-8"
 task: "SOP-BOARD-8"
-revision: 2
+revision: 3
 assessment: {"complexity":"medium","risks":["persistence","public-contract","authorization"],"effort":"约一个工作日代理时长，分两段","drivers":["团队成员的项目目录分散，工作区不能要求一个外层目录","搭建代理写数据目录被 Codex 沙箱拦住","执行依赖开发者个人的通用驱动技能，其他成员自检不通过","看板只有增量执行，没有一键全量验证"],"uncertainties":[],"required_skills":["Python","SQLite","HTML 与原生 JavaScript","Codex CLI 沙箱与 --add-dir"]}
 roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner":"AdolphKevin"}
 ---
@@ -10,7 +10,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 > 本文件是 tw 任务 SOP-BOARD-8 的方案原文，修订 [v9 方案](../proposals/2026-10-20-v9-workspace.md) 的 D30（工作区）与 D33（驱动技能），新增 D37–D39。两处说法不同时以本文为准。验收只以场景经真实入口执行为准，开发中不写单元、接口与集成测试。
 >
-> 状态：修订 2。修订 1 于 2026-10-20 经 AdolphKevin 批准，批准前确认四项取舍：增量与全量两种验证、仅本机开发者发起、验证技能放看板数据目录、工作区为名称加任意位置的仓库。修订 2 去掉 T2 对 T1 的前置依赖：SOP-82-N01 的预期含 T2 的两个按钮，两段在 T2 完成后一并验收；T1 的其余场景可先验收。
+> 状态：修订 2。修订 1 于 2026-10-20 经 AdolphKevin 批准，批准前确认四项取舍：增量与全量两种验证、仅本机开发者发起、验证技能放看板数据目录、工作区为名称加任意位置的仓库。修订 2 去掉 T2 对 T1 的前置依赖：SOP-82-N01 的预期含 T2 的两个按钮，两段在 T2 完成后一并验收；T1 的其余场景可先验收。修订 3 合入 main 的随包 Web 技能：Web 入口缺省使用随包 playwright-acceptance，其他入口仍不按 surface 缺省（2026-10-20 确认）。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -49,7 +49,7 @@ Codex 会话的目录权限：搭建会话以数据目录为工作目录，仓�
 
 搭建代理在查清环境后编写此技能，内容来自对实际服务的调查并与开发者确认：每个入口怎样以最终用户身份操作（工具、地址变量）、登录方式与由谁登录、测试账号与数据的位置（只写位置和环境变量名，不写值）、结果在哪里观察（页面、接口、数据库表及只读查询方式）、证据怎样保存、数据怎样隔离与清理、已知前置条件与易错点。可以引用技能目录内的脚本或参考文件。搭建报告单独列出技能内容摘要，请开发者确认。
 
-`entries.<名>.driver` 改为可选的辅助技能：声明时在数据目录 `skills/` 与 `SOP_BOARD_SKILLS_DIR`（缺省 `~/.agents/skills`）中依次查找，均不存在时为配置问题。删除按 surface 缺省使用 playwright-acceptance、verify-backend-sop-db、build-scenario-validation-loop 的规则；未声明 driver 的入口只按项目验证技能执行。
+`entries.<名>.driver` 改为可选的辅助技能：声明时在数据目录 `skills/` 与 `SOP_BOARD_SKILLS_DIR`（缺省 `~/.agents/skills`）中依次查找，均不存在时为配置问题。删除按 surface 缺省使用 verify-backend-sop-db、build-scenario-validation-loop 的规则。Web 入口例外：未声明 driver 或声明 `playwright-acceptance` 时使用随包发行的 Web 技能（main 的 PR #3），`SOP_BOARD_SKILLS_DIR` 中的同名技能可覆盖；其余未声明 driver 的入口只按项目验证技能执行。
 
 自检第 5 步改名"验证技能"：核对项目验证技能存在、文件头齐全、每个入口有对应标题，以及声明的辅助技能存在；消息列出技能路径与各入口。执行提示（`prompts/execute.md`）和复测提示（`prompts/fix-verify.md`）改为先读取并遵循 `<数据目录>/skills/<skill>/SKILL.md`，再按入口声明使用辅助技能。
 

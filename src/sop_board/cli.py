@@ -21,12 +21,17 @@ from .repositories import Discovery
 
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] == 'playwright':
+        from .playwright import command
+        return command(argv[1:])
     action = argv.pop(0) if argv and argv[0] in ('guide', 'check', 'init') else 'serve'
     if action == 'guide':
         if argv:
             print('用法：sop-board guide', file=sys.stderr)
             return 2
         sys.stdout.write(files('sop_board').joinpath('guide.md').read_text(encoding='utf-8'))
+        from .playwright import guide
+        sys.stdout.write('\n' + guide())
         return 0
     parser = argparse.ArgumentParser(description={'serve': '启动工作区 SOP 验证协作看板', 'check': '自检工作区适配', 'init': '登记工作区名称和仓库'}[action])
     parser.add_argument('workspace', nargs=None if action == 'init' else '?', help='工作区名称')
