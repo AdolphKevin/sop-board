@@ -80,13 +80,15 @@ def codex_failure(directory, code, label='Codex'):
     return f'{label} 退出码 {code}' + ('：' + summary if summary else '')
 
 
-def start_codex(directory, prompt, sandbox='read-only', environment=None, work_directory=None):
+def start_codex(directory, prompt, sandbox='read-only', environment=None, work_directory=None, writable_directories=()):
     """可替换的启动边界；子进程只得到白名单环境及独立进程组。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
     stderr = (directory / 'stderr.txt').open('wb')
     try:
         options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
+        for path in writable_directories:
+            options.extend(['--add-dir', str(Path(path).resolve())])
         schema = ['--output-schema', str(directory / 'schema.json')] if (directory / 'schema.json').is_file() else []
         return subprocess.Popen(['codex', 'exec', '--json', '-s', sandbox, *options, '--skip-git-repo-check',
             '-C', str(work_directory or directory), *schema,
@@ -97,13 +99,15 @@ def start_codex(directory, prompt, sandbox='read-only', environment=None, work_d
         stderr.close()
 
 
-def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None, environment=None):
+def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None, environment=None, writable_directories=()):
     """续接指定会话；resume 的沙箱参数位于 Codex 根命令层。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
     stderr = (directory / 'stderr.txt').open('wb')
     try:
         options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
+        for path in writable_directories:
+            options.extend(['--add-dir', str(Path(path).resolve())])
         return subprocess.Popen(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
             '--skip-git-repo-check', '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory,
             env=environment if environment is not None else codex_environment(), stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
@@ -139,7 +143,7 @@ class Tasks:
         self.stopping = threading.Event()
         self.workers = {}
         self.processes = {}
-        self.prepared_environments = {}
+        self.worktree_environments = {}
         self.browser_owner = None
         self.starting = None
         self.timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT')) if timeout is None else timeout
@@ -257,23 +261,48 @@ class Tasks:
         directory = self.directory(task_id)
         task['files'] = {}
         for parent, folders, names in os.walk(directory, followlinks=False):
-            if Path(parent) == directory and 'repos' in folders:
-                folders.remove('repos')
+            if Path(parent) == directory:
+                folders[:] = [name for name in folders if name in {'evidence', 'sop', 'attempts', 'interruptions', 'validations'}]
+            if '.git' in folders or '.git' in names:
+                folders.clear()
+                continue
             folders.sort()
             for name in sorted(names):
                 path = Path(parent) / name
-                if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(directory) and not path.resolve().is_relative_to(directory / 'repos'):
+                if self.is_task_file(task_id, path):
                     relative = str(path.relative_to(directory))
                     task['files'][relative] = f'/api/v1/tasks/{task_id}/files/{quote(relative, safe="/")}'
         if task['kind'] == 'fix':
             self.fixes.details(task)
         return task
 
+    def is_task_file(self, task_id, path):
+        directory = self.directory(task_id)
+        if directory in self.service.environment.worktrees.active or (directory / '.git').exists():
+            return False
+        if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(directory):
+            return False
+        relative = path.relative_to(directory)
+        public = {'events.jsonl', 'stderr.txt', 'final.json', 'results.jsonl', 'prompt.md', 'schema.json', 'input.json',
+                  'cases.yaml', 'cases.json', 'case_choices.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
+                  'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'pending.json', 'previous-results.json',
+                  'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json'}
+        directories = {'evidence', 'sop', 'attempts', 'interruptions', 'validations'}
+        if len(relative.parts) == 1:
+            if relative.name not in public and not re.fullmatch(r'commit-[0-9]+-[a-z0-9-]+\.txt', relative.name):
+                return False
+        elif relative.parts[0] not in directories:
+            return False
+        with self.store.connection() as db:
+            roots = [r[0] for r in db.execute('SELECT worktree FROM fix_repositories WHERE task=?', (task_id,))]
+        if any(not root or path.resolve().is_relative_to(Path(root)) for root in roots):
+            return False
+        return not any((parent / '.git').exists() for parent in path.parents if parent.is_relative_to(directory))
+
     def file(self, task_id, name):
         self.read(task_id)
-        directory = self.directory(task_id)
-        path = directory / name
-        if '\0' in name or Path(name).is_absolute() or '..' in Path(name).parts or path.resolve().is_relative_to(directory / 'repos') or directory not in path.resolve().parents or path.is_symlink() or not path.is_file():
+        path = self.directory(task_id) / name
+        if '\0' in name or Path(name).is_absolute() or '..' in Path(name).parts or not self.is_task_file(task_id, path):
             reject(404, 'task-file-not-found', 'file', '任务文件不存在')
         return path.read_bytes()
 

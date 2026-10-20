@@ -133,7 +133,7 @@ class Executions:
                     raise ValueError('入口 ' + name + ' 缺少地址环境变量 ' + variable)
                 addresses[name] = environment[variable]
         (directory / 'entries.json').write_text(canonical(dict(entries=inputs['entries'], addresses=addresses)), encoding='utf-8')
-        referenced = {ref for scene in inputs['scenes'] for ref in scene['refs']}
+        referenced = {ref for scene in inputs['scenes'] for ref in scene.get('refs', [])}
         (directory / 'cases.json').write_text(canonical([case for case in inputs['cases'] if case['id'] in referenced]), encoding='utf-8')
         (directory / 'pending.json').write_text(task['scope_json'], encoding='utf-8')
         (directory / 'previous-results.json').write_text(canonical(inputs['previous']), encoding='utf-8')

@@ -13,7 +13,7 @@ $repositories
 只修 product；其他问题写明理由与开发者方案，不为它们改代码。根因在被 Git 忽略的本机配置或运行环境时，必须判为 environment，指出配置项和位置后转开发者；不读取或输出凭证值，不产生代码修补。
 从根因修复，直接替换错误逻辑，不加兼容层，不保留新旧两套实现，不做只让个别场景通过的局部修补，顾及其他场景与已有行为。
 只修改产品代码，不写任何单元、接口或集成测试；即使仓库约定 TDD，本任务也不产出测试。验收由后续新会话经真实入口执行场景。
-snapshot.json 中的场景文件、各仓 docs/sop/ 和工作区配置保持原样；只在任务目录 repos/<别名> 下的工作树改产品代码，不修改基线目录或其它仓库。改动留在 worktree，不提交，不推送。失败尝试的工作树会保留：依据反馈修正已有改动，禁止用 reset、stash 或强制移动分支抹掉现场。
+snapshot.json 中的场景文件、各仓 docs/sop/ 和工作区配置保持原样；只在上面逐仓列出的工作树路径内改产品代码，不修改基线目录或其它仓库。改动留在 worktree，不提交，不推送。失败尝试的工作树会保留：依据反馈修正已有改动，禁止用 reset、stash 或强制移动分支抹掉现场。
 最终输出严格符合 fix.schema.json：root_cause；problems 每项 batch、scenario、category、root_repo、handling、reason；changed_files（使用 别名/相对路径）；plan（无方案用空字符串）。每个输入问题必须出现且只出现一次。
 
 开发者说明：$developer_note

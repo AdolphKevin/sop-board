@@ -35,6 +35,10 @@ class FixValidation:
         stale = self.fixes.snapshot_changes(task)
         if stale:
             return dict(status='fail', reason=stale, evidence=[], scenarios=[])
+        try:
+            self.tasks.worktree_environments[task['id']] = self.fixes.repositories.ensure(task['id'], snapshot['aliases'])
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return dict(status='fail', reason='复测前工作树核对失败：' + str(error), evidence=[], scenarios=[])
         number = task['attempt']
         with self.store.connection() as db:
             sequence = db.execute('SELECT COALESCE(MAX(validation),0)+1 FROM fix_validations WHERE task=? AND attempt=?', (task['id'], number)).fetchone()[0]
@@ -73,7 +77,7 @@ class FixValidation:
                             break
                         self.tasks.update(task['id'], error='等待验收浏览器')
                     self.tasks.stopping.wait(.1)
-            with self.fixes.service.environment.use_repair(directories, workspace.data / 'prepare' / f"verify-{task['id']}-{number}-{sequence}.log", self.fixes.repositories.repair_directories(task['id'])) as environment:
+            with self.fixes.service.environment.use_repair(directories, self.tasks.worktree_environments[task['id']]) as environment:
                 if not self.active(task):
                     return
                 addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items() if entry.get('address_env') and entry['address_env'] in environment}

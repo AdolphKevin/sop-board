@@ -1,4 +1,4 @@
-"""适配进程、自检和同一用户本机唯一环境；不保存 prepare 返回的环境值。"""
+"""适配进程、自检和同一用户本机唯一环境；不保存工作树适配返回的环境值。"""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -6,7 +6,6 @@ import errno
 import json
 import os
 from pathlib import Path
-import re
 import signal
 import shutil
 import socket
@@ -16,6 +15,7 @@ import time
 from uuid import uuid4
 
 from .repositories import git
+from .worktrees import Worktrees, WorktreeError, is_board_input
 
 
 DRIVERS = {'web': 'playwright-acceptance', 'http': 'verify-backend-sop-db',
@@ -81,6 +81,7 @@ def port_owners(ports):
 class Environment:
     def __init__(self, workspace):
         self.workspace = workspace
+        self.worktrees = Worktrees(self)
         self.operation = threading.RLock()
         self.process = None
         self.reader = None
@@ -107,7 +108,7 @@ class Environment:
                     record['config_digest'] == self.workspace.config_digest)
 
     def environment(self, directories, extra=None, log_dir=None):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(('SOP_REPO_', 'SOP_BASE_')) and k != 'SOP_ENV_LOG_DIR'}
+        env = {k: v for k, v in os.environ.items() if not is_board_input(k)}
         # Explicit repository inputs always override values inherited by the board.
         env.update(extra or {})
         for alias, path in directories.items():
@@ -137,41 +138,37 @@ class Environment:
             argv[0] = str(executable)
         return argv
 
-    def prepare(self, directories, log):
-        if 'prepare' not in self.workspace.adapter:
-            return {}
+    def run_command(self, name, environment, log, json_output=False):
         log = Path(log)
         log.parent.mkdir(parents=True, exist_ok=True)
-        process = subprocess.Popen(self.command('prepare'), cwd=self.workspace.data,
-            env=self.environment(directories, log_dir=log.parent), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        process = subprocess.Popen(self.command(name), cwd=self.workspace.data,
+            env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True)
+        failure = ''
         try:
-            stdout, stderr = process.communicate(timeout=self.workspace.adapter['ready_timeout'])
-        except subprocess.TimeoutExpired:
+            deadline = time.monotonic() + self.workspace.adapter['ready_timeout']
+            while True:
+                try:
+                    stdout, stderr = process.communicate(timeout=.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    if self.stopping or time.monotonic() >= deadline:
+                        failure = '看板正在退出' if self.stopping else '等待命令结束超时'
+                        stop_process(process)
+                        stdout, stderr = process.communicate(timeout=5)
+                        break
+        except BaseException:
             stop_process(process)
-            stdout, stderr = process.communicate()
-            log.write_bytes(stderr)
-            raise ValueError('adapter.prepare 超时；日志：' + str(log))
+            raise
         lines = stdout.decode('utf-8', errors='replace').splitlines()
         while lines and not lines[-1].strip():
             lines.pop()
-        # The final JSON may contain sensitive environment values: never write it.
-        log.write_text('\n'.join(lines[:-1]) + '\n' + stderr.decode('utf-8', errors='replace'), encoding='utf-8')
-        if process.returncode:
-            raise ValueError(f'adapter.prepare 退出码 {process.returncode}；日志：{log}')
-        try:
-            value = json.loads(lines[-1])
-            env = value['env']
-            if set(value) != {'env'} or not isinstance(env, dict):
-                raise ValueError()
-            for key, item in env.items():
-                if not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', key) or not isinstance(item, str) or '\0' in item:
-                    raise ValueError()
-                if key.startswith(('SOP_REPO_', 'SOP_BASE_')) or key == 'SOP_ENV_LOG_DIR':
-                    raise ValueError()
-        except (IndexError, KeyError, TypeError, ValueError):
-            raise ValueError('adapter.prepare 最后一行须为 {"env": {环境变量名: 文字值}}，不能覆盖看板输入变量')
-        return env
+        # 最后一行可能含环境值，不进入日志、任务输出或自检报告。
+        visible = lines[:-1] if json_output else lines
+        log.write_text('\n'.join(visible) + '\n' + stderr.decode('utf-8', errors='replace'), encoding='utf-8')
+        if failure or process.returncode:
+            raise ValueError(f'adapter.{name} ' + (failure or f'退出码 {process.returncode}') + '；日志：' + str(log))
+        return lines[-1] if json_output and lines else ''
 
     def _acquire_machine(self):
         path = Path('/tmp') / f'sop-board-environment-{os.getuid()}.lock'
@@ -269,14 +266,13 @@ class Environment:
             yield self.agent_environment(self.workspace.repos)
 
     @contextmanager
-    def use_repair(self, directories, prepare_log, prepare_directories):
+    def use_repair(self, directories, extra):
         with self.operation:
             self.workspace.reload()
             if not self.approved():
                 raise ValueError('工作区配置变化或自检未通过')
             self._stop()
             try:
-                extra = self.prepare(prepare_directories, prepare_log)
                 self._start(directories, extra)
                 yield self.agent_environment(directories, extra)
             finally:
@@ -327,7 +323,6 @@ class Environment:
     def check(self):
         if not self.operation.acquire(blocking=False):
             raise ValueError('环境正在被执行或修复使用，不能开始自检')
-        paths = []
         try:
             if self.process:
                 self._stop()
@@ -345,7 +340,7 @@ class Environment:
                     result['steps'].append(dict(name=name, status='通过', message=message, log=log))
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     result['ok'] = False
-                    result['steps'].append(dict(name=name, status='失败', message=str(error), log=str(self.log) if self.log else None))
+                    result['steps'].append(dict(name=name, status='失败', message=str(error), log=getattr(error, 'log', str(self.log) if self.log else None)))
             def config():
                 if not self.workspace.configured:
                     raise ValueError('；'.join(p['field'] + '：' + p['problem'] for p in self.workspace.problems))
@@ -364,25 +359,41 @@ class Environment:
                 finally:
                     self._stop()
             def worktrees():
-                directories = {}
-                parent = self.workspace.data / 'worktrees' / ('check-' + uuid4().hex)
-                parent.mkdir(parents=True)
+                identifier = uuid4().hex
+                parent = self.workspace.data / 'worktrees' / ('check-' + identifier)
+                branch = 'sop-board/check/' + identifier
+                build_log, cleanup_log = directory / (started + '-worktree.log'), directory / (started + '-cleanup.log')
+                paths, failure, established = {}, None, False
                 try:
-                    for alias, root in self.workspace.repos.items():
-                        path = parent / alias
-                        git(root, 'worktree', 'add', '--detach', str(path), 'HEAD')
-                        paths.append((root, path))
-                        directories[alias] = path
-                    extra = self.prepare(directories, directory / (started + '-prepare.log'))
-                    self._start(directories, extra)
+                    try:
+                        paths, extra = self.worktrees.build(parent, branch, list(self.workspace.repos), build_log)
+                    except WorktreeError as error:
+                        paths = error.paths
+                        raise
+                    established = True
+                    self._start(paths, extra)
                     log = str(self.log)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    failure = error
                 finally:
-                    self._stop()
-                    for root, path in reversed(paths):
-                        git(root, 'worktree', 'remove', '--force', str(path))
-                    paths.clear()
-                    parent.rmdir()
-                return '各仓临时 worktree 已准备，环境就绪并完成清理', log
+                    try:
+                        self._stop()
+                        if paths:
+                            self.worktrees.cleanup(parent, branch, paths, cleanup_log)
+                        # 自检分支只在工作树已清理后删除；未核对的目录保留供检查。
+                        for alias in paths:
+                            if git(self.workspace.repos[alias], 'branch', '--list', branch).strip():
+                                git(self.workspace.repos[alias], 'branch', '-d', branch)
+                        registered = [p for root in self.workspace.repos.values() for p in self.worktrees.registered(root)]
+                        if established and parent.exists() and not any(p.is_relative_to(parent) for p in registered):
+                            shutil.rmtree(parent)
+                    except (OSError, ValueError, subprocess.SubprocessError) as error:
+                        if failure:
+                            raise WorktreeError(str(failure) + '；清理也失败：' + str(error), cleanup_log) from failure
+                        raise
+                if failure:
+                    raise failure
+                return '已建立并核对各仓工作树，环境就绪并清理；建立日志：' + str(build_log) + '；清理日志：' + str(cleanup_log), log
             def drivers():
                 root = Path(os.environ.get('SOP_BOARD_SKILLS_DIR', str(Path.home() / '.agents/skills'))).expanduser().resolve()
                 used = []

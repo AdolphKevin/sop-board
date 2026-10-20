@@ -140,10 +140,10 @@ class Workspace:
             if not isinstance(adapter, dict):
                 problem('adapter', '适配声明应为对象')
                 adapter = {}
-            for extra in adapter.keys() - {'prepare', 'env', 'ports', 'ready_timeout'}:
+            for extra in adapter.keys() - {'worktree', 'cleanup', 'env', 'ports', 'ready_timeout'}:
                 problem('adapter.' + extra, '格式外字段')
-            for field in ('prepare', 'env'):
-                if field == 'prepare' and field not in adapter:
+            for field in ('worktree', 'cleanup', 'env'):
+                if field in ('worktree', 'cleanup') and field not in adapter:
                     continue
                 argv = adapter.get(field)
                 if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and x.strip() and '\0' not in x for x in argv):
@@ -156,7 +156,7 @@ class Workspace:
                 problem('adapter.ready_timeout', '须为正整数秒数')
             adapter = dict(adapter, ready_timeout=timeout)
             tracked = {'config': raw}
-            for field in ('prepare', 'env'):
+            for field in ('worktree', 'cleanup', 'env'):
                 argv = adapter.get(field, [])
                 if isinstance(argv, list):
                     for arg in argv:

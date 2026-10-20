@@ -7,6 +7,7 @@ import subprocess
 
 from .repositories import git
 from .service import canonical
+from .worktrees import WorktreeError
 
 
 def head(root):
@@ -43,37 +44,39 @@ class RepairRepositories:
     def ensure(self, task_id, aliases):
         existing = {r['alias']: r for r in self.rows(task_id)}
         planned = []
+        branch = f'sop-board/fix/{task_id}'
         for alias in aliases:
             root = self.workspace.repos[alias]
             if alias in existing:
                 if existing[alias]['root'] != str(root) or existing[alias]['identity'] != self.workspace.identities[alias]:
                     raise ValueError(alias + ' 的仓库路径或身份变化，须由开发者处理')
                 continue
-            branch = git(root, 'branch', '--show-current').decode().strip()
-            if not branch:
+            baseline = git(root, 'branch', '--show-current').decode().strip()
+            if not baseline:
                 raise ValueError(alias + ' 基线处于分离头指针，不能开始修复')
-            fix_branch = f'sop-board/fix/{task_id}'
-            if git(root, 'branch', '--list', fix_branch).strip():
+            if git(root, 'branch', '--list', branch).strip():
                 raise ValueError(alias + ' 已存在同名修复分支，不能接管')
-            worktree = self.tasks.directory(task_id) / 'repos' / alias
-            if worktree.exists():
-                raise ValueError(alias + ' 任务工作树目录已经存在，不能接管')
-            planned.append((task_id, alias, str(root), self.workspace.identities[alias], branch, head(root), fix_branch, str(worktree)))
+            planned.append((task_id, alias, str(root), self.workspace.identities[alias], baseline, head(root), branch, ''))
         with self.store.transaction() as db:
             db.executemany('INSERT INTO fix_repositories(task,alias,root,identity,baseline_branch,baseline_commit,fix_branch,worktree) VALUES (?,?,?,?,?,?,?,?)', planned)
-        for repo in self.rows(task_id):
-            path = Path(repo['worktree'])
-            if not path.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                if git(repo['root'], 'branch', '--list', repo['fix_branch']).strip():
-                    git(repo['root'], 'worktree', 'add', str(path), repo['fix_branch'])
-                else:
-                    git(repo['root'], 'worktree', 'add', '-b', repo['fix_branch'], str(path), repo['baseline_commit'])
-            if git(path, 'branch', '--show-current').decode().strip() != repo['fix_branch']:
-                raise ValueError(repo['alias'] + ' 修复工作树的分支变化')
+        directory = self.tasks.directory(task_id)
+        known = {r['alias']: Path(r['worktree']) for r in self.rows(task_id) if r['worktree']}
+        if 'worktree' not in self.workspace.adapter:
+            known.update({a: directory / 'repos' / a for a in aliases if a not in known})
+        try:
+            paths, extra = self.tasks.service.environment.worktrees.build(directory, branch, aliases,
+                self.workspace.data / 'worktree-logs' / f'fix-{task_id}.log', known)
+        except WorktreeError as error:
+            for alias, path in error.paths.items():
+                self.update(task_id, alias, worktree=str(path))
+            raise
+        with self.store.transaction() as db:
+            for alias, path in paths.items():
+                db.execute('UPDATE fix_repositories SET worktree=? WHERE task=? AND alias=?', (str(path), task_id, alias))
+        return extra
 
     def repair_directories(self, task_id):
-        return {r['alias']: Path(r['worktree']) for r in self.rows(task_id)}
+        return {r['alias']: Path(r['worktree']) for r in self.rows(task_id) if r['worktree']}
 
     def directories(self, task_id):
         return dict(self.workspace.repos, **self.repair_directories(task_id))
@@ -132,6 +135,8 @@ class RepairRepositories:
         return changes
 
     def commit(self, task_id, number, message):
+        paths = self.repair_directories(task_id)
+        self.tasks.service.environment.worktrees.validate(paths, list(paths), f'sop-board/fix/{task_id}', self.tasks.directory(task_id))
         committed = {}
         for repo in self.rows(task_id):
             worktree = repo['worktree']
@@ -241,18 +246,37 @@ class RepairRepositories:
         return merged
 
     def cleanup(self, task_id):
-        for repo in self.rows(task_id):
+        repositories = self.rows(task_id)
+        branch = f'sop-board/fix/{task_id}'
+        paths = {}
+        remaining = False
+        for repo in repositories:
+            if not repo['worktree'] or repo['fix_branch'] != branch:
+                raise ValueError('修复工作树记录不属于此任务')
+            path = Path(repo['worktree'])
+            if (path.exists() or path in self.tasks.service.environment.worktrees.registered(repo['root'])
+                    or git(repo['root'], 'branch', '--list', branch).strip()):
+                remaining = True
+        if not remaining:
+            self.tasks.worktree_environments.pop(task_id, None)
+            return
+        # 整组核对通过后才交给删除适配，避免先删掉一仓再发现另一仓仍有修复。
+        for repo in repositories:
+            if not repo['worktree'] or repo['fix_branch'] != branch:
+                raise ValueError('修复工作树记录不属于此任务')
             root, path = Path(repo['root']), Path(repo['worktree'])
-            expected = self.tasks.directory(task_id) / 'repos' / repo['alias']
-            if path != expected or repo['fix_branch'] != f'sop-board/fix/{task_id}':
-                raise ValueError('修复工作树不属于此任务')
+            if root != self.workspace.repos.get(repo['alias']):
+                raise ValueError(repo['alias'] + ' 当前配置的基线目录变化，不能清理')
             baseline = git(root, 'rev-parse', 'refs/heads/' + repo['baseline_branch']).decode().strip()
             if not ancestor(root, repo['repair_commit'], baseline):
                 raise ValueError(repo['alias'] + ' 修复提交尚未合入，保留工作树与分支')
-            if path.exists():
-                if head(path) != repo['repair_commit'] or git(path, 'status', '--porcelain', '--untracked-files=all').strip():
-                    raise ValueError(repo['alias'] + ' 工作树被改动，保留现场')
-                # 已合入且无产品改动；一并移除 prepare 复制的被忽略文件。
-                git(root, 'worktree', 'remove', '--force', str(path))
-            if git(root, 'branch', '--list', repo['fix_branch']).strip():
-                git(root, 'branch', '-d', repo['fix_branch'])
+            if path.exists() and (head(path) != repo['repair_commit'] or git(path, 'status', '--porcelain', '--untracked-files=all').strip()):
+                raise ValueError(repo['alias'] + ' 工作树被改动，保留现场')
+            paths[repo['alias']] = path
+        self.tasks.service.environment.worktrees.cleanup(self.tasks.directory(task_id), branch, paths,
+            self.workspace.data / 'worktree-logs' / f'fix-{task_id}-cleanup.log')
+        self.tasks.worktree_environments.pop(task_id, None)
+        # 删除适配成功并核对目录及 Git 登记均已消失之后，才删除已合入分支。
+        for repo in repositories:
+            if git(repo['root'], 'branch', '--list', branch).strip():
+                git(repo['root'], 'branch', '-d', branch)

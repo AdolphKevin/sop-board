@@ -87,14 +87,12 @@ class Fixes:
         if product['dirty']:
             self.tasks.update(task['id'], status='待提交', error='工作区有未提交的产品改动：' + '、'.join(product['changed']))
             return False
-        self.repositories.ensure(task['id'], aliases)
+        self.tasks.worktree_environments[task['id']] = self.repositories.ensure(task['id'], aliases)
         number = task['attempt'] + 1
         protected_files = self.repositories.protected_files(task['id'])
         previous = json.loads(task['snapshot_json'])
         for alias, manifest in previous.get('protected_files', {}).items():
             protected_files[alias] = manifest
-        self.tasks.prepared_environments[task['id']] = self.service.environment.prepare(
-            self.repositories.repair_directories(task['id']), workspace.data / 'prepare' / f"fix-{task['id']}-{number}.log")
         with self.store.transaction() as db:
             pending_attempt = db.execute("SELECT 1 FROM fix_attempts WHERE task=? AND number=? AND outcome IN ('运行中','已中断')",
                 (task['id'], number)).fetchone()
@@ -225,11 +223,11 @@ class Fixes:
                 if not self.live(task):
                     return ''
                 session = self.tasks.read(task['id'])['session_id']
-                if task['id'] not in self.tasks.prepared_environments:
-                    self.tasks.prepared_environments[task['id']] = self.service.environment.prepare(self.repositories.repair_directories(task['id']), self.service.workspace.data / 'prepare' / f"resume-{task['id']}.log")
-                environment = self.service.environment.agent_environment(self.repositories.repair_directories(task['id']), self.tasks.prepared_environments[task['id']])
-                process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment, work_directory=directory) if not session else resume_codex(
-                    directory, session, prompt, sandbox='workspace-write', environment=environment, work_directory=directory)
+                if task['id'] not in self.tasks.worktree_environments:
+                    self.tasks.worktree_environments[task['id']] = self.repositories.ensure(task['id'], [r['alias'] for r in self.repositories.rows(task['id'])])
+                environment = self.service.environment.agent_environment(self.repositories.repair_directories(task['id']), self.tasks.worktree_environments[task['id']])
+                process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment, work_directory=directory, writable_directories=self.repositories.repair_directories(task['id']).values()) if not session else resume_codex(
+                    directory, session, prompt, sandbox='workspace-write', environment=environment, work_directory=directory, writable_directories=self.repositories.repair_directories(task['id']).values())
                 self.tasks.processes[task['id']] = process
                 self.tasks.starting = None
             deadline = time.monotonic() + self.tasks.timeout
@@ -491,7 +489,7 @@ class Fixes:
 
     def complete(self, task_id):
         self.repositories.cleanup(task_id)
-        self.tasks.prepared_environments.pop(task_id, None)
+        self.tasks.worktree_environments.pop(task_id, None)
         task = self.tasks.read(task_id)
         jira = self.service.jira
         keys = dict.fromkeys(p['input']['jira_key'] for p in task['problems'] if p['input'].get('jira_key'))
@@ -519,11 +517,18 @@ class Fixes:
         for task_id in ids:
             task = self.tasks.read(task_id)
             if task['status'] == '已合入':
-                self.complete(task_id)
+                try:
+                    self.complete(task_id)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    self.tasks.update(task_id, status='待开发者合入', error='合入已完成，但清理尚未完成：' + str(error))
                 continue
             if not task['attempts'] or task['attempts'][-1]['validation'].get('status') != 'pass':
                 continue
             validated = task['attempts'][-1]['validation']['repositories']
+            missing = set(validated) - set(self.service.workspace.repos)
+            if missing:
+                self.tasks.update(task_id, status='待开发者合入', error='配置已移除仓库，不能自动恢复清理：' + '、'.join(sorted(missing)))
+                continue
             try:
                 if any(self.service.workspace.product([a])['repos'][a] != value for a, value in validated.items()):
                     continue
@@ -546,7 +551,7 @@ class Fixes:
         target = directory / 'attempts' / str(task['attempt'] + 1)
         target.mkdir(parents=True, exist_ok=True)
         for path in directory.iterdir():
-            if path.is_file() and not path.is_symlink():
+            if self.tasks.is_task_file(task['id'], path):
                 shutil.copyfile(path, target / path.name)
 
     def failed(self, task, reason, answer=None, validation=None):
@@ -598,7 +603,7 @@ class Fixes:
                     for problem in self.unresolved(db, task['workspace']):
                         db.execute('INSERT OR IGNORE INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) VALUES (?,?,?,?,?,0,?)',
                             (task['id'], problem['batch'], problem['scenario'], problem['fingerprint'], problem['result_id'], canonical(problem)))
-            self.tasks.prepared_environments.pop(task['id'], None)
+            self.tasks.worktree_environments.pop(task['id'], None)
 
         else:
             reject(409, 'task-state-invalid', 'status', '任务当前状态不支持此操作')

@@ -33,7 +33,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 <!-- tw-section id=I2 type=interface depends=scope-global -->
 按 v9 D30、D33。命令：`sop-board [工作区目录]`（缺省当前目录）、`--lan`、`--port`、`--data`；`sop-board guide` 输出随包的 `guide.md`；`sop-board check [工作区目录]` 运行自检。项目按 `uv tool install` 可安装。
 
-数据目录缺省 `~/.sop-board/<工作区名>/`，工作区名取目录名；同名目录已登记为另一路径时追加路径摘要的前 8 位。配置为该目录下的 `config.yaml`：`repos`（别名 → 相对工作区的路径，别名为小写字母、数字与连字符）、`scenarios`（相对工作区、位于某个仓库内）、`entries`（场景入口格式，可加 `driver`）、`adapter`（`prepare`、`env` 为命令数组，`ports` 为整数数组，`ready_timeout` 缺省 180）。命令中的相对路径相对数据目录解析。仓库身份由各仓库 origin 规范化得到；工作区以工作区名为键，替代原"项目"。
+数据目录缺省 `~/.sop-board/<工作区名>/`，工作区名取目录名；同名目录已登记为另一路径时追加路径摘要的前 8 位。配置为该目录下的 `config.yaml`：`repos`（别名 → 相对工作区的路径，别名为小写字母、数字与连字符）、`scenarios`（相对工作区、位于某个仓库内）、`entries`（场景入口格式，可加 `driver`）、`adapter`（`worktree`、`cleanup` 为可选命令数组，`env` 为必填命令数组，`ports` 为整数数组，`ready_timeout` 缺省 180）。命令中的相对路径相对数据目录解析。仓库身份由各仓库 origin 规范化得到；工作区以工作区名为键，替代原"项目"。
 
 配置缺失或不合格时，看板照常启动，页面显示"尚未搭建"与指引中的做法，执行与修复停用；配置变化后需重新自检。README 增加"给代理"一节：安装命令与"先运行 `sop-board guide`"。`guide.md` 按 v9 D33 的条目写，保持通用。
 
