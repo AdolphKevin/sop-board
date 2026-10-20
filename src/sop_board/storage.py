@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS batches (
     name TEXT NOT NULL, path TEXT NOT NULL, product_digest TEXT NOT NULL,
     UNIQUE(workspace, name)
 );
+CREATE TABLE IF NOT EXISTS review_completions (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
+    marker TEXT NOT NULL, completed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS versions (
     id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
     version INTEGER NOT NULL, content TEXT NOT NULL, sha256 TEXT NOT NULL,

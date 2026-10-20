@@ -11,6 +11,28 @@ import yaml
 FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver'}
 
 
+def public_problems(problems, *, local):
+    """内网只保留问题类别；异常文字、字段名和路径中的本机信息留在本机。"""
+    if local:
+        return problems
+    labels = {'config': '配置文件不合格', 'repos': '仓库配置不合格',
+              'scenarios': '场景目录配置不合格', 'skill': '验证技能不合格',
+              'entries': '验证入口配置不合格', 'metadata': '场景声明不合格',
+              'workspace': '工作区配置不合格'}
+    result = []
+    for problem in problems:
+        category = problem.get('field', '').split('.')[0]
+        if category not in labels:
+            category = 'workspace'
+        item = dict(field=category, problem=labels[category] + '，请开发者在本机处理')
+        if 'line' in problem:
+            item['line'] = problem['line']
+        if 'path' in problem:
+            item['path'] = '<场景文件>'
+        result.append(item)
+    return result
+
+
 def validate_entries(entries):
     problems = []
     if not isinstance(entries, dict) or not entries:

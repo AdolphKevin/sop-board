@@ -190,3 +190,4 @@ textarea { resize: vertical; }
   .progress-columns { grid-template-columns: 1fr; gap: 0; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transform: none !important; } }
+.defect-link { white-space: pre-wrap; overflow-wrap: anywhere; }

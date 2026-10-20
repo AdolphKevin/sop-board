@@ -7,15 +7,13 @@ import shutil
 from string import Template
 import sqlite3
 import subprocess
-import re
 import os
 
 import yaml
 
 from .errors import reject, APIError
-from .defect_links import ISSUE_KEY
+from .jira import identify
 from .service import canonical, now
-from .statistics import calculate
 from .repositories import git
 from .repair_repositories import RepairRepositories, head
 from .drafts import schema_problems
@@ -72,7 +70,8 @@ class Fixes:
         declarations = self.service.require_ready(task['workspace'])
         workspace = self.service.workspace
         with self.store.connection() as db:
-            pending = self.unresolved(db, task['workspace'])
+            pending = [json.loads(r[0]) for r in db.execute(
+                'SELECT input_json FROM fix_problems WHERE task=? ORDER BY id', (task['id'],))]
             aliases = [r['alias'] for r in self.repositories.rows(task['id'])]
             for problem in pending:
                 batch = self.service.batch(db, task['workspace'], problem['batch'])
@@ -107,32 +106,29 @@ class Fixes:
         snapshot = dict(entries=declarations, config_digest=workspace.config_digest, batches={}, cases={},
                         aliases=aliases, repositories=repositories, protected_files=protected_files)
         with self.store.transaction() as db:
-            fresh = self.unresolved(db, task['workspace'])
+            fresh = [dict(r) for r in db.execute('SELECT * FROM fix_problems WHERE task=? ORDER BY id', (task['id'],))]
             added = []
-            for problem in fresh:
-                previous = db.execute('SELECT * FROM fix_problems WHERE task=? AND batch=? AND scenario=?',
-                    (task['id'], problem['batch'], problem['scenario'])).fetchone()
-                content_changed = previous and previous['fingerprint'] != problem['fingerprint']
-                if previous and previous['result_id'] == problem['result_id'] and not content_changed:
+            for previous in fresh:
+                if previous['first_attempt']:
                     continue
+                problem = json.loads(previous['input_json'])
                 problem.update(jira=None, jira_error='')
                 jira = getattr(self.service, 'jira', None)
-                match = re.fullmatch(re.escape(self.service.jira_url) + r'/browse/(' + ISSUE_KEY + ')', problem['defect_url']) if self.service.jira_url else None
-                if match:
-                    problem['jira_key'] = match[1]
-                if match and jira and all((jira.url, jira.email, jira.token)):
+                issue = identify(problem['defect_url'])
+                if issue:
+                    problem['jira_site'], problem['jira_key'] = issue
+                if not issue:
+                    problem['jira_error'] = '未识别为 Jira Cloud 单据链接，未读取、不会回写'
+                elif not jira:
+                    problem['jira_error'] = 'Jira 未配置，未能读取'
+                else:
                     try:
-                        problem['jira'] = jira.issue(match[1])
+                        problem['jira'] = jira.issue(problem['defect_url'])
                     except APIError as error:
                         problem['jira_error'] = '；'.join(p['problem'] for p in error.problems)
-                if previous:
-                    db.execute("UPDATE fix_problems SET result_id=?,fingerprint=?,first_attempt=?,input_json=?,category='',root_repo=NULL,handling='',reason='',plan='' WHERE id=?",
-                        (problem['result_id'], problem['fingerprint'], number if content_changed else previous['first_attempt'], canonical(problem), previous['id']))
-                else:
-                    db.execute('INSERT INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) VALUES (?,?,?,?,?,?,?)',
-                        (task['id'], problem['batch'], problem['scenario'], problem['fingerprint'], problem['result_id'], number, canonical(problem)))
-                if not previous or content_changed or previous['category'] not in ('', 'product'):
-                    added.append(dict(batch=problem['batch'], scenario=problem['scenario']))
+                db.execute('UPDATE fix_problems SET first_attempt=?,input_json=? WHERE id=?',
+                           (number, canonical(problem), previous['id']))
+                added.append(dict(batch=problem['batch'], scenario=problem['scenario']))
             problems = [json.loads(r[0]) for r in db.execute("SELECT input_json FROM fix_problems WHERE task=? AND category IN ('','product') ORDER BY id", (task['id'],))]
             for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY id', (task['workspace'],)):
                 version = self.service.latest_version(db, batch)
@@ -498,7 +494,10 @@ class Fixes:
         self.tasks.worktree_environments.pop(task_id, None)
         task = self.tasks.read(task_id)
         jira = self.service.jira
-        keys = dict.fromkeys(p['input']['jira_key'] for p in task['problems'] if p['input'].get('jira_key'))
+        # 同号可能属于不同站点；持久记录用完整站点和单号，保留既有表结构。
+        links = dict.fromkeys(
+            site + '/browse/' + key for p in task['problems']
+            if (issue := identify(p['input'].get('defect_url'))) for site, key in [issue])
         paragraphs = ['根因摘要：' + task['result'].get('root_cause', ''),
             '根因仓库：' + '；'.join(p['scenario'] + '：' + (p['root_repo'] or '未定位') for p in task['problems']),
             '仓库与提交：' + '；'.join(r['alias'] + ' ' + r['identity'] + ' ' + r['baseline_branch'] + ' ' +
@@ -506,16 +505,20 @@ class Fixes:
             '改动文件：' + '；'.join(r['alias'] + '：' + '、'.join(r['changed_files']) for r in task['repositories']),
             '复测场景与结果：' + '；'.join(f"{c['batch']} {r['scenario']} {r['status']}" for c in task['validations']
                 if c['attempt'] == task['attempt'] for r in c['results']), '尚未部署到测试环境']
-        for key in keys:
+        for link in links:
             with self.store.transaction() as db:
+                # 旧版只支持单一 Jira 站点，已用裸单号登记过回写；重启不能重复评论。
+                key = identify(link)[1]
+                if db.execute('SELECT 1 FROM fix_jira WHERE task=? AND issue=?', (task_id, key)).fetchone():
+                    continue
                 inserted = db.execute('INSERT OR IGNORE INTO fix_jira VALUES (?,?,?,?,?)',
-                    (task_id, key, '评论结果待人工确认', 'Jira 状态待人工更新', '回写中断时请人工核对，不自动重试')).rowcount
+                    (task_id, link, '评论结果待人工确认', 'Jira 状态待人工更新', '回写中断时请人工核对，不自动重试')).rowcount
             if not inserted:
                 continue
-            result = jira.write_fix(key, paragraphs, os.environ.get('JIRA_FIXED_STATUS', '').strip())
+            result = jira.write_fix(link, paragraphs, os.environ.get('JIRA_FIXED_STATUS', '').strip())
             with self.store.transaction() as db:
                 db.execute('UPDATE fix_jira SET comment=?,transition=?,reason=? WHERE task=? AND issue=?',
-                    (result['comment'], result['transition'], result['reason'], task_id, key))
+                    (result['comment'], result['transition'], result['reason'], task_id, link))
 
     def recover_promotions(self):
         with self.store.connection() as db:
@@ -635,34 +638,15 @@ class Fixes:
         return dict(ok=True, items=items)
 
     def unresolved(self, db, key):
-        problems = []
-        for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY id', (key,)):
-            for scene in calculate(db, batch)['scenarios']:
-                rows = [r for r in (scene['latest_manual'], scene['latest_agent']) if r]
-                latest = max(rows, key=lambda r: r['number'], default=None)
-                if not latest or not (latest['kind'] == 'manual' and latest['status'] in ('fail', 'blocked') and latest['finding'] or
-                                      latest['kind'] == 'agent' and latest['status'] == 'fail'):
-                    continue
-                suppressed = db.execute("SELECT 1 FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.workspace=? "
-                    "AND p.batch=? AND p.scenario=? AND p.fingerprint=? AND p.result_id=? "
-                    "AND (t.status='已放弃' OR p.category NOT IN ('','product')) LIMIT 1",
-                    (key, batch['name'], scene['scenario'], scene['fingerprint'], latest['id'])).fetchone()
-                if suppressed:
-                    continue
-                source = 'manual' if latest['kind'] == 'manual' else 'agent'
-                problems.append(dict(batch=batch['name'], scenario=scene['scenario'], fingerprint=scene['fingerprint'],
-                    result_id=latest['id'], source=source, scene=scene['body'], latest_result=latest,
-                    previous_agent=scene['latest_agent'], defect_url=latest['finding'] if source == 'manual' else '',
-                    evidence=[dict(e, path=str(self.store.data.resolve() / 'evidence' / e['sha256'][:2] / e['sha256'])) for e in latest['evidence']]))
-        return problems
+        return [p for p in self.service.pending_fixes(db, key) if p['review_ready']]
 
     def discover(self):
         if time.monotonic() < self.next_scan or not self.service.environment.approved():
             return
         self.next_scan = time.monotonic() + 5
         workspace = self.service.workspace
-        with self.store.transaction() as db:
-            if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='fix' AND status NOT IN ('已合入','已放弃')", (workspace.name,)).fetchone():
+        with self.service.workspace_lock, self.store.transaction() as db:
+            if self.service.fix_start_reason(db, workspace.name):
                 return
             problems = self.unresolved(db, workspace.name)
             if not problems:
@@ -670,6 +654,9 @@ class Fixes:
             task_id = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,created_at,attempt,error) "
                 "VALUES ('fix',?,'','排队中','未解决问题','','{}',?,0,'等待开始修复')", (workspace.name, now())).lastrowid
             db.execute('INSERT INTO fix_tasks(task) VALUES (?)', (task_id,))
+            db.executemany('INSERT INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) '
+                           'VALUES (?,?,?,?,?,0,?)',
+                [(task_id, p['batch'], p['scenario'], p['fingerprint'], p['result_id'], canonical(p)) for p in problems])
 
     def details(self, task):
         with self.store.connection() as db:
@@ -701,4 +688,5 @@ class Fixes:
             if not db.execute('SELECT 1 FROM workspaces WHERE key=?', (key,)).fetchone():
                 reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
             ids = [r[0] for r in db.execute("SELECT id FROM tasks WHERE kind='fix' AND workspace=? ORDER BY id", (key,))]
-        return dict(ok=True, tasks=[self.tasks.read(i) for i in ids])
+            review = self.service.fix_review_state(db, key)
+        return dict(ok=True, tasks=[self.tasks.read(i) for i in ids], review=review)

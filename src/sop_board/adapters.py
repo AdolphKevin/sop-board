@@ -54,6 +54,7 @@ def port_owners(ports):
         for family, address in [(socket.AF_INET, ('0.0.0.0', port))] + ([(socket.AF_INET6, ('::', port))] if socket.has_ipv6 else []):
             try:
                 with socket.socket(family) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     if family == socket.AF_INET6:
                         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                     sock.bind(address)
@@ -308,6 +309,8 @@ class Environment:
             '工作区 ' + self.workspace.name + ' 尚未搭建完成，或配置变化后尚未自检。在以数据目录为工作目录的代理会话中，按 sop-board guide 继续搭建或修正下列问题：',
             *self.workspace.setup_instructions(),
             '搭建后运行 sop-board check ' + self.workspace.name + ' --data ' + str(self.workspace.data) + '；通过后启用执行与修复。']
+        if instructions and not local:
+            instructions = ['尚未搭建，请开发者在本机处理']
         result = dict(status=state['status'], enabled=approved and not checking, checking=checking,
                       checked_at=record['finished_at'] if record else None, check_passed=approved,
                       setup_instructions=instructions,
