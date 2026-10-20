@@ -15,6 +15,7 @@ from .service import canonical, now
 from .statistics import calculate
 from .tasks import codex_environment, codex_available, terminate_group, judgment_object, invalid_judgment_constant
 from .validation import validate_round
+from .playwright import driver_skill, write_scope
 
 
 class Executions:
@@ -76,13 +77,16 @@ class Executions:
         document['sops'] = [dict(n, scenarios=[s for s in n['scenarios'] if s['id'] in selected])
                             for n in document['sops'] if any(s['id'] in selected for s in n['scenarios'])]
         (directory / 'scenarios.yaml').write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        web_scenes = [s for s in scenes if declarations['entries'][s['verify']]['surface'] == 'web']
+        scope_file = write_scope(directory, task['project'], task['batch'], directory / 'scenarios.yaml', web_scenes)
+        (directory / 'web-pending.json').write_text(canonical([dict(scenario=s['id']) for s in web_scenes]), encoding='utf-8')
         (directory / 'entries.json').write_text(canonical(declarations), encoding='utf-8')
         (directory / 'pending.json').write_text(canonical([s for s in json.loads(task['scope_json']) if s['scenario'] in selected]), encoding='utf-8')
         (directory / 'evidence').mkdir(exist_ok=True)
         prompt = Template(files('sop_board').joinpath('prompts/execute.md').read_text(encoding='utf-8')).substitute(
             task_directory=directory, repository=self.service.writable_repos[task['project']], candidate_directory=worktree or '开发者运行中的环境',
             scenario_file=directory / 'scenarios.yaml', entries_file=directory / 'entries.json', pending_file=directory / 'pending.json',
-            snapshot_file=directory / 'snapshot.json', skills_directory=os.environ.get('SOP_BOARD_SKILLS_DIR', str(Path.home() / '.agents/skills')))
+            snapshot_file=directory / 'snapshot.json', scope_file=scope_file, web_pending_file=directory / 'web-pending.json', playwright_skill=driver_skill() / 'SKILL.md', skills_directory=os.environ.get('SOP_BOARD_SKILLS_DIR', str(Path.home() / '.agents/skills')))
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 

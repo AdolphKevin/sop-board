@@ -313,6 +313,8 @@ async function main() {
     const status = input.case.slice(17);
     await click(button(status));
     assert.equal(message.textContent, "请先在身份栏填写标记人与写入令牌");
+    assert.equal(identity.querySelector("details").getAttribute("open"), "");
+    assert.equal(marker.focused, true);
     assert.equal(expanded.hidden, true); assert.equal(requests.length, 0);
     marker.value = "Tester A"; await click(button(status));
     assert.equal(message.textContent, "请先在身份栏填写标记人与写入令牌");
@@ -665,6 +667,8 @@ async function runPollingCase() {
   if (input.case === "poll-real") {
     // An independent client changes the board; the next real three-second tick sees it.
     await tick(); assert.equal(requests.at(-1).url, statePath);
+    const disclosures = qa("details[data-disclosure]").map(node => node.dataset.disclosure);
+    qa("details[data-disclosure]").forEach(node => node.setAttribute("open", ""));
     if (marker) {readyIdentity(); await marker.dispatch("input"); await token.dispatch("input");}
     const result = await globalThis.fetch(new URL(input.mutationPath, input.serverOrigin), {
       method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer isolated-test"},
@@ -675,6 +679,7 @@ async function runPollingCase() {
     await tick();
     assert.ok(Date.now() - start < 5000);
     assert.notEqual(q("main"), oldMain);
+    for (const name of disclosures) assert.equal(q(`details[data-disclosure='${name}']`).getAttribute("open"), "");
     assert.equal(requests.at(-1).url, input.location);
     if (input.location.includes("/cases")) assert.match(q("main").textContent, /cases-a.yaml/);
     else if (q(".review-form")) {

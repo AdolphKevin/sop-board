@@ -47,6 +47,12 @@ def prepare_store(data):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ('guide', 'playwright'):
+        from .playwright import command, guide
+        if sys.argv[1] == 'guide':
+            print(guide())
+            return 0
+        return command(sys.argv[2:])
     parser = argparse.ArgumentParser(description="启动 SOP 验证协作看板")
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")

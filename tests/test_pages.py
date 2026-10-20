@@ -9,6 +9,22 @@ from test_reads import get
 WEB = f"/p/{KEY}/b/demo"
 
 
+def test_overview_queue_names_are_escaped_and_identity_is_collapsible(board):
+    document = demo()
+    document['sops'][0]['scenarios'][0]['title'] = '名称搜索 <unsafe>'
+    push(board, push_body(document))
+    overview = page(board, WEB)
+    link = overview.one('section', id='queue-pending').one('a', **{'data-scenario': IDS[0]})
+    assert link.one('strong').text == '名称搜索 <unsafe>'
+    assert link.one('small').text == IDS[0]
+    assert not link.find_all('unsafe')
+    assert get(board, BASE)['scenario_titles'][IDS[0]] == '名称搜索 <unsafe>'
+    identity = overview.one('section', id='review-identity').one('details')
+    assert 'open' not in identity.attrs
+    assert identity.one('summary').text == '复核身份标记人与令牌设置'
+    assert identity.one('input', name='token').attrs['type'] == 'password'
+
+
 def test_home_lists_projects_and_batches_without_token(board):
     """I1 首页：空状态以及项目、身份与可访问的批次链接。"""
     assert "还没有项目" in page(board, "/").text

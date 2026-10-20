@@ -27,6 +27,10 @@
       const next = parsed.querySelector("main[data-state-url]");
       if (!next) return;
       if (hasDraft() || writes) {deferRefresh(); return;}
+      const opened = Array.from(document.querySelectorAll("details[data-disclosure][open]"), node => node.dataset.disclosure);
+      next.querySelectorAll("details[data-disclosure]").forEach(node => {
+        if (opened.includes(node.dataset.disclosure)) node.setAttribute("open", "");
+      });
       document.querySelector("main").replaceWith(next);
       pendingRefresh = false;
       initialize();
@@ -69,6 +73,10 @@
     const marker = identity.querySelector("[name='marker']");
     const token = identity.querySelector("[name='token']");
     const adminToken = identity.querySelector("[name='admin-token']");
+    const focusIdentity = field => {
+      identity.querySelector("details")?.setAttribute("open", "");
+      field?.focus();
+    };
     const show = (element, value, state = "success") => {
       element.textContent = value;
       element.dataset.state = state;
@@ -95,7 +103,7 @@
         const message = document.getElementById("developer-message");
         if (!adminToken?.value.trim()) {
           show(message, "请先在身份栏填写开发者令牌", "error");
-          adminToken?.focus();
+          focusIdentity(adminToken);
           return;
         }
         saveIdentity();
@@ -174,12 +182,12 @@
         problems.replaceChildren();
         if (!marker.value.trim()) {
           show(message, "请先在身份栏填写标记人", "error");
-          marker.focus();
+          focusIdentity(marker);
           return;
         }
         if (!token.value.trim()) {
           show(message, "请先在身份栏填写写入令牌", "error");
-          token.focus();
+          focusIdentity(token);
           return;
         }
         const file = fileInput.files[0];
@@ -275,7 +283,7 @@
       const checkIdentity = () => {
         if (marker.value.trim() && token.value.trim()) return true;
         show(message, "请先在身份栏填写标记人与写入令牌", "error");
-        (marker.value.trim() ? token : marker).focus();
+        focusIdentity(marker.value.trim() ? token : marker);
         return false;
       };
       const collapse = () => {
@@ -320,7 +328,7 @@
             const explanation = [code, ...reasons].filter(Boolean).join("；");
             if (unauthorized) {
               show(message, explanation + "；令牌无效，请重新填写写入令牌。已填内容已保留。", "error");
-              token.focus();
+              focusIdentity(token);
             } else {
               show(message, explanation || "标记未保存，请核对填写内容。", "error");
             }

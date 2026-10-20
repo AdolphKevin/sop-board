@@ -320,7 +320,7 @@ class Service:
 
     def summary(self, db, batch):
         result = calculate(db, batch)
-        result.pop("scenarios")
+        result['scenario_titles'] = {scene['scenario']: scene['title'] for scene in result.pop('scenarios')}
         version = self.latest_version(db, batch)
         _, fix_statistics = self.batch_fixes(db, batch)
         tasks = []

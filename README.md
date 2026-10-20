@@ -4,6 +4,16 @@ SOP 验证协作看板。开发岗的代理用 [praxis-skills](https://github.co
 
 状态：开发中。
 
+## 内置 Web 验收入口
+
+```sh
+uv tool install /path/to/sop-board
+sop-board guide
+sop-board playwright --help
+```
+
+`guide` 无需启动服务或设置令牌，会显示随包发布的技能路径和命令。`scope`、`convert`、`tags` 均为本地操作；`submit` 用于手工试跑通过现有看板 API 登记结果，凭证只来自环境变量。看板自动任务写回 results.jsonl 后由看板登记，不另行提交。详见 [Web 验收集成](docs/playwright-acceptance.md)。
+
 ## 使用方式
 
 任何成员 clone 本仓后用 uv 在本机启动看板；团队共用一份数据时，由启动者开启内网访问，其他成员用浏览器打开。分析测试用例时，看板调用启动者本机已登录的 Codex。暂不提供服务器部署。
@@ -11,7 +21,7 @@ SOP 验证协作看板。开发岗的代理用 [praxis-skills](https://github.co
 ## 相关仓库
 
 - [praxis-skills](https://github.com/AdolphKevin/praxis-skills)：`sop-verify` 技能，从业务 SOP 写场景、派独立会话执行、登记结果。
-- [team-workflow](https://github.com/AdolphKevin/team-workflow)：团队流程；看板按轮次导出的结果可直接用 `tw team scenarios submit` 登记。
+- Web 验收技能随 sop-board 包发行，维护于 `src/sop_board/skills/playwright-acceptance/`；无需 team-workflow 或 `tw`。见 [Web 验收集成](docs/playwright-acceptance.md)。
 
 ## 启动与内网访问
 
@@ -87,7 +97,7 @@ checks:
 
 任务无论完成、失败、作废或放弃，均移除检出目录；任务结束与看板退出时终止候选服务的整个进程组，重启会清理残留目录。执行任务可重试失败、已作废、已中断与 Codex 不可用的状态，保留原范围，重新核对待提交并固定快照；待提交与等待浏览器的任务也可以放弃。重试把前次证据和报告一起归档。
 
-每个执行任务使用一个新的 Codex 会话，工作目录为数据目录的 `tasks/<任务编号>/`，显式使用 `workspace-write` 沙箱并开启联网。目录包含筛选后的 `scenarios.yaml`、`entries.json`、`pending.json`、`snapshot.json`、`evidence/` 与发行模板生成的 `prompt.md`。驱动技能目录取 `SOP_BOARD_SKILLS_DIR`，缺省 `~/.agents/skills`；网页、接口或数据库、智能体入口分别使用 `playwright-acceptance`、`verify-backend-sop-db`、`build-scenario-validation-loop`，命令行入口使用临时 HOME，其余入口按操作说明执行。提示词要求保留产品文件，在任务目录写 `results.jsonl` 与 `evidence/` 下的证据。看板核对场景恰好一行、范围、结果字段及证据路径后才登记；不合格时在 `check.json` 写明问题，不登记部分结果。轮次执行者取 Codex 会话编号，会话取任务编号，实现者取仓库的 `git config user.name`（无值时省略），产品与内容指纹取快照，`dirty` 为 false。
+每个执行任务使用一个新的 Codex 会话，工作目录为数据目录的 `tasks/<任务编号>/`，显式使用 `workspace-write` 沙箱并开启联网。目录包含筛选后的 `scenarios.yaml`、`entries.json`、`pending.json`、`snapshot.json`、`evidence/` 与发行模板生成的 `prompt.md`。Web 驱动默认使用随包发行的 `playwright-acceptance`，任务同时生成 Web 专用 `scope.json` 与 `web-pending.json`。`SOP_BOARD_SKILLS_DIR` 中有自定义 Web 技能时可显式覆盖；其他接口/数据库和智能体驱动仍从该目录（缺省 `~/.agents/skills`）读取 `verify-backend-sop-db`、`build-scenario-validation-loop`，命令行入口使用临时 HOME，其余入口按操作说明执行。提示词要求保留产品文件，在任务目录写 `results.jsonl` 与 `evidence/` 下的证据。看板核对场景恰好一行、范围、结果字段及证据路径后才登记；不合格时在 `check.json` 写明问题，不登记部分结果。轮次执行者取 Codex 会话编号，会话取任务编号，实现者取仓库的 `git config user.name`（无值时省略），产品与内容指纹取快照，`dirty` 为 false。
 
 ### 自动修复（提交、复测与合入）
 
