@@ -447,13 +447,18 @@ class Service:
 
     def batch_fixes(self, db, batch):
         records = []
-        for row in db.execute("SELECT t.id,t.status,t.attempt,t.result_json,f.merged_commit FROM tasks t "
+        for row in db.execute("SELECT t.id,t.status,t.error,t.attempt,t.result_json FROM tasks t "
             "JOIN fix_tasks f ON f.task=t.id WHERE t.workspace=? AND EXISTS "
             "(SELECT 1 FROM fix_problems p WHERE p.task=t.id AND p.batch=?) ORDER BY t.id", (batch['workspace'], batch['name'])):
             record = dict(row)
             record['root_cause'] = json.loads(record.pop('result_json')).get('root_cause', '')
             record['scenarios'] = [p[0] for p in db.execute('SELECT scenario FROM fix_problems WHERE task=? AND batch=? ORDER BY id', (row['id'], batch['name']))]
             record['problems'] = len(record['scenarios'])
+            record['root_repositories'] = [dict(r) for r in db.execute('SELECT batch,scenario,root_repo FROM fix_problems WHERE task=? ORDER BY id', (row['id'],))]
+            record['repositories'] = [dict(r) for r in db.execute('SELECT alias,identity,baseline_branch,repair_commit,merged_commit,changed_files_json,merge_status,merge_reason FROM fix_repositories WHERE task=? ORDER BY alias', (row['id'],))]
+            for repo in record['repositories']:
+                repo['changed_files'] = json.loads(repo.pop('changed_files_json'))
+
             record['jira'] = [dict(r) for r in db.execute('SELECT issue,comment,transition,reason FROM fix_jira WHERE task=? ORDER BY issue', (row['id'],))]
             records.append(record)
         stats = dict(tasks=len(records), problems=sum(t['problems'] for t in records),

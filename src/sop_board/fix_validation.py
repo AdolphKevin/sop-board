@@ -1,4 +1,4 @@
-"""将首仓修复工作树交给同一个适配环境，由新会话经真实入口复测。"""
+"""在各仓修复目录启动适配，由新会话复测问题与所有可能受影响场景。"""
 import json
 from importlib.resources import files
 from pathlib import Path
@@ -32,9 +32,9 @@ class FixValidation:
     def run(self, task, problems):
         workspace = self.fixes.service.workspace
         snapshot = task['snapshot']
-        workspace.reload()
-        if snapshot['config_digest'] != workspace.config_digest:
-            return dict(status='fail', reason='工作区配置变化', evidence=[], scenarios=[])
+        stale = self.fixes.snapshot_changes(task)
+        if stale:
+            return dict(status='fail', reason=stale, evidence=[], scenarios=[])
         number = task['attempt']
         with self.store.connection() as db:
             sequence = db.execute('SELECT COALESCE(MAX(validation),0)+1 FROM fix_validations WHERE task=? AND attempt=?', (task['id'], number)).fetchone()[0]
@@ -42,14 +42,26 @@ class FixValidation:
         directory.mkdir(parents=True)
         (directory / 'evidence').mkdir()
         directories = self.fixes.directories(task)
-        selected = []
-        for problem in problems:
-            document = yaml.safe_load(snapshot['batches'][problem['batch']]['content'])
-            scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
-            selected.append(dict(scene, batch=problem['batch']))
+        changed = {r['alias'] for r in task['repositories'] if r['changed_files']}
+        required = {(p['batch'], p['scenario']) for p in problems}
+        selected, aliases = [], set()
+        # 保守覆盖所有声明涉及改动仓库的场景，避免漏掉跨批次依赖。
+        for batch, version in snapshot['batches'].items():
+            document = yaml.safe_load(version['content'])
+            involved = workspace.aliases(document)
+            affected = bool(changed.intersection(involved))
+            for node in document['sops']:
+                for scene in node['scenarios']:
+                    if affected or (batch, scene['id']) in required:
+                        selected.append(dict(scene, batch=batch))
+                        aliases.update(involved)
+        if not required.issubset({(s['batch'], s['id']) for s in selected}):
+            return dict(status='fail', reason='问题场景已不在固定快照中', evidence=[], scenarios=[])
+        aliases.update(snapshot['aliases'])
+        aliases = sorted(aliases)
         rows, session, reason = [], '', ''
         process = None
-        info = workspace.product(snapshot['aliases'], directories)
+        info = workspace.product(aliases, directories)
         if info['dirty']:
             return dict(status='fail', reason='复测目录有未提交的产品改动', evidence=[], scenarios=[])
         try:
@@ -61,7 +73,7 @@ class FixValidation:
                             break
                         self.tasks.update(task['id'], error='等待验收浏览器')
                     self.tasks.stopping.wait(.1)
-            with self.fixes.service.environment.use_repair(directories, workspace.data / 'prepare' / f"verify-{task['id']}-{number}-{sequence}.log") as environment:
+            with self.fixes.service.environment.use_repair(directories, workspace.data / 'prepare' / f"verify-{task['id']}-{number}-{sequence}.log", self.fixes.repositories.repair_directories(task['id'])) as environment:
                 if not self.active(task):
                     return
                 addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items() if entry.get('address_env') and entry['address_env'] in environment}
@@ -97,9 +109,11 @@ class FixValidation:
                 if any((r.get('batch'), r.get('scenario')) not in {(s['batch'], s['id']) for s in selected} for r in raw):
                     raise ValueError('复测结果有范围外批次或场景')
                 workspace.reload()
-                if workspace.config_digest != snapshot['config_digest'] or workspace.product(snapshot['aliases'], directories) != info:
-                    raise ValueError('复测期间配置或代码变化')
-                reason = '；'.join(r['actual'] for r in rows if r['status'] != 'pass')
+                stale = self.fixes.snapshot_changes(task)
+                if stale or workspace.product(aliases, directories) != info:
+                    raise ValueError(stale or '复测期间仓库代码变化')
+                failed = [r for r in rows if r.get('status') != 'pass']
+                reason = '；'.join(str(r.get('actual', '')) for r in failed) or ('存在未通过场景' if failed else '')
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, APIError) as error:
             reason = '；'.join(p['problem'] for p in error.problems) if isinstance(error, APIError) else str(error)
         finally:
@@ -115,7 +129,7 @@ class FixValidation:
         with self.tasks.lock, self.store.transaction() as db:
             for row in rows:
                 row['evidence'] = [dict(name=p.name, sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
-            for batch in dict.fromkeys(p['batch'] for p in problems):
+            for batch in dict.fromkeys(s['batch'] for s in selected):
                 group = [r for r in rows if r['batch'] == batch]
                 version = db.execute('SELECT id FROM versions WHERE batch=(SELECT id FROM batches WHERE workspace=? AND name=?) AND sha256=? ORDER BY id DESC LIMIT 1',
                     (task['workspace'], batch, snapshot['batches'][batch]['sha256'])).fetchone()[0]
@@ -124,11 +138,14 @@ class FixValidation:
                         product=dict(commit=info['commit'], digest=info['product_digest'], dirty=False), submitted_by=session, results=group))
                 except APIError as error:
                     reason = '；'.join(filter(None, [reason, *(p['problem'] for p in error.problems)]))
-                db.execute('INSERT INTO fix_validations(task,attempt,validation,batch,version,commit_id,product_digest,session_id,status,reason,results_json,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                    (task['id'], number, sequence, batch, version, info['repos'][task['repo_alias']]['commit'], info['product_digest'], session,
+                db.execute('INSERT INTO fix_validations(task,attempt,validation,batch,version,repositories_json,product_digest,session_id,status,reason,results_json,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (task['id'], number, sequence, batch, version, canonical(info['repos']), info['product_digest'], session,
                      'fail' if reason else 'pass', reason, canonical(group), canonical(evidence)))
+            if reason:
+                db.execute("UPDATE fix_validations SET status='fail',reason=? WHERE task=? AND attempt=? AND validation=?",
+                           (reason, task['id'], number, sequence))
         return dict(status='fail' if reason else 'pass', reason=reason, evidence=evidence,
-                    session_id=session, repositories=info['repos'], scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in problems])
+                    session_id=session, repositories=info['repos'], scenarios=[dict(batch=s['batch'], scenario=s['id']) for s in selected])
 
     def active(self, task):
         return not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == '复测中'

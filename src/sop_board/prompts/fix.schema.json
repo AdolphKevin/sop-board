@@ -21,7 +21,8 @@
           "scenario",
           "category",
           "handling",
-          "reason"
+          "reason",
+          "root_repo"
         ],
         "properties": {
           "batch": {
@@ -46,6 +47,12 @@
           },
           "reason": {
             "type": "string"
+          },
+          "root_repo": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

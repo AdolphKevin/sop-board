@@ -540,21 +540,26 @@ def fixes(workspace, tasks, selected=None, *, local=False):
     categories = dict(product='产品缺陷', execution='执行问题', environment='环境问题', scenario='场景问题', requirement='需求问题', unfixable='暂无法修复的产品缺陷')
     for problem in task['problems']:
         content += (f"<li>{text(problem['batch'])} {text(problem['scenario'])}：{text(categories.get(problem['category'], '待分析'))} · " +
-            f"{text(problem['handling'])} · {text(problem['reason'])} · {text(problem['plan'])}" +
+            f"根因仓库：{text(problem['root_repo'] or '未定位')} · {text(problem['handling'])} · {text(problem['reason'])} · {text(problem['plan'])}" +
             f"<p>{text(problem['input'].get('jira_error', ''))}</p></li>")
-    content += '</ul><h3>尝试记录</h3>'
+    content += '</ul><h3>各仓改动与合入</h3><table><tr><th>仓库</th><th>改动文件</th><th>修复提交</th><th>基线与合入</th><th>状态与原因</th></tr>'
+    for repo in task['repositories']:
+        content += (f"<tr><td>{text(repo['alias'])} · {text(repo['identity'])}</td><td>{text('、'.join(repo['changed_files']) or '无')}</td>"
+            f"<td>{text(repo['repair_commit'])}</td><td>{text(repo['baseline_branch'])} · {text(repo['merged_commit'] or '未合入')}</td>"
+            f"<td>{text(repo['merge_status'])} · {text(repo['merge_reason'])}</td></tr>")
+    content += '</table><h3>尝试记录</h3>'
     for attempt in task['attempts']:
-        merged = (f"<p>已合入 {text(task['baseline_branch'])}：{text(attempt['merged_commit'])}</p>"
-                  if attempt.get('merged_commit') else '')
+        commits = '；'.join(alias + '：' + commit for alias, commit in attempt['commits'].items()) or '本次无新提交'
+        merged = '；'.join(alias + '：' + commit for alias, commit in attempt['merged_commits'].items()) or '未合入'
         evidence = ''.join(f"<p><a href='{text(url)}'>{text(name)}</a></p>"
             for name, url in task['files'].items()
             if any(path.endswith('/' + name) for path in attempt['validation'].get('evidence', [])))
         content += (f"<section><h4>第 {attempt['number']} 次 · {text(attempt['outcome'])}</h4><p>{text(attempt['reason'])}</p>" +
-            f"<p>提交：{text(attempt['commit_id'])}</p><p>{text(attempt['result'].get('root_cause', ''))}</p>" +
-            merged + evidence + '<pre>' + text(json.dumps(attempt['validation'], ensure_ascii=False, indent=2)) + '</pre></section>')
+            f"<p>逐仓提交：{text(commits)}</p><p>逐仓合入：{text(merged)}</p><p>{text(attempt['result'].get('root_cause', ''))}</p>" +
+            evidence + '<pre>' + text(json.dumps(attempt['validation'], ensure_ascii=False, indent=2)) + '</pre></section>')
     content += '<h3>待开发者处理事项</h3><ul>' + ''.join(
         f"<li>{text(p['batch'])} {text(p['scenario'])}：{text(p['reason'])} · {text(p['plan'])}</li>" for p in task['attention']) + '</ul>'
-    content += f"<h3>合入提交</h3><p>{text(task['merged_commit'])}</p><h3>Jira 回写结果</h3><ul>" + ''.join(
+    content += '<h3>Jira 回写结果</h3><ul>' + ''.join(
         f"<li>{text(r['issue'])}：{text(r['comment'])} · {text(r['transition'])} · {text(r['reason'])}</li>" for r in task['jira']) + '</ul>'
     if local:
         content += "<label>开发者说明<textarea id='developer-note'></textarea></label>"
@@ -562,7 +567,7 @@ def fixes(workspace, tasks, selected=None, *, local=False):
             content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"
         else:
             content += "<button type='button' disabled>批准方案</button>"
-        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('detached', 'interrupted')):
+        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('preparation', 'interrupted')):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
         else:
             content += "<button type='button' disabled>重试</button>"

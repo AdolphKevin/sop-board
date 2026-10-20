@@ -107,7 +107,7 @@ class Environment:
                     record['config_digest'] == self.workspace.config_digest)
 
     def environment(self, directories, extra=None, log_dir=None):
-        env = dict(os.environ)
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('SOP_REPO_', 'SOP_BASE_')) and k != 'SOP_ENV_LOG_DIR'}
         # Explicit repository inputs always override values inherited by the board.
         env.update(extra or {})
         for alias, path in directories.items():
@@ -269,14 +269,14 @@ class Environment:
             yield self.agent_environment(self.workspace.repos)
 
     @contextmanager
-    def use_repair(self, directories, prepare_log):
+    def use_repair(self, directories, prepare_log, prepare_directories):
         with self.operation:
             self.workspace.reload()
             if not self.approved():
                 raise ValueError('工作区配置变化或自检未通过')
             self._stop()
             try:
-                extra = self.prepare(directories, prepare_log)
+                extra = self.prepare(prepare_directories, prepare_log)
                 self._start(directories, extra)
                 yield self.agent_environment(directories, extra)
             finally:

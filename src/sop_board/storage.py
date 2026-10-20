@@ -22,25 +22,30 @@ CREATE TABLE IF NOT EXISTS workspaces (
     key TEXT PRIMARY KEY, root TEXT NOT NULL, name TEXT NOT NULL, defect_prefix TEXT
 );
 CREATE TABLE IF NOT EXISTS fix_tasks (
-    task INTEGER PRIMARY KEY REFERENCES tasks(id), repository TEXT NOT NULL, repo_alias TEXT NOT NULL,
-    baseline_branch TEXT NOT NULL DEFAULT '', baseline_commit TEXT NOT NULL DEFAULT '',
-    fix_branch TEXT NOT NULL DEFAULT '', worktree TEXT NOT NULL DEFAULT '',
-    developer_note TEXT NOT NULL DEFAULT '', retry_reason TEXT NOT NULL DEFAULT '',
-    merged_commit TEXT NOT NULL DEFAULT ''
+    task INTEGER PRIMARY KEY REFERENCES tasks(id),
+    developer_note TEXT NOT NULL DEFAULT '', retry_reason TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS fix_repositories (
+    task INTEGER NOT NULL REFERENCES tasks(id), alias TEXT NOT NULL,
+    root TEXT NOT NULL, identity TEXT NOT NULL, baseline_branch TEXT NOT NULL,
+    baseline_commit TEXT NOT NULL, fix_branch TEXT NOT NULL, worktree TEXT NOT NULL,
+    repair_commit TEXT NOT NULL DEFAULT '', merged_commit TEXT NOT NULL DEFAULT '',
+    changed_files_json TEXT NOT NULL DEFAULT '[]', merge_status TEXT NOT NULL DEFAULT '未核对',
+    merge_reason TEXT NOT NULL DEFAULT '', PRIMARY KEY(task,alias)
 );
 CREATE TABLE IF NOT EXISTS fix_problems (
     id INTEGER PRIMARY KEY, task INTEGER NOT NULL REFERENCES tasks(id),
     batch TEXT NOT NULL, scenario TEXT NOT NULL, fingerprint TEXT NOT NULL,
     result_id INTEGER NOT NULL REFERENCES results(id), first_attempt INTEGER NOT NULL,
-    category TEXT NOT NULL DEFAULT '', handling TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '', root_repo TEXT, handling TEXT NOT NULL DEFAULT '',
     reason TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '', input_json TEXT NOT NULL,
     UNIQUE(task,batch,scenario,fingerprint)
 );
 CREATE TABLE IF NOT EXISTS fix_attempts (
     task INTEGER NOT NULL REFERENCES tasks(id), number INTEGER NOT NULL,
-    started_at TEXT NOT NULL, finished_at TEXT, start_commit TEXT NOT NULL,
-    commit_id TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '运行中',
-    merged_commit TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL, finished_at TEXT, start_commits_json TEXT NOT NULL,
+    commits_json TEXT NOT NULL DEFAULT '{}', outcome TEXT NOT NULL DEFAULT '运行中',
+    merged_commits_json TEXT NOT NULL DEFAULT '{}',
     reason TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}',
     validation_json TEXT NOT NULL DEFAULT '{}', added_json TEXT NOT NULL DEFAULT '[]',
     interruptions_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(task,number)
@@ -48,7 +53,7 @@ CREATE TABLE IF NOT EXISTS fix_attempts (
 CREATE TABLE IF NOT EXISTS fix_validations (
     task INTEGER NOT NULL, attempt INTEGER NOT NULL, validation INTEGER NOT NULL,
     batch TEXT NOT NULL, version INTEGER NOT NULL REFERENCES versions(id),
-    commit_id TEXT NOT NULL, product_digest TEXT NOT NULL, session_id TEXT NOT NULL,
+    repositories_json TEXT NOT NULL, product_digest TEXT NOT NULL, session_id TEXT NOT NULL,
     status TEXT NOT NULL, reason TEXT NOT NULL, results_json TEXT NOT NULL,
     evidence_json TEXT NOT NULL, promoted_round INTEGER,
     PRIMARY KEY(task,attempt,validation,batch),
@@ -130,10 +135,14 @@ class Store:
         self.data = data
         self.lock = threading.RLock()
         with self.connection() as db:
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            tables = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
+            if tables and version != 3:
+                raise ValueError('数据格式不是当前跨仓版本，请使用新的数据目录；不读取或迁移旧库')
             db.execute("PRAGMA journal_mode=WAL")
             # 新格式数据库的建表保持事务完整；不读取或升级旧数据库。
             try:
-                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA)
+                db.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nPRAGMA user_version=3;")
                 db.commit()
             except BaseException:
                 db.rollback()

@@ -242,8 +242,16 @@ class Tasks:
         for field in ('scope', 'snapshot', 'rounds'):
             task[field] = json.loads(task.pop(field + '_json'))
         directory = self.directory(task_id)
-        task['files'] = {str(p.relative_to(directory)): f'/api/v1/tasks/{task_id}/files/{quote(str(p.relative_to(directory)), safe="/")}'
-                         for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink() and directory in p.resolve().parents}
+        task['files'] = {}
+        for parent, folders, names in os.walk(directory, followlinks=False):
+            if Path(parent) == directory and 'repos' in folders:
+                folders.remove('repos')
+            folders.sort()
+            for name in sorted(names):
+                path = Path(parent) / name
+                if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(directory) and not path.resolve().is_relative_to(directory / 'repos'):
+                    relative = str(path.relative_to(directory))
+                    task['files'][relative] = f'/api/v1/tasks/{task_id}/files/{quote(relative, safe="/")}'
         if task['kind'] == 'fix':
             self.fixes.details(task)
         return task
@@ -252,7 +260,7 @@ class Tasks:
         self.read(task_id)
         directory = self.directory(task_id)
         path = directory / name
-        if '\0' in name or Path(name).is_absolute() or '..' in Path(name).parts or directory not in path.resolve().parents or path.is_symlink() or not path.is_file():
+        if '\0' in name or Path(name).is_absolute() or '..' in Path(name).parts or path.resolve().is_relative_to(directory / 'repos') or directory not in path.resolve().parents or path.is_symlink() or not path.is_file():
             reject(404, 'task-file-not-found', 'file', '任务文件不存在')
         return path.read_bytes()
 

@@ -61,7 +61,11 @@ def markdown(data, generated_at):
         jira = '；'.join(f"{r['issue']}：{r['comment']} · {r['transition']} · {r['reason']}" for r in task['jira']) or '无 Jira 回写记录'
         records.append(f"### 修复任务 #{task['id']}\n\n" + '\n'.join('- ' + label + '：' + cell(value) for label, value in [
             ('问题场景', '、'.join(task['scenarios'])), ('问题数', task['problems']), ('根因摘要', task['root_cause'] or '尚未分析'),
-            ('尝试次数', task['attempt']), ('结果', task['status']), ('合入提交', task['merged_commit'] or '无'), ('Jira 回写结果', jira)]))
+            ('尝试次数', task['attempt']), ('结果', task['status']), ('原因', task['error']), ('Jira 回写结果', jira)]) + '\n\n' +
+            table(['场景', '根因仓库'], [[r['batch'] + '/' + r['scenario'], r['root_repo'] or '未定位'] for r in task['root_repositories']]) + '\n' +
+            table(['仓库', '身份', '改动文件', '修复提交', '基线分支', '合入提交', '状态', '原因'],
+                [[r['alias'], r['identity'], '、'.join(r['changed_files']) or '无', r['repair_commit'], r['baseline_branch'],
+                  r['merged_commit'] or '未合入', r['merge_status'], r['merge_reason']] for r in task['repositories']]))
     sections.append('## 修复记录\n\n' + ('\n\n'.join(records) + '\n\n### 自动修复统计\n\n' + '\n'.join(
         '- ' + label + '：' + str(fix_statistics[key]) for key, label in FIX_METRICS) if records else '暂无记录'))
     sections.append('## 回归覆盖\n\n暂无记录')
