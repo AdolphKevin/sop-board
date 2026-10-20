@@ -51,7 +51,11 @@ def port_owners(ports):
     occupied = []
     for port in ports:
         busy = False
-        for family, address in [(socket.AF_INET, ('0.0.0.0', port))] + ([(socket.AF_INET6, ('::', port))] if socket.has_ipv6 else []):
+        # 开启地址复用后，macOS 上通配地址能与只监听回环地址的进程共存，所以回环地址也要单独探测。
+        candidates = [(socket.AF_INET, ('0.0.0.0', port)), (socket.AF_INET, ('127.0.0.1', port))]
+        if socket.has_ipv6:
+            candidates += [(socket.AF_INET6, ('::', port)), (socket.AF_INET6, ('::1', port))]
+        for family, address in candidates:
             try:
                 with socket.socket(family) as sock:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
