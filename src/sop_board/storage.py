@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS fix_attempts (
     task INTEGER NOT NULL REFERENCES tasks(id), number INTEGER NOT NULL,
     started_at TEXT NOT NULL, finished_at TEXT, start_commit TEXT NOT NULL,
     commit_id TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '运行中',
+    merged_commit TEXT NOT NULL DEFAULT '',
     reason TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}',
     validation_json TEXT NOT NULL DEFAULT '{}', added_json TEXT NOT NULL DEFAULT '[]',
     interruptions_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(task,number)

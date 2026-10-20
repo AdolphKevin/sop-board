@@ -8,13 +8,16 @@ from string import Template
 import subprocess
 import re
 import hashlib
+import os
+
+import yaml
 
 from .errors import reject, APIError
 from .defect_links import ISSUE_KEY
 from .service import canonical, now
 from .statistics import calculate
 from .repositories import git, product_files
-from .tasks import codex_available, resume_codex, terminate_group, judgment_object, invalid_judgment_constant
+from .tasks import codex_available, codex_environment, resume_codex, terminate_group, judgment_object, invalid_judgment_constant
 
 
 ACTIVE = ('排队中', '分析中', '修复中', '复测中', '待合入')
@@ -117,6 +120,15 @@ class Fixes:
             if pending and task['input_json'] != '{}':
                 db.execute("UPDATE fix_attempts SET outcome='运行中',finished_at=NULL WHERE task=? AND number=?", (task['id'], number))
                 return True
+        if info['attempt'] and self.in_place(info):
+            # 原地替换的每次新尝试都从基线重建，只移动本任务自有分支。
+            expected = self.store.data.resolve() / 'worktrees' / f"fix-{task['id']}"
+            if worktree != expected or info['fix_branch'] != f"sop-board/fix/{task['id']}":
+                raise ValueError('修复工作目录或分支不属于此任务')
+            latest = git(root, 'rev-parse', 'refs/heads/' + info['baseline_branch']).decode().strip()
+            git(root, 'worktree', 'remove', '--force', str(worktree))
+            git(root, 'branch', '-f', info['fix_branch'], latest)
+            git(root, 'worktree', 'add', str(worktree), info['fix_branch'])
         snapshot = dict(entries=declarations, entry_path=entry, batches={}, cases={})
         with self.store.transaction() as db:
             fresh = self.unresolved(db, task['project'])
@@ -347,7 +359,9 @@ class Fixes:
         return product
 
     def verify(self, task, problems, additional=False):
-        validation = self.validate(self.tasks.read(task['id']), problems)
+        info = self.tasks.read(task['id'])
+        in_place = self.in_place(info)
+        validation = self.validate(info, problems, phase='checks' if in_place else 'candidate')
         if validation is None:
             return
         with self.tasks.lock:
@@ -362,12 +376,22 @@ class Fixes:
                 answer = self.tasks.read(task['id'])['result']
                 self.failed(task, validation.get('reason', '验证未通过'), answer, validation)
             elif validation['status'] == 'pass':
-                with self.store.transaction() as db:
-                    db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=? WHERE task=? AND number=?", (now(), task['id'], number))
+                if not in_place:
+                    with self.store.transaction() as db:
+                        db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=? WHERE task=? AND number=?", (now(), task['id'], number))
                 self.tasks.update(task['id'], status='待合入', error='验证通过，核对基线与工作区后快进合入')
             self.archive(task)
         if validation['status'] == 'pass':
             self.merge(task, problems)
+
+    def in_place(self, task):
+        snapshot = task['snapshot']
+        for problem in task['problems']:
+            document = yaml.safe_load(snapshot['batches'][problem['batch']]['content'])
+            scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
+            if snapshot['entries']['entries'][scene['verify']]['candidate'] == 'in-place':
+                return True
+        return False
 
     def baseline_directory(self, task):
         root = self.service.writable_repos[task['project']]
@@ -424,8 +448,76 @@ class Fixes:
         dirty = bool(git(directory, 'status', '--porcelain', '--untracked-files=all'))
         with self.store.transaction() as db:
             db.execute('UPDATE fix_tasks SET merged_commit=? WHERE task=?', (merged, task['id']))
+            db.execute('UPDATE fix_attempts SET merged_commit=? WHERE task=? AND number=?', (merged, task['id'], info['attempt']))
         if not self.tasks.stopping.is_set():
-            self.promote(info, merged, '工作区含未经验收的修改' if dirty else '验证通过，已快进合入基线')
+            reason = '工作区含未经验收的修改' if dirty else '验证通过，已快进合入基线'
+            if self.in_place(info):
+                self.retest_in_place(task, problems, reason)
+            else:
+                self.promote(info, merged, reason)
+
+    def retest_in_place(self, task, problems, success_reason):
+        info = self.tasks.read(task['id'])
+        root = self.service.writable_repos[task['project']]
+        self.tasks.update(task['id'], status='复测中', error='已替换代码，运行重载命令后复测运行环境')
+        directory = self.tasks.directory(task['id']) / 'reloads' / str(info['attempt'])
+        directory.mkdir(parents=True, exist_ok=True)
+        entries = info['snapshot']['entries']['entries']
+        used = []
+        for problem in info['problems']:
+            document = yaml.safe_load(info['snapshot']['batches'][problem['batch']]['content'])
+            scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
+            if scene['verify'] not in used:
+                used.append(scene['verify'])
+        logs = []
+        reason = ''
+        for index, name in enumerate(used):
+            entry = entries[name]
+            if entry['candidate'] != 'in-place' or not entry.get('reload'):
+                continue
+            path = directory / f'{index}.txt'
+            logs.append(str(path))
+            environment = codex_environment()
+            variable = entry.get('address_env')
+            if variable and os.environ.get(variable):
+                environment[variable] = os.environ[variable]
+            process = None
+            try:
+                with path.open('wb') as stream, self.tasks.lock:
+                    if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '复测中':
+                        return
+                    process = subprocess.Popen(entry['reload'], cwd=root, env=environment, stdin=subprocess.DEVNULL,
+                        stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+                    self.tasks.processes[task['id']] = process
+                code = process.wait(timeout=self.tasks.timeout)
+                if code:
+                    reason = f'reload {name} 退出码 {code}：' + path.read_text(encoding='utf-8', errors='replace')
+            except (OSError, subprocess.SubprocessError) as error:
+                reason = f'reload {name} 未通过：{error}'
+            finally:
+                if process:
+                    terminate_group(process)
+                with self.tasks.lock:
+                    self.tasks.processes.pop(task['id'], None)
+            if reason:
+                break
+        validation = dict(status='fail', reason=reason, evidence=logs) if reason else self.validate(self.tasks.read(task['id']), problems, phase='runtime')
+        if validation is None:
+            return
+        checked = info['attempts'][-1]['validation']
+        validation['checks'] = checked.get('checks', [])
+        validation['evidence'] = list(dict.fromkeys([*checked.get('evidence', []), *logs, *validation['evidence']]))
+        with self.tasks.lock:
+            if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '复测中':
+                return
+            if validation['status'] == 'fail':
+                self.failed(task, validation['reason'], info['result'], validation)
+            else:
+                with self.store.transaction() as db:
+                    db.execute("UPDATE fix_attempts SET outcome='通过',finished_at=?,validation_json=? WHERE task=? AND number=?",
+                        (now(), canonical(validation), task['id'], info['attempt']))
+                self.tasks.update(task['id'], status='已合入', finished_at=now(), error=success_reason)
+                self.archive(task)
 
     def promote(self, task, merged, reason):
         root = self.service.writable_repos[task['project']]
@@ -529,9 +621,9 @@ class Fixes:
             error='连续三次未通过：' + reason if exhausted else reason, result_json=canonical(answer or {}))
         self.archive(task)
 
-    def validate(self, task, problems):
+    def validate(self, task, problems, phase='candidate'):
         from .fix_validation import FixValidation
-        return FixValidation(self).run(task, problems)
+        return FixValidation(self).run(task, problems, phase=phase)
 
     def action(self, task, action, note=''):
         with self.tasks.lock:
@@ -639,6 +731,7 @@ class Fixes:
                 for field in ('result', 'validation', 'added', 'interruptions'):
                     attempt[field] = json.loads(attempt.pop(field + '_json'))
                 task['attempts'].append(attempt)
+            task['merged_commits'] = [a['merged_commit'] for a in task['attempts'] if a['merged_commit']]
             task['candidates'] = []
             for row in db.execute('SELECT * FROM fix_candidates WHERE task=? ORDER BY attempt,validation,batch', (task['id'],)):
                 candidate = dict(row)

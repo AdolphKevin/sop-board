@@ -1,4 +1,5 @@
-"""修复候选沿用执行与检查运行器，结果在合入前独立保存。"""
+"""复用执行与检查运行器；候选独立保存，运行环境复测直接登记。"""
+import hashlib
 import json
 from importlib.resources import files
 from pathlib import Path
@@ -11,7 +12,7 @@ from .candidates import Candidates
 from .checks import Checks
 from .errors import APIError
 from .executions import Executions
-from .repositories import git, product
+from .repositories import git, product, product_files
 from .service import canonical, fingerprint
 from .tasks import judgment_object, invalid_judgment_constant, terminate_group
 from .validation import validate_round
@@ -37,7 +38,7 @@ class FixValidation:
     def __init__(self, fixes):
         self.fixes, self.tasks, self.store = fixes, fixes.tasks, fixes.store
 
-    def run(self, task, problems):
+    def run(self, task, problems, phase='candidate'):
         number = task['attempt']
         with self.store.connection() as db:
             sequence = db.execute('SELECT COALESCE(MAX(validation),0)+1 FROM fix_candidates WHERE task=? AND attempt=?',
@@ -47,7 +48,7 @@ class FixValidation:
         (directory / 'evidence').mkdir()
         context = ValidationContext(self.tasks, directory)
         candidates = Candidates(context)
-        worktree = Path(task['worktree'])
+        worktree = self.fixes.service.writable_repos[task['project']] if phase == 'runtime' else Path(task['worktree'])
         snapshot = task['snapshot']
         declarations = snapshot['entries']
         selected = []
@@ -56,17 +57,25 @@ class FixValidation:
             document = yaml.safe_load(snapshot['batches'][batch]['content'])
             scene = next(s for node in document['sops'] for s in node['scenarios'] if s['id'] == problem['scenario'])
             selected.append(dict(scene, batch=batch))
-        if any(declarations['entries'][s['verify']]['candidate'] == 'in-place' for s in selected):
-            return dict(status='pending', reason='原地替换由 T3 接入', evidence=[],
-                        scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in problems])
+        if phase == 'checks':
+            selected = []
+        elif phase == 'runtime':
+            # 混合入口也使用已替换的运行环境，不启动或检出另一个候选。
+            declarations = dict(declarations, entries={name: dict(entry, candidate='in-place')
+                for name, entry in declarations['entries'].items()})
         commit = git(worktree, 'rev-parse', 'HEAD').decode().strip()
-        info = product(worktree, worktree / 'docs/sop', worktree / snapshot['entry_path'])
+        if phase == 'runtime':
+            manifest = product_files(worktree, worktree / 'docs/sop', worktree / snapshot['entry_path'], head=True, revision=commit)
+            info = dict(product_digest=hashlib.sha256(canonical(manifest).encode()).hexdigest())
+        else:
+            info = product(worktree, worktree / 'docs/sop', worktree / snapshot['entry_path'])
         rows, session, reason = [], '', ''
-        guarded = [dict(scene, batch=batch) for batch, data in snapshot['batches'].items()
+        guarded = [] if phase == 'runtime' else [dict(scene, batch=batch) for batch, data in snapshot['batches'].items()
             for node in yaml.safe_load(data['content'])['sops'] for scene in node['scenarios']
             if (scene.get('regression') or {}).get('check')]
         check_rows = []
         process = None
+        valid_results = True
         try:
             if any(declarations['entries'][s['verify']]['surface'] == 'web' for s in selected):
                 while self.active(task):
@@ -83,6 +92,9 @@ class FixValidation:
             if prepared is None:
                 return
             scenes, failed, environment, targets = prepared
+            if phase == 'runtime':
+                for target in targets.values():
+                    target['directory'] = str(worktree)
             for row in failed:
                 # 同一场景编号可以属于多个批次；入口失败按原顺序归属。
                 matches = [s for s in selected if s['id'] == row['scenario'] and not any(
@@ -130,6 +142,7 @@ class FixValidation:
             bad = [r for r in rows if r['status'] != 'pass']
             reason = '；'.join(r['actual'] for r in bad)
         except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.SubprocessError, APIError) as error:
+            valid_results = False
             reason = '；'.join(p['problem'] for p in error.problems) if isinstance(error, APIError) else str(error)
         finally:
             if process:
@@ -141,7 +154,7 @@ class FixValidation:
             candidates.close(task['id'])
         if not self.active(task):
             return
-        collected = Checks(context).collect(task, worktree, guarded, declarations)
+        collected = [] if phase == 'runtime' else Checks(context).collect(task, worktree, guarded, declarations)
         if collected is None:
             return
         for name, results, paths in collected:
@@ -164,8 +177,13 @@ class FixValidation:
                 prior['evidence'].extend(row['evidence'])
                 prior['regression_check'] = row['regression_check']
         rows = list(combined.values())
+        if phase == 'runtime':
+            for row in rows:
+                row['note'] = '运行环境按 HEAD 记录，未经核实'
         evidence = [str(p) for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink()]
-        with self.store.transaction() as db:
+        with self.tasks.lock, self.store.transaction() as db:
+            if not self.active(task):
+                return
             for row in rows:
                 row['evidence'] = [dict(name=p.name, sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
             groups = []
@@ -178,12 +196,32 @@ class FixValidation:
                         validate_round(db, dict(idempotency_key='candidate', scenario_file_sha256=snapshot['batches'][batch]['sha256'],
                             product=dict(commit=commit, digest=info['product_digest'], dirty=False), submitted_by=session or '候选启动', results=results))
                     except APIError as error:
+                        valid_results = False
                         reason = '；'.join(filter(None, [reason, *(p['problem'] for p in error.problems)]))
                 groups.append((batch, version, results))
             status = 'fail' if reason else 'pass'
             for batch, version, results in groups:
                 db.execute('INSERT INTO fix_candidates(task,attempt,validation,batch,version,commit_id,product_digest,session_id,status,reason,results_json,evidence_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                     (task['id'], number, sequence, batch, version, commit, info['product_digest'], session, status, reason, canonical(results), canonical(evidence)))
+            if phase == 'runtime' and valid_results:
+                registered = []
+                for batch, version, results in groups:
+                    if not results:
+                        continue
+                    batch_row = self.fixes.service.batch(db, task['project'], batch)
+                    key = f"fix-runtime-{task['id']}-{number}-{batch}"
+                    existing = db.execute('SELECT number FROM rounds WHERE batch=? AND idempotency_key=?', (batch_row['id'], key)).fetchone()
+                    body = dict(idempotency_key=key, submitted_by=session or '入口准备', implementer=task['session_id'],
+                        product=dict(commit=commit, digest=info['product_digest'], dirty=False), results=results)
+                    round_number = existing[0] if existing else self.fixes.service.insert_round(db, batch_row,
+                        db.execute('SELECT * FROM versions WHERE id=?', (version,)).fetchone(), body)
+                    db.execute('UPDATE fix_candidates SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
+                        (round_number, task['id'], number, sequence, batch))
+                    db.execute('UPDATE batches SET product_digest=? WHERE id=?', (info['product_digest'], batch_row['id']))
+                    registered.append(dict(batch=batch, round=round_number))
+                prior = json.loads(db.execute('SELECT rounds_json FROM tasks WHERE id=?', (task['id'],)).fetchone()[0])
+                db.execute('UPDATE tasks SET rounds_json=? WHERE id=?',
+                    (canonical(prior + [r for r in registered if r not in prior]), task['id']))
         return dict(status=status, reason=reason, evidence=evidence, candidate_commit=commit, session_id=session,
                     checks=[dict(name=name, status='pass' if all(r['status'] == 'pass' for r in results) else 'fail') for name, results, _ in collected],
                     scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in problems])

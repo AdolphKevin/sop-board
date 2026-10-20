@@ -505,9 +505,14 @@ def fixes(project, tasks, selected=None):
             f"<p>{text(problem['input'].get('jira_error', ''))}</p></li>")
     content += '</ul><h3>尝试记录</h3>'
     for attempt in task['attempts']:
+        merged = (f"<p>已合入 {text(task['baseline_branch'])}：{text(attempt['merged_commit'])}</p>"
+                  if attempt.get('merged_commit') else '')
+        evidence = ''.join(f"<p><a href='{text(url)}'>{text(name)}</a></p>"
+            for name, url in task['files'].items()
+            if any(path.endswith('/' + name) for path in attempt['validation'].get('evidence', [])))
         content += (f"<section><h4>第 {attempt['number']} 次 · {text(attempt['outcome'])}</h4><p>{text(attempt['reason'])}</p>" +
             f"<p>提交：{text(attempt['commit_id'])}</p><p>{text(attempt['result'].get('root_cause', ''))}</p>" +
-            '<pre>' + text(json.dumps(attempt['validation'], ensure_ascii=False, indent=2)) + '</pre></section>')
+            merged + evidence + '<pre>' + text(json.dumps(attempt['validation'], ensure_ascii=False, indent=2)) + '</pre></section>')
     content += "<label>开发者说明<textarea id='developer-note'></textarea></label>"
     if task['status'] == '待开发者处理':
         content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"

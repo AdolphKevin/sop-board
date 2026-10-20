@@ -22,6 +22,8 @@ mode = presets[min(repair_index, len(presets) - 1)] if presets else {}
 output = Path(args[args.index('-o') + 1])
 report = dict(argv=args, cwd=os.getcwd(), env=environment, stdin_eof=sys.stdin.buffer.read() == b'',
               stdin_null=stat.S_ISCHR(os.fstat(0).st_mode), started=time.time())
+if (output.parent / 'problems.json').exists():
+    report['start_commit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
 time.sleep(config.get('invocation_delay', 0))
 with calls.open('a') as stream:
     stream.write(json.dumps(report) + '\n')
@@ -45,6 +47,17 @@ if retest:
     selected = json.loads((output.parent / 'retest.json').read_text())
     observation = '独立复测已核对'
     observed_status = 'pass'
+    if mode.get('observe_http'):
+        from urllib.request import build_opener, ProxyHandler
+        entries = json.loads((output.parent / 'entries.json').read_text())
+        observations = []
+        for scene in selected:
+            name = scene['scene']['verify']
+            variable = entries['entries'][name]['address_env']
+            with build_opener(ProxyHandler({})).open(os.environ[variable], timeout=5) as response:
+                observations.append(json.loads(response.read()))
+        observation = json.dumps(observations, ensure_ascii=False)
+        observed_status = 'pass' if all(r['content'] == mode['expected_content'] for r in observations) else 'fail'
     if mode.get('observe_product'):
         entries = json.loads((output.parent / 'entries.json').read_text())
         target = entries['targets'][selected[0]['scene']['verify']]['directory']
