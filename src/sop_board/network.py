@@ -6,6 +6,17 @@ import socket
 import sys
 
 
+def is_loopback(address):
+    """只信任连接对端的 IP；IPv4 映射地址按其 IPv4 部分判断。"""
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return parsed.is_loopback
+
+
 class Interface(ctypes.Structure):
     pass
 

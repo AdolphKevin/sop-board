@@ -14,11 +14,7 @@ def git(root, *args, capture_stderr=False):
                                    stderr=subprocess.STDOUT if capture_stderr else subprocess.DEVNULL, timeout=10)
 
 
-def authorize(values, token, admin):
-    if values and not admin.strip():
-        raise ValueError('缺少非空 SOP_BOARD_ADMIN_TOKEN')
-    if admin and admin == token:
-        raise ValueError('两个令牌相同：开发者令牌必须不同于写入令牌')
+def authorize(values):
     repos = {}
     for value in values:
         identity, separator, raw = value.partition('=')

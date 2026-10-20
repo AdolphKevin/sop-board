@@ -1,6 +1,5 @@
 """标准库 HTTP 适配层；不承担统计与持久化规则。"""
 
-import hmac
 from http.server import BaseHTTPRequestHandler
 from importlib.resources import files
 import json
@@ -10,11 +9,27 @@ from urllib.parse import quote, unquote, urlsplit, parse_qs
 
 from .errors import APIError, reject
 from . import pages
+from .network import is_loopback
 from .evidence_types import content_type as evidence_content_type, is_text
 
 
 def invalid_constant(value):
     raise ValueError("JSON 不接受非有限数字")
+
+
+def same_origin(origin, host):
+    """本服务使用 HTTP；比较规范化主机与端口，不信任转发头。"""
+    try:
+        source, target = urlsplit(origin), urlsplit('http://' + host)
+        for value in (source, target):
+            if (value.scheme != 'http' or not value.hostname or value.username is not None
+                    or value.password is not None or value.path or value.query or value.fragment):
+                return False
+        source_port = source.port if source.port is not None else 80
+        target_port = target.port if target.port is not None else 80
+        return (source.hostname, source_port) == (target.hostname, target_port)
+    except ValueError:
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -40,6 +55,7 @@ class Handler(BaseHTTPRequestHandler):
             service = self.server.service
             path = urlsplit(self.path).path
             method = self.command
+            local = is_loopback(self.client_address[0])
             assets = {"/assets/board.css": ("board.css", "text/css; charset=utf-8"),
                       "/assets/board.js": ("board.js", "text/javascript; charset=utf-8"),
                       "/assets/sop.js": ("sop.js", "text/javascript; charset=utf-8"),
@@ -49,15 +65,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, files("sop_board").joinpath("assets", name).read_bytes(), content_type)
                 return
             if method in ("POST", "PUT"):
-                authorization = self.headers.get("Authorization", "")
                 developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel|approve)", path) or
                                  re.fullmatch(r"/api/v1/automation/(pause|resume)", path) or
                                  re.fullmatch(r"/api/v1/projects/[^/]+/batches/[^/]+/(merges|checks|executions)", path))
-                if developer and hmac.compare_digest(authorization.encode(), ("Bearer " + self.server.token).encode()):
-                    reject(403, "admin-required", "Authorization", "此操作需要开发者令牌")
-                expected = self.server.admin_token if developer else self.server.token
-                if not expected or not hmac.compare_digest(authorization.encode(), ("Bearer " + expected).encode()):
-                    reject(401, "unauthorized", "Authorization", "令牌缺失或不符")
+                if developer and not local:
+                    reject(403, "local-only", "client", "此操作仅限本机")
+                origin = self.headers.get("Origin")
+                if origin is not None and not same_origin(origin, self.headers.get("Host", "")):
+                    reject(403, "cross-origin", "Origin", "写入请求必须与看板同源")
+                binary_upload = path == "/api/v1/evidence" and method == "POST"
+                if not binary_upload and self.headers.get_content_type() != "application/json":
+                    reject(415, "json-required", "Content-Type", "请求正文必须为 application/json")
                 try:
                     length = int(self.headers.get("Content-Length", "0" if developer else ""))
                     if length < 0:
@@ -78,16 +96,16 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, UnicodeError):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
-                self.respond(200, pages.home(service.projects()).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.home(service.projects(), local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == 'GET' and (match := re.fullmatch(r'/p/([^/]+)/fixes', path)):
                 key = unquote(match[1])
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
-                self.respond(200, pages.fixes(key, self.server.tasks.fixes.list(key)['tasks'], selected).encode(), 'text/html; charset=utf-8')
+                self.respond(200, pages.fixes(key, self.server.tasks.fixes.list(key)['tasks'], selected, local=local).encode(), 'text/html; charset=utf-8')
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.batch(key, service.read_batch(key, batch)).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.batch(key, service.read_batch(key, batch), local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/scenarios", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -103,7 +121,7 @@ class Handler(BaseHTTPRequestHandler):
                 key, batch = unquote(match[1]), unquote(match[2])
                 service.read_batch(key, batch)
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
-                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], selected).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], selected, local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/p/([^/]+)/b/([^/]+)/sop", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -230,5 +248,5 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = handle_api
 
     def log_message(self, format, *args):
-        # Do not log request bodies, authorization headers, or request targets.
+        # Do not log request bodies or request targets.
         pass

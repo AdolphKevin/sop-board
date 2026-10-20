@@ -67,42 +67,29 @@
     const identity = document.getElementById("review-identity");
     if (!identity) return;
     const marker = identity.querySelector("[name='marker']");
-    const token = identity.querySelector("[name='token']");
-    const adminToken = identity.querySelector("[name='admin-token']");
     const show = (element, value, state = "success") => {
       element.textContent = value;
       element.dataset.state = state;
     };
     const saveIdentity = () => {
       localStorage.setItem("sop-board.marker", marker.value.trim());
-      localStorage.setItem("sop-board.token", token.value);
-      if (adminToken) localStorage.setItem("sop-board.admin-token", adminToken.value);
     };
     marker.value = localStorage.getItem("sop-board.marker") || "";
-    token.value = localStorage.getItem("sop-board.token") || "";
-    if (adminToken) adminToken.value = localStorage.getItem("sop-board.admin-token") || "";
     for (const event of ["input", "change"]) {
       marker.addEventListener(event, saveIdentity);
-      token.addEventListener(event, saveIdentity);
-      if (adminToken) adminToken.addEventListener(event, saveIdentity);
     }
     document.getElementById("save-identity").addEventListener("click", () => {
       saveIdentity();
-      show(document.getElementById("identity-message"), "标记人与令牌已保存，可随时更换。");
+      show(document.getElementById("identity-message"), "标记人已保存，可随时更换。");
     });
     document.querySelectorAll("[data-developer-action]").forEach(button => {
       button.addEventListener("click", async () => {
         const message = document.getElementById("developer-message");
-        if (!adminToken?.value.trim()) {
-          show(message, "请先在身份栏填写开发者令牌", "error");
-          adminToken?.focus();
-          return;
-        }
         saveIdentity();
         button.disabled = true;
         try {
           const response = await fetch(button.dataset.developerAction, {
-            method: "POST", headers: {"Content-Type": "application/json", Authorization: "Bearer " + adminToken.value},
+            method: "POST", headers: {"Content-Type": "application/json"},
             body: button.dataset.developerNote !== undefined ? JSON.stringify({note: document.getElementById("developer-note")?.value || ""}) : "{}",
           });
           const data = await response.json();
@@ -177,11 +164,6 @@
           marker.focus();
           return;
         }
-        if (!token.value.trim()) {
-          show(message, "请先在身份栏填写写入令牌", "error");
-          token.focus();
-          return;
-        }
         const file = fileInput.files[0];
         if (!file) {
           show(message, "请选择用例 YAML 文件", "error");
@@ -194,7 +176,7 @@
         try {
           const content = await file.text();
           const response = await fetch(uploadForm.action, {method: "POST",
-            headers: {"Content-Type": "application/json", Authorization: "Bearer " + token.value},
+            headers: {"Content-Type": "application/json"},
             body: JSON.stringify({filename: file.name, content, uploaded_by: marker.value.trim()})});
           const data = await response.json();
           if (response.ok && data.ok) {
@@ -273,9 +255,9 @@
       let selected = null;
       let pending = false;
       const checkIdentity = () => {
-        if (marker.value.trim() && token.value.trim()) return true;
-        show(message, "请先在身份栏填写标记人与写入令牌", "error");
-        (marker.value.trim() ? token : marker).focus();
+        if (marker.value.trim()) return true;
+        show(message, "请先在身份栏填写标记人", "error");
+        marker.focus();
         return false;
       };
       const collapse = () => {
@@ -306,7 +288,7 @@
         controls.forEach(button => {button.disabled = true;});
         try {
           const response = await fetch(form.action, {method: "POST",
-            headers: {"Content-Type": "application/json", Authorization: "Bearer " + token.value},
+            headers: {"Content-Type": "application/json"},
             body: JSON.stringify(payload)});
           const data = await response.json();
           if (response.ok && data.ok) {
@@ -314,16 +296,10 @@
             collapse();
             show(message, "标记已保存为第 " + data.round + " 轮。");
           } else {
-            const unauthorized = response.status === 401 || data.error_code === "unauthorized";
-            const code = data.error_code || (unauthorized ? "unauthorized" : "");
+            const code = data.error_code || "";
             const reasons = (data.problems || []).map(problem => problem.problem);
             const explanation = [code, ...reasons].filter(Boolean).join("；");
-            if (unauthorized) {
-              show(message, explanation + "；令牌无效，请重新填写写入令牌。已填内容已保留。", "error");
-              token.focus();
-            } else {
-              show(message, explanation || "标记未保存，请核对填写内容。", "error");
-            }
+            show(message, explanation || "标记未保存，请核对填写内容。", "error");
           }
         } catch {
           show(message, "网络请求失败，内容已保留。请先核对是否已保存，再决定是否重试。", "error");

@@ -42,7 +42,7 @@ def layout(title, content, jira_url="", watch=None, scripts=()):
             f"<main{jira}{polling}>{content}</main></body></html>")
 
 
-def home(data):
+def home(data, *, local=False):
     projects = []
     for project in data["projects"]:
         batches = "".join(f"<li data-batch='{text(batch['name'])}'><a href='{text(batch_url(project['key'], batch['name']))}'>"
@@ -50,7 +50,7 @@ def home(data):
         projects.append(f"<section><h2>{text(project['name'])}</h2><p>{text(project['id'])}</p>"
                         f"<p>{'可写' if project.get('writable') else '只读'}</p><ul>{batches}</ul>" +
                         ''.join(f"<p><a href='/p/{text(project['key'])}/fixes?task={t['id']}'>修复任务 #{t['id']}</a> · {text(t['status'])} · {text(t['error'])}</p>" for t in project.get('fix_tasks', [])) + '</section>')
-    return layout("项目与批次", automation_controls(data) + "<h1>项目与批次</h1>" +
+    return layout("项目与批次", automation_controls(data, local=local) + "<h1>项目与批次</h1>" +
                   ("".join(projects) or "<p>还没有项目，推送场景文件后会显示在这里。</p>") + identity_bar())
 
 
@@ -80,9 +80,11 @@ def execution_state(data):
             f"通过 {counts['pass']}、失败 {counts['fail']}、受阻 {counts['blocked']}、跳过 {counts['skip']}")
 
 
-def automation_controls(data):
+def automation_controls(data, *, local=False):
     paused = data.get('automation_paused', False)
     notice = "<p id='automation-state' role='status'>自动任务已暂停</p>" if paused else "<p id='automation-state' role='status' hidden></p>"
+    if not local:
+        return "<section>" + notice + "</section>"
     return ("<section>" + notice + f"<button type='button' data-automation-toggle='' data-developer-action='/api/v1/automation/{'resume' if paused else 'pause'}'>"
             f"{'恢复自动任务' if paused else '暂停自动任务'}</button>"
             "<p id='developer-message' role='status' aria-live='polite'></p></section>")
@@ -102,7 +104,7 @@ def execution_list(data):
         '</tr></thead><tbody>' + rows + '</tbody></table></div></section>')
 
 
-def batch(project, data):
+def batch(project, data, *, local=False):
     base = batch_url(project, data["name"])
     api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(data['name'], safe='')}"
     workspace = f"<p>{'可写' if data.get('writable') else '只读'}</p>"
@@ -114,10 +116,10 @@ def batch(project, data):
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
             for p in data["workspace_problems"]) + "</section>"
     report_link = workspace + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
-    if data.get('writable'):
+    if local and data.get('writable'):
         report_link += (f"<p><button type='button' data-developer-action='{text(api)}/executions'>执行待执行场景</button> "
                         f"<button type='button' data-developer-action='{text(api)}/checks'>运行回归检查</button></p>")
-    report_link += automation_controls(data) + identity_bar()
+    report_link += automation_controls(data, local=local) + identity_bar()
     if data.get('fix_statistics', {}).get('tasks'):
         from .reports import FIX_METRICS
         report_link += '<section><h2>自动修复统计</h2>' + ''.join(
@@ -237,11 +239,9 @@ def scenario(data, jira_url=""):
 
 
 def identity_bar():
-    return ("<section id='review-identity'><h2>复核身份</h2><fieldset><legend>标记人与令牌（可随时更换）</legend>"
+    return ("<section id='review-identity'><h2>复核身份</h2><fieldset><legend>标记人（可随时更换）</legend>"
             "<label>标记人<input name='marker' autocomplete='off'></label>"
-            "<label>写入令牌<input name='token' type='password' autocomplete='off'></label>"
-            "<label>开发者令牌<input name='admin-token' type='password' autocomplete='off'></label>"
-            "<button type='button' id='save-identity'>保存标记人与令牌</button></fieldset>"
+            "<button type='button' id='save-identity'>保存标记人</button></fieldset>"
             "<p id='identity-message' role='status' aria-live='polite'></p></section>")
 
 
@@ -451,11 +451,11 @@ def scenarios(project, name, data, jira_url=""):
     return layout("SOP 场景 · " + name, content, jira_url, watch=(project, name, data["etag"]))
 
 
-def merges(project, name, tasks, selected=None):
+def merges(project, name, tasks, selected=None, *, local=False):
     api = f"/api/v1/projects/{quote(project, safe='')}/batches/{quote(name, safe='')}"
     content = (batch_nav(project, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" + identity_bar() +
                "<p>未授权项目保存草稿；授权项目核对磁盘版本后写入工作区。待同步时请核对工作区的修改。</p>" +
-               f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" +
+               (f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" if local else "") +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
     current = next((t for t in tasks if str(t['id']) == selected), tasks[-1] if tasks else None)
     content += "<table><thead><tr><th>任务</th><th>触发原因</th><th>状态</th><th>创建时间</th></tr></thead><tbody>"
@@ -489,15 +489,15 @@ def merges(project, name, tasks, selected=None):
             content += f"<p><a href='{text(api)}/merges/{task['id']}/scenario-file' download>下载合并场景</a> " + f"<a href='{text(api)}/merges/{task['id']}/pairs.json' download>下载配对文件</a></p>"
         for name_, url in task['files'].items():
             content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
-        if task['status'] in ('失败', '已中断', 'Codex 不可用', '已作废'):
+        if local and task['status'] in ('失败', '已中断', 'Codex 不可用', '已作废'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
-        if task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器'):
+        if local and task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
         content += '</section>'
     return layout('任务', content)
 
 
-def fixes(project, tasks, selected=None):
+def fixes(project, tasks, selected=None, *, local=False):
     content = ("<h1>修复任务</h1>" + identity_bar() +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
     if not tasks:
@@ -528,19 +528,20 @@ def fixes(project, tasks, selected=None):
         f"<li>{text(p['batch'])} {text(p['scenario'])}：{text(p['reason'])} · {text(p['plan'])}</li>" for p in task['attention']) + '</ul>'
     content += f"<h3>合入提交</h3><p>{text(task['merged_commit'])}</p><h3>Jira 回写结果</h3><ul>" + ''.join(
         f"<li>{text(r['issue'])}：{text(r['comment'])} · {text(r['transition'])} · {text(r['reason'])}</li>" for r in task['jira']) + '</ul>'
-    content += "<label>开发者说明<textarea id='developer-note'></textarea></label>"
-    if task['status'] == '待开发者处理':
-        content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"
-    else:
-        content += "<button type='button' disabled>批准方案</button>"
-    if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('detached', 'interrupted')):
-        content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
-    else:
-        content += "<button type='button' disabled>重试</button>"
-    if task['status'] not in ('已合入', '已放弃', '待合入'):
-        content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
-    else:
-        content += "<button type='button' disabled>放弃</button>"
+    if local:
+        content += "<label>开发者说明<textarea id='developer-note'></textarea></label>"
+        if task['status'] == '待开发者处理':
+            content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"
+        else:
+            content += "<button type='button' disabled>批准方案</button>"
+        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('detached', 'interrupted')):
+            content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
+        else:
+            content += "<button type='button' disabled>重试</button>"
+        if task['status'] not in ('已合入', '已放弃', '待合入'):
+            content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
+        else:
+            content += "<button type='button' disabled>放弃</button>"
     for name, url in task['files'].items():
         content += f"<p><a href='{text(url)}' download>{text(name)}</a></p>"
     return layout('修复任务', content)

@@ -53,13 +53,9 @@ def main():
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--writable-repo", action="append", default=[])
     args = parser.parse_args()
-    token = os.environ.get("SOP_BOARD_TOKEN", "")
-    if not token.strip():
-        print("启动失败：缺少非空 SOP_BOARD_TOKEN", file=sys.stderr)
-        return 1
     try:
         codex_timeout = parse_timeout(os.environ.get("SOP_BOARD_CODEX_TIMEOUT"))
-        repos = authorize(args.writable_repo, token, os.environ.get("SOP_BOARD_ADMIN_TOKEN", ""))
+        repos = authorize(args.writable_repo)
         data_path = args.data.resolve()
         if any(data_path == path or path in data_path.parents for path in repos.values()):
             raise ValueError('数据目录不能位于授权仓库内')
@@ -91,9 +87,7 @@ def main():
         server.jira = Jira(os.environ.get("JIRA_URL", ""), os.environ.get("JIRA_EMAIL", ""),
                            os.environ.get("JIRA_API_TOKEN", ""),
                            timeout=os.environ.get("JIRA_TIMEOUT_SECONDS", "10"))
-        server.token = token
         server.service.jira = server.jira
-        server.admin_token = os.environ.get("SOP_BOARD_ADMIN_TOKEN", "")
         tasks = server.tasks = Tasks(server.service, timeout=codex_timeout)
         discovery = Discovery(server.service, repos)
         discovery.scan()
