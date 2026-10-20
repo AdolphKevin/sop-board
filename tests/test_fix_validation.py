@@ -115,18 +115,23 @@ def test_fix_fast_forwards_checked_out_baseline_and_records_merge_state(board_fa
 
 def test_fix_promotes_only_last_passing_attempt_for_each_batch_and_is_idempotent(board_factory, fix_codex, fix_repo):
     """SOP-56-P01/P02：各批一轮、保留身份与时间、更新产品、重启不重复。"""
+    # 两批都属于初始数据：授权后新增批次会排队普通执行，可能先于每 5 秒发现的修复任务运行。
+    # 先让 fix_board 经真实接口登记全部初始批次，再授权，确保本用例只观察修复提升。
+    doc = yaml.safe_load((fix_repo / 'docs/sop/demo.yaml').read_text())
+    doc['metadata']['batch'] = 'b2'
+    content = yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)
+    (fix_repo / 'docs/sop/b2.yaml').write_text(content)
     configure(fix_codex, {}, {}, retests=[dict(statuses={IDS[0]: 'fail'}), {}])
     board, pushed = fix_board(board_factory, fix_codex, fix_repo, paused=True)
     agent(board, pushed, ['pass'] * 4)
     fail(board, pushed)
-    doc = yaml.safe_load(pushed['content'])
-    doc['metadata']['batch'] = 'b2'
-    body = push_body(doc, path='docs/sop/b2.yaml')
+    body = push_body(doc, path='docs/sop/b2.yaml', content=content)
     other = BASE.replace('/demo', '/b2')
-    assert board.request('PUT', other + '/scenario-file', body)[0] == 200
     agent(board, body, ['fail', 'pass', 'pass', 'pass'], base=other, key='b2-fail')
+    assert not any(t['kind'] == 'execute' for t in board.request('GET', '/api/v1/tasks', auth=False)[1]['tasks'])
     board.request('POST', '/api/v1/automation/resume', {}, headers=ADMIN)
     task = wait_fix(board, '已合入')
+    assert {(p['batch'], p['scenario']) for p in task['problems']} == {('demo', IDS[0]), ('b2', IDS[0])}
     assert task['attempt'] == 2
     assert [a['outcome'] for a in task['attempts']] == ['未通过', '通过']
     for name, base, number in [('demo', BASE, 3), ('b2', other, 2)]:

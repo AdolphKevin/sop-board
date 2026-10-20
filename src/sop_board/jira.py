@@ -34,6 +34,54 @@ class Jira:
         self.lock = Lock()
         self.opener = build_opener(NoRedirect())
 
+    def write_fix(self, key, paragraphs, fixed_status):
+        """逐项记录结果；不保存或转发上游正文、异常详情中的认证内容。"""
+        if not all((self.url, self.email, self.token)):
+            return dict(comment='Jira 未配置，未回写', transition='Jira 未配置，未回写', reason='Jira 未配置，未回写')
+        authorization = base64.b64encode(f'{self.email}:{self.token}'.encode()).decode()
+
+        def request(suffix, body=None):
+            req = Request(f'{self.url}/rest/api/3/issue/{key}/{suffix}',
+                data=json.dumps(body, ensure_ascii=False).encode() if body is not None else None,
+                headers={'Authorization': 'Basic ' + authorization, 'Accept': 'application/json',
+                         'Content-Type': 'application/json'})
+            try:
+                with self.opener.open(req, timeout=self.timeout) as response:
+                    return json.load(response) if body is None else None
+            except HTTPError as error:
+                error.close()
+                raise ValueError(f'Jira 返回 HTTP {error.code}') from None
+            except TimeoutError:
+                raise ValueError('Jira 请求超时') from None
+            except OSError:
+                raise ValueError('Jira 连接失败') from None
+            except (ValueError, KeyError, TypeError, HTTPException):
+                raise ValueError('Jira 响应格式无效或连接中断') from None
+
+        reasons = []
+        try:
+            request('comment', dict(body=dict(type='doc', version=1, content=[
+                dict(type='paragraph', content=[dict(type='text', text=p)]) for p in paragraphs if p])))
+            comment = '评论成功'
+        except ValueError as error:
+            comment = '评论失败'
+            reasons.append('评论失败：' + str(error))
+        transition = 'Jira 状态待人工更新'
+        if fixed_status:
+            try:
+                choices = request('transitions')['transitions']
+                choice = next((t for t in choices if t['to']['name'] == fixed_status), None)
+                if choice is None:
+                    reasons.append('没有目标状态的可用流转')
+                else:
+                    request('transitions', dict(transition=dict(id=choice['id'])))
+                    transition = '流转成功'
+            except (ValueError, KeyError, TypeError):
+                reasons.append('流转失败：Jira 请求失败或响应无效')
+        else:
+            reasons.append('未设置 Jira 修复目标状态')
+        return dict(comment=comment, transition=transition, reason='；'.join(reasons))
+
     def issue(self, key):
         """修复会话需要的单据内容；不使用页面摘要缓存。"""
         if not re.fullmatch(ISSUE_KEY, key):

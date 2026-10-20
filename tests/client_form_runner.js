@@ -156,7 +156,13 @@ function assertSaved(status, round = 2) {
   assert.equal(currentUrl.href, input.location);
 }
 async function main() {
-  if (input.case === "automation-tasks") {
+  if (input.case === "fix-approve-no-token") {
+    const approve = qa("[data-developer-action]").find(b => b.dataset.developerAction.endsWith("/approve"));
+    assert.ok(approve);
+    await click(approve);
+    assert.equal(q("#developer-message").textContent, "请先在身份栏填写开发者令牌");
+    assert.equal(requests.length, 0);
+  } else if (input.case === "automation-tasks") {
     const execute = qa("[data-developer-action]").find(b => b.dataset.developerAction.endsWith("/executions"));
     const check = qa("[data-developer-action]").find(b => b.dataset.developerAction.endsWith("/checks"));
     assert.ok(execute); assert.ok(check);

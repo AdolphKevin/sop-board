@@ -250,7 +250,7 @@ def test_in_place_advanced_baseline_reruns_checks_before_any_runtime_retest(boar
         records = trace(control)
         assert [r['event'] for r in records[:4]] == ['check-start', 'check-end'] * 2
         assert records[0]['commit'] != records[2]['commit']
-        parents = git(task['worktree'], 'rev-list', '--parents', '-1', records[2]['commit']).split()
+        parents = git(fix_repo, 'rev-list', '--parents', '-1', records[2]['commit']).split()
         assert parents[1:] == [task['attempts'][0]['commit_id'], advanced]
         calls = all_invocations(fix_codex)
         if check_fails:

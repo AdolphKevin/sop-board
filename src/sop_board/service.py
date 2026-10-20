@@ -117,6 +117,11 @@ class Service:
             "WHERE project=? AND batch=? AND kind IN ('execute','check') ORDER BY id", (batch['project'], batch['name']))]
         if tasks:
             etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
+        fixes = [dict(r) for r in db.execute('SELECT t.id,t.status,t.error,t.attempt,t.result_json,p.category,p.fingerprint '
+            'FROM tasks t JOIN fix_problems p ON p.task=t.id WHERE t.project=? AND p.batch=? ORDER BY t.id,p.id',
+            (batch['project'], batch['name']))]
+        if fixes:
+            etag += '-f' + hashlib.sha256(canonical(fixes).encode()).hexdigest()[:12]
         if self.automation_paused(db):
             etag += '-a1'
         return '"' + etag + '"'
@@ -133,15 +138,9 @@ class Service:
         ids = {s["scenario"] for s in summary["scenarios"]}
         merge = db.execute("SELECT id,result_json FROM tasks WHERE project=? AND batch=? AND kind='merge' AND status='已完成' ORDER BY id DESC LIMIT 1",
                            (batch['project'], batch['name'])).fetchone()
-        fixes = list(db.execute("SELECT t.id,t.status,t.attempt,COUNT(p.id) AS problems FROM tasks t JOIN fix_problems p ON p.task=t.id "
-            "WHERE t.kind='fix' AND t.project=? AND p.batch=? GROUP BY t.id", (batch['project'], batch['name'])))
-        fix_statistics = dict(tasks=len(fixes), problems=sum(t['problems'] for t in fixes),
-            merged=sum(t['status'] == '已合入' for t in fixes),
-            developer=sum(t['status'] in ('待开发者处理', '待开发者合入') for t in fixes),
-            first_pass=sum(t['status'] == '已合入' and t['attempt'] == 1 for t in fixes),
-            attempts=sum(t['attempt'] for t in fixes)) if fixes else None
+        fixes, fix_statistics = self.batch_fixes(db, batch)
         return dict(batch=dict(batch), project=dict(db.execute("SELECT * FROM projects WHERE key=?", (batch["project"],)).fetchone()),
-                    fix_statistics=fix_statistics,
+                    fixes=fixes, fix_statistics=fix_statistics,
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
                     coverage=ratio(sum(c["id"] in ids for c in cases), len(cases)),
@@ -323,6 +322,7 @@ class Service:
         result = calculate(db, batch)
         result.pop("scenarios")
         version = self.latest_version(db, batch)
+        _, fix_statistics = self.batch_fixes(db, batch)
         tasks = []
         for row in db.execute("SELECT id,kind,trigger,status,scope_json,started_at,finished_at,error,void_reason,rounds_json "
                               "FROM tasks WHERE project=? AND batch=? AND kind IN ('execute','check') ORDER BY id", (batch['project'], batch['name'])):
@@ -331,7 +331,7 @@ class Service:
             task['rounds'] = json.loads(task.pop('rounds_json'))
             tasks.append(task)
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
-                    execution_tasks=tasks, automation_paused=self.automation_paused(db),
+                    execution_tasks=tasks, fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
                     dirty=bool(version["dirty"]) if version else None,
@@ -347,6 +347,8 @@ class Service:
             batch = self.batch(db, key, name)
             if scenarios:
                 summary = calculate(db, batch)
+                for scene in summary['scenarios']:
+                    scene['fix_tasks'] = self.scenario_fixes(db, batch, scene['scenario'], scene['fingerprint'])
                 version = self.latest_version(db, batch)
                 nodes = yaml.safe_load(version["content"])["sops"] if version else []
                 return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
@@ -417,6 +419,7 @@ class Service:
             groups = []
             for record in records:
                 groups.append(dict(fingerprint=record["fingerprint"], current=bool(record["current"]),
+                                   fix_tasks=self.scenario_fixes(db, batch, scenario, record['fingerprint']),
                                    body=json.loads(record["body"]), results=[r for r in results if r["fingerprint"] == record["fingerprint"]]))
             latest = records[0]
             sop_sources = [dict(row) for row in db.execute(
@@ -428,6 +431,29 @@ class Service:
                         fingerprint=latest["fingerprint"], current=bool(latest["current"]),
                         pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups, sop_sources=sop_sources,
                         summary=next((item for item in calculate(db, batch)["scenarios"] if item["scenario"] == scenario), None))
+
+    def scenario_fixes(self, db, batch, scenario, fingerprint):
+        return [dict(r) for r in db.execute('SELECT t.id,t.status,p.category FROM tasks t JOIN fix_problems p ON p.task=t.id '
+            'WHERE t.project=? AND p.batch=? AND p.scenario=? AND p.fingerprint=? ORDER BY t.id',
+            (batch['project'], batch['name'], scenario, fingerprint))]
+
+    def batch_fixes(self, db, batch):
+        records = []
+        for row in db.execute("SELECT t.id,t.status,t.attempt,t.result_json,f.merged_commit FROM tasks t "
+            "JOIN fix_tasks f ON f.task=t.id WHERE t.project=? AND EXISTS "
+            "(SELECT 1 FROM fix_problems p WHERE p.task=t.id AND p.batch=?) ORDER BY t.id", (batch['project'], batch['name'])):
+            record = dict(row)
+            record['root_cause'] = json.loads(record.pop('result_json')).get('root_cause', '')
+            record['scenarios'] = [p[0] for p in db.execute('SELECT scenario FROM fix_problems WHERE task=? AND batch=? ORDER BY id', (row['id'], batch['name']))]
+            record['problems'] = len(record['scenarios'])
+            record['jira'] = [dict(r) for r in db.execute('SELECT issue,comment,transition,reason FROM fix_jira WHERE task=? ORDER BY issue', (row['id'],))]
+            records.append(record)
+        stats = dict(tasks=len(records), problems=sum(t['problems'] for t in records),
+            merged=sum(t['status'] == '已合入' for t in records),
+            developer=sum(t['status'] in ('待开发者处理', '待开发者合入') for t in records),
+            first_pass=sum(t['status'] == '已合入' and t['attempt'] == 1 for t in records),
+            attempts=sum(t['attempt'] for t in records))
+        return records, stats
 
     def export_round(self, key, name, number):
         round_data = self.read_round(key, name, number)

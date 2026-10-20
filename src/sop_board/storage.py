@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS fix_candidates (
     PRIMARY KEY(task,attempt,validation,batch),
     FOREIGN KEY(task,attempt) REFERENCES fix_attempts(task,number)
 );
+CREATE TABLE IF NOT EXISTS fix_jira (
+    task INTEGER NOT NULL REFERENCES tasks(id), issue TEXT NOT NULL,
+    comment TEXT NOT NULL, transition TEXT NOT NULL, reason TEXT NOT NULL,
+    PRIMARY KEY(task,issue)
+);
 CREATE TABLE IF NOT EXISTS batches (
     id INTEGER PRIMARY KEY, project TEXT NOT NULL REFERENCES projects(key),
     name TEXT NOT NULL, path TEXT NOT NULL, product_digest TEXT NOT NULL,

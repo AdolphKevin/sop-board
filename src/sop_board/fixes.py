@@ -518,6 +518,7 @@ class Fixes:
                         (now(), canonical(validation), task['id'], info['attempt']))
                 self.tasks.update(task['id'], status='已合入', finished_at=now(), error=success_reason)
                 self.archive(task)
+                self.complete(task['id'])
 
     def promote(self, task, merged, reason):
         root = self.service.writable_repos[task['project']]
@@ -555,6 +556,37 @@ class Fixes:
             db.execute('UPDATE fix_tasks SET merged_commit=? WHERE task=?', (merged, task['id']))
             db.execute("UPDATE tasks SET status='已合入',finished_at=?,error=?,rounds_json=? WHERE id=?",
                 (now(), reason, canonical(rounds), task['id']))
+        self.complete(task['id'])
+
+    def complete(self, task_id):
+        task = self.tasks.read(task_id)
+        root = self.service.writable_repos[task['project']]
+        expected = self.store.data.resolve() / 'worktrees' / f'fix-{task_id}'
+        if task['worktree'] != str(expected) or task['fix_branch'] != f'sop-board/fix/{task_id}':
+            raise ValueError('修复工作目录或分支不属于此任务')
+        if expected.exists():
+            git(root, 'worktree', 'remove', str(expected))
+        if git(root, 'branch', '--list', task['fix_branch']).strip():
+            git(self.baseline_directory(task) or root, 'branch', '-d', task['fix_branch'])
+        jira = self.service.jira
+        keys = dict.fromkeys(p['input']['jira_key'] for p in task['problems'] if p['input'].get('jira_key'))
+        paragraphs = ['根因摘要：' + task['result'].get('root_cause', ''),
+            '改动文件：' + '、'.join(dict.fromkeys(f for a in task['attempts'] for f in a['result'].get('changed_files', []))),
+            '修复提交：' + '、'.join(a['commit_id'] for a in task['attempts'] if a['commit_id']),
+            '合入的本机基线分支：' + task['baseline_branch'] + '；合入提交：' + task['merged_commit'],
+            '复测场景与结果：' + '；'.join(f"{c['batch']} {r['scenario']} {r['status']}" for c in task['candidates']
+                if c['attempt'] == task['attempt'] for r in c['results']), '尚未部署到测试环境']
+        for key in keys:
+            with self.store.transaction() as db:
+                # 先登记，进程中断后也不自动重发可能已送达的评论。
+                inserted = db.execute('INSERT OR IGNORE INTO fix_jira VALUES (?,?,?,?,?)',
+                    (task_id, key, '评论结果待人工确认', 'Jira 状态待人工更新', '回写中断时请人工核对，不自动重试')).rowcount
+            if not inserted:
+                continue
+            result = jira.write_fix(key, paragraphs, os.environ.get('JIRA_FIXED_STATUS', '').strip())
+            with self.store.transaction() as db:
+                db.execute('UPDATE fix_jira SET comment=?,transition=?,reason=? WHERE task=? AND issue=?',
+                    (result['comment'], result['transition'], result['reason'], task_id, key))
 
     def recover_promotions(self):
         with self.store.connection() as db:
@@ -578,6 +610,11 @@ class Fixes:
             except subprocess.CalledProcessError:
                 continue
             self.promote(task, merged, '重启后确认候选已在基线中，已补做结果提升')
+        with self.store.connection() as db:
+            merged_ids = [r[0] for r in db.execute("SELECT id FROM tasks WHERE kind='fix' AND status='已合入'")]
+        for task_id in merged_ids:
+            if self.tasks.read(task_id)['project'] in self.service.writable_repos:
+                self.complete(task_id)
 
     def live(self, task):
         return not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] in ('分析中', '修复中')
@@ -671,11 +708,18 @@ class Fixes:
                    '待补充': 'cases-needed', '待同步': 'sync-needed', '已中断': 'interrupted'}
         items = []
         for task in self.tasks.list(key)['tasks']:
-            if task['status'] not in mapping and not task.get('attention'):
+            if task['status'] == '已放弃':
                 continue
             url = f"/p/{key}/fixes" if task['kind'] == 'fix' else f"/p/{key}/b/{task['batch']}/merges" if task['kind'] == 'merge' else f"/p/{key}/b/{task['batch']}"
-            items.append(dict(kind=mapping.get(task['status'], 'developer-action'), task=task['id'], batch=task['batch'],
-                reason=task['error'], url=origin + url, resume='codex resume ' + task['session_id'] if task['session_id'] else ''))
+            base = dict(task=task['id'], batch=task['batch'], url=origin + url,
+                resume='codex resume ' + task['session_id'] if task['session_id'] else '')
+            if task['status'] in mapping or task.get('attention'):
+                reasons = [task['error']] + [f"{p['batch']} {p['scenario']}：{p['reason']} · {p['plan']}" for p in task.get('attention', [])]
+                items.append(dict(base, kind=mapping.get(task['status'], 'developer-action'), reason='；'.join(filter(None, reasons))))
+            manual = [r for r in task.get('jira', []) if r['comment'] != '评论成功' or r['transition'] != '流转成功']
+            if manual:
+                items.append(dict(base, kind='jira-manual', reason='；'.join(
+                    f"{r['issue']}：{r['comment']} · {r['transition']} · {r['reason']}" for r in manual)))
         return dict(ok=True, items=items)
 
     def unresolved(self, db, key):
@@ -738,6 +782,7 @@ class Fixes:
                 for field in ('results', 'evidence'):
                     candidate[field] = json.loads(candidate.pop(field + '_json'))
                 task['candidates'].append(candidate)
+            task['jira'] = [dict(r) for r in db.execute('SELECT issue,comment,transition,reason FROM fix_jira WHERE task=? ORDER BY issue', (task['id'],))]
         task['attention'] = [p for p in task['problems'] if p['category'] not in ('', 'product')]
         return task
 

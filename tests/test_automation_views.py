@@ -47,12 +47,15 @@ def test_execution_list_has_all_columns_triggers_reasons_and_check_rounds(board_
     mode(fake_codex, result_ids=[])
     assert settle(board, start_execution(board))['status'] == '失败'
     assert settle(board, start_check(board))['status'] == '已完成'
-    tasks = [t for t in board.request('GET', '/api/v1/tasks', auth=False)[1]['tasks'] if t['kind'] != 'merge']
+    # SOP-BOARD-5 新增的修复任务可能已由失败结果触发；它在项目修复页展示。
+    # 明确等待其出现，核对批次“执行任务”表仍只包含执行与检查两类。
+    wait_for(lambda: any(t['kind'] == 'fix' for t in board.request('GET', '/api/v1/tasks', auth=False)[1]['tasks']))
+    tasks = [t for t in board.request('GET', '/api/v1/tasks', auth=False)[1]['tasks'] if t['kind'] in ('execute', 'check')]
     page = Document(board.request('GET', f'/p/{KEY}/b/demo', auth=False)[1]).root
     section = next(s for s in page.find_all('section') if any(h.text == '执行任务' for h in s.find_all('h2')))
     rows = section.find_all('tr')
     assert [c.text for c in rows[0].find_all('th')] == ['编号', '种类', '触发原因', '范围条数', '状态', '开始时间', '结束时间', '原因', '轮次']
-    assert len(rows) == len(tasks) + 1
+    assert len(rows) == len(tasks) + 1, [(t['id'], t['kind'], t['status']) for t in tasks]
     assert {t['trigger'] for t in tasks} == {'场景版本', '合并写入', '开发者发起'}
     for row, task in zip(rows[1:], tasks):
         cells = [c.text for c in row.children if not isinstance(c, str)]

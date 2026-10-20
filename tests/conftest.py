@@ -19,6 +19,7 @@ TEST_ENV = {k: v for k, v in os.environ.items() if k not in ("SOP_BOARD_TOKEN", 
 TEST_ENV["SOP_BOARD_TOKEN"] = "isolated-test"
 # All Codex-dependent tests opt in with a disposable fake executable.
 TEST_ENV["PATH"] = os.defpath
+TEST_ENV.pop('JIRA_FIXED_STATUS', None)
 OPENER = build_opener(ProxyHandler({}))
 
 

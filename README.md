@@ -113,7 +113,13 @@ checks:
 
 项目修复页为 `/p/<项目键>/fixes`，读取接口为 `GET /api/v1/projects/<项目键>/fixes` 和 `GET /api/v1/tasks/<任务编号>`，均不需令牌；未授权项目的修复列表为空。开发者可向任务的 `/approve` 提交 `{note}` 批准方案并续接同一会话，向 `/retry` 重试中断、Codex 不可用、分离头指针或连续会话中断，向 `/cancel` 放弃任务。以上操作仅接受开发者令牌。`GET /api/v1/projects/<项目键>/attention` 列出需要开发者处理的任务与续接命令。
 
-本阶段支持 `checkout`、`start` 与原地替换修复闭环；Jira 回写、合入后的工作目录清理、完整修复报告与场景标记属于后续任务。可运行 `uv run --frozen python tests/demo_fix.py`，在临时授权仓库中用预设 Codex 和本机模拟 Jira 演示提交、实际候选命令复测、检查、合入与提升；原地替换自检用 `uv run --frozen python tests/demo_fix_in_place.py`，经按工作区内容响应的 HTTP 服务核对重载与直接登记。脚本核对接口、SQLite 和 Git，结束后停止服务并删除临时目录。
+合入后看板删除修复工作目录与已合入的修复分支，保留修复记录与证据；问题场景回到复测队列，等待测试岗复核。配置了 `JIRA_URL`、`JIRA_EMAIL` 与 `JIRA_API_TOKEN` 时，每张 Jira 单收到一条文档格式评论，包含根因、改动、提交、本机基线分支及复测结果，并注明“尚未部署到测试环境”。设置 `JIRA_FIXED_STATUS` 后，看板读取可用流转并按目标状态名选择；未设置或不可达时记“Jira 状态待人工更新”。评论失败仍尝试流转，回写失败不自动重试，也不改变“已合入”状态；配置不全时记“Jira 未配置，未回写”。认证信息仅用于请求，不保存到任务文件、页面或日志；进程中断后无法确认的回写交给开发者核对。
+
+修复页显示问题判定、根因、各次尝试与证据、合入提交、转开发者事项和 Jira 结果。SOP 场景页与详情页标出进行中的修复及待开发者处理的问题；任务结束后清除标记，详情历史保留所属修复任务。批次总览和报告按本批次的问题计数，尝试次数取整个任务，展示任务数、问题数、已合入数、转开发者数、首次尝试即通过的任务数与总尝试次数；无修复任务的报告写“暂无记录”。
+
+`attention` 读取接口返回 `{ok, items}`，每项包含 `kind`、`task`、`batch`、`reason`、`url`、`resume`，涵盖合并、执行与修复任务。事项类型分别为 `developer-action`（待开发者处理）、`developer-merge`（待开发者合入）、`commit-needed`（待提交）、`cases-needed`（待补充用例）、`sync-needed`（待同步）、`jira-manual`（Jira 待人工处理）、`interrupted`（已中断）。页面完整地址取请求的 `Host`；有会话时给出 `codex resume <会话编号>`，否则为空字符串。
+
+可运行 `uv run --frozen python tests/demo_fix.py`，在临时授权仓库中用预设 Codex 与本机模拟 Jira 演示实际候选命令复测、检查、合入、清理、评论与流转，并输出修复页文本、attention 响应与报告区块；原地替换自检用 `uv run --frozen python tests/demo_fix_in_place.py`，经按工作区内容响应的 HTTP 服务核对重载与直接登记。脚本核对接口、SQLite 和 Git，结束后停止服务并删除临时目录。真实 Jira 站点的验证仍留待外部接入阶段。
 
 批次导航中的“合并”页提供任务列表、错误原因、原始文件下载与开发者操作。有用例的批次在上传用例或场景文件变化时自动建立任务，触发原因分别为“上传用例”和“场景文件变化”。`POST /api/v1/projects/<项目键>/batches/<批次>/merges` 发起“重新合并”：相同输入已有排队或运行任务时返回该任务，否则建立新任务，即使此前相同输入已经完成。没有用例时返回 409 `cases-missing`。任务带 `scenario_file_sha256` 表示依据的场景原文摘要，无场景版本时为空字符串。
 

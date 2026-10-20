@@ -5,6 +5,8 @@ from html import escape
 
 STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
 MANUAL = {**STATUS, "fail": "不通过（失败）", "blocked": "不通过（受阻）"}
+FIX_METRICS = [('tasks', '任务数'), ('problems', '问题数'), ('merged', '已合入数'),
+               ('developer', '转开发者数'), ('first_pass', '首次尝试即通过的任务数'), ('attempts', '总尝试次数')]
 
 
 def fraction(value):
@@ -54,10 +56,14 @@ def markdown(data, generated_at):
                     table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]
                           for m in summary["misjudgments"]]))
     fix_statistics = data.get('fix_statistics')
-    sections.append('## 修复记录\n\n' + ('### 自动修复统计\n\n' + '\n'.join(
-        '- ' + label + '：' + str(fix_statistics[key]) for key, label in [('tasks', '任务数'), ('problems', '问题数'),
-        ('merged', '已合入数'), ('developer', '转开发者数'), ('first_pass', '首次尝试即通过的任务数'), ('attempts', '总尝试次数')])
-        if fix_statistics else '暂无记录'))
+    records = []
+    for task in data.get('fixes', []):
+        jira = '；'.join(f"{r['issue']}：{r['comment']} · {r['transition']} · {r['reason']}" for r in task['jira']) or '无 Jira 回写记录'
+        records.append(f"### 修复任务 #{task['id']}\n\n" + '\n'.join('- ' + label + '：' + cell(value) for label, value in [
+            ('问题场景', '、'.join(task['scenarios'])), ('问题数', task['problems']), ('根因摘要', task['root_cause'] or '尚未分析'),
+            ('尝试次数', task['attempt']), ('结果', task['status']), ('合入提交', task['merged_commit'] or '无'), ('Jira 回写结果', jira)]))
+    sections.append('## 修复记录\n\n' + ('\n\n'.join(records) + '\n\n### 自动修复统计\n\n' + '\n'.join(
+        '- ' + label + '：' + str(fix_statistics[key]) for key, label in FIX_METRICS) if records else '暂无记录'))
     sections.append('## 回归覆盖\n\n暂无记录')
     merge = data.get('merge')
     if not merge:
