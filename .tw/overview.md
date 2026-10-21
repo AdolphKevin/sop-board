@@ -23,3 +23,5 @@ D35、I6：每条用例明确归为 flow/detail 并说明理由，仅 flow 生�
 Web 验收技能随 sop-board 发行，维护于 src/sop_board/skills/playwright-acceptance/，不再依赖 team-workflow。总览优先展示执行进度、Agent 通过率和复核进度；其他指标可展开，队列同时显示场景名称和编号，复核身份默认折叠，刷新保留展开状态。
 
 产品展示名称统一为 Flow Board；安装包、命令、Python 模块、环境变量、数据目录及适配就绪标记沿用既有 sop-board 标识。
+
+录屏证据在场景详情页通过原生 video controls 内联播放，保留下载链接；仅预加载元数据，不自动播放，视频证据 GET 支持单段 Range/206 与无效范围 416，方便拖动进度。
