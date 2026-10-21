@@ -211,7 +211,7 @@
             });
             show(message, data.paused ? "自动任务已暂停" : "自动任务已恢复");
           } else {
-            show(message, "任务 #" + data.task.id + "：" + data.task.status);
+            show(message, "任务 #" + data.task.id + "：" + (data.task.status === "等待合并" ? data.task.error : data.task.status));
             if (controls) message.dataset.taskId = String(data.task.id);
             if (button.dataset.caseFlow !== undefined) {
               button.textContent = "已指定单独成场景";
@@ -496,7 +496,7 @@
         const saved = executionMessages.get(group.dataset.executionUrl);
         const task = batch.execution_tasks?.find(task => String(task.id) === saved?.taskId);
         if (task) {
-          saved.text = "任务 #" + task.id + "：" + task.status;
+          saved.text = "任务 #" + task.id + "：" + (task.status === "等待合并" ? task.error : task.status);
           renderExecutionMessage(group);
         }
       });

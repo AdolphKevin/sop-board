@@ -14,7 +14,7 @@ import yaml
 from .errors import reject, APIError
 from .jira import identify
 from .service import canonical, now
-from .repositories import git
+from .repositories import git, MissingGitIdentity
 from .repair_repositories import RepairRepositories, head
 from .drafts import schema_problems
 from .tasks import codex_available, resume_codex, terminate_group, judgment_object, invalid_judgment_constant, codex_failure
@@ -56,7 +56,7 @@ class Fixes:
                 return
         except (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError, APIError) as error:
             with self.store.transaction() as db:
-                db.execute("UPDATE fix_tasks SET retry_reason='preparation' WHERE task=?", (task['id'],))
+                db.execute("UPDATE fix_tasks SET retry_reason='preparation' WHERE task=? AND retry_reason!='git-identity'", (task['id'],))
             self.tasks.update(task['id'], status='待开发者处理', error=f'无法准备修复：{error}')
             return
         self.tasks.update(task['id'], status='分析中' if task['attempt'] == 0 else '修复中', started_at=now(), error='修复会话运行中')
@@ -93,12 +93,12 @@ class Fixes:
         for alias, manifest in previous.get('protected_files', {}).items():
             protected_files[alias] = manifest
         with self.store.transaction() as db:
-            pending_attempt = db.execute("SELECT 1 FROM fix_attempts WHERE task=? AND number=? AND outcome IN ('运行中','已中断')",
+            pending_attempt = db.execute("SELECT 1 FROM fix_attempts WHERE task=? AND number=? AND outcome IN ('运行中','已中断','待提交')",
                 (task['id'], number)).fetchone()
-            db.execute("UPDATE fix_tasks SET retry_reason='' WHERE task=?", (task['id'],))
             if pending_attempt and task['input_json'] != '{}':
                 db.execute("UPDATE fix_attempts SET outcome='运行中',finished_at=NULL WHERE task=? AND number=?", (task['id'], number))
                 return True
+            db.execute("UPDATE fix_tasks SET retry_reason='' WHERE task=?", (task['id'],))
         starts = self.repositories.heads(task['id'])
         repositories = {r['alias']: dict(identity=r['identity'], directory=r['worktree'], baseline_directory=r['root'],
             baseline_branch=r['baseline_branch'], baseline_commit=r['baseline_commit'], commit=starts[r['alias']])
@@ -172,6 +172,15 @@ class Fixes:
         (directory / 'feedback.json').write_text(canonical(dict(added=json.loads(task['input_json'])['added'],
             previous=info['attempts'][-2] if len(info['attempts']) > 1 else None)), encoding='utf-8')
         try:
+            if info['retry_reason'] == 'git-identity':
+                with self.tasks.lock:
+                    self.tasks.starting = None
+                    if not self.live(task):
+                        return
+                    products = self.finish(task, info['attempts'][-1]['result'])
+                if products:
+                    self.verify(task, products)
+                return
             for retry in range(2):
                 interruption = self.run_session(task, directory, prompt)
                 with self.tasks.lock:
@@ -323,6 +332,14 @@ class Fixes:
                 return
         try:
             self.repositories.commit(task['id'], number, message)
+        except MissingGitIdentity as error:
+            with self.store.transaction() as db:
+                db.execute("UPDATE fix_tasks SET retry_reason='git-identity' WHERE task=?", (task['id'],))
+                db.execute("UPDATE fix_attempts SET outcome='待提交',reason=?,result_json=? WHERE task=? AND number=?",
+                    (str(error), canonical(answer), task['id'], number))
+            self.tasks.update(task['id'], status='待开发者处理', error=str(error), result_json=canonical(answer))
+            self.archive(task)
+            return
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             self.failed(task, str(error), answer)
             return
@@ -331,8 +348,9 @@ class Fixes:
             self.failed(task, '提交期间 SOP 或场景文件被改动：' + '、'.join(protected), answer)
             return
         with self.store.transaction() as db:
+            db.execute("UPDATE fix_tasks SET retry_reason='' WHERE task=?", (task['id'],))
             pending = dict(status='pending', reason='等待验证', evidence=[], scenarios=[dict(batch=p['batch'], scenario=p['scenario']) for p in product])
-            db.execute("UPDATE fix_attempts SET outcome='待验证',result_json=?,validation_json=? WHERE task=? AND number=?",
+            db.execute("UPDATE fix_attempts SET outcome='待验证',reason='',result_json=?,validation_json=? WHERE task=? AND number=?",
                 (canonical(answer), canonical(pending), task['id'], number))
         self.tasks.update(task['id'], attempt=number, status='复测中', error='使用各仓修复工作树的适配环境复测', result_json=canonical(answer))
         return product
@@ -583,6 +601,8 @@ class Fixes:
             return self._action(self.tasks.read(task['id']), action, note)
 
     def _action(self, task, action, note):
+        if action == 'approve' and task['retry_reason'] == 'git-identity':
+            action = 'retry'
         if action in ('approve', 'retry'):
             self.service.require_ready(task['workspace'])
         if task['kind'] != 'fix':
@@ -597,9 +617,10 @@ class Fixes:
                 db.execute("UPDATE fix_problems SET category='',root_repo=NULL WHERE task=?", (task['id'],))
             self.tasks.update(task['id'], status='排队中', error='开发者已批准方案')
         elif action == 'retry':
-            if task['status'] not in ('已中断', 'Codex 不可用') and not (task['status'] == '待开发者处理' and task['retry_reason'] in ('preparation', 'interrupted')):
+            if task['status'] not in ('已中断', 'Codex 不可用') and not (task['status'] == '待开发者处理' and task['retry_reason'] in ('preparation', 'interrupted', 'git-identity')):
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持重试')
-            self.tasks.update(task['id'], status='排队中', error='开发者重试，重新准备工作目录', finished_at=None)
+            self.tasks.update(task['id'], status='排队中',
+                error='开发者重试，从提交步骤继续' if task['retry_reason'] == 'git-identity' else '开发者重试，重新准备工作目录', finished_at=None)
         elif action == 'cancel':
             if task['status'] in ('已合入', '已放弃', '待合入'):
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持放弃')

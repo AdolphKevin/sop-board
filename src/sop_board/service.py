@@ -94,7 +94,7 @@ class Service:
                       "AND status NOT IN ('已合入','已放弃') LIMIT 1", (key,)).fetchone():
             return '等待当前修复结束'
         if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='execute' "
-                      "AND status IN ('排队中','待提交','等待浏览器','运行中') LIMIT 1", (key,)).fetchone():
+                      "AND status IN ('排队中','待提交','等待浏览器','等待合并','运行中') LIMIT 1", (key,)).fetchone():
             return '等待验证运行完'
         return ''
 

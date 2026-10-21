@@ -133,6 +133,9 @@ def execution_state(data):
     running = [t for t in data.get('execution_tasks', []) if t['kind'] == 'execute' and t['status'] == '运行中']
     if running:
         return f"执行中（{len(running)} 个会话，开始于 {local_time(running[0]['started_at'])}，任务 #{running[0]['id']}）"
+    waiting = [t for t in data.get('execution_tasks', []) if t['kind'] == 'execute' and t['status'] == '等待合并']
+    if waiting:
+        return f"任务 #{waiting[0]['id']}：{text(waiting[0]['error'])}"
     if any(t['kind'] == 'execute' and t['status'] == '待提交' for t in data.get('execution_tasks', [])):
         return '待提交：工作区有未提交的产品改动'
     if data["version"] is None:
@@ -620,7 +623,7 @@ def merges(workspace, name, tasks, case_data, selected=None, *, local=False):
             content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
         if local and task['status'] in ('失败', '已中断', 'Codex 不可用', '已作废'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
-        if local and task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器'):
+        if local and task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器', '等待合并'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
         content += '</section>'
     return layout('任务', content)
@@ -671,7 +674,7 @@ def fixes(workspace, tasks, selected=None, *, review=None, local=False):
             content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"
         else:
             content += "<button type='button' disabled>批准方案</button>"
-        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('preparation', 'interrupted')):
+        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('preparation', 'interrupted', 'git-identity')):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
         else:
             content += "<button type='button' disabled>重试</button>"

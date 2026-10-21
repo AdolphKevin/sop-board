@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import threading
 
@@ -14,6 +15,31 @@ def git(root, *args, capture_stderr=False):
     env['GIT_OPTIONAL_LOCKS'] = '0'
     return subprocess.check_output(['git', '-C', str(root), *args], env=env,
                                    stderr=subprocess.STDOUT if capture_stderr else subprocess.DEVNULL, timeout=30)
+
+
+class MissingGitIdentity(ValueError):
+    """缺少提交身份，保留修复现场并等待开发者设置。"""
+
+
+def git_identities(repositories):
+    identities, problems = {}, []
+    for alias, root in repositories.items():
+        identity = {}
+        for field in ('user.name', 'user.email'):
+            try:
+                value = git(root, 'config', field).decode().strip()
+            except subprocess.CalledProcessError as error:
+                if error.returncode != 1:
+                    raise
+                value = ''
+            if not value:
+                problems.append(f'{alias} 缺少 {field}；请设置 git -C {shlex.quote(str(root))} config {field} <值>，'
+                                f'或 git config --global {field} <值>')
+            identity[field] = value
+        identities[alias] = identity
+    if problems:
+        raise MissingGitIdentity('；'.join(problems))
+    return identities
 
 
 def product_files(root, excluded=None, head=False, revision='HEAD'):

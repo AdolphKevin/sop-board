@@ -12,7 +12,9 @@
 根据真实入口观察结果，不能只看源码就判为通过。
 
 对于 pending.json 中 reason 为 source-changed 的场景，结合 changes.json 的提交范围、实际 git diff、场景内容与依赖关系判定是否受影响。受影响或无法证明不受影响时必须重新执行。
-只有同一内容已有通过结果、且能明确说明改动为何不影响该场景时才可沿用：status 仍为 pass，note 必须为“沿用：<说明具体改动范围、依赖关系和不受影响的理由>”；不得仅写“无影响”。沿用的 evidence 可以为空数组，看板会保留原通过记录的证据。
+同一内容已有通过结果、且判定不受影响的场景必须沿用，不再实际执行：status 仍为 pass，note 必须为“沿用：<说明具体改动范围、依赖关系和不受影响的理由>”；不得仅写“无影响”。沿用的 evidence 可以为空数组，看板会保留原通过记录的证据。
+在任务目录写 impact.json，内容为 JSON 数组，恰好覆盖全部 source-changed 场景，每项包含 scenario、affected（布尔值 true/false）、reason（具体判定理由）。
+affected 为 false 必须对应沿用结果；affected 为 true（包括无法证明不受影响）必须对应实际执行结果，不得沿用。没有 source-changed 场景时写空数组。
 其他 reason 不得沿用。没有理由的沿用、遗漏或范围外场景均不合格。
 pending.json 中 reason 为 rerun 的场景必须实际执行并保存新证据，不得沿用。
 
