@@ -39,6 +39,7 @@ export function tags(scenarioId) {
 
 export const test = base.extend({
   // 一个 worker 仅建立一次 CDP 连接；case 的录屏/trace 仍独立。
+  // worker 重启仍会重连；须保留配置模板的 maxFailures: 1，不能仅依赖 workers/retries。
   _acceptanceTarget: [async ({}, use) => {
     let target;
     try { target = await connectTarget(chromium); }

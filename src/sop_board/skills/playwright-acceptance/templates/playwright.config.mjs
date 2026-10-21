@@ -13,6 +13,8 @@ export default defineConfig({
   workers: 1,
   fullyParallel: false,
   retries: 0,
+  // 交互式 Chrome：意外失败后停止本轮，避免新 worker 再次连接并触发授权。
+  maxFailures: 1,
   timeout: 120000,
   expect: { timeout: 15000 },
   outputDir: path.join(out, 'results'),

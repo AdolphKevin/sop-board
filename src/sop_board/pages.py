@@ -106,10 +106,17 @@ def environment_panel(data, local):
 def home(data, *, environment=None, local=False):
     cards = []
     for workspace in data['workspaces']:
-        batches = ''.join(f"<li><a href='{text(batch_url(workspace['key'], batch['name']))}'>{text(batch['name'])}</a> · {agent_state(batch)}" +
-                          execution_controls(workspace['key'], batch['name'], batch, local=local) + '</li>' for batch in workspace['batches'])
+        batches = ''.join(
+            "<li class='batch-entry'><div class='batch-entry-heading'><div class='batch-entry-info'>"
+            "<span class='batch-entry-label'>验收批次</span>"
+            f"<h3><a href='{text(batch_url(workspace['key'], batch['name']))}'>{text(batch['name'])}</a></h3></div>"
+            f"<a class='button batch-entry-open' href='{text(batch_url(workspace['key'], batch['name']))}' "
+            f"aria-label='进入 {text(batch['name'])} 验收看板'>进入验收看板 <span aria-hidden='true'>→</span></a></div>"
+            f"<p class='batch-entry-state'>{agent_state(batch)}</p>" +
+            execution_controls(workspace['key'], batch['name'], batch, local=local) + '</li>'
+            for batch in workspace['batches'])
         repositories = ''.join(f"<p>{text(repo['alias'])}：{text(repo['identity'])}</p>" for repo in workspace['repositories'])
-        cards.append(f"<section><h2>{text(workspace['name'])}</h2>{repositories}<ul>{batches}</ul>" +
+        cards.append(f"<section><h2>{text(workspace['name'])}</h2>{repositories}<ul class='batch-entry-list'>{batches}</ul>" +
             ''.join(f"<p><a href='/w/{text(workspace['key'])}/fixes?task={t['id']}'>修复任务 #{t['id']}</a> · {text(t['status'])}</p>" for t in workspace['fix_tasks']) +
             f"<form id='cases-upload' data-workspace-key='{text(workspace['key'])}'>"
             "<h3>上传批次用例</h3><label>批次名称<input name='batch' required></label>"
@@ -275,6 +282,10 @@ MANUAL_STATUS = {**STATUS, "fail": "不通过（失败）", "blocked": "不通�
 
 
 def evidence_preview(evidence):
+    # DOM snapshots are internal locator diagnostics, not board attachments.
+    name = evidence.get("name", "").replace("\\", "/").rsplit("/", 1)[-1]
+    if name == "visible-aria.txt" or name.endswith("-visible-aria.txt"):
+        return ""
     url = "/api/v1/evidence/" + evidence["sha256"]
     download = f"<a href='{text(url)}' download='{text(evidence['name'])}'>下载 {text(evidence['name'])}</a>"
     if evidence["content_type"].startswith("video/"):
