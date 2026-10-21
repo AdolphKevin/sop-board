@@ -14,7 +14,7 @@ sop-board playwright guide
 
 ## 自动执行与修复复测
 
-执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。保持工作区已启动的适配环境，按入口操作，不自行启停服务。Web 连接在同一 worker 共用 CDP，每条实际执行场景独立录屏、截图及 trace。
+执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。保持工作区已启动的适配环境，按入口操作，不自行启停服务。Web 连接在同一 worker 共用 CDP，每条实际执行场景独立录屏、截图及 trace。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1；首个意外失败或受阻后停止本轮，避免 worker 重启引发连续调试授权。剩余未执行范围单列，部分转换显式加 --allow-partial。
 
 ```sh
 sop-board playwright convert --report <报告.json> --out <任务目录> \
@@ -44,3 +44,11 @@ sop-board playwright submit --results /work/round/results.jsonl --scope /work/sc
 ## 验证与维护
 
 遵循 main 的场景验收方式，通过实际命令、工作区 HTTP 入口与页面核对，不恢复上游删除的根 tests/。现有技能资源随包保留；发行包应包含技能、模板和转换器。提交后核对工作区、批次、编号、轮次、证据及进度，不以 Playwright 的绿色数量代替整批业务结果。
+
+## 跨项目操作映射
+
+通用技能只规定先识别状态、必要时导航、按完成信号等待和异常停止。页面名称、菜单、路由、iframe 特征、对象标识、写入口及成功信号写入项目 surface-map.md；模板不预设某个业务页面。
+
+目标视图已满足前置条件时直接复用，不再次点击外层入口。定位失效先只读核对当前文档、弹窗及 frame；正确业务操作后的结果不符仍为失败，定位和连接问题单独记为执行受阻。保存或提交前注册响应/事件等待，核对业务成功的可见结果后才刷新或导航；状态不明时不重复提交。
+
+仅更新技能说明及模板不会改写现有任务目录中的执行脚本。继续旧任务前须核对其项目映射、完成等待和停止配置；不因模板已修正就宣称旧轮次结果有效。

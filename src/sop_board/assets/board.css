@@ -194,3 +194,20 @@ textarea { resize: vertical; }
 .evidence-video video { display: block; width: 100%; max-height: 70vh; background: #111; border: 1px solid var(--line); border-radius: 8px; }
 
 .defect-link { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Workspace batch navigation */
+.batch-entry-list { list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 12px; }
+.batch-entry { margin: 0; padding: 20px; white-space: normal; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--accent-soft); min-width: 0; }
+.batch-entry-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
+.batch-entry-info { min-width: 0; flex: 1 1 200px; }
+.batch-entry-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.batch-entry h3 { font-size: 20px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
+.batch-entry h3 a { color: var(--ink); }
+.batch-entry-open { flex: 0 0 auto; min-height: 44px; gap: 12px; }
+.batch-entry-state { font-size: 12px; color: var(--muted); margin: 12px 0 0; overflow-wrap: anywhere; }
+.batch-entry a:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+.batch-entry .execution-controls { margin-top: 16px; }
+@media (max-width: 520px) {
+  .batch-entry { padding: 16px; }
+  .batch-entry-open { width: 100%; }
+}
