@@ -202,18 +202,9 @@ class Tasks:
                 if not known and (not pair or pair['kind'] != 'detail'):
                     reject(409, 'case-kind-invalid', 'case', '当前合并中此用例不是细节用例')
                 db.execute('INSERT OR IGNORE INTO case_flow_choices(batch,case_id,chosen_at) VALUES (?,?,?)', (batch['id'], force_case, now()))
-            forced_flow = self.service.flow_choices(db, batch)
-            upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
-            from .repositories import read_sop_sources
-            entries = dict(entries=workspace.entries)
-            uploaded_sop = self.service.latest_sop_upload(db, batch)
-            sop_sources = read_sop_sources(workspace, version['content'] if version else '', uploaded_sop)
-            if uploaded_sop:
-                sop_sources = [s for s in sop_sources if s['path'] != uploaded_sop['path']]
-                sop_sources.append(dict(path=uploaded_sop['path'], ref=uploaded_sop['ref'],
-                    content=uploaded_sop['content'], commit=uploaded_sop['commit_id'],
-                    sha256=uploaded_sop['sha256'], confirmed_by=uploaded_sop['confirmed_by']))
-                sop_sources.sort(key=lambda s: s['path'])
+            inputs, sources = self.merge_inputs(db, batch, version, cases)
+            forced_flow, upload, entries = sources['forced_flow'], sources['upload'], sources['entries']
+            uploaded_sop, sop_sources = sources['uploaded_sop'], sources['sop_sources']
             nodes = {r['section']: r['node'] for r in db.execute('SELECT section,node FROM node_numbers WHERE batch=?', (batch['id'],))}
             for case in cases:
                 name_ = section(case)
@@ -223,7 +214,7 @@ class Tasks:
             snapshot = dict(cases=cases, scenarios=version['content'] if version else '', entries=entries,
                             batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'], nodes=nodes,
                             config_digest=workspace.config_digest, forced_flow=forced_flow,
-                            confirmed_draft_cases=self.confirmed_draft_cases(db, batch))
+                            confirmed_draft_cases=sources['confirmed_draft_cases'])
             # 只继承已有记录证明曾经并入、且仍在当前场景中的禁止副作用。
             # 任意外来用例场景上的额外断言不因此成为确定字段的输入。
             transferred = {}
@@ -241,29 +232,50 @@ class Tasks:
                 for case, effects in transferred.items() if case in owners and owners[case] in existing}
             snapshot['sop_sources'] = sop_sources
             scenario_sha = version['sha256'] if version else ''
-            # 上传序号和已分配节点不是业务输入；配置改变也必须生成新快照。
-            inputs = dict(cases=dict(metadata=snapshot['case_metadata'], test_cases=cases),
-                          scenarios=scenario_sha, entries=entries, config_digest=snapshot['config_digest'], forced_flow=forced_flow,
-                          sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
-            if snapshot['confirmed_draft_cases']:
-                inputs['confirmed_draft_cases'] = snapshot['confirmed_draft_cases']
             if uploaded_sop:
                 snapshot['sop_upload_id'] = uploaded_sop['id']
-                snapshot['uploaded_sop'] = dict(ref=uploaded_sop['ref'], version=f"看板上传 #{uploaded_sop['version']}",
-                                                confirmed_by=uploaded_sop['confirmed_by'])
-                inputs['uploaded_sop'] = snapshot['uploaded_sop']
+                snapshot['uploaded_sop'] = inputs['uploaded_sop']
             digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
             states = ('排队中', '运行中') if trigger == '重新合并' else (
                 '已完成', '待同步', '待补充', '排队中', '运行中', '失败', 'Codex 不可用', '已中断', '已放弃')
             placeholders = ','.join('?' for _ in states)
-            previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND input_digest=? AND status IN ({placeholders}) ORDER BY id LIMIT 1",
-                                  (key, name, digest, *states)).fetchone()
+            # 已落地的合并以写入后的输入登记 landed_digest，重启扫描不再以自己的输出为依据重复合并。
+            previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
+                                  f"AND (input_digest=? OR json_extract(result_json,'$.landed_digest')=?) AND status IN ({placeholders}) ORDER BY id LIMIT 1",
+                                  (key, name, digest, digest, *states)).fetchone()
             if previous:
                 task_id = previous['id']
             else:
                 task_id = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at) VALUES ('merge',?,?,'排队中',?,?,?,?,?)",
                                      (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
             return dict(ok=True, task=self.read(task_id, connection=db))
+
+    def merge_inputs(self, db, batch, version, cases):
+        """合并的业务输入及其来源；上传序号和已分配节点不是业务输入，配置改变也必须生成新快照。"""
+        from .repositories import read_sop_sources
+        workspace = self.service.workspace
+        forced_flow = self.service.flow_choices(db, batch)
+        upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
+        entries = dict(entries=workspace.entries)
+        uploaded_sop = self.service.latest_sop_upload(db, batch)
+        sop_sources = read_sop_sources(workspace, version['content'] if version else '', uploaded_sop)
+        if uploaded_sop:
+            sop_sources = [s for s in sop_sources if s['path'] != uploaded_sop['path']]
+            sop_sources.append(dict(path=uploaded_sop['path'], ref=uploaded_sop['ref'],
+                content=uploaded_sop['content'], commit=uploaded_sop['commit_id'],
+                sha256=uploaded_sop['sha256'], confirmed_by=uploaded_sop['confirmed_by']))
+            sop_sources.sort(key=lambda s: s['path'])
+        confirmed = self.confirmed_draft_cases(db, batch)
+        inputs = dict(cases=dict(metadata=json.loads(upload['metadata']), test_cases=cases),
+                      scenarios=version['sha256'] if version else '', entries=entries, config_digest=workspace.config_digest,
+                      forced_flow=forced_flow, sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
+        if confirmed:
+            inputs['confirmed_draft_cases'] = confirmed
+        if uploaded_sop:
+            inputs['uploaded_sop'] = dict(ref=uploaded_sop['ref'], version=f"看板上传 #{uploaded_sop['version']}",
+                                          confirmed_by=uploaded_sop['confirmed_by'])
+        return inputs, dict(forced_flow=forced_flow, upload=upload, entries=entries, uploaded_sop=uploaded_sop,
+                            sop_sources=sop_sources, confirmed_draft_cases=confirmed)
 
     def enqueue_execution(self, key, name, scope='pending'):
         if not isinstance(scope, str) or scope not in ('pending', 'all'):
@@ -592,6 +604,10 @@ class Tasks:
             fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}),
             pairings=[dict(p, case_sha256=case_hashes[p['case']]) for p in check['pairs']],
             auto_execute=draft_upload is None)
+        with self.store.connection() as db:
+            batch = self.service.batch(db, task['workspace'], task['batch'])
+            landed, _ = self.merge_inputs(db, batch, self.service.latest_version(db, batch), self.service.case_union(db, batch))
+        check['landed_digest'] = hashlib.sha256(canonical(landed).encode()).hexdigest()
         return '已完成'
 
     def run(self):
