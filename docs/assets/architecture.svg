@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" role="img" aria-label="Flow Board 系统架构：参与者、sop-board 本地服务、Codex 会话、产品仓库与 Jira Cloud">
+  <title>Flow Board 系统架构：参与者、sop-board 本地服务、Codex 会话、产品仓库与 Jira Cloud</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#060a1a"/><stop offset="0.6" stop-color="#0b1230"/><stop offset="1" stop-color="#120a2a"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#1e293b" stroke-width="1"/></pattern>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="80"/></filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity="0.45"/></filter>
+    <marker id="a-cyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#22d3ee"/></marker><marker id="a-violet" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#a78bfa"/></marker><marker id="a-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#34d399"/></marker><marker id="a-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#f59e0b"/></marker><marker id="a-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#fb7185"/></marker><marker id="a-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#60a5fa"/></marker><marker id="a-slate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#64748b"/></marker>
+    <style>
+      .sans { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .card { fill: #0b1230; fill-opacity: .94; }
+      .flow { stroke-dasharray: 4 12; animation: flow 1.2s linear infinite; }
+      .pulse { animation: pulse 2.4s ease-in-out infinite; }
+      @keyframes flow { to { stroke-dashoffset: -16; } }
+      @keyframes pulse { 0%, 100% { stroke-opacity: .25; } 50% { stroke-opacity: .9; } }
+    </style>
+  </defs>
+  <rect width="1280" height="800" rx="20" fill="url(#bg)"/>
+  <rect width="1280" height="800" rx="20" fill="url(#grid)" opacity="0.5"/>
+  <circle cx="470" cy="430" r="220" fill="#6d28d9" opacity="0.22" filter="url(#blur)"/><circle cx="1100" cy="400" r="180" fill="#0891b2" opacity="0.16" filter="url(#blur)"/>
+  <rect x="0.5" y="0.5" width="1279" height="799" rx="20" fill="none" stroke="#334155" stroke-opacity="0.6"/>
+
+<text x="56" y="62" class="mono" font-size="13" letter-spacing="4" fill="#67e8f9">ARCHITECTURE</text><text x="56" y="96" class="sans" font-size="26" font-weight="800" fill="#f8fafc">系统架构</text>
+<rect x="40" y="210" width="210" height="504" rx="20" fill="#22d3ee" fill-opacity="0.04" stroke="#22d3ee" stroke-opacity="0.35" stroke-dasharray="2 6"/><text x="60" y="240" class="mono" font-size="11" letter-spacing="3" fill="#67e8f9">PEOPLE</text><text x="60" y="262" class="sans" font-size="15" font-weight="700" fill="#e2e8f0">参与者</text>
+<rect x="290" y="210" width="360" height="504" rx="20" fill="#a78bfa" fill-opacity="0.04" stroke="#a78bfa" stroke-opacity="0.35" stroke-dasharray="2 6"/><text x="310" y="240" class="mono" font-size="11" letter-spacing="3" fill="#c4b5fd">LOCAL SERVICE</text><text x="310" y="262" class="sans" font-size="15" font-weight="700" fill="#e2e8f0">sop-board 本地服务</text>
+<rect x="690" y="210" width="250" height="374" rx="20" fill="#a78bfa" fill-opacity="0.04" stroke="#a78bfa" stroke-opacity="0.35" stroke-dasharray="2 6"/><text x="710" y="240" class="mono" font-size="11" letter-spacing="3" fill="#c4b5fd">CODEX · ≤3 并发</text><text x="710" y="262" class="sans" font-size="15" font-weight="700" fill="#e2e8f0">Agent 会话</text>
+<rect x="980" y="210" width="260" height="374" rx="20" fill="#34d399" fill-opacity="0.04" stroke="#34d399" stroke-opacity="0.35" stroke-dasharray="2 6"/><text x="1000" y="240" class="mono" font-size="11" letter-spacing="3" fill="#6ee7b7">PRODUCT REPOS</text><text x="1000" y="262" class="sans" font-size="15" font-weight="700" fill="#e2e8f0">产品仓库（可分散多处）</text>
+<g transform="translate(0 34)">
+<path d="M230 300 H310" fill="none" stroke="#22d3ee" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-cyan)"/><path d="M230 300 H310" fill="none" stroke="#67e8f9" stroke-width="2" class="flow"/>
+<text x="270" y="290" text-anchor="middle" class="sans" font-size="11" fill="#67e8f9">内网</text>
+<path d="M230 480 H266 V312 H310" fill="none" stroke="#f59e0b" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-amber)"/><path d="M230 480 H266 V312 H310" fill="none" stroke="#fcd34d" stroke-width="2" class="flow"/>
+<text x="258" y="470" text-anchor="end" class="sans" font-size="11" fill="#fcd34d">本机</text>
+<path d="M470 334 V384" fill="none" stroke="#a78bfa" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-violet)"/><path d="M470 334 V384" fill="none" stroke="#c4b5fd" stroke-width="2" class="flow"/>
+<path d="M385 454 V504" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#a-violet)"/>
+<path d="M555 454 V504" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#a-violet)"/>
+<path d="M630 419 H668 M668 309 V489" fill="none" stroke="#a78bfa" stroke-width="2"/>
+<path d="M668 309 H710" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#a-violet)"/>
+<path d="M668 399 H710" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#a-violet)"/>
+<path d="M668 489 H710" fill="none" stroke="#a78bfa" stroke-width="2" marker-end="url(#a-violet)"/>
+<path d="M920 309 H1000" fill="none" stroke="#a78bfa" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-violet)"/><path d="M920 309 H1000" fill="none" stroke="#c4b5fd" stroke-width="2" class="flow"/>
+<text x="960" y="299" text-anchor="middle" class="sans" font-size="11" fill="#c4b5fd">写入场景</text>
+<path d="M920 399 L1000 452" fill="none" stroke="#a78bfa" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-violet)"/><path d="M920 399 L1000 452" fill="none" stroke="#c4b5fd" stroke-width="2" class="flow"/>
+<text x="948" y="445" text-anchor="middle" class="sans" font-size="11" fill="#c4b5fd">改产品代码</text>
+<path d="M1060 420 V352" fill="none" stroke="#34d399" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#a-green)"/>
+<path d="M1180 420 V352" fill="none" stroke="#34d399" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#a-green)"/>
+<text x="1120" y="392" text-anchor="middle" class="sans" font-size="11.5" fill="#6ee7b7">快进合入</text>
+<path d="M815 524 V610" fill="none" stroke="#a78bfa" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-violet)"/><path d="M815 524 V610" fill="none" stroke="#c4b5fd" stroke-width="2" class="flow"/>
+<text x="827" y="582" text-anchor="start" class="sans" font-size="11.5" fill="#c4b5fd">Playwright · HTTP 黑盒操作</text>
+<path d="M1110 504 V610" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#a-green)"/>
+<text x="1122" y="582" text-anchor="start" class="sans" font-size="11.5" fill="#6ee7b7">加载基线或修复代码</text>
+<path d="M630 549 H666 V655 H690" fill="none" stroke="#34d399" stroke-width="2" stroke-opacity="0.35" marker-end="url(#a-green)"/><path d="M630 549 H666 V655 H690" fill="none" stroke="#6ee7b7" stroke-width="2" class="flow"/>
+<text x="676" y="600" text-anchor="start" class="sans" font-size="11.5" fill="#6ee7b7">启动</text>
+<g transform="translate(60 260)" filter="url(#shadow)" class="sans"><rect class="card" width="170" height="100" rx="16" stroke="#22d3ee" stroke-width="1.5"/><rect x="16" y="13" width="57" height="22" rx="11" fill="#22d3ee" fill-opacity="0.15"/><text x="44.5" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#67e8f9">HUMAN</text><text x="16" y="57.0" font-size="15" font-weight="700" fill="#f1f5f9">测试同事</text><text x="16" y="77.0" font-size="13" fill="#94a3b8">上传 · 复核 · 标注</text></g>
+<g transform="translate(60 430)" filter="url(#shadow)" class="sans"><rect class="card" width="170" height="100" rx="16" stroke="#f59e0b" stroke-width="1.5"/><rect x="16" y="13" width="39" height="22" rx="11" fill="#f59e0b" fill-opacity="0.15"/><text x="35.5" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#fcd34d">DEV</text><text x="16" y="57.0" font-size="15" font-weight="700" fill="#f1f5f9">开发者</text><text x="16" y="77.0" font-size="13" fill="#94a3b8">自检 · 执行 · 批准</text></g>
+<g transform="translate(310 264)" filter="url(#shadow)" class="sans"><rect x="-4" y="-4" width="328" height="78" rx="21" fill="none" stroke="#a78bfa" stroke-width="2" class="pulse"/><rect class="card" width="320" height="70" rx="16" stroke="#a78bfa" stroke-width="1.5"/><text x="16" y="27.0" font-size="15" font-weight="700" fill="#f1f5f9">看板页面 / REST API</text><text x="16" y="47.0" font-size="13" fill="#94a3b8">同源校验 · 开发者操作仅限回环</text></g>
+<g transform="translate(310 384)" filter="url(#shadow)" class="sans"><rect class="card" width="320" height="70" rx="16" stroke="#a78bfa" stroke-width="1.5"/><text x="16" y="27.0" font-size="15" font-weight="700" fill="#f1f5f9">任务调度</text><text x="16" y="47.0" font-size="13" fill="#94a3b8">合并 · 执行 · 修复 · 全局暂停</text></g>
+<g transform="translate(310 504)" filter="url(#shadow)" class="sans"><rect class="card" width="150" height="90" rx="16" stroke="#a78bfa" stroke-width="1.5"/><text x="16" y="26.0" font-size="14" font-weight="700" fill="#f1f5f9">workspace</text><text x="16" y="47.0" font-size="14" font-weight="700" fill="#f1f5f9">.sqlite3</text><text x="16" y="66.0" font-size="13" fill="#94a3b8">版本 · 轮次 · 证据</text></g>
+<g transform="translate(480 504)" filter="url(#shadow)" class="sans"><rect class="card" width="150" height="90" rx="16" stroke="#34d399" stroke-width="1.5"/><text x="16" y="26.5" font-size="14" font-weight="700" fill="#f1f5f9">环境适配</text><text x="16" y="45.5" font-size="13" fill="#94a3b8">adapter.env</text><text x="16" y="65.5" font-size="13" fill="#94a3b8">worktree · cleanup</text></g>
+<g transform="translate(710 274)" filter="url(#shadow)" class="sans"><rect class="card" width="210" height="70" rx="16" stroke="#a78bfa" stroke-width="1.5"/><text x="16" y="27.0" font-size="15" font-weight="700" fill="#f1f5f9">合并会话</text><text x="16" y="47.0" font-size="13" fill="#94a3b8">用例 → SOP 场景</text></g>
+<g transform="translate(710 364)" filter="url(#shadow)" class="sans"><rect class="card" width="210" height="70" rx="16" stroke="#a78bfa" stroke-width="1.5"/><text x="16" y="27.0" font-size="15" font-weight="700" fill="#f1f5f9">修复会话</text><text x="16" y="47.0" font-size="13" fill="#94a3b8">根因分析 · 修改产品代码</text></g>
+<g transform="translate(710 454)" filter="url(#shadow)" class="sans"><rect class="card" width="210" height="70" rx="16" stroke="#a78bfa" stroke-width="1.5"/><text x="16" y="27.0" font-size="15" font-weight="700" fill="#f1f5f9">执行 / 复测会话</text><text x="16" y="47.0" font-size="13" fill="#94a3b8">独立会话 · 真实入口</text></g>
+<g transform="translate(1000 274)" filter="url(#shadow)" class="sans"><rect class="card" width="110" height="78" rx="16" stroke="#34d399" stroke-width="1.5"/><text x="16" y="31.5" font-size="16" font-weight="700" fill="#f1f5f9">app</text><text x="16" y="52.5" font-size="13" fill="#94a3b8">main</text></g>
+<g transform="translate(1120 274)" filter="url(#shadow)" class="sans"><rect class="card" width="110" height="78" rx="16" stroke="#34d399" stroke-width="1.5"/><text x="16" y="31.5" font-size="16" font-weight="700" fill="#f1f5f9">lib</text><text x="16" y="52.5" font-size="13" fill="#94a3b8">main</text></g>
+<g transform="translate(1000 420)" filter="url(#shadow)" class="sans"><rect class="card" width="230" height="84" rx="16" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5 4"/><text x="16" y="34.0" font-size="15" font-weight="700" fill="#f1f5f9">修复工作树</text><text x="16" y="54.0" font-size="13" fill="#94a3b8">sop-board/fix/&lt;编号&gt;</text></g>
+<g transform="translate(690 610)" filter="url(#shadow)" class="sans"><rect class="card" width="550" height="90" rx="16" stroke="#34d399" stroke-width="1.5"/><text x="16" y="37.0" font-size="15" font-weight="700" fill="#f1f5f9">运行中的服务环境</text><text x="16" y="57.0" font-size="13" fill="#94a3b8">基线目录或修复工作树 · adapter.ports 端口互斥 · 环境日志留存</text></g>
+</g>
+<path d="M545 174 V298" fill="none" stroke="#60a5fa" stroke-width="2" marker-end="url(#a-blue)"/>
+<path d="M595 298 V174" fill="none" stroke="#60a5fa" stroke-width="2" marker-end="url(#a-blue)"/>
+<text x="533" y="200" text-anchor="end" class="sans" font-size="11.5" fill="#bfdbfe">读取单据</text>
+<text x="607" y="200" text-anchor="start" class="sans" font-size="11.5" fill="#bfdbfe">回写评论 · 流转状态</text>
+<g transform="translate(455 112)" filter="url(#shadow)" class="sans"><rect class="card" width="230" height="62" rx="16" stroke="#60a5fa" stroke-width="1.5"/><text x="16" y="23.0" font-size="15" font-weight="700" fill="#f1f5f9">Jira Cloud</text><text x="16" y="43.0" font-size="13" fill="#94a3b8">JIRA_EMAIL · JIRA_API_TOKEN</text></g>
+</svg>

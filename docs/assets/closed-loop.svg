@@ -1,0 +1,184 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="790" viewBox="0 0 1280 790" role="img" aria-label="Flow Board 自动化闭环：用例上传与合并、Agent 黑盒测试、人工复核、根因分析与修复、状态回写">
+  <title>Flow Board 自动化闭环</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#060a1a"/>
+      <stop offset="0.6" stop-color="#0b1230"/>
+      <stop offset="1" stop-color="#120a2a"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="0.5" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#c084fc"/>
+    </linearGradient>
+    <radialGradient id="core" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#312e81"/>
+      <stop offset="1" stop-color="#0b1230"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1e293b" stroke-width="1"/>
+    </pattern>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="70"/>
+    </filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrow-violet" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#a78bfa"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#34d399"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#f59e0b"/>
+    </marker>
+    <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#fb7185"/>
+    </marker>
+    <style>
+      .sans { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", sans-serif; }
+      .mono { font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+      .flow { stroke-dasharray: 4 14; animation: flow 1.2s linear infinite; }
+      .pulse { transform-origin: 640px 410px; animation: pulse 3s ease-in-out infinite; }
+      @keyframes flow { to { stroke-dashoffset: -18; } }
+      @keyframes pulse { 0%, 100% { opacity: .3; transform: scale(1); } 50% { opacity: .75; transform: scale(1.08); } }
+      .card { fill: #0b1230; fill-opacity: .94; }
+      .h { font-size: 19px; font-weight: 700; fill: #f1f5f9; }
+      .d { font-size: 13.5px; fill: #94a3b8; }
+      .tag { font-size: 11px; letter-spacing: 2px; }
+    </style>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1280" height="790" rx="20" fill="url(#bg)"/>
+  <rect width="1280" height="790" rx="20" fill="url(#grid)" opacity="0.5"/>
+  <circle cx="640" cy="410" r="230" fill="#6d28d9" opacity="0.28" filter="url(#blur)"/>
+  <rect x="0.5" y="0.5" width="1279" height="789" rx="20" fill="none" stroke="#334155" stroke-opacity="0.6"/>
+
+  <!-- 标题与图例 -->
+  <text x="56" y="62" class="mono" font-size="13" letter-spacing="4" fill="#67e8f9">AUTOMATED CLOSED LOOP</text>
+  <text x="56" y="96" class="sans" font-size="26" font-weight="800" fill="#f8fafc">自动化闭环</text>
+
+  <g class="sans" font-size="13" fill="#cbd5e1" transform="translate(842 58)">
+    <circle cx="6" cy="0" r="6" fill="none" stroke="#22d3ee" stroke-width="2.5"/><text x="18" y="5">人工</text>
+    <circle cx="76" cy="0" r="6" fill="none" stroke="#a78bfa" stroke-width="2.5"/><text x="88" y="5">AI Agent</text>
+    <circle cx="176" cy="0" r="6" fill="none" stroke="#f59e0b" stroke-width="2.5"/><text x="188" y="5">开发者</text>
+    <circle cx="260" cy="0" r="6" fill="none" stroke="#34d399" stroke-width="2.5"/><text x="272" y="5">看板</text>
+    <circle cx="330" cy="0" r="6" fill="none" stroke="#fb7185" stroke-width="2.5"/><text x="342" y="5">失败</text>
+  </g>
+
+  <!-- 主环：01 → 02 → 03 → 04 → 05（圆心 640,410，半径 250） -->
+  <path d="M640 160 A250 250 0 1 1 402.2 332.7" fill="none" stroke="url(#ring)" stroke-width="3" opacity="0.35"/>
+  <path d="M640 160 A250 250 0 1 1 402.2 332.7" fill="none" stroke="url(#ring)" stroke-width="3" class="flow"/>
+  <!-- 05 → 01：下一批次 -->
+  <path d="M402.2 332.7 A250 250 0 0 1 640 160" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="3 7"/>
+  <text x="430" y="216" class="sans" font-size="12" fill="#64748b" transform="rotate(-36 430 216)">下一批用例</text>
+
+  <!-- 环上箭头（角度 -54, 18, 90, 162） -->
+  <g fill="#c4b5fd">
+    <path d="M-7 -7L9 0L-7 7z" transform="translate(787 207.7) rotate(36)"/>
+    <path d="M-7 -7L9 0L-7 7z" transform="translate(877.8 487.3) rotate(108)"/>
+    <path d="M-7 -7L9 0L-7 7z" transform="translate(640 660) rotate(180)"/>
+    <path d="M-7 -7L9 0L-7 7z" transform="translate(402.2 487.3) rotate(252)"/>
+  </g>
+
+  <!-- 环上流动光点 -->
+  <circle r="5" fill="#67e8f9" filter="url(#glow)">
+    <animateMotion dur="10s" repeatCount="indefinite" path="M640 160 A250 250 0 1 1 402.2 332.7"/>
+  </circle>
+
+  <!-- 核心 -->
+  <circle cx="640" cy="410" r="104" fill="none" stroke="#6366f1" stroke-width="1" class="pulse"/>
+  <circle cx="640" cy="410" r="84" fill="url(#core)" stroke="#818cf8" stroke-width="1.5"/>
+  <text x="640" y="400" text-anchor="middle" class="mono" font-size="30" font-weight="700" fill="#e0e7ff" letter-spacing="2">SOP</text>
+  <text x="640" y="426" text-anchor="middle" class="sans" font-size="14" font-weight="600" fill="#c7d2fe">业务场景</text>
+  <text x="640" y="448" text-anchor="middle" class="sans" font-size="12" fill="#818cf8">版本 · 证据 · 状态</text>
+
+  <!-- 05 → 03：修复后回到人工复测 -->
+  <path d="M492 389 Q520 530 700 568" fill="none" stroke="#34d399" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#arrow-green)"/>
+  <text x="462" y="540" class="sans" font-size="12.5" fill="#6ee7b7">回到人工复测</text>
+
+  <!-- 02 → 04：自动验证失败直接进入根因分析（外圈绕行） -->
+  <path d="M998 333 H1232 V738 H493 V672" fill="none" stroke="#fb7185" stroke-width="2" stroke-dasharray="6 6" marker-end="url(#arrow-rose)"/>
+  <rect x="742" y="725" width="244" height="26" rx="13" fill="#0b1230" stroke="#fb7185" stroke-opacity="0.5"/>
+  <text x="864" y="743" text-anchor="middle" class="sans" font-size="12.5" fill="#fda4af">自动验证失败 · 直接进入根因分析</text>
+
+  <!-- 03 → 导出 -->
+  <path d="M907 586 Q960 586 986 536" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <!-- 04 → 开发者 -->
+  <path d="M373 612 H306" fill="none" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow-amber)"/>
+  <path d="M306 636 H373" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrow-amber)"/>
+
+  <!-- 阶段卡片 -->
+  <g class="sans">
+    <!-- 01 -->
+    <g transform="translate(516 104)" filter="url(#shadow)">
+      <rect class="card" width="248" height="114" rx="18" stroke="#22d3ee" stroke-width="1.5"/>
+      <rect x="18" y="16" width="38" height="22" rx="11" fill="#22d3ee" fill-opacity="0.15"/>
+      <text x="37" y="32" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#67e8f9">01</text>
+      <text x="230" y="32" text-anchor="end" class="mono tag" fill="#67e8f9">HUMAN+AI</text>
+      <text x="18" y="64" class="h">用例上传与合并</text>
+      <text x="18" y="86" class="d">测试同事上传 YAML 用例</text>
+      <text x="18" y="104" class="d">Codex 补充合并为 SOP 场景</text>
+    </g>
+    <!-- 02 -->
+    <g transform="translate(754 276)" filter="url(#shadow)">
+      <rect class="card" width="248" height="114" rx="18" stroke="#a78bfa" stroke-width="1.5"/>
+      <rect x="18" y="16" width="38" height="22" rx="11" fill="#a78bfa" fill-opacity="0.15"/>
+      <text x="37" y="32" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#c4b5fd">02</text>
+      <text x="230" y="32" text-anchor="end" class="mono tag" fill="#c4b5fd">AGENT</text>
+      <text x="18" y="64" class="h">自动化黑盒测试</text>
+      <text x="18" y="86" class="d">Playwright · 真实接口执行</text>
+      <text x="18" y="104" class="d">逐条保存结果与原始证据</text>
+    </g>
+    <!-- 03 -->
+    <g transform="translate(663 555)" filter="url(#shadow)">
+      <rect class="card" width="248" height="114" rx="18" stroke="#22d3ee" stroke-width="1.5"/>
+      <rect x="18" y="16" width="38" height="22" rx="11" fill="#22d3ee" fill-opacity="0.15"/>
+      <text x="37" y="32" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#67e8f9">03</text>
+      <text x="230" y="32" text-anchor="end" class="mono tag" fill="#67e8f9">HUMAN</text>
+      <text x="18" y="64" class="h">人工测试与缺陷管理</text>
+      <text x="18" y="86" class="d">看板标注 · 贴 Jira 单号</text>
+      <text x="18" y="104" class="d">复核完成后放行修复</text>
+    </g>
+    <!-- 04 -->
+    <g transform="translate(369 555)" filter="url(#shadow)">
+      <rect class="card" width="248" height="114" rx="18" stroke="#a78bfa" stroke-width="1.5"/>
+      <rect x="18" y="16" width="38" height="22" rx="11" fill="#a78bfa" fill-opacity="0.15"/>
+      <text x="37" y="32" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#c4b5fd">04</text>
+      <text x="230" y="32" text-anchor="end" class="mono tag" fill="#c4b5fd">AGENT</text>
+      <text x="18" y="64" class="h">根因分析与自动修复</text>
+      <text x="18" y="86" class="d">结合 Jira 定位根因仓库</text>
+      <text x="18" y="104" class="d">隔离工作树修复 · 独立复测</text>
+    </g>
+    <!-- 05 -->
+    <g transform="translate(278 276)" filter="url(#shadow)">
+      <rect class="card" width="248" height="114" rx="18" stroke="#34d399" stroke-width="1.5"/>
+      <rect x="18" y="16" width="38" height="22" rx="11" fill="#34d399" fill-opacity="0.15"/>
+      <text x="37" y="32" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#6ee7b7">05</text>
+      <text x="230" y="32" text-anchor="end" class="mono tag" fill="#6ee7b7">BOARD</text>
+      <text x="18" y="64" class="h">状态更新</text>
+      <text x="18" y="86" class="d">快进合入 · 回写 Jira 评论</text>
+      <text x="18" y="104" class="d">登记独立复测结果</text>
+    </g>
+
+    <!-- 导出 -->
+    <g transform="translate(940 456)" filter="url(#shadow)">
+      <rect class="card" width="236" height="78" rx="16" stroke="#34d399" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="18" y="32" font-size="15" font-weight="700" fill="#6ee7b7">✓ 复核通过</text>
+      <text x="18" y="56" class="d">导出报告、结果 YAML 与证据</text>
+    </g>
+    <!-- 开发者 -->
+    <g transform="translate(70 576)" filter="url(#shadow)">
+      <rect class="card" width="236" height="96" rx="16" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="18" y="32" font-size="15" font-weight="700" fill="#fcd34d">开发者介入</text>
+      <text x="18" y="56" class="d">复杂或环境问题、三次未通过</text>
+      <text x="18" y="76" class="d">批准方案、重试或接手修复</text>
+    </g>
+  </g>
+</svg>
