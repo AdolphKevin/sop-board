@@ -12,3 +12,6 @@ sop-board = "sop_board.cli:main"
 [build-system]
 requires = ["uv_build>=0.9.28,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*" }, { git = { commit = true } }]

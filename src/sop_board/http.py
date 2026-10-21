@@ -98,20 +98,21 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, UnicodeError):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
-                self.respond(200, pages.home(service.workspaces(), environment=service.environment.public(local), local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.home(service.workspaces(local=local), environment=service.environment_status(local=local), local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == 'GET' and (match := re.fullmatch(r'/w/([^/]+)/fixes', path)):
                 key = unquote(match[1])
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
-                self.respond(200, pages.fixes(key, self.server.tasks.fixes.list(key)['tasks'], selected, local=local).encode(), 'text/html; charset=utf-8')
+                data = self.server.tasks.fixes.list(key)
+                self.respond(200, pages.fixes(key, data['tasks'], selected, review=data['review'], local=local).encode(), 'text/html; charset=utf-8')
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.batch(key, service.read_batch(key, batch), environment=service.environment.public(local), local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.batch(key, service.read_batch(key, batch, local=local), environment=service.environment_status(local=local), local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/scenarios", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True), service.jira_url, local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True, local=local), local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -120,7 +121,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/merges", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                service.read_batch(key, batch)
+                service.read_batch(key, batch, local=local)
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
                 self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch)['tasks'], service.read_cases(key, batch), selected, local=local).encode(), "text/html; charset=utf-8")
                 return
@@ -133,16 +134,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/progress", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                data = service.read_batch(key, batch)
+                data = service.read_batch(key, batch, local=local)
                 coverage = service.read_cases(key, batch)["coverage"]
                 self.respond(200, pages.progress(key, data, coverage).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
-                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario), service.jira_url).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario)).encode(), "text/html; charset=utf-8")
                 return
             if method == 'GET' and path == '/api/v1/environment':
-                result = dict(ok=True, **service.environment.public(local))
+                result = dict(ok=True, **service.environment_status(local=local))
             elif method == 'POST' and path in ('/api/v1/environment/check', '/api/v1/environment/restart'):
                 try:
                     if path.endswith('/check'):
@@ -151,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
                         service.environment.restart()
                 except ValueError as error:
                     reject(409, 'environment-unavailable', 'environment', str(error))
-                result = dict(ok=True, **service.environment.public(local))
+                result = dict(ok=True, **service.environment_status(local=local))
             elif method == 'GET' and path == '/api/v1/guide':
                 self.respond(200, files('sop_board').joinpath('guide.md').read_bytes(), 'text/plain; charset=utf-8')
                 return
@@ -185,22 +186,20 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/approve", path)):
                 result = self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', body.get('note', '')) if isinstance(body, dict) else self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', None)
             elif method == "GET" and path == "/api/v1/workspaces":
-                result = service.workspaces()
+                result = service.workspaces(local=local)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/entries", path)):
-                result = service.entries(unquote(match[1]))
+                result = service.entries(unquote(match[1]), local=local)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/fixes", path)):
                 result = self.server.tasks.fixes.list(unquote(match[1]))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/attention", path)):
                 result = self.server.tasks.fixes.attention(unquote(match[1]), 'http://' + self.headers.get('Host', 'localhost'))
-            elif method == "GET" and (match := re.fullmatch(r"/api/v1/jira/([^/]+)", path)):
-                result = self.server.jira.summary(unquote(match[1]))
+            elif method == "GET" and path == "/api/v1/jira/summary":
+                result = self.server.jira.summary(parse_qs(urlsplit(self.path).query).get('url', [''])[0])
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):
                 key, batch, number = unquote(match[1]), unquote(match[2]), int(match[3])
                 self.respond(200, service.export_round(key, batch, number), "application/zip",
                              [("Content-Disposition", f"attachment; filename=round-{number}.zip")])
                 return
-            elif method == "PUT" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)", path)):
-                result = service.settings(unquote(match[1]), body)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/evidence/([^/]+)", path)):
                 raw, name = service.evidence(unquote(match[1]))
                 media = evidence_content_type(name)
@@ -213,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
                               ("Content-Security-Policy", "sandbox; default-src 'none'"), *extra])
                 return
-            elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
+            elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|review-complete|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]
                 if method == "PUT" and action == "scenario-file" and number is None:
                     result = service.push(key, batch, body)
@@ -221,6 +220,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = service.round(key, batch, body)
                 elif method == "POST" and action == "marks" and number is None:
                     result = service.mark(key, batch, body)
+                elif method == "POST" and action == "review-complete" and number is None:
+                    result = service.review_complete(key, batch, body)
                 elif method == "POST" and action == "cases" and number is None:
                     result = service.upload_cases(key, batch, body)
                 elif method == "POST" and action == "results" and number is None:
@@ -250,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
                                  [("Content-Disposition", f"attachment; filename={action if action == 'cases.yaml' else 'scenarios.yaml'}")])
                     return
                 elif method == "GET" and action in (None, "scenarios") and number is None:
-                    result = service.read_batch(key, batch, scenarios=action == "scenarios")
+                    result = service.read_batch(key, batch, scenarios=action == "scenarios", local=local)
                 elif method == "GET" and action == "rounds" and number is not None:
                     result = service.read_round(key, batch, int(number))
                 else:

@@ -1,18 +1,15 @@
 """测试岗结果文件的格式转换与完整校验；存储由 Service 的事务负责。"""
 
 from datetime import datetime
-import re
 
 import yaml
-
-from .defect_links import ISSUE_KEY
 
 
 STATUS_OUT = {"pass": "passed", "fail": "failed", "blocked": "blocked", "skip": "skipped"}
 STATUS_IN = {value: key for key, value in STATUS_OUT.items()}
 
 
-def export_results(data, jira_url):
+def export_results(data):
     scenarios = {item["scenario"]: item for item in data["summary"]["scenarios"]}
     results = []
     pairings = {p["case"]: p for p in data["pairings"]}
@@ -28,12 +25,10 @@ def export_results(data, jira_url):
         row = dict(case_id=case["id"], status=STATUS_OUT[latest["status"]], actual_result=latest["actual"],
                    executor=latest["executor"], tested_at=latest["executed_at"])
         finding = latest.get("finding") or ""
-        jira = re.fullmatch(re.escape(jira_url) + r"/browse/(" + ISSUE_KEY + r")(?:[?#].*)?", finding) if jira_url else None
         notes = (["细节用例并入场景 " + scenario["scenario"] + "；此行引用该流程的结果"] if pair["kind"] == "detail" else [])
-        if jira:
-            row["jira_issue"] = jira[1]
-        elif finding.startswith(("http://", "https://")):
-            notes.append("缺陷链接 " + finding)
+        if finding:
+            # 保留既有结果文件字段名，但值始终是缺陷原文，不再抽取单号。
+            row["jira_issue"] = finding
         if latest.get("note"):
             notes.append(latest["note"])
         if notes:
@@ -61,9 +56,8 @@ class ResultsLoader(yaml.SafeLoader):
 ResultsLoader.add_constructor("tag:yaml.org,2002:timestamp", lambda loader, node: loader.construct_scalar(node))
 
 
-def load_results(body, current, jira_url, prefix):
+def load_results(body, current):
     from .defect_links import normalize
-    from .errors import APIError
     from .validation import Problems, nonempty
 
     p = Problems("results-invalid")
@@ -145,17 +139,8 @@ def load_results(body, current, jira_url, prefix):
         if "evidence" in row and (not isinstance(row["evidence"], list) or not all(nonempty(e) for e in row["evidence"])):
             p.add(field + ".evidence", "应为证据路径字符串数组")
         finding = None
-        if status in ("failed", "blocked") and "jira_issue" not in row:
-            p.add(field + ".jira_issue", "失败与受阻必须填写 jira_issue")
-        if "jira_issue" in row:
-            if not nonempty(row["jira_issue"]):
-                p.add(field + ".jira_issue", "应为非空字符串")
-            else:
-                try:
-                    finding = normalize(row["jira_issue"], jira_url, prefix)
-                except APIError as error:
-                    for problem in error.problems:
-                        p.add(field + ".jira_issue", problem["problem"])
+        if status in ("failed", "blocked") or "jira_issue" in row:
+            finding = normalize(row.get("jira_issue"), field + ".jira_issue")
         if status == "skipped":
             skipped.append(sid)
         elif isinstance(status, str) and status in STATUS_IN and isinstance(sid, str) and sid in current:

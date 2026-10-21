@@ -1,0 +1,204 @@
+# SOP-BOARD-10 的验收场景
+# 预期依据 docs/designs/SOP-BOARD-10.md（修订 1）的 D46–D52。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# “多仓演示工作区”：以名称登记的两个分散的临时 Git 仓库 app（HTTP 服务，调用 lib）与 lib，origin 为 https://example.invalid/...；搭建由新开的代理会话按 sop-board guide 完成。独立验收串行进行。
+
+metadata:
+  requirement: "sop-board：必须沿用、缺 Git 身份交给开发者、按端口互斥、安装缓存、搭建报告模板、执行等待合并、自检核对地址变量"
+  batch: "sop-board-10"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/designs/SOP-BOARD-10.md 的 D46–D52"
+      version: "修订 1（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board"]
+
+sops:
+  - id: SOP-101
+    title: 产品变化后按影响沿用或重跑
+    actor: 开发者
+    entry: 本机看板页面
+    scenarios:
+      - id: SOP-101-P01
+        polarity: positive
+        title: 只影响一条场景的改动提交后，其余场景写理由沿用
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["一个批次有 4 条场景全部通过", "开发者提交一处只影响其中一条场景的产品改动"]
+        steps: ["在批次概览页点执行待执行场景", "等待任务结束，查看任务、场景页和导出报告"]
+        expected: ["受影响的一条实际执行并有新证据", "其余 3 条为通过，note 以“沿用：”开头并写明改动范围与理由，保留原证据", "任务目录 impact.json 与结果行一致，页面与报告的沿用数为 3"]
+        forbidden_effects: ["判定不受影响的场景被实际重跑"]
+      - id: SOP-101-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 判定与结果不一致时本轮不合格
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["同 SOP-101-P01 的前置状态", "执行者在会话结束前、看板读取结果前，把 impact.json 中一条不受影响的场景改为 affected:false，而结果行仍是实际执行（人工构造，报告中注明）"]
+        steps: ["等待任务结束"]
+        expected: ["任务失败，原因写明该场景的判定与结果不一致", "没有登记新轮次"]
+        forbidden_effects: ["登记本轮结果"]
+
+  - id: SOP-102
+    title: 缺 Git 身份时交给开发者
+    actor: 开发者
+    entry: sop-board check 与修复页
+    scenarios:
+      - id: SOP-102-P01
+        polarity: positive
+        title: 修复提交前发现缺 Git 身份，转开发者处理，设置后重试继续且不计次
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["多仓演示工作区已搭建，lib 中有一处植入缺陷，自检通过后执行者移除 lib 的仓库级 user.name，且全局没有设置"]
+        steps: ["等待执行失败与修复任务开始", "修复会话改完代码后查看修复页", "在 lib 设置仓库级 user.name，在修复页点重试", "等待修复任务结束"]
+        expected: ["任务转为待开发者处理，原因写明 lib 缺少 user.name，尝试次数不增加", "重试后从提交步骤继续，修复工作树中的改动保留", "最终复测通过并合入"]
+        forbidden_effects: ["因缺身份连续计为未通过的尝试", "丢弃已有修复改动"]
+      - id: SOP-102-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 自检第 1 步发现仓库缺 Git 身份
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["工作区已登记配置，app 没有仓库级 user.email，全局也没有"]
+        steps: ["运行 sop-board check <名称>"]
+        expected: ["第 1 步失败，写明 app 缺少 user.email 和设置方法，后续步骤未执行，退出码 1"]
+        forbidden_effects: ["自检改动仓库的 Git 配置"]
+
+  - id: SOP-103
+    title: 环境按端口互斥
+    actor: 开发者
+    entry: sop-board 启动与本机页面
+    scenarios:
+      - id: SOP-103-P01
+        polarity: positive
+        title: 端口不重叠的两个工作区同时运行环境
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["两个已搭建的工作区 w1、w2，adapter.ports 互不重叠"]
+        steps: ["分别以不同看板端口启动 w1、w2", "查看两边的环境栏，在两边各执行一次待执行场景"]
+        expected: ["两边环境都就绪", "两边的执行都完成并登记结果"]
+        forbidden_effects: ["提示本机已有看板环境运行"]
+      - id: SOP-103-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 端口重叠时后启动的一方等待，并在端口释放后自动启动
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["工作区 w1 的环境正在运行；工作区 w3 的 adapter.ports 与 w1 有一个相同端口"]
+        steps: ["启动 w3 的看板，查看环境栏", "停止 w1 的看板，等待 30 秒后再查看 w3 的环境栏"]
+        expected: ["w3 环境未启动，环境栏写明“等待端口 <端口>（工作区 w1）”", "w1 停止后 30 秒内 w3 自动启动基线环境并显示就绪"]
+        forbidden_effects: ["w3 与 w1 同时占用同一端口启动环境"]
+
+  - id: SOP-104
+    title: 重新安装取得最新源码
+    actor: 开发者
+    entry: uv tool install
+    scenarios:
+      - id: SOP-104-P01
+        polarity: positive
+        title: 源码提交后不改版本号重新安装，装上的是新代码
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["已用 uv tool install --force <检出> 安装过一次（隔离的 UV_TOOL_DIR）", "执行者在检出的临时克隆中修改 src 下一个提示文字并提交，版本号不变"]
+        steps: ["再次运行 uv tool install --force <克隆>", "比较已安装包中该文件与克隆中的内容"]
+        expected: ["安装输出显示重新构建", "已安装文件与克隆中的新内容一致"]
+        forbidden_effects: ["沿用旧构建"]
+      - id: SOP-104-N01
+        polarity: negative
+        negative_type: duplicate
+        title: 源码未变化时重复安装不必重建
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["SOP-104-P01 已完成，克隆没有新的改动"]
+        steps: ["再次运行 uv tool install --force <克隆>"]
+        expected: ["安装成功，已安装文件与克隆一致"]
+        forbidden_effects: ["安装失败"]
+
+  - id: SOP-105
+    title: 搭建报告使用固定模板
+    actor: 开发者
+    entry: 开发者打开的 Codex 搭建会话
+    scenarios:
+      - id: SOP-105-P01
+        polarity: positive
+        title: 代理的搭建报告按顺序包含七个规定章节
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["多仓演示工作区尚未登记"]
+        steps: ["新开 Codex 会话请代理按 sop-board 的安装说明安装并搭建，回答它的提问", "查看数据目录的 setup-report.md 与会话最终回复"]
+        expected: ["两处都按顺序包含：已验证的事实、推断及依据、待回答的问题、工作树建立与清理方式、外部工具与外部依赖、验证技能摘要、Jira 读取", "没有内容的章节写“无”"]
+        forbidden_effects: ["报告中出现凭据值"]
+      - id: SOP-105-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 开发者有未决问题时报告列出待回答的问题
+        actor: 开发者
+        priority: P2
+        verify: agent
+        initial_state: ["同 SOP-105-P01"]
+        steps: ["代理询问服务启动方式时回答“不确定，需要再问同事”，其余照常回答", "查看搭建报告"]
+        expected: ["“待回答的问题”一节写出启动方式未确认，推断及依据一节写明代理采用的假设"]
+        forbidden_effects: ["把未确认的推断写进“已验证的事实”"]
+
+  - id: SOP-106
+    title: 执行等待同批次合并结束
+    actor: 开发者
+    entry: 本机看板页面
+    scenarios:
+      - id: SOP-106-P01
+        polarity: positive
+        title: 合并运行时点执行，执行等合并结束后用新场景版本开始
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个批次已有场景并全部通过", "测试同事刚上传一条新用例，合并任务正在运行"]
+        steps: ["在批次概览页点重新验证全部场景", "等待两个任务结束"]
+        expected: ["执行任务显示等待合并 #<编号>，不启动会话", "合并结束后执行开始，范围包含合并生成的新场景", "执行没有因场景变化作废"]
+        forbidden_effects: ["执行与合并同时运行"]
+      - id: SOP-106-N01
+        polarity: negative
+        negative_type: interrupted
+        title: 合并失败时执行按现有场景版本开始
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state: ["一个批次已有场景", "测试同事上传了一条会让合并失败的用例（例如缺少必填字段，人工构造并注明），合并正在运行"]
+        steps: ["点执行待执行场景或重新验证全部场景", "等待两个任务结束"]
+        expected: ["合并失败后，执行按现有场景版本开始并完成"]
+        forbidden_effects: ["执行一直停在等待合并"]
+
+  - id: SOP-107
+    title: 自检核对入口地址变量
+    actor: 开发者
+    entry: sop-board check
+    scenarios:
+      - id: SOP-107-P01
+        polarity: positive
+        title: 地址变量来自适配返回或看板环境时自检通过
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["工作区一个入口声明 address_env，变量由启动看板的环境提供"]
+        steps: ["设置该变量后运行 sop-board check <名称>"]
+        expected: ["五步全部通过，退出码 0"]
+        forbidden_effects: []
+      - id: SOP-107-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 缺少入口地址变量时自检失败
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["同 SOP-107-P01，但启动环境中没有该变量，适配也不返回它"]
+        steps: ["运行 sop-board check <名称>"]
+        expected: ["第 3 步失败，写明入口名与缺少的变量名，退出码 1"]
+        forbidden_effects: ["自检通过后执行才因缺变量失败"]

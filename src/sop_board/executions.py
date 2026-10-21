@@ -24,6 +24,11 @@ class Executions:
         self.tasks, self.service, self.store = tasks, tasks.service, tasks.store
         self.next_review = {}
 
+    def waiting_merge(self, db, key, name):
+        row = db.execute("SELECT id FROM tasks WHERE kind='merge' AND workspace=? AND batch=? "
+                         "AND status IN ('排队中','运行中') ORDER BY id LIMIT 1", (key, name)).fetchone()
+        return row['id'] if row else None
+
     def enqueue(self, key, name, scope=None, trigger='开发者发起', selection='pending'):
         with self.tasks.lock:
             manual = scope is None
@@ -31,6 +36,7 @@ class Executions:
                 self.service.require_ready(key)
             with self.store.transaction() as db:
                 batch = self.service.batch(db, key, name)
+                merge = self.waiting_merge(db, key, name)
                 version = self.service.latest_version(db, batch)
                 document = yaml.safe_load(version['content']) if version else {'sops': []}
                 if manual:
@@ -40,22 +46,34 @@ class Executions:
                     summary = calculate(db, batch)
                     scope = ([dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios']]
                              if selection == 'all' else pending_scope(db, batch, summary, product['product_digest']))
-                if not scope:
+                if not scope and not (manual and merge):
                     if manual:
                         reject(409, 'nothing-to-execute', 'scenarios', '尚无场景' if selection == 'all' else '没有待执行场景')
                     return None
-                previous = db.execute("SELECT id,scope_json FROM tasks WHERE kind='execute' AND workspace=? AND batch=? "
-                    "AND status IN ('排队中','待提交','等待浏览器') ORDER BY id LIMIT 1", (key, name)).fetchone()
+                previous = db.execute("SELECT id,scope_json,input_json FROM tasks WHERE kind='execute' AND workspace=? AND batch=? "
+                    "AND status IN ('排队中','待提交','等待浏览器','等待合并') ORDER BY id LIMIT 1", (key, name)).fetchone()
+                request = dict(selection=selection if manual else 'explicit', refresh_after_merge=bool(merge))
+                status, error = ('等待合并', f'等待合并 #{merge}') if merge else ('排队中', '')
                 if previous:
+                    prior = json.loads(previous['input_json'])
+                    request['selection'] = ('all' if 'all' in (prior.get('selection'), request['selection']) else
+                                            'pending' if 'pending' in (prior.get('selection'), request['selection']) else 'explicit')
+                    request['refresh_after_merge'] |= prior.get('refresh_after_merge', False)
                     combined = {s['scenario']: s for s in json.loads(previous['scope_json'])}
                     for scene in scope:
                         if combined.get(scene['scenario'], {}).get('reason') != 'rerun':
                             combined[scene['scenario']] = scene
                     task_id = previous['id']
-                    db.execute('UPDATE tasks SET scope_json=? WHERE id=?', (canonical(list(combined.values())), task_id))
+                    db.execute('UPDATE tasks SET scope_json=?,input_json=? WHERE id=?',
+                               (canonical(list(combined.values())), canonical(dict(prior, **request)), task_id))
+                    if merge:
+                        db.execute("UPDATE tasks SET status=?,error=?,snapshot_json='{}' WHERE id=?", (status, error, task_id))
                 else:
                     task_id = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scope_json,created_at) "
-                        "VALUES ('execute',?,?,'排队中',?,'','{}',?,?)", (key, name, trigger, canonical(scope), now())).lastrowid
+                        "VALUES ('execute',?,?,?,?,?,?,?,?)",
+                        (key, name, status, trigger, '', canonical(request), canonical(scope), now())).lastrowid
+                    if error:
+                        db.execute('UPDATE tasks SET error=? WHERE id=?', (error, task_id))
         return dict(ok=True, task=self.tasks.read(task_id))
 
     def freeze(self, task):
@@ -79,10 +97,26 @@ class Executions:
                         config_digest=workspace.config_digest, skill_digest=workspace.skill_digest(), cases_digest=hashlib.sha256(canonical(cases).encode()).hexdigest(),
                         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest() if source.is_file() else '', **product)
         previous = {sid: details[sid]['latest_agent'] for sid in scope if details[sid]['latest_agent']}
-        inputs = dict(document=document, scenes=scenes, entries=workspace.execution_entries(), aliases=aliases, previous=previous, cases=cases)
+        request = json.loads(task['input_json'])
+        inputs = dict(document=document, scenes=scenes, entries=workspace.execution_entries(), aliases=aliases, previous=previous, cases=cases,
+                      selection=request.get('selection', 'explicit'), refresh_after_merge=False)
         return snapshot, inputs
 
     def prepare(self, task):
+        with self.store.connection() as db:
+            merge = self.waiting_merge(db, task['workspace'], task['batch'])
+        if merge:
+            request = json.loads(task['input_json'])
+            if (task['status'] != '等待合并' or task['error'] != f'等待合并 #{merge}'
+                    or task['snapshot_json'] != '{}' or not request.get('refresh_after_merge')):
+                request['refresh_after_merge'] = True
+                self.tasks.update(task['id'], status='等待合并', error=f'等待合并 #{merge}',
+                                  input_json=canonical(request), snapshot_json='{}')
+            (self.tasks.directory(task['id']) / 'snapshot.json').unlink(missing_ok=True)
+            if self.tasks.browser_owner == task['id']:
+                self.tasks.browser_owner = None
+            self.next_review.pop(task['id'], None)
+            return False
         if time.monotonic() < self.next_review.get(task['id'], 0):
             return False
         self.next_review[task['id']] = time.monotonic() + 5
@@ -93,6 +127,35 @@ class Executions:
         if not declarations['ok']:
             self.tasks.update(task['id'], status='排队中', error='入口声明不合格')
             return False
+        if self.service.environment.state.get('waiting_port'):
+            self.tasks.update(task['id'], status='排队中', error=self.service.environment.state['status'])
+            return False
+        request = json.loads(task['input_json'])
+        if request.get('refresh_after_merge'):
+            with self.store.transaction() as db:
+                batch = self.service.batch(db, task['workspace'], task['batch'])
+                version = self.service.latest_version(db, batch)
+                document = yaml.safe_load(version['content']) if version else {'sops': []}
+                product = self.service.workspace.product(self.service.workspace.aliases(document))
+                db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product['product_digest'], batch['id']))
+                batch = self.service.batch(db, task['workspace'], task['batch'])
+                summary = calculate(db, batch)
+                if request.get('selection') == 'all':
+                    scope = [dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios']]
+                else:
+                    current = {s['scenario'] for s in summary['scenarios']}
+                    scope = {s['scenario']: s for s in pending_scope(db, batch, summary, product['product_digest'])}
+                    for scene in json.loads(task['scope_json']):
+                        if scene['scenario'] in current and (scene['reason'] == 'rerun' or scene['scenario'] not in scope):
+                            scope[scene['scenario']] = scene
+                    scope = list(scope.values())
+                request['refresh_after_merge'] = False
+                task['scope_json'], task['input_json'] = canonical(scope), canonical(request)
+                db.execute("UPDATE tasks SET scope_json=?,input_json=?,status='排队中',error='' WHERE id=?",
+                           (task['scope_json'], task['input_json'], task['id']))
+            if not scope:
+                self.tasks.update(task['id'], status='已完成', finished_at=now(), error='合并结束，当前版本没有待执行场景')
+                return False
         snapshot, inputs = self.freeze(task)
         if snapshot['dirty']:
             self.tasks.update(task['id'], status='待提交', error='工作区有未提交的产品改动：' + '、'.join(snapshot['changed'][:10]))
@@ -129,7 +192,7 @@ class Executions:
         for name, entry in inputs['entries'].items():
             variable = entry.get('address_env')
             if variable:
-                if variable not in environment:
+                if not environment.get(variable, '').strip():
                     raise ValueError('入口 ' + name + ' 缺少地址环境变量 ' + variable)
                 addresses[name] = environment[variable]
         (directory / 'entries.json').write_text(canonical(dict(entries=inputs['entries'], addresses=addresses)), encoding='utf-8')
@@ -174,6 +237,31 @@ class Executions:
         snapshot = json.loads(task['snapshot_json'])
         inputs = json.loads(task.get('input_json', '{}'))
         scope = {s['scenario']: s['reason'] for s in json.loads(task.get('scope_json', '[]'))}
+        changed = {sid for sid in selected if scope.get(sid) == 'source-changed'}
+        impact = {}
+        if changed:
+            label = '、'.join(sorted(changed))
+            impact_path = directory / 'impact.json'
+            if not impact_path.is_file() or impact_path.is_symlink():
+                raise ValueError(label + ' 缺少 impact.json 影响判定')
+            try:
+                decisions = json.loads(impact_path.read_text(encoding='utf-8'), object_pairs_hook=judgment_object,
+                                       parse_constant=invalid_judgment_constant)
+            except (OSError, ValueError) as error:
+                raise ValueError(label + ' impact.json 不合格：' + str(error)) from error
+            if not isinstance(decisions, list):
+                raise ValueError(label + ' impact.json 应为数组')
+            for decision in decisions:
+                if not isinstance(decision, dict):
+                    raise ValueError(label + ' impact.json 每项应为对象')
+                sid = decision.get('scenario')
+                if not isinstance(sid, str) or sid not in changed or sid in impact:
+                    raise ValueError('impact.json 场景重复或不在待判定范围内：' + str(sid))
+                if type(decision.get('affected')) is not bool or not isinstance(decision.get('reason'), str) or not decision['reason'].strip():
+                    raise ValueError(sid + ' impact.json 必须有布尔值 affected 和非空 reason')
+                impact[sid] = decision['affected']
+            if changed - impact.keys():
+                raise ValueError('、'.join(sorted(changed - impact.keys())) + ' 缺少 impact.json 影响判定')
         rows, seen = [], set()
         for row in raw:
             if not isinstance(row, dict):
@@ -185,6 +273,10 @@ class Executions:
                 raise ValueError('结果重复或不在本轮范围内：' + str(sid))
             seen.add(sid)
             note = row.get('note') or ''
+            reused = isinstance(note, str) and note.startswith('沿用：')
+            if sid in impact and impact[sid] == reused:
+                raise ValueError(sid + ' impact.json 判定与结果不一致：' +
+                                 ('判定受影响，必须实际执行' if impact[sid] else '判定不受影响，必须沿用'))
             if scope.get(sid) == 'rerun' and isinstance(note, str) and note.startswith('沿用：'):
                 raise ValueError(sid + ' 须实际执行并保存新证据，不得沿用')
             evidence = row.get('evidence')

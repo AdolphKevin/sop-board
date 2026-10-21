@@ -68,13 +68,11 @@ def main():
         server.daemon_threads = False
         store = Store(workspace.data)
         with store.transaction() as db:
-            identity = next(iter(workspace.identities.values()), '')
-            prefix = f'https://{identity}/issues/' if identity.startswith('github.com/') else None
-            db.execute('INSERT INTO workspaces(key,root,name,defect_prefix) VALUES (?,?,?,?) '
+            db.execute('INSERT INTO workspaces(key,root,name) VALUES (?,?,?) '
                        'ON CONFLICT(key) DO UPDATE SET root=excluded.root,name=excluded.name',
-                       (workspace.name, str(workspace.data), workspace.name, prefix))
-        service = server.service = Service(store, workspace, environment, jira_url=os.environ.get('JIRA_URL', ''))
-        server.jira = service.jira = Jira(os.environ.get('JIRA_URL', ''), os.environ.get('JIRA_EMAIL', ''),
+                       (workspace.name, str(workspace.data), workspace.name))
+        service = server.service = Service(store, workspace, environment)
+        server.jira = service.jira = Jira(os.environ.get('JIRA_EMAIL', ''),
                                         os.environ.get('JIRA_API_TOKEN', ''), timeout=os.environ.get('JIRA_TIMEOUT_SECONDS', '10'))
         if environment.approved():
             try:

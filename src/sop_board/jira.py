@@ -7,10 +7,33 @@ import re
 import time
 from threading import Lock
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .defect_links import ISSUE_KEY
 from .errors import reject
+
+
+def identify(value):
+    """只从 Jira Cloud 的 HTTPS 单据链接取得站点和单号。"""
+    if not isinstance(value, str):
+        return None
+    try:
+        link = urlsplit(value)
+        hostname = (link.hostname or '').lower()
+        match = re.fullmatch(r'/browse/(' + ISSUE_KEY + r')/?', link.path)
+        if link.scheme == 'https' and hostname.endswith('.atlassian.net') and match:
+            return 'https://' + hostname, match[1]
+    except ValueError:
+        pass
+    return None
+
+
+def require_issue(value):
+    issue = identify(value)
+    if issue is None:
+        reject(422, 'jira-link-invalid', 'url', '未识别为 Jira Cloud 单据链接')
+    return issue
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -20,8 +43,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class Jira:
-    def __init__(self, url="", email="", token="", timeout=10, clock=time.monotonic):
-        self.url = url.rstrip("/")
+    def __init__(self, email="", token="", timeout=10, clock=time.monotonic):
         self.email = email
         self.token = token
         try:
@@ -34,14 +56,18 @@ class Jira:
         self.lock = Lock()
         self.opener = build_opener(NoRedirect())
 
-    def write_fix(self, key, paragraphs, fixed_status):
+    def write_fix(self, url, paragraphs, fixed_status):
         """逐项记录结果；不保存或转发上游正文、异常详情中的认证内容。"""
-        if not all((self.url, self.email, self.token)):
+        issue = identify(url)
+        if issue is None:
+            return dict(comment='未识别为 Jira，未回写', transition='未识别为 Jira，未回写', reason='缺陷链接不是 Jira Cloud 单据链接')
+        site, key = issue
+        if not all((self.email, self.token)):
             return dict(comment='Jira 未配置，未回写', transition='Jira 未配置，未回写', reason='Jira 未配置，未回写')
         authorization = base64.b64encode(f'{self.email}:{self.token}'.encode()).decode()
 
         def request(suffix, body=None):
-            req = Request(f'{self.url}/rest/api/3/issue/{key}/{suffix}',
+            req = Request(f'{site}/rest/api/3/issue/{key}/{suffix}',
                 data=json.dumps(body, ensure_ascii=False).encode() if body is not None else None,
                 headers={'Authorization': 'Basic ' + authorization, 'Accept': 'application/json',
                          'Content-Type': 'application/json'})
@@ -82,19 +108,18 @@ class Jira:
             reasons.append('未设置 Jira 修复目标状态')
         return dict(comment=comment, transition=transition, reason='；'.join(reasons))
 
-    def issue(self, key):
+    def issue(self, url):
         """修复会话需要的单据内容；不使用页面摘要缓存。"""
-        if not re.fullmatch(ISSUE_KEY, key):
-            reject(422, 'jira-key-invalid', 'key', 'Jira 单号格式不符')
-        if not all((self.url, self.email, self.token)):
+        site, key = require_issue(url)
+        if not all((self.email, self.token)):
             reject(404, 'jira-not-configured', 'jira', 'Jira 未配置完整')
         authorization = base64.b64encode(f'{self.email}:{self.token}'.encode()).decode()
-        request = Request(f'{self.url}/rest/api/3/issue/{key}?fields=summary,description,status,comment,attachment',
+        request = Request(f'{site}/rest/api/3/issue/{key}?fields=summary,description,status,comment,attachment',
             headers={'Authorization': 'Basic ' + authorization, 'Accept': 'application/json'})
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
                 fields = json.load(response)['fields']
-            result = dict(key=key, summary=fields['summary'], description=fields.get('description'),
+            result = dict(site=site, key=key, summary=fields['summary'], description=fields.get('description'),
                 status=fields['status']['name'], comments=fields.get('comment', {}).get('comments', []),
                 attachments=[a['filename'] for a in fields.get('attachment', [])])
             if not isinstance(result['summary'], str) or not isinstance(result['status'], str) or not isinstance(result['comments'], list):
@@ -121,17 +146,16 @@ class Jira:
             return value
         return redact(result)
 
-    def summary(self, key):
-        if not re.fullmatch(ISSUE_KEY, key):
-            reject(422, "jira-key-invalid", "key", "Jira 单号格式不符，请填写如 ABC-1 的大写单号")
-        if not all((self.url, self.email, self.token)):
-            reject(404, "jira-not-configured", "jira", "需同时配置 JIRA_URL、JIRA_EMAIL 与 JIRA_API_TOKEN")
+    def summary(self, url):
+        site, key = require_issue(url)
+        if not all((self.email, self.token)):
+            reject(404, "jira-not-configured", "jira", "Jira 未配置：需同时配置 JIRA_EMAIL 与 JIRA_API_TOKEN")
         with self.lock:
-            cached = self.cache.get(key)
+            cached = self.cache.get((site, key))
             if cached and self.clock() < cached[0]:
                 return dict(cached[1])
         authorization = base64.b64encode(f"{self.email}:{self.token}".encode()).decode()
-        request = Request(f"{self.url}/rest/api/3/issue/{key}?fields=summary,status",
+        request = Request(f"{site}/rest/api/3/issue/{key}?fields=summary,status",
                           headers={"Authorization": "Basic " + authorization,
                                    "Accept": "application/json"})
         try:
@@ -156,9 +180,9 @@ class Jira:
             return value
 
         result = dict(ok=True, key=key, summary=redact(summary),
-                      status=redact(status), url=f"{self.url}/browse/{key}")
+                      status=redact(status), url=f"{site}/browse/{key}")
         with self.lock:
             current = self.clock()
             self.cache = {key: value for key, value in self.cache.items() if current < value[0]}
-            self.cache[key] = (current + 300, result)
+            self.cache[(site, key)] = (current + 300, result)
         return dict(result)

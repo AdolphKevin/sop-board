@@ -4,9 +4,9 @@ from html import escape
 from difflib import SequenceMatcher
 import json
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from .defect_links import ISSUE_KEY
+from .jira import identify
 from .time_format import local_time
 from .sop_markdown import render as render_sop
 
@@ -24,8 +24,37 @@ def time_tag(value, element_id=None):
     return f"<time{identifier} datetime='{text(value)}'>{local_time(value)}</time>"
 
 
-def layout(title, content, jira_url="", watch=None, scripts=()):
-    jira = f" data-jira-url='{text(jira_url)}'" if jira_url else ""
+def defect_link(value):
+    value = value or ''
+    try:
+        clickable = urlsplit(value).scheme in ('http', 'https')
+    except ValueError:
+        clickable = False
+    content = text(value)
+    if clickable:
+        jira = " data-jira-link=''" if identify(value) else ''
+        content = f"<a href='{text(value)}' rel='noopener noreferrer'{jira}>{content}</a>"
+    return "<span class='defect-link'>" + content + "</span>"
+
+
+def fix_waiting(review):
+    return "<div data-fix-waiting=''>" + ''.join(
+        "<p class='notice'>" + text(reason) + "</p>" for reason in review.get('waiting', [])) + "</div>"
+
+
+def review_completion(workspace, name, data):
+    review = data['review']
+    count = review['manual_count']
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}/review-complete"
+    return (f"<section data-review-complete='{text(api)}'>"
+            f"<button type='button' data-review-complete-button=''{'' if count else ' disabled'}>"
+            f"复核完成，开始修复（{count} 条人工不通过）</button>"
+            f"<p data-review-complete-empty=''>{'没有待修复的人工不通过' if not count else ''}</p>"
+            "<p data-review-complete-message='' role='status' aria-live='polite'></p>" +
+            fix_waiting(review) + "</section>")
+
+
+def layout(title, content, watch=None, scripts=()):
     polling = ""
     if watch:
         workspace, name, etag = watch
@@ -41,7 +70,7 @@ def layout(title, content, jira_url="", watch=None, scripts=()):
             "<a class='skip-link' href='#board-main'>跳到主要内容</a>"
             "<header class='app-header'><div class='brand'><a href='/'>Flow Board</a>"
             "<span>流程验收看板</span></div><span class='header-caption'>验收工作台</span></header>"
-            f"<main id='board-main'{jira}{polling}>{content}</main></body></html>")
+            f"<main id='board-main'{polling}>{content}</main></body></html>")
 
 
 def environment_panel(data, local):
@@ -57,6 +86,8 @@ def environment_panel(data, local):
     content += (f"<div id='environment-setup'{hidden}>" +
                 ''.join('<p>' + text(line) + '</p>' for line in instructions) + '</div>')
     if local:
+        content += ("<p id='environment-jira'>Jira 读取：" +
+                    ('已配置' if data.get('jira_configured') else '未配置') + "</p>")
         content += ''.join('<p>' + text(p['field'] + '：' + p['problem']) + '</p>' for p in data.get('problems', []))
         content += ("<button type='button' data-environment-action='/api/v1/environment/check'>自检</button> "
                     "<button type='button' data-environment-action='/api/v1/environment/restart'>重启环境</button>"
@@ -102,6 +133,9 @@ def execution_state(data):
     running = [t for t in data.get('execution_tasks', []) if t['kind'] == 'execute' and t['status'] == '运行中']
     if running:
         return f"执行中（{len(running)} 个会话，开始于 {local_time(running[0]['started_at'])}，任务 #{running[0]['id']}）"
+    waiting = [t for t in data.get('execution_tasks', []) if t['kind'] == 'execute' and t['status'] == '等待合并']
+    if waiting:
+        return f"任务 #{waiting[0]['id']}：{text(waiting[0]['error'])}"
     if any(t['kind'] == 'execute' and t['status'] == '待提交' for t in data.get('execution_tasks', [])):
         return '待提交：工作区有未提交的产品改动'
     if data["version"] is None:
@@ -170,6 +204,7 @@ def batch(workspace, data, *, environment=None, local=False):
     report_link = environment_panel(environment, local) + workspace_info + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
     report_link += execution_controls(workspace, data['name'], data, local=local)
     report_link += automation_controls(data, local=local) + identity_bar()
+    report_link += review_completion(workspace, data['name'], data)
     if data.get('fix_statistics', {}).get('tasks'):
         from .reports import FIX_METRICS
         report_link += '<section><h2>自动修复统计</h2>' + ''.join(
@@ -207,7 +242,7 @@ def batch(workspace, data, *, environment=None, local=False):
                      f"<td data-field='pass-rate'>{ratio(r['pass_rate'])}</td>"
                      f"<td><a href='{text(api + '/rounds/' + str(r['number']) + '/export')}'>导出 ZIP</a></td></tr>" for r in data["rounds"])
     findings = "".join(f"<tr><td><a href='{text(base + '/s/' + quote(item['scenario'], safe=''))}'>{text(item['scenario'])}</a></td>"
-                       f"<td><a href='{text(item['defect_url'])}'>{text(item['defect_url'])}</a></td>"
+                       f"<td>{defect_link(item['defect_url'])}</td>"
                        f"<td>{text(item['agent_executor'])}</td><td>{text(item['marker'])}</td></tr>"
                        for item in data["misjudgments"])
     access = '工作区已搭建' if data.get('configured') else '尚未搭建'
@@ -267,7 +302,7 @@ def evidence_preview(evidence):
     return f"<p>{download}</p>"
 
 
-def scenario(data, jira_url=""):
+def scenario(data):
     base = batch_url(data["workspace"], data["batch"])
     titles = {}
     for source in data.get('sop_sources', []):
@@ -293,9 +328,8 @@ def scenario(data, jira_url=""):
             for field, name in [("finding", "问题或缺陷"), ("note", "备注"), ("session", "会话")]:
                 if result.get(field):
                     value = text(result[field])
-                    if (field == "finding" and result["kind"] == "manual" and jira_url
-                            and re.fullmatch(re.escape(jira_url) + r"/browse/" + ISSUE_KEY + r"(?:[?#].*)?", result[field])):
-                        value = f"<a href='{value}'>{value}</a>"
+                    if field == "finding" and result["kind"] == "manual":
+                        value = defect_link(result[field])
                     extras.append(f"<p>{name}：{value}</p>")
             result_label = (MANUAL_STATUS if result["kind"] == "manual" else STATUS)[result["status"]]
             results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {result_label}</h3>"
@@ -313,8 +347,9 @@ def scenario(data, jira_url=""):
     body = (f"<nav><a href='{text(base)}'>返回批次总览</a></nav>{batch_nav(data['workspace'], data['batch'], 'scenarios')}<h1>{text(data['scenario'])} · {text(data['title'])}</h1>"
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
             f"<p>验证入口：{text(data['verify'])}</p>"
-            f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}{review}{''.join(sections)}")
-    return layout(data["scenario"], body, jira_url, watch=(data["workspace"], data["batch"], data["etag"]))
+            f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}"
+            f"{review_completion(data['workspace'], data['batch'], data) if data['current'] else ''}{review}{''.join(sections)}")
+    return layout(data["scenario"], body, watch=(data["workspace"], data["batch"], data["etag"]))
 
 
 def identity_bar():
@@ -489,7 +524,7 @@ def scenario_fields(body):
 def latest_result(result, kind):
     if not result:
         return ""
-    link = (f"<a href='{text(result['finding'])}'>{text(result['finding'])}</a>" if kind == "人工" and result.get("finding") else "")
+    link = defect_link(result['finding']) if kind == "人工" and result.get("finding") else ""
     note = f"<p>备注：{text(result['note'])}</p>" if result.get("note") else ""
     label = (MANUAL_STATUS if kind == "人工" else STATUS)[result["status"]]
     return (f"<p>{kind} · {label} · {'标记人' if kind == '人工' else '执行者'}：{text(result['executor'])} · "
@@ -507,11 +542,12 @@ def fix_badges(workspace, tasks):
         for t in tasks if t['status'] not in ('已合入', '已放弃'))
 
 
-def scenarios(workspace, name, data, jira_url="", *, local=False):
+def scenarios(workspace, name, data, *, local=False):
     base = batch_url(workspace, name)
     by_id = {item["scenario"]: item for item in data["scenarios"]}
     content = batch_nav(workspace, name, "scenarios") + f"<h1>批次 {text(name)} · SOP 场景</h1>"
     content += execution_controls(workspace, name, data, local=local) + identity_bar()
+    content += review_completion(workspace, name, data)
     if not data["has_version"]:
         content += f"<p>尚无场景，测试岗上传用例后由合并生成</p><a href='{text(base + '/cases')}'>用例页</a>"
         return layout("SOP 场景 · " + name, content, watch=(workspace, name, data["etag"]))
@@ -530,7 +566,7 @@ def scenarios(workspace, name, data, jira_url="", *, local=False):
                         f"<p>{'正向' if source['polarity'] == 'positive' else '反向'} · 优先级：{text(source['priority'])} · 角色：{text(source['actor'])} · 验证入口：{text(source['verify'])}</p>"
                         f"{fix_badges(workspace, item['fix_tasks'])}{scenario_fields(source)}{scenario_summary(item)}{review_controls(workspace, name, item)}</article>")
         content += "</section>"
-    return layout("SOP 场景 · " + name, content, jira_url, watch=(workspace, name, data["etag"]))
+    return layout("SOP 场景 · " + name, content, watch=(workspace, name, data["etag"]))
 
 
 def merges(workspace, name, tasks, case_data, selected=None, *, local=False):
@@ -593,15 +629,17 @@ def merges(workspace, name, tasks, case_data, selected=None, *, local=False):
             content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
         if local and task['status'] in ('失败', '已中断', 'Codex 不可用', '已作废'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
-        if local and task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器'):
+        if local and task['status'] in ('排队中', '运行中', '已中断', '待同步', '待补充', '待提交', '等待浏览器', '等待合并'):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
         content += '</section>'
     return layout('任务', content)
 
 
-def fixes(workspace, tasks, selected=None, *, local=False):
+def fixes(workspace, tasks, selected=None, *, review=None, local=False):
     content = ("<h1>修复任务</h1>" + identity_bar() +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
+    content += (f"<section data-fix-state='/api/v1/workspaces/{quote(workspace, safe='')}/fixes'>" +
+                fix_waiting(review or {}) + "</section>")
     if not tasks:
         return layout('修复任务', content + '<p>暂无记录</p>')
     content += '<table><tr><th>任务</th><th>问题数</th><th>状态与原因</th><th>尝试次数</th><th>会话编号</th></tr>'
@@ -615,6 +653,7 @@ def fixes(workspace, tasks, selected=None, *, local=False):
     for problem in task['problems']:
         content += (f"<li>{text(problem['batch'])} {text(problem['scenario'])}：{text(categories.get(problem['category'], '待分析'))} · " +
             f"根因仓库：{text(problem['root_repo'] or '未定位')} · {text(problem['handling'])} · {text(problem['reason'])} · {text(problem['plan'])}" +
+            f"<p>{defect_link(problem['input'].get('defect_url'))}</p>" +
             f"<p>{text(problem['input'].get('jira_error', ''))}</p></li>")
     content += '</ul><h3>各仓改动与合入</h3><table><tr><th>仓库</th><th>改动文件</th><th>修复提交</th><th>基线与合入</th><th>状态与原因</th></tr>'
     for repo in task['repositories']:
@@ -641,7 +680,7 @@ def fixes(workspace, tasks, selected=None, *, local=False):
             content += f"<button type='button' data-developer-note='' data-developer-action='/api/v1/tasks/{task['id']}/approve'>批准方案</button>"
         else:
             content += "<button type='button' disabled>批准方案</button>"
-        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('preparation', 'interrupted')):
+        if task['status'] in ('已中断', 'Codex 不可用') or (task['status'] == '待开发者处理' and task.get('retry_reason') in ('preparation', 'interrupted', 'git-identity')):
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
         else:
             content += "<button type='button' disabled>重试</button>"

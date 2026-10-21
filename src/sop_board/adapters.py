@@ -1,4 +1,4 @@
-"""适配进程、自检和同一用户本机唯一环境；不保存工作树适配返回的环境值。"""
+"""适配进程、自检和按端口互斥的环境；不保存工作树适配返回的环境值。"""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -14,7 +14,7 @@ import threading
 import time
 from uuid import uuid4
 
-from .repositories import git
+from .repositories import git, git_identities
 from .worktrees import Worktrees, WorktreeError, is_board_input
 
 
@@ -51,9 +51,14 @@ def port_owners(ports):
     occupied = []
     for port in ports:
         busy = False
-        for family, address in [(socket.AF_INET, ('0.0.0.0', port))] + ([(socket.AF_INET6, ('::', port))] if socket.has_ipv6 else []):
+        # 开启地址复用后，macOS 上通配地址能与只监听回环地址的进程共存，所以回环地址也要单独探测。
+        candidates = [(socket.AF_INET, ('0.0.0.0', port)), (socket.AF_INET, ('127.0.0.1', port))]
+        if socket.has_ipv6:
+            candidates += [(socket.AF_INET6, ('::', port)), (socket.AF_INET6, ('::1', port))]
+        for family, address in candidates:
             try:
                 with socket.socket(family) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     if family == socket.AF_INET6:
                         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                     sock.bind(address)
@@ -74,6 +79,12 @@ def port_owners(ports):
     return occupied
 
 
+class PortBusy(ValueError):
+    def __init__(self, port, owner):
+        self.port, self.owner = port, owner
+        super().__init__(f'端口 {port} 正由工作区 {owner} 的环境使用')
+
+
 class Environment:
     def __init__(self, workspace):
         self.workspace = workspace
@@ -82,7 +93,8 @@ class Environment:
         self.process = None
         self.reader = None
         self.log = None
-        self.machine_lock = None
+        self.port_locks = {}
+        self.next_port_retry = 0
         self.state = dict(status='未启动', repositories={}, config_digest='', error='')
         self.extra = {}
         self.stopping = False
@@ -166,15 +178,51 @@ class Environment:
             raise ValueError(f'adapter.{name} ' + (failure or f'退出码 {process.returncode}') + '；日志：' + str(log))
         return lines[-1] if json_output and lines else ''
 
-    def _acquire_machine(self):
-        path = Path('/tmp') / f'sop-board-environment-{os.getuid()}.lock'
-        lock = path.open('a+')
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+    def _release_ports(self):
+        for lock in self.port_locks.values():
+            fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
-            raise ValueError('本机已有看板环境运行，请先停止另一套环境')
-        self.machine_lock = lock
+        self.port_locks.clear()
+
+    def _acquire_ports(self):
+        ports = sorted(self.workspace.adapter['ports'])
+        if list(self.port_locks) == ports:
+            return
+        self._release_ports()
+        try:
+            for port in ports:
+                path = Path('/tmp') / f'sop-board-port-{os.getuid()}-{port}.lock'
+                lock = path.open('a+')
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    try:
+                        lock.seek(0)
+                        owner = json.load(lock).get('workspace') or '未知'
+                    except (ValueError, AttributeError):
+                        owner = '未知'
+                    finally:
+                        lock.close()
+                    raise PortBusy(port, owner)
+                except BaseException:
+                    lock.close()
+                    raise
+                self.port_locks[port] = lock
+                lock.seek(0)
+                lock.truncate()
+                json.dump(dict(workspace=self.workspace.name, data=str(self.workspace.data)), lock, ensure_ascii=False)
+                lock.flush()
+        except BaseException:
+            self._release_ports()
+            raise
+
+    def check_addresses(self, extra=None):
+        environment = self.environment(self.workspace.repos, extra)
+        missing = [f'入口 {name} 缺少非空地址环境变量 {entry["address_env"]}'
+                   for name, entry in self.workspace.entries.items()
+                   if entry.get('address_env') and not environment.get(entry['address_env'], '').strip()]
+        if missing:
+            raise ValueError('；'.join(missing))
 
     def _record(self):
         path = self.workspace.data / 'environment.json'
@@ -185,14 +233,22 @@ class Environment:
     def _start(self, directories, extra=None):
         if self.process:
             self._stop()
-        self._acquire_machine()
-        directory = self.workspace.data / 'env'
-        directory.mkdir(exist_ok=True)
-        sequence = max((int(p.stem) for p in directory.glob('*.log') if p.stem.isdigit()), default=0) + 1
-        self.log = directory / f'{sequence}.log'
-        ready = threading.Event()
-        self.extra = extra or {}
         try:
+            self._acquire_ports()
+        except PortBusy as error:
+            self.state = dict(status=f'等待端口 {error.port}（工作区 {error.owner}）', repositories={},
+                              config_digest=self.workspace.config_digest, error=str(error),
+                              waiting_port=error.port, waiting_workspace=error.owner)
+            self.next_port_retry = time.monotonic() + 10
+            self._record()
+            raise
+        try:
+            directory = self.workspace.data / 'env'
+            directory.mkdir(exist_ok=True)
+            sequence = max((int(p.stem) for p in directory.glob('*.log') if p.stem.isdigit()), default=0) + 1
+            self.log = directory / f'{sequence}.log'
+            ready = threading.Event()
+            self.extra = extra or {}
             repositories = {alias: dict(directory=str(path), commit=git(path, 'rev-parse', '--verify', 'HEAD').decode().strip())
                             for alias, path in directories.items()}
             self.state = dict(status='启动中', repositories=repositories, config_digest=self.workspace.config_digest,
@@ -236,10 +292,9 @@ class Environment:
             self.process.stdout.close()
             self.process = None
         self.extra = {}
-        if self.machine_lock:
-            fcntl.flock(self.machine_lock, fcntl.LOCK_UN)
-            self.machine_lock.close()
-            self.machine_lock = None
+        self._release_ports()
+        self.state.pop('waiting_port', None)
+        self.state.pop('waiting_workspace', None)
         self.state['status'] = '已停止'
         self._record()
 
@@ -294,6 +349,12 @@ class Environment:
         try:
             if self.process and not self.approved():
                 self._stop()
+            if (self.state.get('waiting_port') and self.approved() and not self.stopping
+                    and time.monotonic() >= self.next_port_retry):
+                try:
+                    self.ensure_baseline()
+                except PortBusy:
+                    pass
         finally:
             self.operation.release()
 
@@ -308,6 +369,8 @@ class Environment:
             '工作区 ' + self.workspace.name + ' 尚未搭建完成，或配置变化后尚未自检。在以数据目录为工作目录的代理会话中，按 sop-board guide 继续搭建或修正下列问题：',
             *self.workspace.setup_instructions(),
             '搭建后运行 sop-board check ' + self.workspace.name + ' --data ' + str(self.workspace.data) + '；通过后启用执行与修复。']
+        if instructions and not local:
+            instructions = ['尚未搭建，请开发者在本机处理']
         result = dict(status=state['status'], enabled=approved and not checking, checking=checking,
                       checked_at=record['finished_at'] if record else None, check_passed=approved,
                       setup_instructions=instructions,
@@ -344,8 +407,10 @@ class Environment:
                     raise ValueError('；'.join(p['field'] + '：' + p['problem'] for p in problems))
                 for path in self.workspace.repos.values():
                     git(path, 'rev-parse', '--verify', 'HEAD')
-                return '配置和仓库路径合格', None
+                git_identities(self.workspace.repos)
+                return '配置、仓库路径及 Git 提交身份合格', None
             def ports():
+                self._acquire_ports()
                 busy = port_owners(self.workspace.adapter['ports'])
                 if busy:
                     raise ValueError('端口被占用：\n' + '\n'.join(str(p['port']) + '\n' + p['process'] for p in busy))
@@ -353,6 +418,7 @@ class Environment:
             def baseline():
                 try:
                     self._start(self.workspace.repos)
+                    self.check_addresses()
                     return '基线环境已就绪并停止', str(self.log)
                 finally:
                     self._stop()
@@ -370,6 +436,7 @@ class Environment:
                         raise
                     established = True
                     self._start(paths, extra)
+                    self.check_addresses(extra)
                     log = str(self.log)
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     failure = error
@@ -413,6 +480,8 @@ class Environment:
             temporary.replace(path)
             return dict(result, path=str(path))
         finally:
+            if not self.process:
+                self._release_ports()
             self.operation.release()
 
     def start_check(self):
@@ -428,6 +497,8 @@ class Environment:
                     if result['ok'] and not self.stopping:
                         with self.operation:
                             self.ensure_baseline()
+                except PortBusy:
+                    pass
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     self.state.update(status='失败', error=str(error))
             self.check_thread = threading.Thread(target=run, name='workspace-check', daemon=True)

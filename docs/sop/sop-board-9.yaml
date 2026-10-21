@@ -1,0 +1,199 @@
+# SOP-BOARD-9：缺陷链接、Jira 识别与统一修复的验收场景
+# 预期依据 docs/designs/SOP-BOARD-9.md（修订 3）的 D40–D45。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# “多仓演示工作区”：以名称登记的两个分散的临时 Git 仓库 app（HTTP 服务，调用 lib）与 lib，origin 为 https://example.invalid/...，不设 JIRA_URL；搭建由新开的代理会话按 sop-board guide 完成。
+# Jira 场景使用开发者提供的测试单据和 JIRA_EMAIL、JIRA_API_TOKEN 环境变量，凭据值不进入证据。
+
+metadata:
+  requirement: "sop-board：缺陷链接原样保存、按链接识别 Jira、验证结束后统一修复"
+  batch: "sop-board-9"
+  version: 3
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/designs/SOP-BOARD-9.md 的 D40–D42"
+      version: "修订 1（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-9.md 的 D43"
+      version: "修订 2（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-9.md 的 D44、D45"
+      version: "修订 3（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "defect-link", "jira", "fix-trigger", "self-check"]
+
+sops:
+  - id: SOP-91
+    title: 标不通过时登记缺陷链接
+    actor: 测试同事
+    entry: SOP 场景页与结果文件导入
+    scenarios:
+      - id: SOP-91-P01
+        polarity: positive
+        title: origin 不是 GitHub、没有 JIRA_URL 时，任意文字的缺陷链接都能保存并原样显示
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["多仓演示工作区的看板以 --lan 运行，批次有两条已执行的场景", "启动看板的环境没有 JIRA_URL"]
+        steps: ["从内网地址打开 SOP 场景页，填标记人", "对第一条场景点不通过，缺陷链接填 https://gitlab.example.invalid/team/app/-/issues/12，提交", "对第二条场景点不通过，缺陷链接填 群内反馈：问候语少了一个 l，提交", "导出本批次的报告与结果文件"]
+        expected: ["两次提交都成功，页面不跳转，两条场景进入问题队列", "第一条的链接原样显示并可点击，第二条的文字原样显示且不是链接", "报告与结果文件中的缺陷链接与填写内容逐字一致"]
+        forbidden_effects: ["要求设置缺陷链接前缀或配置 JIRA_URL", "改写或补全填写的内容"]
+      - id: SOP-91-P02
+        polarity: positive
+        title: Atlassian 的 Jira 链接显示单据信息，修复会话拿到单据内容
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["看板启动环境有 JIRA_EMAIL、JIRA_API_TOKEN，没有 JIRA_URL", "开发者提供一张测试单据，链接形如 https://<站点>.atlassian.net/browse/<单号>?atlOrigin=<值>", "批次有一条执行失败的场景"]
+        steps: ["在 SOP 场景页对该场景点不通过，缺陷链接粘贴带 atlOrigin 的完整单据链接，提交", "查看场景卡片", "点复核完成，开始修复，等待修复任务进入修复中"]
+        expected: ["保存的链接与粘贴的原文一致，包括 atlOrigin", "链接旁显示该单据的标题与状态", "修复任务输入中该问题带有单据的标题、描述、状态和评论"]
+        forbidden_effects: ["页面、日志、报告或修复输入中出现 JIRA_API_TOKEN 或 JIRA_EMAIL 的值"]
+      - id: SOP-91-N01
+        polarity: negative
+        negative_type: empty-input
+        title: 不通过时缺陷链接为空或只有空白被拒绝
+        actor: 测试同事
+        priority: P1
+        verify: api
+        initial_state: ["看板运行中，批次有一条已执行的场景"]
+        steps: ["POST 标记接口，status 为 fail，defect_url 为空字符串", "再提交一次，defect_url 为三个空格"]
+        expected: ["两次都返回 422 defect-link-required"]
+        forbidden_effects: ["新增人工结果或轮次"]
+      - id: SOP-91-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 非 http 链接不可点击，伪装的 atlassian 链接不被当作 Jira
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["看板启动环境有 JIRA_EMAIL、JIRA_API_TOKEN", "执行者在本机起一个记录全部请求的 HTTP 服务"]
+        steps: ["对一条场景点不通过，缺陷链接填 javascript:alert(1)，提交并在浏览器中查看该场景", "对另一条场景点不通过，缺陷链接填 http://127.0.0.1:<记录服务端口>/browse/ABC-1?host=x.atlassian.net，提交并查看"]
+        expected: ["javascript:alert(1) 作为纯文字显示，不是链接，页面没有执行脚本", "第二条链接原样保存，旁边不显示 Jira 单据信息", "记录服务没有收到带 Authorization 头的请求"]
+        forbidden_effects: ["向非 *.atlassian.net 主机发送 Jira 凭据"]
+
+  - id: SOP-92
+    title: 验证结束后统一修复
+    actor: 开发者、测试同事
+    entry: 看板页面与修复页
+    scenarios:
+      - id: SOP-92-P01
+        polarity: positive
+        title: 两个批次的执行都结束后，只建一个修复任务，包含两个批次的 Agent 失败
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["多仓演示工作区，lib 中有一处植入缺陷", "两个批次各有一条调用 lib 的场景，执行都会失败", "自动任务已暂停"]
+        steps: ["在两个批次各点执行待执行场景", "恢复自动任务", "第一个批次的执行结束、第二个仍在排队或运行时查看修复页", "等两个执行都结束后查看修复页"]
+        expected: ["第二个执行结束前没有修复任务，修复页显示等待验证运行完", "两个执行都结束后只有一个修复任务，问题列表包含两个批次的失败场景"]
+        forbidden_effects: ["只含一个批次失败项的修复任务"]
+      - id: SOP-92-P02
+        polarity: positive
+        title: 测试同事逐条标不通过不会触发修复，点复核完成后统一修复
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["看板以 --lan 运行，验证已运行完，没有修复任务", "批次有两条 Agent 通过、但测试同事认为不通过的场景"]
+        steps: ["从内网地址打开 SOP 场景页，填标记人", "对两条场景先后点不通过并填缺陷链接，每次之间等待超过 10 秒", "查看修复页", "点复核完成，开始修复（2 条人工不通过）", "查看修复页"]
+        expected: ["两次标记之后都没有修复任务，修复页显示等待测试同事复核完成", "复核完成按钮显示 2 条，点击后页面就地显示纳入的两条场景与开始时机", "随后只建一个修复任务，问题列表包含这两条人工不通过及其缺陷链接"]
+        forbidden_effects: ["在点复核完成之前开始修复"]
+      - id: SOP-92-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 有执行等待提交时不开始修复
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个批次的执行已失败，另一个批次的执行因仓库有未提交的产品改动处于待提交"]
+        steps: ["等待 30 秒后查看修复页", "提交该改动，等待第二个执行结束后查看修复页"]
+        expected: ["待提交期间没有修复任务，修复页显示等待验证运行完", "第二个执行结束后建一个修复任务，包含当时全部失败项"]
+        forbidden_effects: ["执行处于待提交时开始修复"]
+      - id: SOP-92-N02
+        polarity: negative
+        negative_type: empty-input
+        title: 没有待修复的人工不通过时复核完成不可用
+        actor: 测试同事
+        priority: P2
+        verify: api
+        initial_state: ["看板运行中，批次没有尚未进入修复的人工不通过"]
+        steps: ["查看批次概览页的复核完成按钮", "POST review-complete，正文带标记人", "POST review-complete，标记人为空"]
+        expected: ["按钮停用并写明没有待修复的人工不通过", "第一次请求返回 409 nothing-to-fix", "第二次请求返回 422"]
+        forbidden_effects: ["新增修复任务或复核登记"]
+
+  - id: SOP-93
+    title: 自检核对端口
+    actor: 开发者
+    entry: sop-board check
+    scenarios:
+      - id: SOP-93-P01
+        polarity: positive
+        title: 看板刚停止、端口只剩 TIME_WAIT 连接时立即自检通过
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["工作区已搭建并自检通过，看板运行中且环境就绪", "执行者在停止前请求过一次演示服务，使端口留下已关闭的连接"]
+        steps: ["停止看板，确认 lsof -nP -iTCP:<声明端口> -sTCP:LISTEN 没有输出，netstat 能看到该端口的 TIME_WAIT", "10 秒内运行 sop-board check <名称>"]
+        expected: ["第 2 步通过，五步全部通过，退出码 0", "页面与 checks 报告的最近自检为通过"]
+        forbidden_effects: ["第 2 步报端口被占用"]
+      - id: SOP-93-N01
+        polarity: negative
+        negative_type: duplicate
+        title: 确有进程监听声明端口时自检仍失败并列出进程
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["工作区已搭建，看板已停止", "执行者另起一个进程监听一个声明端口"]
+        steps: ["运行 sop-board check <名称>"]
+        expected: ["第 2 步失败并列出监听该端口的进程，后续步骤未执行，退出码 1"]
+        forbidden_effects: ["结束或改动占用端口的进程"]
+
+  - id: SOP-94
+    title: 搭建时引导配置 Jira 读取
+    actor: 开发者
+    entry: 开发者打开的 Codex 搭建会话与本机看板页面
+    scenarios:
+      - id: SOP-94-P01
+        polarity: positive
+        title: 代理引导开发者自行设置 Jira 变量，启动后读到测试单据标题
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["分散双仓尚未登记", "项目使用方有自己的 Jira Cloud（*.atlassian.net）账号、API token 与一张测试单据"]
+        steps: ["新开 Codex 会话请代理按 sop-board 的安装说明安装并搭建", "代理问到缺陷平台时回答使用 Jira Cloud", "按代理说明由开发者自己在启动看板的环境里设置 JIRA_EMAIL、JIRA_API_TOKEN", "代理核对变量已设置、启动看板后，按它的请求给出测试单据的完整链接"]
+        expected: ["代理说明两个变量与 token 创建地址，没有请开发者在对话中提供值", "代理只按变量名核对是否已设置", "代理报告写出该测试单据的标题与状态", "本机环境栏显示“Jira 读取：已配置”"]
+        forbidden_effects: ["会话记录、数据目录、适配、技能或搭建报告中出现 JIRA_EMAIL 或 JIRA_API_TOKEN 的值"]
+      - id: SOP-94-N01
+        polarity: negative
+        negative_type: not-found
+        title: 不使用 Jira 时跳过配置，搭建照常完成
+        actor: 开发者
+        priority: P2
+        verify: agent
+        initial_state: ["分散双仓尚未登记，启动环境没有 Jira 变量"]
+        steps: ["新开 Codex 会话请代理安装并搭建，问到缺陷平台时回答不使用 Jira", "代理报告后启动看板"]
+        expected: ["代理跳过 Jira 配置，自检五步通过", "本机环境栏显示“Jira 读取：未配置”，内网页面不显示这一行"]
+        forbidden_effects: ["代理要求设置 Jira 变量才能完成搭建"]
+
+  - id: SOP-95
+    title: 内网页面不显示本机路径
+    actor: 内网同事
+    entry: 看板内网页面与接口
+    scenarios:
+      - id: SOP-95-P01
+        polarity: positive
+        title: 工作区未就绪时本机页面给出搭建命令，内网页面只提示尚未搭建
+        actor: 内网同事
+        priority: P1
+        verify: web
+        initial_state: ["看板以 --lan 运行，执行者删除验证技能的一个入口标题使工作区未就绪"]
+        steps: ["用本机地址打开首页与批次概览页", "用内网地址打开同两页，并请求 /api/v1/environment、/api/v1/workspaces、/api/v1/workspaces/<名>/entries"]
+        expected: ["本机页面显示 codex -C 继续命令与问题详情", "内网页面只显示尚未搭建与请开发者在本机处理"]
+        forbidden_effects: ["内网页面或接口响应中出现数据目录、仓库或技能的本机绝对路径，或者 HOME 中的用户名"]
+      - id: SOP-95-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网请求不能用参数取回本机搭建详情
+        actor: 内网同事
+        priority: P2
+        verify: api
+        initial_state: ["同 SOP-95-P01"]
+        steps: ["用内网地址请求 /api/v1/environment?local=1 与带 X-Forwarded-For: 127.0.0.1 的同一接口"]
+        expected: ["两次响应都与普通内网请求相同，不含本机路径与日志"]
+        forbidden_effects: ["按请求参数或转发头返回本机详情"]

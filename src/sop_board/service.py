@@ -13,8 +13,9 @@ import yaml
 
 from .errors import APIError, reject
 from .cases import load_cases
-from .defect_links import normalize
+from .entries import public_problems
 from .evidence_types import content_type, is_text
+from .jira import identify
 from .scenario_file import load_scenarios
 from .reports import markdown
 from .result_files import export_results, load_results
@@ -37,7 +38,7 @@ def fingerprint(scenario):
 
 
 class Service:
-    def __init__(self, store, workspace, environment, jira_url=""):
+    def __init__(self, store, workspace, environment):
         self.store = store
         self.workspace, self.environment = workspace, environment
         self.workspace_problems = {}
@@ -45,7 +46,6 @@ class Service:
         self.execution_callback = None
         # 发现与合并落地共享锁，防止看板写入在登记版本前被自己的扫描发现。
         self.workspace_lock = threading.RLock()
-        self.jira_url = jira_url.rstrip("/")
 
     def automation_paused(self, db):
         row = db.execute("SELECT value FROM settings WHERE key='automation_paused'").fetchone()
@@ -57,6 +57,78 @@ class Service:
             db.execute("INSERT INTO settings(key,value) VALUES ('automation_paused',?) "
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ('true' if paused else 'false',))
         return dict(ok=True, paused=paused)
+
+    def pending_fixes(self, db, key, name=None):
+        """只取当前未进入修复的问题；人工结果以登记时间判定复核是否完成。"""
+        problems = []
+        for batch in db.execute('SELECT * FROM batches WHERE workspace=? AND (? IS NULL OR name=?) ORDER BY id', (key, name, name)):
+            for scene in calculate(db, batch)['scenarios']:
+                latest = max((r for r in (scene['latest_manual'], scene['latest_agent']) if r),
+                             key=lambda r: r['number'], default=None)
+                if not latest or not (
+                    latest['kind'] == 'manual' and latest['status'] in ('fail', 'blocked') and latest['finding']
+                    or latest['kind'] == 'agent' and latest['status'] == 'fail'
+                ):
+                    continue
+                # 已放弃、已分类为非产品问题及已纳入任务的同一结果均不重复建任务。
+                if db.execute('SELECT 1 FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.workspace=? '
+                    'AND p.batch=? AND p.scenario=? AND p.fingerprint=? AND p.result_id=? LIMIT 1',
+                    (key, batch['name'], scene['scenario'], scene['fingerprint'], latest['id'])).fetchone():
+                    continue
+                manual = latest['kind'] == 'manual'
+                reviewed = not manual or bool(db.execute(
+                    'SELECT 1 FROM review_completions WHERE batch=? AND completed_at>=? LIMIT 1',
+                    (batch['id'], latest['submitted_at'])).fetchone())
+                problems.append(dict(batch=batch['name'], scenario=scene['scenario'], fingerprint=scene['fingerprint'],
+                    result_id=latest['id'], source=latest['kind'], review_ready=reviewed,
+                    scene=scene['body'], latest_result=latest, previous_agent=scene['latest_agent'],
+                    defect_url=latest['finding'] if manual else '',
+                    evidence=[dict(e, path=str(self.store.data.resolve() / 'evidence' / e['sha256'][:2] / e['sha256']))
+                              for e in latest['evidence']]))
+        return problems
+
+    def fix_start_reason(self, db, key):
+        if self.automation_paused(db):
+            return '自动任务已暂停'
+        if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='fix' "
+                      "AND status NOT IN ('已合入','已放弃') LIMIT 1", (key,)).fetchone():
+            return '等待当前修复结束'
+        if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='execute' "
+                      "AND status IN ('排队中','待提交','等待浏览器','等待合并','运行中') LIMIT 1", (key,)).fetchone():
+            return '等待验证运行完'
+        return ''
+
+    def fix_review_state(self, db, key, name=None):
+        problems = self.pending_fixes(db, key, name)
+        waiting = []
+        if problems:
+            reason = self.fix_start_reason(db, key)
+            if reason:
+                waiting.append(reason)
+            if any(not p['review_ready'] for p in problems):
+                waiting.append('等待测试同事复核完成')
+        return dict(manual_count=sum(p['source'] == 'manual' for p in problems), waiting=waiting)
+
+    def review_complete(self, key, name, body):
+        p = Problems('review-complete-invalid')
+        if not isinstance(body, dict):
+            p.add('body', '应为只含 marker 的对象')
+            p.finish()
+        for field in body.keys() - {'marker'}:
+            p.add(field, '复核完成只接受 marker 字段')
+        p.text(body.get('marker'), 'marker')
+        p.finish()
+        with self.workspace_lock, self.store.transaction() as db:
+            batch = self.batch(db, key, name)
+            problems = [p for p in self.pending_fixes(db, key, name) if p['source'] == 'manual']
+            if not problems:
+                reject(409, 'nothing-to-fix', 'batch', '没有待修复的人工不通过')
+            timestamp = now()
+            db.execute('INSERT INTO review_completions(batch,marker,completed_at) VALUES (?,?,?)',
+                       (batch['id'], body['marker'].strip(), timestamp))
+            return dict(ok=True, scenarios=[p['scenario'] for p in problems], completed_at=timestamp,
+                        start=self.fix_start_reason(db, key) or '立即',
+                        review=self.fix_review_state(db, key, name))
 
     def upload(self, raw, name):
         with self.store.transaction() as db:
@@ -77,7 +149,14 @@ class Service:
             reject(404, "batch-not-found", "batch", "批次不存在")
         return batch
 
-    def entries(self, key):
+    def environment_status(self, *, local=False):
+        result = self.environment.public(local)
+        if local:
+            jira = getattr(self, 'jira', None)
+            result['jira_configured'] = bool(jira and jira.email and jira.token)
+        return result
+
+    def entries(self, key, *, local=True):
         if key != self.workspace.name:
             reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
         from .entries import check_references
@@ -92,7 +171,7 @@ class Service:
                     self.workspace.aliases(document)
                 except ValueError as error:
                     problems.append(dict(field='metadata.repos', problem=str(error)))
-        return dict(ok=not problems, entries=self.workspace.entries, problems=problems)
+        return dict(ok=not problems, entries=self.workspace.entries, problems=public_problems(problems, local=local))
 
     def require_ready(self, key):
         if key != self.workspace.name:
@@ -136,6 +215,9 @@ class Service:
         etag += '-env' + hashlib.sha256(canonical(self.environment.public()).encode()).hexdigest()[:12]
         if self.automation_paused(db):
             etag += '-a1'
+        review = self.fix_review_state(db, batch['workspace'], batch['name'])
+        completion = db.execute('SELECT COALESCE(MAX(id),0) FROM review_completions WHERE batch=?', (batch['id'],)).fetchone()[0]
+        etag += '-review' + hashlib.sha256(canonical([review, completion]).encode()).hexdigest()[:12]
         return '"' + etag + '"'
 
     def state(self, key, name):
@@ -151,7 +233,7 @@ class Service:
         merge = db.execute("SELECT id,result_json FROM tasks WHERE workspace=? AND batch=? AND kind='merge' AND status='已完成' ORDER BY id DESC LIMIT 1",
                            (batch['workspace'], batch['name'])).fetchone()
         fixes, fix_statistics = self.batch_fixes(db, batch)
-        return dict(batch=dict(batch), workspace=dict(db.execute("SELECT * FROM workspaces WHERE key=?", (batch["workspace"],)).fetchone(), repositories=self.workspace.public()["repositories"]),
+        return dict(batch=dict(batch), workspace=dict(db.execute("SELECT key,root,name FROM workspaces WHERE key=?", (batch["workspace"],)).fetchone(), repositories=self.workspace.public()["repositories"]),
                     fixes=fixes, fix_statistics=fix_statistics,
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
@@ -167,15 +249,14 @@ class Service:
     def results_yaml(self, key, name):
         with self.store.connection() as db:
             db.execute("BEGIN")
-            return export_results(self.report_data(db, self.batch(db, key, name)), self.jira_url)
+            return export_results(self.report_data(db, self.batch(db, key, name)))
 
     def import_results(self, key, name, body):
         with self.store.transaction() as db:
             batch = self.batch(db, key, name)
             current = {row["scenario"]: row["fingerprint"] for row in db.execute(
                 "SELECT scenario,fingerprint FROM scenarios WHERE batch=? AND current=1", (batch["id"],))}
-            prefix = db.execute("SELECT defect_prefix FROM workspaces WHERE key=?", (key,)).fetchone()[0]
-            document, prepared, skipped = load_results(body, current, self.jira_url, prefix)
+            document, prepared, skipped = load_results(body, current)
             if not prepared:
                 return dict(ok=True, round=None, imported=0, skipped=skipped)
             version = self.latest_version(db, batch)
@@ -347,9 +428,9 @@ class Service:
         if problems:
             raise APIError(409, "scenario-stale", problems)
 
-    def execution_options(self, db, batch, summary):
+    def execution_options(self, db, batch, summary, *, local=True):
         # 产品指纹取发现线程每 5 秒更新的批次记录，页面与轮询不重读仓库文件；点击入队时再按当时内容精确计算。
-        problems = self.entries(batch['workspace'])['problems']
+        problems = self.entries(batch['workspace'], local=local)['problems']
         reason = '尚未搭建：' + problems[0]['problem'] if problems else ''
         count = len(pending_scope(db, batch, summary, batch['product_digest']))
         if not reason and not self.environment.approved():
@@ -359,9 +440,9 @@ class Service:
         return dict(pending_count=count, total_count=summary['scenario_count'],
                     pending_reason=reason or ('没有待执行场景' if not count else ''), all_reason=reason)
 
-    def summary(self, db, batch):
+    def summary(self, db, batch, *, local=True):
         result = calculate(db, batch)
-        execution = self.execution_options(db, batch, result)
+        execution = self.execution_options(db, batch, result, local=local)
         result['scenario_titles'] = {scene['scenario']: scene['title'] for scene in result.pop('scenarios')}
         version = self.latest_version(db, batch)
         _, fix_statistics = self.batch_fixes(db, batch)
@@ -374,17 +455,18 @@ class Service:
             task['rounds'] = json.loads(task.pop('rounds_json'))
             tasks.append(task)
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
+                    review=self.fix_review_state(db, batch['workspace'], batch['name']),
                     execution=execution, execution_tasks=tasks, fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
                     dirty=bool(version["dirty"]) if version else None,
                     commit=version["commit_id"] if version else None,
                     configured=self.workspace.configured, enabled=self.environment.approved(),
-                    entry_problems=self.entries(batch['workspace'])['problems'] if self.workspace.configured else [],
-                    workspace_problems=self.workspace_problems.get((batch["workspace"], batch["name"]), []),
+                    entry_problems=self.entries(batch['workspace'], local=local)['problems'] if self.workspace.configured else [],
+                    workspace_problems=public_problems(self.workspace_problems.get((batch["workspace"], batch["name"]), []), local=local),
                     scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
 
-    def read_batch(self, key, name, scenarios=False):
+    def read_batch(self, key, name, scenarios=False, *, local=True):
         with self.store.connection() as db:
             db.execute("BEGIN")
             batch = self.batch(db, key, name)
@@ -395,18 +477,18 @@ class Service:
                 version = self.latest_version(db, batch)
                 nodes = yaml.safe_load(version["content"])["sops"] if version else []
                 return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
-                            execution=self.execution_options(db, batch, summary),
+                            review=self.fix_review_state(db, key, name),
+                            execution=self.execution_options(db, batch, summary, local=local),
                             has_version=version is not None, etag=self.batch_etag(db, batch))
-            return self.summary(db, batch)
+            return self.summary(db, batch, local=local)
 
-    def workspaces(self):
+    def workspaces(self, *, local=True):
         with self.store.connection() as db:
             db.execute("BEGIN")
-            row = db.execute('SELECT * FROM workspaces WHERE key=?', (self.workspace.name,)).fetchone()
             workspace = dict(key=self.workspace.name, name=self.workspace.name, **{
                 'repositories': self.workspace.public()['repositories'], 'configured': self.workspace.configured,
-                'enabled': self.environment.approved(), 'defect_prefix': row['defect_prefix'],
-                'batches': [self.summary(db, batch) for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY name', (self.workspace.name,))],
+                'enabled': self.environment.approved(),
+                'batches': [self.summary(db, batch, local=local) for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY name', (self.workspace.name,))],
                 'fix_tasks': [dict(r) for r in db.execute("SELECT id,status,error FROM tasks WHERE workspace=? AND kind='fix' AND status NOT IN ('已合入','已放弃') ORDER BY id", (self.workspace.name,))]})
             return dict(ok=True, workspaces=[workspace], automation_paused=self.automation_paused(db))
 
@@ -470,6 +552,7 @@ class Service:
                 '(SELECT 1 FROM sop_versions newer WHERE newer.batch=v.batch AND newer.path=v.path AND newer.version>v.version) ORDER BY path',
                 (batch['id'],))]
             return dict(workspace=key, batch=name, etag=self.batch_etag(db, batch), scenario=scenario, node=latest["node"], title=latest["title"],
+                        review=self.fix_review_state(db, key, name),
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
                         fingerprint=latest["fingerprint"], current=bool(latest["current"]),
                         pushed_at=self.latest_version(db, batch)["pushed_at"], groups=groups, sop_sources=sop_sources,
@@ -528,18 +611,6 @@ class Service:
             archive.writestr("results.jsonl", "\n".join(rows) + "\n")
         return output.getvalue()
 
-    def settings(self, key, body):
-        p = Problems("workspace-invalid")
-        prefix = body.get("defect_prefix") if isinstance(body, dict) else None
-        if not isinstance(prefix, str) or not prefix.startswith("https://") or not prefix[len("https://"):].strip():
-            p.add("defect_prefix", "缺陷链接前缀须以 https:// 开头")
-        p.finish()
-        with self.store.transaction() as db:
-            if not db.execute("SELECT 1 FROM workspaces WHERE key=?", (key,)).fetchone():
-                reject(404, "workspace-not-found", "workspace", "工作区不存在")
-            db.execute("UPDATE workspaces SET defect_prefix=? WHERE key=?", (prefix, key))
-        return dict(ok=True, defect_prefix=prefix)
-
     def mark(self, key, name, body):
         with self.store.transaction() as db:
             batch = self.batch(db, key, name)
@@ -550,9 +621,6 @@ class Service:
                 reject(409, "scenario-stale", "scenario", f"场景 {body['scenario']} 不在当前版本")
             if current["fingerprint"] != body["fingerprint"]:
                 reject(409, "scenario-stale", "fingerprint", "场景内容指纹已变更")
-            if body["status"] in ("fail", "blocked"):
-                prefix = db.execute("SELECT defect_prefix FROM workspaces WHERE key=?", (key,)).fetchone()[0]
-                body = {**body, "defect_url": normalize(body["defect_url"], self.jira_url, prefix)}
             version = self.latest_version(db, batch)
             number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
             timestamp = now()
@@ -576,7 +644,9 @@ class Service:
             number = self.insert_round(db, batch, version, round_body, kind="manual")
             summary = calculate(db, batch)
             scenario = next(item for item in summary["scenarios"] if item["scenario"] == body["scenario"])
-            return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"])
+            scenario["latest_manual"]["jira_link"] = bool(identify(scenario["latest_manual"]["finding"]))
+            return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"],
+                        review=self.fix_review_state(db, key, name))
 
     def push(self, key, batch, body, *, pairings=None):
         validate_push(body)

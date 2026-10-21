@@ -149,7 +149,7 @@ class Tasks:
         self.timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT')) if timeout is None else timeout
         with self.store.transaction() as db:
             db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE "
-                "(kind!='fix' AND status IN ('排队中','待提交','等待浏览器','运行中')) OR "
+                "(kind!='fix' AND status IN ('排队中','待提交','等待浏览器','等待合并','运行中')) OR "
                 "(kind='fix' AND status IN ('分析中','修复中','复测中','待合入'))", (now(),))
         self.availability_error = codex_available()
         from .executions import Executions
@@ -287,7 +287,7 @@ class Tasks:
         relative = path.relative_to(directory)
         public = {'events.jsonl', 'stderr.txt', 'final.json', 'results.jsonl', 'prompt.md', 'schema.json', 'input.json',
                   'cases.yaml', 'cases.json', 'case_choices.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
-                  'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'pending.json', 'previous-results.json',
+                  'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'impact.json', 'pending.json', 'previous-results.json',
                   'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json'}
         directories = {'evidence', 'sop', 'attempts', 'interruptions', 'validations'}
         if len(relative.parts) == 1:
@@ -328,7 +328,7 @@ class Tasks:
                 return self.fixes.action(task, action)
             allowed = ('失败', '已中断', 'Codex 不可用') if action == 'retry' else ('排队中', '运行中', '已中断', '待同步', '待补充')
             if task['kind'] == 'execute':
-                allowed += ('已作废',) if action == 'retry' else ('待提交', '等待浏览器')
+                allowed += ('已作废',) if action == 'retry' else ('待提交', '等待浏览器', '等待合并')
             if task['status'] not in allowed:
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持此操作')
             if action == 'cancel':
@@ -520,7 +520,7 @@ class Tasks:
                     if self.service.automation_paused(db):
                         continue
                     queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','execute','fix') "
-                        "AND status IN ('排队中','待提交','等待浏览器') ORDER BY id")]
+                        "AND status IN ('排队中','待提交','等待浏览器','等待合并') ORDER BY id")]
                     running_batches = {(r['workspace'], r['batch']) for r in db.execute("SELECT workspace,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
                 for task in queued:
                     if self.stopping.is_set():
@@ -528,6 +528,8 @@ class Tasks:
                     if task['kind'] == 'fix':
                         if self.service.environment.approved():
                             self.fixes.schedule(task)
+                        continue
+                    if task['kind'] == 'merge' and (task['workspace'], task['batch']) in running_batches:
                         continue
                     if task['kind'] == 'execute':
                         if self.fixes.blocks_execution(task['workspace']):

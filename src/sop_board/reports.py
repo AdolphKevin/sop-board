@@ -59,6 +59,9 @@ def markdown(data, generated_at):
                     "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
                     table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]
                           for m in summary["misjudgments"]]))
+    sections.append("## 当前人工缺陷\n\n" + table(["场景", "缺陷链接"], [
+        [item["scenario"], item["latest_manual"]["finding"]] for item in summary["scenarios"]
+        if item["latest_manual"] and item["latest_manual"].get("finding")]))
     fix_statistics = data.get('fix_statistics')
     records = []
     for task in data.get('fixes', []):

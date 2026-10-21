@@ -178,7 +178,8 @@ def validate_mark(body):
     if status == "pass" and "defect_url" in body:
         p.add("defect_url", "通过标记不接受缺陷链接")
     if status in ("fail", "blocked"):
-        p.text(body.get("defect_url"), "defect_url")
+        from .defect_links import normalize
+        normalize(body.get("defect_url"))
     if "note" in body and not isinstance(body["note"], str):
         p.add("note", "应为字符串")
     p.finish()

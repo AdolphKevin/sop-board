@@ -192,3 +192,5 @@ textarea { resize: vertical; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transform: none !important; } }
 
 .evidence-video video { display: block; width: 100%; max-height: 70vh; background: #111; border: 1px solid var(--line); border-radius: 8px; }
+
+.defect-link { white-space: pre-wrap; overflow-wrap: anywhere; }

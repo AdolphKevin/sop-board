@@ -7,6 +7,40 @@
   let executionPolling = false;
   let writes = 0;
   const executionMessages = new Map();
+  const reviewMessages = new Map();
+  const renderWaiting = (container, review) => {
+    container.replaceChildren(...review.waiting.map(reason => {
+      const message = document.createElement("p");
+      message.className = "notice";
+      message.textContent = reason;
+      return message;
+    }));
+  };
+  const updateReview = review => {
+    document.querySelectorAll("[data-review-complete]").forEach(controls => {
+      const button = controls.querySelector("[data-review-complete-button]");
+      button.disabled = !review.manual_count;
+      button.textContent = `复核完成，开始修复（${review.manual_count} 条人工不通过）`;
+      controls.querySelector("[data-review-complete-empty]").textContent =
+        review.manual_count ? "" : "没有待修复的人工不通过";
+      renderWaiting(controls.querySelector("[data-fix-waiting]"), review);
+    });
+  };
+  const defectLink = (value, isJira) => {
+    const container = document.createElement("span");
+    container.className = "defect-link";
+    let clickable = false;
+    try {clickable = ["http:", "https:"].includes(new URL(value).protocol);} catch {}
+    const content = document.createElement(clickable ? "a" : "span");
+    content.textContent = value;
+    if (clickable) {
+      content.setAttribute("href", value);
+      content.setAttribute("rel", "noopener noreferrer");
+      if (isJira) content.dataset.jiraLink = "";
+    }
+    container.appendChild(content);
+    return container;
+  };
   const renderExecutionMessage = controls => {
     const saved = executionMessages.get(controls.dataset.executionUrl);
     if (!saved) return;
@@ -48,25 +82,25 @@
   const initialize = () => {
     applyCurrentFilter = () => {};
     document.querySelectorAll("[data-execution-url]").forEach(renderExecutionMessage);
-    const jiraBase = document.querySelector("[data-jira-url]")?.dataset.jiraUrl || "";
     const hydrateJira = root => {
-      if (!jiraBase) return;
-      const prefix = jiraBase + "/browse/";
-      root.querySelectorAll("a[href]").forEach(async link => {
+      root.querySelectorAll("a[data-jira-link]").forEach(async link => {
         const href = link.getAttribute("href");
-        if (!href.startsWith(prefix) || link.dataset.jiraLoaded) return;
-        const match = href.slice(prefix.length).match(/^([A-Z][A-Z0-9_]*-[0-9]+)(?:[?#].*)?$/);
-        if (!match) return;
+        if (link.dataset.jiraLoaded) return;
         link.dataset.jiraLoaded = "true";
         const summary = document.createElement("span");
-        summary.setAttribute("data-jira-summary", match[1]);
+        summary.setAttribute("data-jira-summary", href);
         summary.setAttribute("aria-live", "polite");
         summary.dataset.state = "loading";
         link.after(summary);
         try {
-          const response = await fetch("/api/v1/jira/" + match[1], {headers: {Accept: "application/json"}});
+          const response = await fetch("/api/v1/jira/summary?url=" + encodeURIComponent(href), {headers: {Accept: "application/json"}});
           const data = await response.json();
-          if (!response.ok || !data.ok || typeof data.summary !== "string" || typeof data.status !== "string") throw new Error();
+          if (!response.ok || !data.ok) {
+            summary.textContent = " " + ((data.problems || []).map(p => p.problem).join("；") || "Jira 读取失败");
+            summary.dataset.state = "error";
+            return;
+          }
+          if (typeof data.summary !== "string" || typeof data.status !== "string") throw new Error();
           summary.textContent = " " + data.summary + " · " + data.status;
           summary.dataset.state = "success";
         } catch {
@@ -110,6 +144,42 @@
       saveIdentity();
       show(document.getElementById("identity-message"), "标记人已保存，可随时更换。");
     });
+    document.querySelectorAll("[data-review-complete]").forEach(controls => {
+      const button = controls.querySelector("[data-review-complete-button]");
+      const message = controls.querySelector("[data-review-complete-message]");
+      const saved = reviewMessages.get(controls.dataset.reviewComplete);
+      if (saved) show(message, saved.text, saved.state);
+      button.addEventListener("click", async () => {
+        if (!marker.value.trim()) {
+          show(message, "请先在身份栏填写标记人", "error");
+          focusIdentity(marker);
+          return;
+        }
+        saveIdentity();
+        writes += 1;
+        button.disabled = true;
+        try {
+          const response = await fetch(controls.dataset.reviewComplete, {method: "POST",
+            headers: {"Content-Type": "application/json"}, body: JSON.stringify({marker: marker.value.trim()})});
+          const data = await response.json();
+          if (response.ok && data.ok) {
+            updateReview(data.review);
+            show(message, "已纳入：" + data.scenarios.join("、") + "；开始时机：" + data.start);
+            pendingRefresh = true;
+          } else {
+            show(message, (data.problems || []).map(p => p.problem).join("；") || "复核完成登记失败", "error");
+            button.disabled = data.error_code === "nothing-to-fix";
+          }
+        } catch {
+          show(message, "连接失败，请核对是否已登记后重试。", "error");
+          button.disabled = false;
+        } finally {
+          reviewMessages.set(controls.dataset.reviewComplete, {text: message.textContent, state: message.dataset.state});
+          writes -= 1;
+          await refreshPage();
+        }
+      });
+    });
     document.querySelectorAll("[data-developer-action]").forEach(button => {
       button.addEventListener("click", async () => {
         const controls = button.closest("[data-execution-url]");
@@ -141,7 +211,7 @@
             });
             show(message, data.paused ? "自动任务已暂停" : "自动任务已恢复");
           } else {
-            show(message, "任务 #" + data.task.id + "：" + data.task.status);
+            show(message, "任务 #" + data.task.id + "：" + (data.task.status === "等待合并" ? data.task.error : data.task.status));
             if (controls) message.dataset.taskId = String(data.task.id);
             if (button.dataset.caseFlow !== undefined) {
               button.textContent = "已指定单独成场景";
@@ -263,9 +333,7 @@
       heading.appendChild(resultTime(result));
       container.appendChild(heading);
       if (result.finding) {
-        const link = element("a", result.finding);
-        link.setAttribute("href", result.finding);
-        container.appendChild(link);
+        container.appendChild(defectLink(result.finding, result.jira_link));
       }
       if (result.note) container.appendChild(element("p", "备注：" + result.note));
       return container;
@@ -334,7 +402,7 @@
         const payload = {scenario: field("scenario").value, fingerprint: field("fingerprint").value,
           status, marker: marker.value.trim()};
         if (status !== "pass") {
-          payload.defect_url = field("defect_url").value.trim();
+          payload.defect_url = field("defect_url").value;
           if (field("note").value) payload.note = field("note").value;
         }
         pending = true;
@@ -348,6 +416,7 @@
           const data = await response.json();
           if (response.ok && data.ok) {
             updateScenario(form.closest(".scenario-card"), data.scenario, data.filters);
+            updateReview(data.review);
             collapse();
             show(message, "标记已保存为第 " + data.round + " 轮。");
           } else {
@@ -388,6 +457,18 @@
     });
   };
   initialize();
+  let fixPolling = false;
+  setInterval(async () => {
+    const panel = document.querySelector("[data-fix-state]");
+    if (!panel || fixPolling) return;
+    fixPolling = true;
+    try {
+      const response = await fetch(panel.dataset.fixState, {cache: "no-store"});
+      const data = await response.json();
+      if (response.ok && data.ok) renderWaiting(panel.querySelector("[data-fix-waiting]"), data.review);
+    } catch { /* 下次轮询重试，保留已显示的等待原因。 */ }
+    finally {fixPolling = false;}
+  }, 3000);
   setInterval(async () => {
     const controls = Array.from(document.querySelectorAll("[data-execution-url]"));
     if (!controls.length || executionPolling || writes || refreshing) return;
@@ -415,7 +496,7 @@
         const saved = executionMessages.get(group.dataset.executionUrl);
         const task = batch.execution_tasks?.find(task => String(task.id) === saved?.taskId);
         if (task) {
-          saved.text = "任务 #" + task.id + "：" + task.status;
+          saved.text = "任务 #" + task.id + "：" + (task.status === "等待合并" ? task.error : task.status);
           renderExecutionMessage(group);
         }
       });
@@ -447,6 +528,8 @@
       document.getElementById("environment-state").textContent = "环境" + data.status;
       document.getElementById("environment-ports").textContent = "环境端口：" + (data.ports.join("、") || "未声明");
       document.getElementById("environment-check-state").textContent = data.checking ? "自检中" : (data.check_passed ? "最近自检通过" : "尚未通过自检") + (data.checked_at ? " · " + data.checked_at : "");
+      const jira = document.getElementById("environment-jira");
+      if (jira) jira.textContent = "Jira 读取：" + (data.jira_configured ? "已配置" : "未配置");
       const setup = document.getElementById("environment-setup");
       setup.replaceChildren(...data.setup_instructions.map(instruction => {
         const line = document.createElement("p");

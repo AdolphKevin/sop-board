@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from .repositories import git
+from .repositories import git, git_identities
 from .service import canonical
 from .worktrees import WorktreeError
 
@@ -137,6 +137,8 @@ class RepairRepositories:
     def commit(self, task_id, number, message):
         paths = self.repair_directories(task_id)
         self.tasks.service.environment.worktrees.validate(paths, list(paths), f'sop-board/fix/{task_id}', self.tasks.directory(task_id))
+        # 整组先核对 Git 实际生效的身份，缺失时不能暂存或开始任何仓库的提交。
+        identities = git_identities({r['alias']: r['root'] for r in self.rows(task_id)})
         committed = {}
         for repo in self.rows(task_id):
             worktree = repo['worktree']
@@ -148,8 +150,8 @@ class RepairRepositories:
             git(worktree, 'add', '--all')
             if not git(worktree, 'diff', '--cached', '--name-only').strip():
                 continue
-            author = git(repo['root'], 'config', 'user.name').decode().strip()
-            email = git(repo['root'], 'config', 'user.email').decode().strip()
+            author = identities[repo['alias']]['user.name']
+            email = identities[repo['alias']]['user.email']
             try:
                 git(worktree, '-c', 'commit.gpgsign=false', '-c', 'user.name=' + author, '-c', 'user.email=' + email,
                     'commit', '-m', message, capture_stderr=True)
