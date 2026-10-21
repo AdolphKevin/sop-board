@@ -1,16 +1,19 @@
 # SOP-BOARD-8：分散仓库的工作区、项目验证技能与一键验证的验收场景
-# 预期依据 docs/designs/SOP-BOARD-8.md（修订 1）的 D37–D39。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# 预期依据 docs/designs/SOP-BOARD-8.md（修订 3）的 D37–D39。版本 2 按独立评审 Q2 补充 SOP-82-P02、SOP-82-N03。只写业务流程；验收只以本文件的场景经真实入口执行为准。
 # "分散双仓"：执行者在两个互不包含的临时目录各建一个 Git 仓库，app（HTTP 服务，调用 lib）位于 <临时根>/a/app，lib 位于 <临时根>/b/lib；两仓都在 main 且干净，origin 为明确标注的演示地址。
 # 搭建由新开的代理会话按 `sop-board guide` 完成；执行者在搭建完成前不手写配置、不手写验证技能。
 
 metadata:
   requirement: "sop-board：分散仓库的工作区、搭建时生成项目验证技能、一键增量与全量验证"
   batch: "sop-board-8"
-  version: 1
+  version: 2
   owner: "AdolphKevin"
   sources:
     - ref: "docs/designs/SOP-BOARD-8.md 的 D37–D39"
       version: "修订 1（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/designs/SOP-BOARD-8.md 修订 3 的 D38（Web 入口缺省随包技能）与 I2（复测期间技能变化本轮作废）"
+      version: "修订 3（2026-10-20）"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "workspace", "verification-skill"]
 
@@ -111,6 +114,27 @@ sops:
         steps: ["点执行待执行场景", "执行会话运行中时，在 SKILL.md 末尾追加一行说明", "等待任务结束"]
         expected: ["任务为已作废，原因含验证技能变化", "没有登记新的轮次"]
         forbidden_effects: ["登记本轮结果"]
+      - id: SOP-82-P02
+        polarity: positive
+        title: Web 入口未声明 driver 时使用随包 Web 技能，其他入口不按类型缺省
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["SOP-82-P01 的搭建已完成，SOP_BOARD_SKILLS_DIR 为空目录", "执行者让代理在配置中增加一个 surface 为 web、不写 driver 的入口，并在验证技能中为它写二级标题；批次有一条 verify 为该入口的场景"]
+        steps: ["运行 sop-board check <名称>", "启动看板，点执行待执行场景，等待任务结束", "查看任务目录的 prompt.md、entries.json，以及是否生成 scope.json 与 web-pending.json"]
+        expected: ["自检第 5 步列出 web 入口的辅助技能为随包的 playwright-acceptance/SKILL.md，http 入口为“辅助技能：无”", "prompt.md 先要求读取项目验证技能，再要求 Web 场景读取随包技能", "entries.json 中 web 入口的 driver_path 指向随包技能，任务目录有 scope.json 与 web-pending.json"]
+        forbidden_effects: ["http 入口被缺省指定 verify-backend-sop-db 等技能", "自检要求个人技能目录中的技能"]
+      - id: SOP-82-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 修复复测期间验证技能被修改时本次复测作废
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state: ["多仓演示工作区已搭建，lib 中有一处植入缺陷，一条调用 lib 的场景执行失败，修复任务已开始"]
+        steps: ["修复任务进入复测中、复测会话运行时，在 SKILL.md 末尾追加一行说明", "等待复测结束后查看修复页、复测记录与两个仓库的 main"]
+        expected: ["本次复测作废，原因含验证技能变化", "修复任务转为待开发者处理，不计为未通过的尝试", "没有登记复测轮次，两个仓库的 main 都没有变化"]
+        forbidden_effects: ["以作废的复测结果合入", "把作废计入三次失败上限"]
 
   - id: SOP-83
     title: 本机一键增量或全量验证
