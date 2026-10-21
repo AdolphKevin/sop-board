@@ -1,0 +1,209 @@
+# SOP-BOARD-11 的验收场景
+# 预期依据 docs/designs/SOP-BOARD-11.md 的 D53–D59。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含一个“退款申请”页面与接口），origin 为 https://example.invalid/...，场景目录为 docs/sop；
+# 看板以 --lan 启动。“测试同事”指经非回环地址访问看板的浏览器，“开发者”指本机浏览器。
+# “退款 SOP”：在仓库外准备的 Markdown 文件，含两节规则：买家在签收 7 天内可申请退款；客服审核同意后原路退回。SOP 未规定退款理由的字数上限，而 app 代码限制理由不超过 200 字。
+# 独立验收串行进行。
+
+metadata:
+  requirement: "sop-board：上传业务 SOP，生成用例草稿，多人批注修订后确认，并进入合并与执行"
+  batch: "sop-board-11"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/designs/SOP-BOARD-11.md 的 D53–D59"
+      version: "修订 1（2026-10-21）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board"]
+
+sops:
+  - id: SOP-111
+    title: 上传业务 SOP 并生成首版草稿
+    actor: 测试同事
+    entry: 内网看板首页与草稿页
+    scenarios:
+      - id: SOP-111-P01
+        polarity: positive
+        title: 测试同事上传 SOP 后写入场景目录并生成带覆盖矩阵的草稿 v1
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["演示工作区已搭建、自检通过，批次 refund 不存在", "测试同事身份栏标记人为 tester-a"]
+        steps: ["在首页工作区卡片的上传业务 SOP 表单中填批次 refund、业务确认人 biz-owner，选择退款 SOP 文件提交", "在 app 仓库执行 git status 并查看 docs/sop/refund.md", "打开批次 refund 的 SOP 页", "等待生成任务结束后打开草稿页"]
+        expected: ["上传成功提示，app 仓库出现未提交的 docs/sop/refund.md，内容与上传文件逐字相同，产品仓库其他文件没有变化", "SOP 页显示版本 1，确认人为 biz-owner", "草稿页显示 v1；规则覆盖矩阵中每条规则都有正向用例，并有负向用例或醒目的豁免理由", "负向用例至少覆盖：超过 7 天申请、非本人订单申请、重复申请", "用例编号符合 TC_ 格式，每条用例标明依据的规则编号"]
+        forbidden_effects: ["看板提交或推送 app 仓库", "场景目录中除 refund.md 外出现新文件"]
+        evidence_hints: ["上传页与草稿页截图", "git status 输出", "SOP 页截图"]
+      - id: SOP-111-P02
+        polarity: positive
+        title: SOP 未写明而代码中有约束的规则写入预期并标注代码推理
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["SOP-111-P01 完成，草稿 v1 已生成"]
+        steps: ["在草稿页查找与退款理由长度相关的用例", "按显示的代码位置打开 app 仓库对应文件核对"]
+        expected: ["至少一条用例的预期写明理由不超过 200 字（含超长被拒的负向用例），标“代码推理”", "这些用例显示的代码位置在 app 仓库中存在，该处确为 200 字限制", "页头统计中代码推理用例数与列表中标注的条数一致"]
+        forbidden_effects: ["来自代码的预期被标为依据 SOP", "代码推理用例缺少代码位置"]
+        evidence_hints: ["草稿页相关用例与问题截图"]
+      - id: SOP-111-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 空文件、非 UTF-8 或超过 1 MiB 的 SOP 被拒绝且不写文件
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["演示工作区已搭建，批次 refund2 不存在", "准备空文件、GBK 编码文件和 1.5 MiB 的 Markdown 文件各一份"]
+        steps: ["依次以三个文件向批次 refund2 上传 SOP", "查看 app 仓库 git status 与任务列表"]
+        expected: ["三次都提示上传失败并写明原因（为空、不是 UTF-8、超过 1 MiB）", "app 仓库没有 docs/sop/refund2.md，没有新建生成任务"]
+        forbidden_effects: ["写入场景目录", "触发 Codex"]
+        evidence_hints: ["三次失败提示截图", "git status 输出"]
+      - id: SOP-111-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 场景目录中的 SOP 原文在别处被改过时拒绝覆盖
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["SOP-111-P01 完成", "测试同事打开上传表单后，开发者在 app 仓库直接修改 docs/sop/refund.md 一行（不提交）"]
+        steps: ["测试同事不刷新页面，选择另一份 SOP 文件向批次 refund 上传"]
+        expected: ["提示场景目录中的 SOP 原文已在别处修改，请刷新后重试", "docs/sop/refund.md 保持开发者修改后的内容", "SOP 页版本数不变，没有新建生成或修订任务"]
+        forbidden_effects: ["覆盖开发者的本机修改"]
+        evidence_hints: ["失败提示截图", "文件内容对比"]
+
+  - id: SOP-112
+    title: 多人批注与按反馈修订
+    actor: 测试同事与开发者
+    entry: 草稿页
+    scenarios:
+      - id: SOP-112-P01
+        polarity: positive
+        title: 测试同事与开发者分别批注、回答问题后修订出 v2，每条批注都有处理结论
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["SOP-111-P02 完成"]
+        steps: ["测试同事 tester-a 对理由长度的代码推理用例写修改意见：“业务确认上限为 100 字”", "测试同事对一条负向用例写修改意见，并对一条用例标建议删除", "开发者 dev-a 在本机对规则“客服审核同意后原路退回”补充场景：“客服驳回时不退款”", "测试同事点按反馈修订，等待任务结束"]
+        expected: ["草稿页显示 v2，与 v1 的差异按新增、修改、未变分组", "四条批注各显示已采纳、未采纳或已提问之一，并附会话的处理说明", "被采纳删除的用例在 v2 中消失", "dev-a 的补充批注为已采纳：v1 没有客服驳回不退款的负向用例时 v2 新增该用例；v1 已有时，处理说明写明对应的已有用例编号，且该用例在 v2 中补上指向该批注的来源", "理由长度用例在 v2 中的预期改为不超过 100 字，标“批注确认”并指向 tester-a 的批注", "v1 中未被要求修改的用例编号与内容在 v2 中不变"]
+        forbidden_effects: ["v2 中出现没有对应采纳删除批注的用例消失", "修改与批注无关的用例"]
+        evidence_hints: ["v1 与 v2 差异截图", "批注列表与处理结论截图"]
+      - id: SOP-112-P02
+        polarity: positive
+        title: 修订进行中新增的批注留到下一轮
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["草稿有一条待处理批注"]
+        steps: ["点按反馈修订，任务运行期间再新增一条批注", "等待任务结束后查看批注列表"]
+        expected: ["运行期间新增的批注仍为待处理，新版本的处理结论中没有它", "按反馈修订按钮仍可用，可以发起下一轮"]
+        forbidden_effects: ["运行期间新增的批注被标为已处理"]
+        evidence_hints: ["批注列表截图"]
+      - id: SOP-112-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 修订输出漏掉某条批注的处理或缺少负向覆盖时本轮不合格
+        actor: 看板
+        priority: P1
+        verify: web
+        initial_state: ["草稿 v1 有两条待处理批注", "执行者在修订会话结束后、看板读取结果前，把 final.json 中一条批注的处理结论删掉，并把一条规则的负向用例与豁免理由都置空（人工构造，报告中注明）"]
+        steps: ["等待修订任务结束，查看草稿页"]
+        expected: ["任务失败，原因逐条写明未处理的批注编号与缺少负向覆盖的规则", "当前版本仍为 v1，两条批注仍为待处理", "失败后可以点重试"]
+        forbidden_effects: ["产生 v2", "更新批注状态"]
+        evidence_hints: ["任务失败原因截图", "草稿页版本截图"]
+
+  - id: SOP-113
+    title: 确认草稿并进入合并与执行
+    actor: 测试同事与开发者
+    entry: 草稿页、合并页与批次概览页
+    scenarios:
+      - id: SOP-113-P01
+        polarity: positive
+        title: 测试同事确认最新草稿后登记为用例上传，合并结果带 SOP 来源，开发者执行
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["SOP-112-P01 完成，最新版本没有待回答问题，也没有待处理批注（确认提示中两项均为 0）"]
+        steps: ["测试同事 tester-a 点确认草稿", "打开批次 refund 的用例页与合并页，等待合并任务结束", "查看 app 仓库 docs/sop/refund.yaml", "开发者在本机批次概览页点执行待执行场景，等待结束"]
+        expected: ["草稿显示已确认及对应的用例上传序号", "用例页出现一次上传，文件名为 SOP 草稿 v<k>，上传人为 tester-a，用例与最新草稿逐条一致，description 写明依据规则、代码推理位置或批注编号", "合并任务的触发原因为上传用例，任务目录 sop/ 中有 docs/sop/refund.md 原文", "合并任务已完成（不因代码推理或批注确认的预期停在待补充），refund.yaml 已写入", "refund.yaml 的 metadata.sources 含 ref 为 docs/sop/refund.md、confirmed_by 为 biz-owner 的来源，另有本次用例上传的来源", "合并完成后没有自动入队执行任务，批次概览页显示场景待执行", "开发者点执行待执行场景后，执行任务对每条场景给出结果与证据"]
+        forbidden_effects: ["确认后草稿仍可被修订或再次确认", "看板提交 app 仓库"]
+        evidence_hints: ["用例页与合并页截图", "refund.yaml 的 metadata 段", "执行结果截图"]
+      - id: SOP-113-P02
+        polarity: positive
+        title: 有待处理批注或待回答问题时提示后仍可确认，未处理项留有记录
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["批次 refund4 的草稿最新版本有一条待回答问题、一条待处理批注和至少一条代码推理用例"]
+        steps: ["点确认草稿，在提示中点取消", "再点确认草稿，在提示中点仍然确认", "查看草稿页与用例页"]
+        expected: ["提示列出待处理批注 1 条、待回答问题 1 条及代码推理用例数", "取消后没有登记上传", "仍然确认后登记一次用例上传并触发合并", "该批注显示为确认时未处理，该问题显示为确认时未回答"]
+        forbidden_effects: ["未经提示直接确认", "确认时丢弃未处理批注的记录"]
+        evidence_hints: ["提示框截图", "草稿页未处理项截图", "用例页上传记录"]
+      - id: SOP-113-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 确认的不是最新版本时被拒绝
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["测试同事在草稿 v2 页面停留期间，开发者发起修订并产生 v3，v3 满足确认条件"]
+        steps: ["测试同事不刷新页面直接点确认草稿", "刷新后查看 v3，再点确认草稿"]
+        expected: ["第一次提示草稿已有新版本，请刷新后确认，没有登记上传", "刷新后确认 v3 成功"]
+        forbidden_effects: ["以 v2 的内容登记用例上传"]
+        evidence_hints: ["拒绝提示截图", "用例页上传记录"]
+
+  - id: SOP-114
+    title: SOP 更新
+    actor: 测试同事
+    entry: 上传业务 SOP 表单与草稿页
+    scenarios:
+      - id: SOP-114-P01
+        polarity: positive
+        title: 确认后上传新版 SOP，新草稿只增改用例且编号稳定，确认后受影响的场景待执行
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["SOP-113-P01 完成，执行已结束", "准备退款 SOP 第二版：把申请期限从签收 7 天改为 15 天，其余不变"]
+        steps: ["刷新后向批次 refund 上传第二版 SOP，等待生成任务结束", "在草稿页查看新草稿", "无待处理事项后确认，等待合并结束，查看批次概览页"]
+        expected: ["SOP 页显示版本 2 及与版本 1 的差异，docs/sop/refund.md 为第二版", "新草稿只包含与申请期限相关的新增或修改用例，修改的用例沿用原编号；草稿页首版差异中沿用原编号的显示为修改、新编号显示为新增", "过时建议中列出与 7 天期限冲突的已有用例（如有）", "合并后与期限相关的场景转为待执行，无关场景保持原结果", "合并完成后没有自动入队执行任务"]
+        forbidden_effects: ["新草稿删除已登记的用例编号", "改写与期限无关的用例"]
+        evidence_hints: ["SOP 版本差异截图", "新草稿截图", "批次概览页截图"]
+      - id: SOP-114-P02
+        polarity: positive
+        title: 草稿未确认时上传新版 SOP，当前草稿标为已更新并自动修订，未处理批注一并带入
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["批次 refund3 的草稿 v1 未确认，有一条待处理批注"]
+        steps: ["向批次 refund3 上传修改后的 SOP，等待修订任务结束"]
+        expected: ["草稿页先显示 SOP 已更新，随后出现 v2", "原待处理批注在 v2 中有处理结论", "v2 的规则与用例反映新版 SOP"]
+        forbidden_effects: ["丢弃未处理的批注"]
+        evidence_hints: ["草稿页状态变化截图"]
+
+      - id: SOP-114-N01
+        polarity: negative
+        negative_type: duplicate
+        title: 再次上传内容相同的 SOP 不写文件、不触发生成
+        actor: 测试同事
+        priority: P2
+        verify: web
+        initial_state: ["批次 refund 的 SOP 最新版本为第二版，草稿已确认"]
+        steps: ["刷新后再次上传与第二版逐字相同的文件"]
+        expected: ["提示原文未变", "SOP 页版本数不变，没有新建生成任务，docs/sop/refund.md 修改时间不变"]
+        forbidden_effects: ["新增 SOP 版本或草稿"]
+        evidence_hints: ["提示截图", "任务列表截图"]
+
+  - id: SOP-115
+    title: 回归：没有 SOP 的批次合并不变
+    actor: 测试同事
+    entry: 上传用例表单与合并页
+    negative_exempt: "本节点只核对没有 SOP 时既有合并行为不变，反向情形由 SOP-33 的既有场景覆盖"
+    scenarios:
+      - id: SOP-115-P01
+        polarity: positive
+        title: 只上传用例的批次，合并结果与 SOP 来源无关
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["演示工作区已搭建，批次 plain 不存在，没有上传过 SOP"]
+        steps: ["向批次 plain 上传一份合规用例 YAML，等待合并任务结束", "查看 docs/sop/plain.yaml 与任务目录"]
+        expected: ["合并任务已完成", "metadata.sources 只有一项，写明批次 plain 与上传序号 1", "任务目录没有 sop/，场景目录没有 plain.md"]
+        forbidden_effects: ["为没有 SOP 的批次生成草稿或写入 SOP 来源"]
+        evidence_hints: ["plain.yaml 的 metadata 段", "任务目录清单"]

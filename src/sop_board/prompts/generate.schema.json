@@ -1,0 +1,280 @@
+{
+  "type": "object",
+  "properties": {
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          },
+          "excerpt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "section",
+          "excerpt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "functional",
+              "ui",
+              "security",
+              "performance",
+              "accessibility"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preconditions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_results": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "auto": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "sop",
+              "code",
+              "annotation"
+            ]
+          },
+          "basis_note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "priority",
+          "type",
+          "description",
+          "preconditions",
+          "steps",
+          "expected_results",
+          "tags",
+          "auto",
+          "rules",
+          "basis",
+          "basis_note"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string"
+          },
+          "positive": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "negative": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "negative_exempt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "rule",
+          "positive",
+          "negative",
+          "negative_exempt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "rule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "rule"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "text",
+          "cases"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "obsolete": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "case": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "case",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "annotation": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "adopted",
+              "rejected",
+              "question"
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "annotation",
+          "action",
+          "note"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "rules",
+    "cases",
+    "coverage",
+    "questions",
+    "assumptions",
+    "obsolete",
+    "responses",
+    "notes"
+  ],
+  "additionalProperties": false
+}

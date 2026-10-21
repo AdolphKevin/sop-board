@@ -1,16 +1,155 @@
 """任务的只读判断核对与草稿生成；不写工作区仓库。"""
 from copy import deepcopy
+from datetime import date
 from importlib.resources import files
 import json
+from pathlib import Path
 import re
 
 import yaml
 
 from .errors import APIError
+from .cases import load_cases
 from .scenario_file import load_scenarios, NEGATIVE_TYPES
 
 
 SCHEMA = json.loads(files('sop_board').joinpath('prompts/merge.schema.json').read_text(encoding='utf-8'))
+GENERATE_SCHEMA = json.loads(files('sop_board').joinpath('prompts/generate.schema.json').read_text(encoding='utf-8'))
+
+
+def generated_case(item):
+    """差异比较与确认上传共用同一种用例正文，避免把草稿专属字段当作修改。"""
+    case = {k: v for k, v in item.items() if k not in ('rules', 'basis', 'basis_note') and v is not None}
+    basis = {'sop': 'SOP 依据', 'code': '代码推理', 'annotation': '批注确认'}[item['basis']]
+    case['description'] = '\n'.join(filter(None, [case.get('description'), '依据：' + '、'.join(item['rules']),
+                                                 basis + '：' + item['basis_note']]))
+    return case
+
+
+def generated_cases(snapshot, result, *, confirmed_by=None):
+    cases = [generated_case(item) for item in result['cases']]
+    title = re.search(r'^#\s+(.+)$', snapshot['sop']['content'], re.M)
+    return yaml.safe_dump(dict(metadata=dict(module=snapshot['workspace'], feature=title[1] if title else snapshot['batch'],
+        owner=confirmed_by if confirmed_by is not None else snapshot['sop']['confirmed_by'], last_reviewed=date.today().isoformat(), tags=['sop-draft']),
+        test_cases=cases), allow_unicode=True, sort_keys=False)
+
+
+def generation_problems(snapshot, result):
+    problems = schema_problems(result, GENERATE_SCHEMA)
+    if problems:
+        return problems
+    try:
+        load_cases(dict(filename='SOP 草稿', uploaded_by=snapshot['sop']['confirmed_by'], content=generated_cases(snapshot, result)))
+    except APIError as error:
+        problems += [p['field'] + '：' + p['problem'] for p in error.problems]
+    rules, cases, questions = {}, {c['id']: c for c in result['cases']}, set()
+    available = {c['id']: c for c in snapshot['cases']} | cases
+    for item in result['rules']:
+        rid = item['id']
+        if not re.fullmatch(r'R[1-9][0-9]*', rid) or rid in rules:
+            problems.append(f'rules 规则编号不合格或重复：{rid}')
+        if not item['section'].strip() or not item['excerpt'].strip():
+            problems.append(f'{rid} 所属节点和 SOP 摘录不能为空')
+        rules[rid] = item
+    if not rules:
+        problems.append('rules 至少包含一条 SOP 规则')
+    links, seen = set(), set()
+    for item in result['coverage']:
+        rid = item['rule']
+        if rid not in rules or rid in seen:
+            problems.append(f'coverage 未知或重复规则：{rid}')
+        seen.add(rid)
+        if not item['positive']:
+            problems.append(f'{rid} 缺少正向覆盖')
+        if not item['negative'] and not (item['negative_exempt'] or '').strip():
+            problems.append(f'{rid} 缺少负向覆盖或豁免理由')
+        for polarity in ('positive', 'negative'):
+            covered = set()
+            for cid in item[polarity]:
+                if cid not in available or cid in covered:
+                    problems.append(f'{rid} {polarity} 未知或重复用例：{cid}')
+                elif ('negative' in available[cid]['tags']) != (polarity == 'negative'):
+                    problems.append(f'{rid} {cid} 正负向与用例标签不一致')
+                covered.add(cid)
+                if cid in cases:
+                    links.add((rid, cid))
+            if rid in rules and item[polarity] and not any(
+                    cid in available and section(available[cid]) == rules[rid]['section'] for cid in item[polarity]):
+                label = '正向' if polarity == 'positive' else '负向'
+                problems.append(f'{rid} {label}覆盖至少包含一条节点为“{rules[rid]["section"]}”的用例')
+    problems += [f'coverage 缺少规则：{rid}' for rid in sorted(rules.keys() - seen)]
+    reverse = set()
+    annotations = {'#' + str(a['number']): a for a in snapshot['all_annotations']}
+    for item in result['cases']:
+        cid = item['id']
+        sections = [t[8:] for t in item['tags'] if t.startswith('section:')]
+        if len(sections) != 1 or not sections[0].strip():
+            problems.append(f'{cid} 必须恰好包含一个非空 section: 节点标签')
+        if not item['rules'] or len(set(item['rules'])) != len(item['rules']):
+            problems.append(f'{cid} rules 必须为非空且不重复的规则编号')
+        for rid in item['rules']:
+            if rid not in rules:
+                problems.append(f'{cid} 引用了不存在的规则：{rid}')
+            reverse.add((rid, cid))
+        note = item['basis_note']
+        if not note.strip():
+            problems.append(f'{cid} 缺少依据说明')
+        if item['basis'] == 'code':
+            locations = re.findall(r'([A-Za-z][A-Za-z0-9_-]*):([^\s:，。；、`<>]+):([0-9]+)(?![0-9A-Za-z_])', note)
+            if not locations:
+                problems.append(f'{cid} 代码依据须含 <别名>:<路径>:<行>')
+            for alias, relative, line in locations:
+                root = snapshot['repos'].get(alias)
+                if root is None:
+                    problems.append(f'{cid} 代码位置别名未声明：{alias}')
+                    continue
+                try:
+                    root = Path(root).resolve()
+                    path = (root / relative).resolve()
+                    if Path(relative).is_absolute() or '..' in Path(relative).parts or not path.is_relative_to(root) or not path.is_file():
+                        problems.append(f'{cid} 代码文件不存在或越出仓库：{alias}:{relative}')
+                        continue
+                    if not 1 <= int(line) <= len(path.read_bytes().splitlines()):
+                        problems.append(f'{cid} 代码行号超出文件范围：{alias}:{relative}:{line}')
+                except (OSError, ValueError, RuntimeError):
+                    problems.append(f'{cid} 无法读取代码文件：{alias}:{relative}')
+        if item['basis'] == 'annotation':
+            refs = re.findall(r'#[0-9]+', note)
+            if not refs or any(ref not in annotations for ref in refs):
+                problems.append(f'{cid} 批注依据须指向已有批注：{note}')
+    problems += [f'coverage 与 cases.rules 不一致：{rid} / {cid}' for rid, cid in sorted(links ^ reverse)]
+    for item in result['questions']:
+        qid = item['id']
+        if not re.fullmatch(r'Q[1-9][0-9]*', qid) or qid in questions or not item['text'].strip():
+            problems.append(f'questions 编号重复、不合格或问题为空：{qid}')
+        if item['rule'] is not None and item['rule'] not in rules:
+            problems.append(f'{qid} 引用了不存在的规则：{item["rule"]}')
+        questions.add(qid)
+    for item in result['assumptions']:
+        if not item['text'].strip() or any(cid not in available for cid in item['cases']):
+            problems.append('assumptions 假设为空或引用了不存在的用例')
+    registered = {c['id'] for c in snapshot['cases']}
+    for item in result['obsolete']:
+        if item['case'] not in registered or not item['reason'].strip():
+            problems.append(f'obsolete 须引用已登记用例并说明原因：{item["case"]}')
+    pending = {'#' + str(a['number']): a for a in snapshot['annotations']}
+    responses = {}
+    for item in result['responses']:
+        ref = item['annotation']
+        if ref not in pending or ref in responses:
+            problems.append(f'responses 未知或重复批注：{ref}')
+        if not item['note'].strip():
+            problems.append(f'{ref} 缺少批注处理说明')
+        responses[ref] = item
+    problems += [f'responses 缺少批注：{ref}' for ref in sorted(pending.keys() - responses.keys())]
+    previous = {c['id'] for c in (snapshot['draft'] or {}).get('cases', [])}
+    removed = previous - cases.keys()
+    adopted = {a['target'][5:] for ref, a in pending.items() if a['kind'] == 'remove' and a['target'].startswith('case:')
+               and responses.get(ref, {}).get('action') == 'adopted'}
+    problems += [f'用例 {cid} 消失，但没有被采纳的 remove 批注' for cid in sorted(removed - adopted)]
+    problems += [f'不得删除已登记的用例 {cid}，只能列入 obsolete' for cid in sorted(removed & registered)]
+    problems += [f'不得采纳删除已登记用例 {cid} 的批注，只能列入 obsolete' for cid in sorted(adopted & registered)]
+    return problems
 
 
 def section(case):
@@ -262,9 +401,14 @@ def assemble(snapshot, result):
     source = dict(ref=f"批次 {snapshot['batch']} 用例上传 #{snapshot['upload']}", version=snapshot['upload'], confirmed_by=meta['owner'])
     # 只带有保留补充场景的文件才需要延续旧来源，避免重复合并累加看板生成的来源。
     old_sources = deepcopy(original.get('metadata', {}).get('sources', [])) if dispositions or any(snapshot['merged_forbidden_effects'].values()) else []
+    sources = [source] + [s for s in old_sources if s != source]
+    uploaded_sop = snapshot.get('uploaded_sop')
+    if uploaded_sop:
+        sources = [s for s in sources if s['ref'] != uploaded_sop['ref']]
+        sources.append(deepcopy(uploaded_sop))
     document = dict(metadata=dict(requirement=original.get('metadata', {}).get('requirement', meta['feature']),
                                  batch=snapshot['batch'], version=snapshot['upload'], owner=meta['owner'],
-                                 sources=[source] + [s for s in old_sources if s != source]),
+                                 sources=sources),
                     sops=list(groups.values()) + kept_nodes)
     if 'repos' in original.get('metadata', {}):
         document['metadata']['repos'] = original['metadata']['repos']

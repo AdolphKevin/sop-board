@@ -118,6 +118,43 @@ CREATE TABLE IF NOT EXISTS sop_versions (
     sha256 TEXT NOT NULL, confirmed_by TEXT NOT NULL, content TEXT NOT NULL, recorded_at TEXT NOT NULL,
     UNIQUE(batch, path, version)
 );
+CREATE TABLE IF NOT EXISTS sop_uploads (
+    version INTEGER PRIMARY KEY REFERENCES sop_versions(id),
+    filename TEXT NOT NULL, uploaded_by TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS drafts (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
+    status TEXT NOT NULL CHECK(status IN ('生成中','待确认','修订中','SOP 已更新','已确认','失败','已放弃')),
+    sop_version INTEGER NOT NULL REFERENCES sop_versions(id),
+    current_task INTEGER REFERENCES tasks(id), created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS active_draft ON drafts(batch) WHERE status NOT IN ('已确认','已放弃');
+CREATE TABLE IF NOT EXISTS draft_versions (
+    id INTEGER PRIMARY KEY, draft INTEGER NOT NULL REFERENCES drafts(id), number INTEGER NOT NULL,
+    output_json TEXT NOT NULL, task INTEGER NOT NULL UNIQUE REFERENCES tasks(id), thread_id TEXT,
+    revision_note TEXT NOT NULL, sop_version INTEGER NOT NULL REFERENCES sop_versions(id),
+    created_at TEXT NOT NULL, UNIQUE(draft,number)
+);
+CREATE TABLE IF NOT EXISTS draft_annotations (
+    batch INTEGER NOT NULL REFERENCES batches(id), number INTEGER NOT NULL,
+    draft INTEGER NOT NULL REFERENCES drafts(id), version INTEGER NOT NULL,
+    target TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, author TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '待处理' CHECK(status IN ('待处理','已采纳','未采纳','已提问','确认时未处理')),
+    processing_note TEXT NOT NULL DEFAULT '', processed_version INTEGER, created_at TEXT NOT NULL,
+    PRIMARY KEY(batch,number), FOREIGN KEY(draft,version) REFERENCES draft_versions(draft,number),
+    FOREIGN KEY(draft,processed_version) REFERENCES draft_versions(draft,number)
+);
+CREATE TABLE IF NOT EXISTS draft_events (
+    id INTEGER PRIMARY KEY, draft INTEGER NOT NULL REFERENCES drafts(id), version INTEGER NOT NULL,
+    annotation INTEGER NOT NULL, author TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL,
+    FOREIGN KEY(draft,version) REFERENCES draft_versions(draft,number)
+);
+CREATE TABLE IF NOT EXISTS draft_confirmations (
+    draft INTEGER PRIMARY KEY REFERENCES drafts(id), version INTEGER NOT NULL,
+    upload INTEGER NOT NULL UNIQUE REFERENCES case_uploads(id), confirmed_by TEXT NOT NULL, confirmed_at TEXT NOT NULL,
+    pending_annotations_json TEXT NOT NULL, unanswered_questions_json TEXT NOT NULL,
+    FOREIGN KEY(draft,version) REFERENCES draft_versions(draft,number)
+);
 CREATE TABLE IF NOT EXISTS case_flow_choices (
     batch INTEGER NOT NULL REFERENCES batches(id), case_id TEXT NOT NULL,
     chosen_at TEXT NOT NULL, PRIMARY KEY(batch,case_id)

@@ -9,6 +9,7 @@ from urllib.parse import quote, urlsplit
 from .jira import identify
 from .time_format import local_time
 from .sop_markdown import render as render_sop
+from .drafts import generated_case
 
 
 def text(value):
@@ -103,6 +104,16 @@ def environment_panel(data, local):
     return content + '</section>'
 
 
+def sop_upload(workspace, hashes, batch=''):
+    return (f"<form data-sop-upload='' data-workspace-key='{text(workspace)}' data-sop-hashes='{text(json.dumps(hashes))}'>"
+            "<h3>上传业务 SOP</h3>"
+            f"<label>批次名称<input name='batch' value='{text(batch)}'{' readonly' if batch else ''} required></label>"
+            "<label>SOP 文件<input type='file' name='file' accept='.md,.txt' required></label>"
+            "<label>业务确认人<input name='confirmed_by' required></label>"
+            "<button type='submit'>上传业务 SOP</button><p data-sop-message='' role='status'></p>"
+            "<ul data-sop-problems=''></ul></form>")
+
+
 def home(data, *, environment=None, local=False):
     cards = []
     for workspace in data['workspaces']:
@@ -122,7 +133,8 @@ def home(data, *, environment=None, local=False):
             "<h3>上传批次用例</h3><label>批次名称<input name='batch' required></label>"
             "<label>用例文件<input type='file' name='file' accept='.yaml,.yml' required></label>"
             "<button type='submit'>上传用例</button><p data-cases-message='' role='status'></p>"
-            "<ul data-cases-problems=''></ul></form></section>")
+            "<ul data-cases-problems=''></ul></form>" +
+            sop_upload(workspace['key'], workspace['sop_hashes']) + '</section>')
     return layout('工作区与批次', environment_panel(environment, local) + automation_controls(data, local=local) +
                   '<h1>工作区与批次</h1>' + identity_bar() + "<div data-execution-home=''>" + ''.join(cards) + '</div>')
 
@@ -211,6 +223,7 @@ def batch(workspace, data, *, environment=None, local=False):
     report_link = environment_panel(environment, local) + workspace_info + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
     report_link += execution_controls(workspace, data['name'], data, local=local)
     report_link += automation_controls(data, local=local) + identity_bar()
+    report_link += sop_upload(workspace, {data['name']: data['sop_sha256']}, data['name'])
     report_link += review_completion(workspace, data['name'], data)
     if data.get('fix_statistics', {}).get('tasks'):
         from .reports import FIX_METRICS
@@ -398,7 +411,7 @@ def batch_nav(workspace, name, current):
         f"<a href='{text(base + suffix)}'" + (" aria-current='page'" if key == current else "") + f">{label}</a>"
         for key, suffix, label in [("overview", "", "总览"), ("scenarios", "/scenarios", "SOP 场景"),
                                    ("cases", "/cases", "用例"), ("progress", "/progress", "进度"), ("merges", "/merges", "合并"),
-                                   ("sop", "/sop", "SOP")]) + "</nav>"
+                                   ("sop", "/sop", "SOP"), ("draft", "/draft", "草稿")]) + "</nav>"
 
 
 def sop_diff(before, after):
@@ -521,6 +534,185 @@ def cases(workspace, name, data):
     if not groups:
         content += "<p>尚无用例，请选择文件上传。</p>"
     return layout("用例 · " + name, content, watch=(workspace, name, data["etag"]))
+
+
+DRAFT_BASIS = dict(sop='SOP 依据', code='代码推理', annotation='批注确认')
+ANNOTATION_KINDS = dict(comment='修改意见', remove='建议删除用例', add='补充场景', answer='回答问题')
+
+
+def draft_annotation_form(api, version, target):
+    kinds = ['comment', 'add']
+    if target.startswith('case:'):
+        kinds.append('remove')
+    if target.startswith('question:'):
+        kinds.append('answer')
+    options = ''.join(f"<option value='{kind}'>{ANNOTATION_KINDS[kind]}</option>" for kind in kinds)
+    return (f"<details class='draft-feedback' data-disclosure='annotation-{text(target)}'><summary>添加批注</summary>"
+            f"<form data-draft-form='annotation' action='{text(api)}/annotations' method='post' novalidate>"
+            f"<input type='hidden' name='version' value='{version}'>"
+            f"<input type='hidden' name='target' value='{text(target)}'>"
+            f"<label>类型<select name='kind'>{options}</select></label>"
+            "<label>批注内容<textarea name='text' rows='3' required></textarea></label>"
+            "<button type='submit'>提交批注</button> <button type='button' data-draft-cancel='' class='button-secondary'>取消</button>"
+            "<p data-draft-message='' role='status' aria-live='polite'></p></form></details>")
+
+
+def draft_case_text(item):
+    labels = [('title', '标题'), ('priority', '优先级'), ('type', '类型'), ('description', '说明'),
+              ('preconditions', '前置条件'), ('steps', '步骤'), ('expected_results', '预期'),
+              ('tags', '标签'), ('auto', '自动执行'), ('rules', '依据规则'), ('basis', '依据来源'), ('basis_note', '依据说明')]
+    lines = []
+    for key, label in labels:
+        value = item.get(key)
+        if isinstance(value, list):
+            value = '、'.join(value)
+        elif key == 'basis' and value is not None:
+            value = DRAFT_BASIS[value]
+        elif type(value) is bool:
+            value = '是' if value else '否'
+        lines.append(label + '：' + str(value if value is not None else '未声明'))
+    return '\n'.join(lines)
+
+
+def draft_changes(previous, current, *, registered_cases=()):
+    old = {c['id']: c for c in (previous['output']['cases'] if previous else registered_cases)}
+    new = {c['id']: c if previous else generated_case(c) for c in current['output']['cases']}
+    groups = [('新增', [cid for cid in new if cid not in old]),
+              ('修改', [cid for cid in new if cid in old and old[cid] != new[cid]]),
+              ('未变', [cid for cid in new if cid in old and old[cid] == new[cid]])]
+    if previous and old.keys() - new.keys():
+        groups.append(('删除', [cid for cid in old if cid not in new]))
+    heading = f"v{previous['number']} → v{current['number']}" if previous else '首版 · 对比已登记用例'
+    content = f'<section><h2>版本差异 · {heading}</h2>'
+    for label, ids in groups:
+        content += f'<h3>{label}（{len(ids)}）</h3><ul>'
+        for cid in ids:
+            title = text(cid + ' · ' + (new.get(cid) or old[cid])['title'])
+            content += '<li>' + (f"<a href='#case-{text(cid)}'>{title}</a>" if cid in new else title)
+            if label == '修改':
+                content += '<details><summary>查看变化</summary>' + sop_diff(draft_case_text(old[cid]), draft_case_text(new[cid])) + '</details>'
+            content += '</li>'
+        content += '</ul>'
+    return content + '</section>'
+
+
+def draft(workspace, name, data, selected=None, *, local=False):
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}/draft"
+    content = batch_nav(workspace, name, 'draft') + f'<h1>批次 {text(name)} · 草稿</h1>' + identity_bar()
+    row = data['draft']
+    if not row:
+        return layout('草稿 · ' + name, content + '<p>尚无草稿，请先上传业务 SOP。</p>', watch=(workspace, name, data['etag']))
+    editable = row['status'] not in ('已确认', '已放弃')
+    content += f"<p class='execution-banner'>草稿状态：{text(row['status'])}</p>"
+    task = row['current_task']
+    if task:
+        content += (f"<section><h2>生成 / 修订任务 #{task['id']} · {text(task['status'])}</h2>"
+                    f"<p>{text(task['trigger'])} · {time_tag(task['created_at'])}</p><p>{text(task['error'])}</p>")
+        problems = task['result'].get('problems', [])
+        if problems:
+            content += '<ul>' + ''.join('<li>' + text(p) + '</li>' for p in problems) + '</ul>'
+        if local and task.get('session_id') and not row['versions']:
+            content += '<p>查阅生成会话：<code>' + text('codex resume ' + task['session_id']) + '</code></p>'
+        if local and editable:
+            if task['status'] in ('失败', '已中断', 'Codex 不可用'):
+                content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button> "
+            if task['status'] in ('排队中', '运行中', '已中断'):
+                content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
+        content += "<p id='developer-message' role='status' aria-live='polite'></p></section>"
+    versions = row['versions']
+    if not versions:
+        return layout('草稿 · ' + name, content + '<p>尚无可查看的草稿版本。</p>', watch=(workspace, name, data['etag']))
+    current = next((v for v in versions if str(v['number']) == selected), versions[-1])
+    output = current['output']
+    previous = next((v for v in versions if v['number'] == current['number'] - 1), None)
+    counts = {basis: sum(c['basis'] == basis for c in output['cases']) for basis in DRAFT_BASIS}
+    content += '<dl class="metrics">' + ''.join(f"<div><dt>{label}</dt><dd>{counts[basis]}</dd></div>" for basis, label in DRAFT_BASIS.items()) + '</dl>'
+    options = ''.join(f"<option value='{v['number']}'{' selected' if v == current else ''}>v{v['number']}</option>" for v in versions)
+    content += f"<form method='get'><label>草稿版本<select name='version'>{options}</select></label><button type='submit'>查看版本</button></form>"
+    content += f"<p>当前查看 v{current['number']} · {time_tag(current['created_at'])} · {text(current['revision_note'])}</p>"
+    if local and current.get('thread_id'):
+        content += '<p>查阅生成会话：<code>' + text('codex resume ' + current['thread_id']) + '</code></p>'
+    confirmation = row['confirmation']
+    if confirmation:
+        content += (f"<section><h2>确认记录 · v{confirmation['version']}</h2><p>{text(confirmation['confirmed_by'])} · {time_tag(confirmation['confirmed_at'])}</p>"
+                    f"<p><a href='{text(batch_url(workspace, name))}/cases'>用例上传 #{confirmation['upload_number']}</a></p>"
+                    f"<p>确认时未处理批注：{len(confirmation['pending_annotations'])} 条 · 确认时未回答问题：{len(confirmation['unanswered_questions'])} 条</p></section>")
+    if editable:
+        content += (f"<section data-draft-actions='{text(api)}' data-version='{current['number']}'>"
+                    "<h2>草稿操作</h2><button type='button' data-draft-revise=''>按反馈修订</button> "
+                    "<button type='button' data-draft-confirm=''>确认草稿</button>"
+                    "<p data-draft-message='' role='status' aria-live='polite'></p>" +
+                    draft_annotation_form(api, current['number'], 'draft') + '</section>')
+        pending = sum(a['status'] == '待处理' for a in row['annotations'])
+        content += ("<dialog id='draft-confirm-dialog' aria-labelledby='draft-confirm-title'><h2 id='draft-confirm-title'>确认草稿</h2>"
+                    f"<p>待处理批注 {pending} 条 · 待回答问题 {len(output['questions'])} 条 · 代码推理用例 {counts['code']} 条</p>"
+                    "<p>仍然确认后，用例会登记上传并进入合并；未处理项保留在确认记录中。尚未提交的批注不会保存。</p>"
+                    "<button type='button' data-draft-confirm-submit=''>仍然确认</button> "
+                    "<button type='button' data-draft-confirm-cancel='' class='button-secondary'>取消</button>"
+                    "<p data-draft-message='' role='status' aria-live='polite'></p></dialog>")
+    content += draft_changes(previous, current, registered_cases=row['registered_cases'])
+    coverage = {c['rule']: c for c in output['coverage']}
+    content += "<section><h2>规则覆盖矩阵</h2><div class='table-scroll'><table><thead><tr><th>规则与原文</th><th>正向用例</th><th>负向用例 / 豁免</th><th>批注</th></tr></thead><tbody>"
+    for rule in output['rules']:
+        cover = coverage[rule['id']]
+        content += f"<tr id='rule-{text(rule['id'])}'><th>{text(rule['id'])} · {text(rule['section'])}<p>{text(rule['excerpt'])}</p></th>"
+        for polarity in ('positive', 'negative'):
+            content += '<td>' + str(len(cover[polarity])) + ' 条：' + text('、'.join(cover[polarity]) or '无')
+            if polarity == 'negative' and cover['negative_exempt']:
+                content += "<p class='notice'><strong>负向豁免：</strong>" + text(cover['negative_exempt']) + '</p>'
+            content += '</td>'
+        content += '<td>' + (draft_annotation_form(api, current['number'], 'rule:' + rule['id']) if editable else '') + '</td></tr>'
+    content += '</tbody></table></div></section><section><h2>用例列表</h2>'
+    types = dict(functional='功能', ui='界面', security='安全', performance='性能', accessibility='无障碍')
+    for item in output['cases']:
+        content += (f"<article class='scenario-card draft-case' id='case-{text(item['id'])}' data-basis='{text(item['basis'])}'>"
+                    f"<h3>{text(item['id'])} · {text(item['title'])}</h3>"
+                    f"<p><span class='draft-basis'>{DRAFT_BASIS[item['basis']]}</span> {text(item['basis_note'])}</p>"
+                    f"<p>依据：{text('、'.join(item['rules']))} · 优先级：{text(item['priority'])} · 类型：{types[item['type']]}</p>"
+                    f"<p>{text(item.get('description') or '')}</p>")
+        for field, label in [('preconditions', '前置条件'), ('steps', '步骤'), ('expected_results', '预期')]:
+            content += f'<h4>{label}</h4><ul>' + ''.join('<li>' + text(v) + '</li>' for v in item.get(field) or []) + '</ul>'
+        content += '<p>标签：' + text('、'.join(item['tags'])) + '</p>'
+        if editable:
+            content += draft_annotation_form(api, current['number'], 'case:' + item['id'])
+        content += '</article>'
+    content += '</section><section><h2>待回答问题</h2>'
+    for question in output['questions']:
+        unresolved = confirmation and confirmation['version'] == current['number']
+        content += (f"<article><h3>{text(question['id'])} · {'确认时未回答' if unresolved else '待回答'}</h3>"
+                    f"<p>{text(question['text'])}</p><p>关联规则：{text(question['rule'] or '整份草稿')}</p>")
+        if editable:
+            content += draft_annotation_form(api, current['number'], 'question:' + question['id'])
+        content += '</article>'
+    if not output['questions']:
+        content += '<p>无待回答问题</p>'
+    content += '</section>'
+    for title, values in [('假设', [a['text'] + ' · 用例：' + '、'.join(a['cases']) for a in output['assumptions']]),
+                           ('过时建议', [a['case'] + '：' + a['reason'] for a in output['obsolete']]), ('备注', output['notes'])]:
+        content += f'<section><h2>{title}</h2>' + ('<ul>' + ''.join('<li>' + text(v) + '</li>' for v in values) + '</ul>' if values else '<p>无</p>') + '</section>'
+    content += '<section><h2>批注列表</h2>'
+    for a in row['annotations']:
+        target = a['target']
+        target_label = '整份草稿' if target == 'draft' else {'case': '用例', 'rule': '规则', 'question': '问题'}[target.partition(':')[0]] + ' ' + target.partition(':')[2]
+        content += (f"<article class='scenario-card' id='annotation-{a['number']}'><h3>#{a['number']} · {text(a['status'])}</h3>"
+                    f"<p>{text(target_label)} · {ANNOTATION_KINDS[a['kind']]} · 作者：{text(a['author'])} · <a href='?version={a['version']}'>v{a['version']}</a> · {time_tag(a['created_at'])}</p>"
+                    f"<p class='draft-text'>{text(a['text'])}</p><p>处理说明：{text(a['processing_note'] or '尚未处理')}"
+                    + (f" · 所在版本 v{a['processed_version']}" if a['processed_version'] else '') + '</p>')
+        if editable and a['status'] == '待处理':
+            content += (f"<details class='draft-feedback' data-disclosure='reject-{a['number']}'><summary>标为未采纳</summary>"
+                        f"<form data-draft-form='reject' action='{text(api)}/annotations/{a['number']}/reject' method='post' novalidate>"
+                        "<label>理由<textarea name='reason' required></textarea></label><button type='submit'>标为未采纳</button> "
+                        "<button type='button' data-draft-cancel='' class='button-secondary'>取消</button>"
+                        "<p data-draft-message='' role='status' aria-live='polite'></p></form></details>")
+        content += '</article>'
+    if not row['annotations']:
+        content += '<p>暂无批注</p>'
+    content += '</section><section><h2>修订历史</h2><ul>'
+    for version in versions:
+        content += f"<li>v{version['number']} · {time_tag(version['created_at'])} · {text(version['revision_note'])}</li>"
+    for event in row['history']:
+        content += f"<li>v{event['version']} · {time_tag(event['created_at'])} · {text(event['author'])} 手动将 #{event['annotation']} 标为未采纳：{text(event['note'])}</li>"
+    return layout('草稿 · ' + name, content + '</ul></section>', watch=(workspace, name, data['etag']))
 
 
 def scenario_fields(body):

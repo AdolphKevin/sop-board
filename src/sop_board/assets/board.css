@@ -153,6 +153,13 @@ textarea { resize: vertical; }
 .mermaid svg { max-width: 100%; height: auto; }
 .sop-diff [data-kind=delete] { background: #fff0ee; }
 .sop-diff [data-kind=insert] { background: var(--accent-soft); }
+.draft-feedback { margin: 12px 0; }
+.draft-feedback form { padding: 12px 16px; background: var(--subtle); border-radius: 6px; }
+.draft-text, .draft-case p, [data-draft-message] { white-space: pre-wrap; overflow-wrap: anywhere; }
+.draft-basis { display: inline-block; padding: 2px 8px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.draft-case[data-basis=code] .draft-basis { background: #fcf2e5; color: var(--warning); }
+#draft-confirm-dialog { width: min(560px, calc(100% - 32px)); padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--ink); background: var(--surface); }
+#draft-confirm-dialog::backdrop { background: rgb(32 38 46 / 40%); }
 @media (max-width: 1024px) {
   .queues { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .queues .queue-active { grid-column: 1 / -1; grid-row: 1; }

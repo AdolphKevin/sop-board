@@ -1,5 +1,6 @@
 """持久任务、Codex 进程入口与经过核对后的合并落地。"""
 import hashlib
+from contextlib import nullcontext
 import json
 import re
 import os
@@ -99,7 +100,7 @@ def start_codex(directory, prompt, sandbox='read-only', environment=None, work_d
         stderr.close()
 
 
-def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None, environment=None, writable_directories=()):
+def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None, environment=None, writable_directories=(), schema=None):
     """续接指定会话；resume 的沙箱参数位于 Codex 根命令层。"""
     directory = Path(directory).resolve()
     events = (directory / 'events.jsonl').open('wb')
@@ -108,8 +109,9 @@ def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directo
         options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
         for path in writable_directories:
             options.extend(['--add-dir', str(Path(path).resolve())])
+        schema_args = ['--output-schema', str(Path(schema).resolve())] if schema is not None else []
         return subprocess.Popen(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
-            '--skip-git-repo-check', '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory,
+            '--skip-git-repo-check', *schema_args, '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory,
             env=environment if environment is not None else codex_environment(), stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
     finally:
         events.close()
@@ -151,6 +153,9 @@ class Tasks:
             db.execute("UPDATE tasks SET status='已中断',finished_at=?,error='看板重启，任务已中断' WHERE "
                 "(kind!='fix' AND status IN ('排队中','待提交','等待浏览器','等待合并','运行中')) OR "
                 "(kind='fix' AND status IN ('分析中','修复中','复测中','待合入'))", (now(),))
+        from .generations import Generations
+        self.generations = Generations(self)
+        service.sop_callback = self.enqueue_generate
         self.availability_error = codex_available()
         from .executions import Executions
         self.executions = Executions(self)
@@ -162,7 +167,18 @@ class Tasks:
         self.thread = threading.Thread(target=self.run, name='codex-queue', daemon=True)
         self.thread.start()
 
-    def enqueue_merge(self, key, name, trigger="重新合并", force_case=None):
+    def confirmed_draft_cases(self, db, batch):
+        # 按并集中每条用例的最新上传追溯确认，不能用最后一次上传的标签代表整个并集。
+        return {row['case_id']: row['confirmed_by'] for row in db.execute(
+            'SELECT v.case_id,u.metadata,c.confirmed_by FROM case_versions v '
+            'JOIN case_uploads u ON u.batch=v.batch AND u.number=v.upload '
+            'JOIN draft_confirmations c ON c.upload=u.id '
+            'WHERE v.batch=? AND NOT EXISTS '
+            '(SELECT 1 FROM case_versions newer WHERE newer.batch=v.batch '
+            'AND newer.case_id=v.case_id AND newer.upload>v.upload) ORDER BY v.case_id', (batch['id'],))
+            if 'sop-draft' in json.loads(row['metadata']).get('tags', [])}
+
+    def enqueue_merge(self, key, name, trigger="重新合并", force_case=None, *, connection=None):
         workspace = self.service.workspace
         workspace.reload()
         if not workspace.configured:
@@ -170,7 +186,7 @@ class Tasks:
                 reject(409, 'workspace-not-ready', 'workspace', '尚未搭建，请先配置工作区')
             return None
         workspace.scenario_path(name)
-        with self.lock, self.store.transaction() as db:
+        with self.lock, (nullcontext(connection) if connection is not None else self.store.transaction()) as db:
             batch = self.service.batch(db, key, name)
             version = self.service.latest_version(db, batch)
             cases = self.service.case_union(db, batch)
@@ -186,11 +202,9 @@ class Tasks:
                 if not known and (not pair or pair['kind'] != 'detail'):
                     reject(409, 'case-kind-invalid', 'case', '当前合并中此用例不是细节用例')
                 db.execute('INSERT OR IGNORE INTO case_flow_choices(batch,case_id,chosen_at) VALUES (?,?,?)', (batch['id'], force_case, now()))
-            forced_flow = self.service.flow_choices(db, batch)
-            upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
-            from .repositories import read_sop_sources
-            entries = dict(entries=workspace.entries)
-            sop_sources = read_sop_sources(workspace, version['content'] if version else '')
+            inputs, sources = self.merge_inputs(db, batch, version, cases)
+            forced_flow, upload, entries = sources['forced_flow'], sources['upload'], sources['entries']
+            uploaded_sop, sop_sources = sources['uploaded_sop'], sources['sop_sources']
             nodes = {r['section']: r['node'] for r in db.execute('SELECT section,node FROM node_numbers WHERE batch=?', (batch['id'],))}
             for case in cases:
                 name_ = section(case)
@@ -199,7 +213,8 @@ class Tasks:
                     db.execute('INSERT INTO node_numbers VALUES (?,?,?)', (batch['id'], name_, nodes[name_]))
             snapshot = dict(cases=cases, scenarios=version['content'] if version else '', entries=entries,
                             batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'], nodes=nodes,
-                            config_digest=workspace.config_digest, forced_flow=forced_flow)
+                            config_digest=workspace.config_digest, forced_flow=forced_flow,
+                            confirmed_draft_cases=sources['confirmed_draft_cases'])
             # 只继承已有记录证明曾经并入、且仍在当前场景中的禁止副作用。
             # 任意外来用例场景上的额外断言不因此成为确定字段的输入。
             transferred = {}
@@ -217,27 +232,58 @@ class Tasks:
                 for case, effects in transferred.items() if case in owners and owners[case] in existing}
             snapshot['sop_sources'] = sop_sources
             scenario_sha = version['sha256'] if version else ''
-            # 上传序号和已分配节点不是业务输入；配置改变也必须生成新快照。
-            inputs = dict(cases=dict(metadata=snapshot['case_metadata'], test_cases=cases),
-                          scenarios=scenario_sha, entries=entries, config_digest=snapshot['config_digest'], forced_flow=forced_flow,
-                          sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
+            if uploaded_sop:
+                snapshot['sop_upload_id'] = uploaded_sop['id']
+                snapshot['uploaded_sop'] = inputs['uploaded_sop']
             digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
             states = ('排队中', '运行中') if trigger == '重新合并' else (
                 '已完成', '待同步', '待补充', '排队中', '运行中', '失败', 'Codex 不可用', '已中断', '已放弃')
             placeholders = ','.join('?' for _ in states)
-            previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND input_digest=? AND status IN ({placeholders}) ORDER BY id LIMIT 1",
-                                  (key, name, digest, *states)).fetchone()
+            # 已落地的合并以写入后的输入登记 landed_digest，重启扫描不再以自己的输出为依据重复合并。
+            previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
+                                  f"AND (input_digest=? OR json_extract(result_json,'$.landed_digest')=?) AND status IN ({placeholders}) ORDER BY id LIMIT 1",
+                                  (key, name, digest, digest, *states)).fetchone()
             if previous:
                 task_id = previous['id']
             else:
                 task_id = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at) VALUES ('merge',?,?,'排队中',?,?,?,?,?)",
                                      (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
-        return dict(ok=True, task=self.read(task_id))
+            return dict(ok=True, task=self.read(task_id, connection=db))
+
+    def merge_inputs(self, db, batch, version, cases):
+        """合并的业务输入及其来源；上传序号和已分配节点不是业务输入，配置改变也必须生成新快照。"""
+        from .repositories import read_sop_sources
+        workspace = self.service.workspace
+        forced_flow = self.service.flow_choices(db, batch)
+        upload = db.execute('SELECT number,metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()
+        entries = dict(entries=workspace.entries)
+        uploaded_sop = self.service.latest_sop_upload(db, batch)
+        sop_sources = read_sop_sources(workspace, version['content'] if version else '', uploaded_sop)
+        if uploaded_sop:
+            sop_sources = [s for s in sop_sources if s['path'] != uploaded_sop['path']]
+            sop_sources.append(dict(path=uploaded_sop['path'], ref=uploaded_sop['ref'],
+                content=uploaded_sop['content'], commit=uploaded_sop['commit_id'],
+                sha256=uploaded_sop['sha256'], confirmed_by=uploaded_sop['confirmed_by']))
+            sop_sources.sort(key=lambda s: s['path'])
+        confirmed = self.confirmed_draft_cases(db, batch)
+        inputs = dict(cases=dict(metadata=json.loads(upload['metadata']), test_cases=cases),
+                      scenarios=version['sha256'] if version else '', entries=entries, config_digest=workspace.config_digest,
+                      forced_flow=forced_flow, sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
+        if confirmed:
+            inputs['confirmed_draft_cases'] = confirmed
+        if uploaded_sop:
+            inputs['uploaded_sop'] = dict(ref=uploaded_sop['ref'], version=f"看板上传 #{uploaded_sop['version']}",
+                                          confirmed_by=uploaded_sop['confirmed_by'])
+        return inputs, dict(forced_flow=forced_flow, upload=upload, entries=entries, uploaded_sop=uploaded_sop,
+                            sop_sources=sop_sources, confirmed_draft_cases=confirmed)
 
     def enqueue_execution(self, key, name, scope='pending'):
         if not isinstance(scope, str) or scope not in ('pending', 'all'):
             reject(422, 'invalid-scope', 'scope', '执行范围应为 pending 或 all')
         return self.executions.enqueue(key, name, selection=scope)
+
+    def enqueue_generate(self, key, name, version=None):
+        return self.generations.enqueue(key, name, version)
 
     def list(self, workspace=None, batch=None):
         with self.store.connection() as db:
@@ -248,8 +294,8 @@ class Tasks:
     def directory(self, task_id):
         return self.store.data.resolve() / 'tasks' / str(task_id)
 
-    def read(self, task_id):
-        with self.store.connection() as db:
+    def read(self, task_id, *, connection=None):
+        with (nullcontext(connection) if connection is not None else self.store.connection()) as db:
             row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if not row:
             reject(404, 'task-not-found', 'task', '任务不存在')
@@ -286,9 +332,11 @@ class Tasks:
             return False
         relative = path.relative_to(directory)
         public = {'events.jsonl', 'stderr.txt', 'final.json', 'results.jsonl', 'prompt.md', 'schema.json', 'input.json',
-                  'cases.yaml', 'cases.json', 'case_choices.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
+                  'cases.yaml', 'cases.json', 'case_choices.json', 'case_confirmations.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
                   'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'impact.json', 'pending.json', 'previous-results.json',
                   'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json'}
+        public |= {'sop.md', 'repos.json', 'draft.json', 'annotations.json', 'sop-before.md', 'sop.diff',
+                   'original-sop.md', 'history.json', 'all-annotations.json', 'revision.json', 'cases-generated.yaml'}
         directories = {'evidence', 'sop', 'attempts', 'interruptions', 'validations'}
         if len(relative.parts) == 1:
             if relative.name not in public and not re.fullmatch(r'commit-[0-9]+-[a-z0-9-]+\.txt', relative.name):
@@ -331,6 +379,8 @@ class Tasks:
                 allowed += ('已作废',) if action == 'retry' else ('待提交', '等待浏览器', '等待合并')
             if task['status'] not in allowed:
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持此操作')
+            if task['kind'] == 'generate':
+                self.generations.action(task, action)
             if action == 'cancel':
                 self.update(task_id, status='已放弃', finished_at=now())
                 process = self.processes.get(task_id)
@@ -344,12 +394,15 @@ class Tasks:
                     archive = directory / ('attempt-' + str(task['attempt']))
                     archive.mkdir()
                     for path in directory.iterdir():
-                        if path.is_file() or (task['kind'] == 'execute' and path != archive and not path.name.startswith('attempt-')):
+                        if path.is_file() or (task['kind'] in ('execute', 'generate') and path != archive and not path.name.startswith('attempt-')):
                             path.rename(archive / path.name)
                 self.executions.next_review.pop(task_id, None)
                 self.update(task_id, status='排队中', started_at=None, finished_at=None,
-                            session_id=None, error='', result_digest=None, result_json='{}', snapshot_json='{}',
+                            session_id=None, error='', result_digest=None, result_json='{}',
+                            snapshot_json=canonical(task['snapshot']) if task['kind'] == 'generate' else '{}',
                             void_reason='', rounds_json='[]', attempt=task['attempt'] + 1)
+            if task['kind'] == 'generate':
+                self.generations.task_status(task_id, '已放弃' if action == 'cancel' else '排队中')
         return dict(ok=True, task=self.read(task_id))
 
     def prepare_merge(self, task):
@@ -368,6 +421,8 @@ class Tasks:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(source['content'], encoding='utf-8')
         (directory / 'case_choices.json').write_text(canonical(dict(forced_flow=snapshot['forced_flow'])), encoding='utf-8')
+        (directory / 'case_confirmations.json').write_text(canonical(dict(
+            confirmed_draft_cases=snapshot.get('confirmed_draft_cases', {}))), encoding='utf-8')
         (directory / 'input.json').write_text(task['input_json'], encoding='utf-8')
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         (directory / 'schema.json').write_text(canonical(SCHEMA), encoding='utf-8')
@@ -381,13 +436,17 @@ class Tasks:
         unavailable = False
         check = None
         outcome = "已完成"
+        timed_out = False
+        generating = task['kind'] == 'generate'
+        snapshot = json.loads(task['input_json']) if generating else {}
+        resumed = generating and bool(snapshot.get('thread_id'))
         try:
             directory.mkdir(parents=True, exist_ok=True)
-            prompt = self.prepare_merge(task)
+            prompt = self.generations.prepare(task) if generating else self.prepare_merge(task)
             with self.lock:
                 if self.stopping.is_set() or self.read(task['id'])['status'] != '运行中':
                     return
-                process = self.launcher(directory, prompt)
+                process = resume_codex(directory, snapshot['thread_id'], prompt, schema=directory / 'schema.json') if resumed else self.launcher(directory, prompt)
                 self.processes[task['id']] = process
                 self.starting = None
             try:
@@ -395,12 +454,31 @@ class Tasks:
             except subprocess.TimeoutExpired:
                 terminate_group(process)
                 code = process.returncode
+                timed_out = True
                 error = f'Codex 运行超时（{self.timeout:g} 秒）'
             if code:
                 error = error or codex_failure(directory, code)
+            if resumed and code and not self.stopping.is_set() and not timed_out:
+                with self.lock:
+                    if self.read(task['id'])['status'] != '运行中':
+                        return
+                    terminate_group(process)
+                    prompt = self.generations.fallback(task, prompt, error)
+                    process = self.launcher(directory, prompt)
+                    self.processes[task['id']] = process
+                    resumed = False
+                    error = ''
+                try:
+                    code = process.wait(timeout=self.timeout)
+                except subprocess.TimeoutExpired:
+                    terminate_group(process)
+                    code = process.returncode
+                    error = f'Codex 运行超时（{self.timeout:g} 秒）'
+                if code:
+                    error = error or codex_failure(directory, code)
             try:
                 if not error:
-                    outcome, check = self.consume_merge_output(task)
+                    outcome, check = self.generations.consume(task) if generating else self.consume_merge_output(task)
                     if not check['ok']:
                         error = '; '.join(str(p) for p in check['problems'])
             except FileNotFoundError:
@@ -419,7 +497,7 @@ class Tasks:
         except (OSError, subprocess.SubprocessError):
             error = 'Codex 运行失败：无法启动进程或读取任务文件'
         except (KeyError, TypeError, ValueError):
-            error = '任务输入不合格，请重新合并'
+            error = '任务输入不合格，请重新生成或修订' if generating else '任务输入不合格，请重新合并'
         finally:
             if process:
                 terminate_group(process)
@@ -428,6 +506,8 @@ class Tasks:
                 if self.starting == task['id']:
                     self.starting = None
                 events = directory / 'events.jsonl'
+                if resumed:
+                    session = snapshot['thread_id']
                 if events.exists():
                     for line in events.read_text(encoding='utf-8', errors='replace').splitlines():
                         try:
@@ -442,11 +522,20 @@ class Tasks:
                         check = dict(ok=False, problems=[error])
                     elif error and check['ok']:
                         check.update(ok=False, problems=[error])
-                    (directory / 'check.json').write_text(canonical(check), encoding='utf-8')
-                    self.update(task['id'], status='Codex 不可用' if unavailable else '失败' if error else outcome,
+                    values = dict(status='Codex 不可用' if unavailable else '失败' if error else outcome,
                                 finished_at=now(), session_id=session, error=error,
                                 result_json=canonical(check),
                                 result_digest=hashlib.sha256((directory / 'final.json').read_bytes()).hexdigest() if (directory / 'final.json').is_file() else None)
+                    if generating:
+                        try:
+                            self.generations.finish(task, values, check)
+                        except (OSError, ValueError, sqlite3.Error) as problem:
+                            check = dict(ok=False, problems=[f'草稿版本无法保存：{problem}'])
+                            self.update(task['id'], status='失败', finished_at=now(), error=check['problems'][0], result_json=canonical(check))
+                            self.generations.task_status(task['id'], '失败')
+                    else:
+                        self.update(task['id'], **values)
+                    (directory / 'check.json').write_text(canonical(check), encoding='utf-8')
 
     def consume_merge_output(self, task):
         directory = self.directory(task['id'])
@@ -482,8 +571,17 @@ class Tasks:
             cases = self.service.case_union(db, batch)
             metadata = json.loads(db.execute('SELECT metadata FROM case_uploads WHERE batch=? ORDER BY number DESC LIMIT 1', (batch['id'],)).fetchone()[0])
             choices = self.service.flow_choices(db, batch)
+            confirmed_draft_cases = self.confirmed_draft_cases(db, batch)
             version = self.service.latest_version(db, batch)
+            uploaded_sop = self.service.latest_sop_upload(db, batch)
+            # 只看本次快照依据的那次上传，批次中其他草稿确认不影响普通上传的自动执行。
+            draft_upload = db.execute('SELECT 1 FROM case_uploads u JOIN draft_confirmations c ON c.upload=u.id '
+                                     'WHERE u.batch=? AND u.number=?', (batch['id'], snapshot['upload'])).fetchone()
+        if (uploaded_sop['id'] if uploaded_sop else None) != snapshot.get('sop_upload_id'):
+            check['problems'] = ['业务 SOP 已更新，请重新合并']
+            return '待同步'
         if (canonical(cases) != canonical(snapshot['cases']) or metadata != snapshot['case_metadata']
+                or confirmed_draft_cases != snapshot.get('confirmed_draft_cases', {})
                 or choices != snapshot['forced_flow'] or (version['content'] if version else '') != snapshot['scenarios']):
             check['problems'] = ['用例、场景或开发者分类选择变化，请重新合并']
             return '待同步'
@@ -504,7 +602,12 @@ class Tasks:
             path=workspace.display_path(source), content=raw, pushed_by=f"看板合并 #{task['id']}",
             commit=info['commit'], dirty=info['dirty'], product_digest=info['product_digest'],
             fingerprints={s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}),
-            pairings=[dict(p, case_sha256=case_hashes[p['case']]) for p in check['pairs']])
+            pairings=[dict(p, case_sha256=case_hashes[p['case']]) for p in check['pairs']],
+            auto_execute=draft_upload is None)
+        with self.store.connection() as db:
+            batch = self.service.batch(db, task['workspace'], task['batch'])
+            landed, _ = self.merge_inputs(db, batch, self.service.latest_version(db, batch), self.service.case_union(db, batch))
+        check['landed_digest'] = hashlib.sha256(canonical(landed).encode()).hexdigest()
         return '已完成'
 
     def run(self):
@@ -519,7 +622,7 @@ class Tasks:
                 with self.store.connection() as db:
                     if self.service.automation_paused(db):
                         continue
-                    queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','execute','fix') "
+                    queued = [dict(r) for r in db.execute("SELECT * FROM tasks WHERE kind IN ('merge','generate','execute','fix') "
                         "AND status IN ('排队中','待提交','等待浏览器','等待合并') ORDER BY id")]
                     running_batches = {(r['workspace'], r['batch']) for r in db.execute("SELECT workspace,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
                 for task in queued:
@@ -529,7 +632,7 @@ class Tasks:
                         if self.service.environment.approved():
                             self.fixes.schedule(task)
                         continue
-                    if task['kind'] == 'merge' and (task['workspace'], task['batch']) in running_batches:
+                    if task['kind'] in ('merge', 'generate') and (task['workspace'], task['batch']) in running_batches:
                         continue
                     if task['kind'] == 'execute':
                         if self.fixes.blocks_execution(task['workspace']):
@@ -553,12 +656,14 @@ class Tasks:
                             self.browser_owner = task['id']
                     if self.starting is not None or len(self.workers) >= 3:
                         continue
-                    if task['kind'] == 'merge' and not self.service.workspace.configured:
+                    if task['kind'] in ('merge', 'generate') and not self.service.workspace.configured:
                         self.update(task['id'], error='尚未搭建，等待配置工作区')
                         continue
                     error = codex_available()
                     if error:
                         self.update(task['id'], status='Codex 不可用', finished_at=now(), error=error)
+                        if task['kind'] == 'generate':
+                            self.generations.task_status(task['id'], 'Codex 不可用')
                         if self.browser_owner == task['id']:
                             self.browser_owner = None
                         continue

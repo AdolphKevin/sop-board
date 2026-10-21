@@ -20,7 +20,7 @@ from .scenario_file import load_scenarios
 from .reports import markdown
 from .result_files import export_results, load_results
 from .statistics import calculate, pending_scope, ratio
-from .validation import Problems, validate_mark, validate_push, validate_round
+from .validation import Problems, validate_batch, validate_mark, validate_push, validate_round, validate_sop_upload
 
 
 def now():
@@ -43,6 +43,7 @@ class Service:
         self.workspace, self.environment = workspace, environment
         self.workspace_problems = {}
         self.merge_callback = None
+        self.sop_callback = None
         self.execution_callback = None
         # 发现与合并落地共享锁，防止看板写入在登记版本前被自己的扫描发现。
         self.workspace_lock = threading.RLock()
@@ -203,9 +204,13 @@ class Service:
         if self.workspace.configured:
             etag += '-e' + hashlib.sha256(canonical(self.entries(batch['workspace'])).encode()).hexdigest()[:12]
         tasks = [dict(r) for r in db.execute("SELECT id,status,scope_json,started_at,finished_at,error,void_reason,rounds_json FROM tasks "
-            "WHERE workspace=? AND batch=? AND kind='execute' ORDER BY id", (batch['workspace'], batch['name']))]
+            "WHERE workspace=? AND batch=? AND kind IN ('execute','generate') ORDER BY id", (batch['workspace'], batch['name']))]
         if tasks:
             etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
+        drafts = [dict(r) for r in db.execute('SELECT id,status,current_task FROM drafts WHERE batch=? ORDER BY id', (batch['id'],))]
+        annotations = [dict(r) for r in db.execute('SELECT * FROM draft_annotations WHERE batch=? ORDER BY number', (batch['id'],))]
+        if drafts:
+            etag += '-draft' + hashlib.sha256(canonical([drafts, annotations]).encode()).hexdigest()[:12]
         fixes = [dict(r) for r in db.execute('SELECT t.id,t.status,t.error,t.attempt,t.result_json,p.category,p.fingerprint '
             'FROM tasks t JOIN fix_problems p ON p.task=t.id WHERE t.workspace=? AND p.batch=? ORDER BY t.id,p.id',
             (batch['workspace'], batch['name']))]
@@ -273,9 +278,8 @@ class Service:
             number = self.insert_round(db, batch, version, round_body, kind="manual")
             return dict(ok=True, round=number, imported=len(prepared), skipped=skipped)
 
-    def upload_cases(self, key, name, body):
-        if not name or name in ('.', '..') or any(c in name for c in ('/', '\\', '\0')):
-            reject(422, 'batch-invalid', 'batch', '批次名称不能含路径分隔符')
+    def upload_cases(self, key, name, body, *, on_upload=None):
+        validate_batch(name)
         document = load_cases(body)
         with self.workspace_lock, self.store.transaction() as db:
             if not db.execute("SELECT 1 FROM workspaces WHERE key=?", (key,)).fetchone():
@@ -286,7 +290,8 @@ class Service:
             sha = hashlib.sha256(body["content"].encode()).hexdigest()
             current = {item["id"]: item for item in self.case_union(db, batch)}
             count = len(document["test_cases"])
-            if previous and previous["sha256"] == sha:
+            # 草稿确认各登记一次上传，并在同一事务中保存确认记录。
+            if previous and previous["sha256"] == sha and on_upload is None:
                 return dict(ok=True, upload=previous["number"], added=0, updated=0, unchanged=count,
                             union_count=len(current), unchanged_upload=True)
             number = previous["number"] + 1 if previous else 1
@@ -300,8 +305,88 @@ class Service:
                            (batch["id"], item["id"], number, canonical(item)))
             result = dict(ok=True, upload=number, added=added, updated=updated,
                           unchanged=count - added - updated, union_count=len(current) + added)
-        if self.merge_callback and self.workspace.configured:
+            if on_upload:
+                on_upload(db, batch, number)
+                if self.merge_callback and self.workspace.configured:
+                    self.merge_callback(key, name, trigger="上传用例", connection=db)
+        if on_upload is None and self.merge_callback and self.workspace.configured:
             self.merge_callback(key, name, trigger="上传用例")
+        return result
+
+    def sop_path(self, name):
+        validate_batch(name)
+        path = self.workspace.scenarios / (name + '.md')
+        if path.is_symlink() or path.resolve().parent != self.workspace.scenarios or path.exists() and not path.is_file():
+            reject(422, 'sop-invalid', 'batch', 'SOP 路径须为配置场景目录中的普通文件')
+        return path
+
+    def sop_hashes(self):
+        if not self.workspace.configured:
+            return {}
+        return {path.stem: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(self.workspace.scenarios.glob('*.md'))
+                if path.is_file() and not path.is_symlink()}
+
+    def sop_sha256(self, name):
+        if not self.workspace.configured:
+            return ''
+        path = self.workspace.scenarios / (name + '.md')
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() and not path.is_symlink() else ''
+
+    def latest_sop_upload(self, db, batch):
+        row = db.execute('SELECT v.* FROM sop_versions v JOIN sop_uploads u ON u.version=v.id '
+                         'WHERE v.batch=? ORDER BY v.id DESC LIMIT 1', (batch['id'],)).fetchone()
+        return dict(row, ref=row['path'].partition(':')[2]) if row else None
+
+    def upload_sop(self, key, name, body):
+        validate_batch(name)
+        validate_sop_upload(body)
+        with self.workspace_lock, self.store.transaction() as db:
+            if key != self.workspace.name:
+                reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+            self.workspace.reload()
+            if not self.workspace.configured:
+                reject(422, 'sop-invalid', 'workspace', '尚未搭建，请先配置工作区')
+            path = self.sop_path(name)
+            current_content = path.read_bytes() if path.exists() else None
+            current = hashlib.sha256(current_content).hexdigest() if current_content is not None else ''
+            if current != body['base_sha256']:
+                reject(409, 'sop-changed', 'base_sha256', '场景目录中的 SOP 原文已在别处修改，请刷新后重试')
+            db.execute("INSERT OR IGNORE INTO batches(workspace,name,path,product_digest) VALUES (?,?,'','')", (key, name))
+            batch = self.batch(db, key, name)
+            label = self.workspace.display_path(path)
+            previous = db.execute('SELECT * FROM sop_versions WHERE batch=? AND path=? ORDER BY version DESC LIMIT 1',
+                                  (batch['id'], label)).fetchone()
+            content = body['content'].encode('utf-8')
+            sha = hashlib.sha256(content).hexdigest()
+            if current_content == content and previous and previous['content'] == body['content']:
+                db.execute('INSERT OR IGNORE INTO sop_uploads(version,filename,uploaded_by) VALUES (?,?,?)',
+                           (previous['id'], body['filename'], body['uploaded_by'].strip()))
+                return dict(ok=True, version=previous['version'], sha256=current, unchanged=True)
+            from .repositories import git
+            repository = self.workspace.repos[self.workspace.scenario_repo]
+            source = dict(path=label, ref=path.relative_to(repository).as_posix(), content=body['content'],
+                          commit=git(repository, 'rev-parse', '--verify', 'HEAD').decode().strip(),
+                          sha256=sha, confirmed_by=body['confirmed_by'].strip())
+            self.save_sop_sources(db, batch['id'], [source])
+            version = db.execute('SELECT id,version FROM sop_versions WHERE batch=? AND path=? ORDER BY version DESC LIMIT 1',
+                                 (batch['id'], label)).fetchone()
+            # 恢复磁盘原文可能沿用已有版本；只补登记，不覆写该版本已有的上传记录。
+            db.execute('INSERT OR IGNORE INTO sop_uploads(version,filename,uploaded_by) VALUES (?,?,?)',
+                       (version['id'], body['filename'], body['uploaded_by'].strip()))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix('.md.tmp')
+            try:
+                temporary.write_bytes(content)
+                current = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ''
+                if current != body['base_sha256']:
+                    reject(409, 'sop-changed', 'base_sha256', '场景目录中的 SOP 原文已在别处修改，请刷新后重试')
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            result = dict(ok=True, version=version['version'], sha256=sha, unchanged=False)
+        if self.sop_callback and (previous is None or version['id'] != previous['id']):
+            self.sop_callback(key, name, version=result['version'])
         return result
 
     def case_union(self, db, batch):
@@ -462,6 +547,7 @@ class Service:
                     dirty=bool(version["dirty"]) if version else None,
                     commit=version["commit_id"] if version else None,
                     configured=self.workspace.configured, enabled=self.environment.approved(),
+                    sop_sha256=self.sop_sha256(batch['name']),
                     entry_problems=self.entries(batch['workspace'], local=local)['problems'] if self.workspace.configured else [],
                     workspace_problems=public_problems(self.workspace_problems.get((batch["workspace"], batch["name"]), []), local=local),
                     scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
@@ -486,6 +572,7 @@ class Service:
         with self.store.connection() as db:
             db.execute("BEGIN")
             workspace = dict(key=self.workspace.name, name=self.workspace.name, **{
+                'sop_hashes': self.sop_hashes(),
                 'repositories': self.workspace.public()['repositories'], 'configured': self.workspace.configured,
                 'enabled': self.environment.approved(),
                 'batches': [self.summary(db, batch, local=local) for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY name', (self.workspace.name,))],
@@ -648,7 +735,7 @@ class Service:
             return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"],
                         review=self.fix_review_state(db, key, name))
 
-    def push(self, key, batch, body, *, pairings=None):
+    def push(self, key, batch, body, *, pairings=None, auto_execute=True):
         validate_push(body)
         document = load_scenarios(body["content"])
         if document["metadata"]["batch"] != batch:
@@ -705,7 +792,7 @@ class Service:
         landed = pairings is not None
         with self.store.connection() as db:
             has_cases = bool(self.case_union(db, self.batch(db, key, batch)))
-        if self.execution_callback and self.workspace.configured and (landed or not has_cases):
+        if auto_execute and self.execution_callback and self.workspace.configured and (landed or not has_cases):
             self.execution_callback(key, batch, scope=[dict(scenario=s, reason='new' if s in added else 'changed')
                 for s in computed if s in added or s in changed], trigger='合并写入' if landed else '场景版本')
         if self.merge_callback and not landed and self.workspace.configured:

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import threading
@@ -81,13 +82,15 @@ def product_files(root, excluded=None, head=False, revision='HEAD'):
     return sorted(result, key=lambda r: os.fsencode(r['path']))
 
 
-def read_sop_sources(workspace, raw):
+def read_sop_sources(workspace, raw, uploaded_sop=None):
     document = yaml.safe_load(raw) or {}
     sources = {}
     for source in document.get('metadata', {}).get('sources', []):
-        for token in source['ref'].split():
+        # 上传来源是完整仓内路径，允许批次名含空格、冒号，并保留原文换行。
+        uploaded = re.fullmatch(r'看板上传 #[0-9]+', str(source.get('version', '')))
+        for token in [source['ref']] if uploaded else source['ref'].split():
             alias, separator, relative = token.partition(':')
-            if not separator:
+            if uploaded or not separator:
                 alias, relative = workspace.scenario_repo, token
             repository = workspace.repos.get(alias)
             if repository is None or Path(relative).is_absolute() or '..' in Path(relative).parts:
@@ -95,9 +98,10 @@ def read_sop_sources(workspace, raw):
             path = (repository / relative).resolve()
             if not path.is_relative_to(repository) or not path.is_file():
                 continue
-            content = path.read_text(encoding='utf-8')
-            commit = git(repository, 'rev-parse', '--verify', 'HEAD').decode().strip()
             label = alias + ':' + path.relative_to(repository).as_posix()
+            preserve = uploaded or uploaded_sop and uploaded_sop['path'] == label
+            content = path.read_bytes().decode('utf-8') if preserve else path.read_text(encoding='utf-8')
+            commit = git(repository, 'rev-parse', '--verify', 'HEAD').decode().strip()
             sources[label] = dict(path=label, ref=source['ref'], content=content, commit=commit,
                                   sha256=hashlib.sha256(content.encode()).hexdigest(), confirmed_by=source['confirmed_by'])
             break
@@ -133,12 +137,14 @@ class Discovery:
                     if document['metadata']['batch'] != name:
                         raise ValueError('metadata.batch 必须与场景文件名一致')
                     info = workspace.product(workspace.aliases(document))
-                    sources = read_sop_sources(workspace, raw)
                     with self.service.store.connection() as db:
+                        batch = db.execute('SELECT * FROM batches WHERE workspace=? AND name=?', (workspace.name, name)).fetchone()
+                        uploaded_sop = self.service.latest_sop_upload(db, batch) if batch else None
                         found = db.execute('SELECT 1 FROM versions v JOIN batches b ON b.id=v.batch '
                             'WHERE b.workspace=? AND b.name=? AND v.content=? '
                             'AND NOT EXISTS (SELECT 1 FROM versions newer WHERE newer.batch=v.batch AND newer.version>v.version)',
                             (workspace.name, name, raw)).fetchone()
+                    sources = read_sop_sources(workspace, raw, uploaded_sop)
                     if found:
                         with self.service.store.transaction() as db:
                             batch = self.service.batch(db, workspace.name, name)
