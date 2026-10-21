@@ -6,11 +6,14 @@
 metadata:
   requirement: "sop-board v9：工作区与项目适配、免令牌、跨仓修复、用例分层"
   batch: "sop-board-7"
-  version: 4
+  version: 5
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-20-v9-workspace.md 的 D30–D35"
       version: "v9 修订 3（2026-10-20）"
+      confirmed_by: "AdolphKevin"
+    - ref: "SOP-71-P01 预期第 1 条放宽：单仓搭建不要求代理只写数据目录，只要求搭建文件最终落在确认的数据目录、产品仓库不被改动"
+      version: "版本 5（2026-10-21）"
       confirmed_by: "AdolphKevin"
     - ref: "docs/designs/SOP-BOARD-8.md 的 D37–D38"
       version: "修订 1（2026-10-20）"
@@ -31,7 +34,7 @@ sops:
         verify: agent
         initial_state: ["单仓工作区已准备，本机没有该工作区的看板目录", "sop-board 候选版可用 uv tool install 从本地检出安装"]
         steps: ["在单仓工作区打开新的代理会话，说：按 sop-board 的安装说明为这个工作区安装并搭建", "回答工作区名称、全部仓库目录及搭建提问，代理运行 sop-board init 后按输出进入数据目录会话继续", "代理报告后运行 sop-board check <名称>，再运行 sop-board <名称>"]
-        expected: ["代理运行了 sop-board guide，并只在 ~/.sop-board/<工作区名>/ 下写文件", "代理就 worktree 的建法与开发者确认后才写入适配，报告写明适配依赖的外部工具", "sop-board check 五步全部通过，退出码 0", "代理的报告分为已验证的事实、推断及依据、待回答的问题", "sop-board 启动后页面显示环境就绪，页面与启动过程没有任何令牌输入"]
+        expected: ["代理运行了 sop-board guide；搭建文件（配置、适配、验证技能、搭建报告）最终都在开发者确认的数据目录中（缺省 ~/.sop-board/<工作区名>/），代理在仓库之外使用临时目录或暂存位置不判为不符", "代理就 worktree 的建法与开发者确认后才写入适配，报告写明适配依赖的外部工具", "sop-board check 五步全部通过，退出码 0", "代理的报告分为已验证的事实、推断及依据、待回答的问题", "sop-board 启动后页面显示环境就绪，页面与启动过程没有任何令牌输入"]
         forbidden_effects: ["工作区内的仓库出现新文件或改动", "执行者手写配置"]
       - id: SOP-71-N01
         polarity: negative
