@@ -277,6 +277,12 @@ MANUAL_STATUS = {**STATUS, "fail": "不通过（失败）", "blocked": "不通�
 def evidence_preview(evidence):
     url = "/api/v1/evidence/" + evidence["sha256"]
     download = f"<a href='{text(url)}' download='{text(evidence['name'])}'>下载 {text(evidence['name'])}</a>"
+    if evidence["content_type"].startswith("video/"):
+        return (f"<figure class='evidence-video'><video controls playsinline preload='metadata' "
+                f"aria-label='录屏：{text(evidence['name'])}'>"
+                f"<source src='{text(url)}' type='{text(evidence['content_type'])}'>"
+                f"浏览器无法播放此录屏，请使用下载链接。</video>"
+                f"<figcaption>录屏：{text(evidence['name'])}</figcaption></figure><p>{download}</p>")
     if evidence["content_type"].startswith("image/"):
         return download + f"<figure><img src='{text(url)}' alt='{text(evidence['name'])}' loading='lazy'><figcaption>{text(evidence['name'])}</figcaption></figure>"
     if "preview" in evidence:

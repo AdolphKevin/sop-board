@@ -10,7 +10,7 @@ from urllib.parse import quote, unquote, urlsplit, parse_qs
 from .errors import APIError, reject
 from . import pages
 from .network import is_loopback
-from .evidence_types import content_type as evidence_content_type, is_text
+from .evidence_types import content_type as evidence_content_type, is_text, video_response
 
 
 def invalid_constant(value):
@@ -205,9 +205,12 @@ class Handler(BaseHTTPRequestHandler):
                 media = evidence_content_type(name)
                 if is_text(media):
                     media += "; charset=utf-8"
-                self.respond(200, raw, media,
+                status, extra = 200, []
+                if media.startswith("video/"):
+                    status, raw, extra = video_response(raw, self.headers.get("Range"))
+                self.respond(status, raw, media,
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
-                              ("Content-Security-Policy", "sandbox; default-src 'none'")])
+                              ("Content-Security-Policy", "sandbox; default-src 'none'"), *extra])
                 return
             elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|review-complete|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]

@@ -26,6 +26,8 @@ Web 验收技能随 sop-board 发行，维护于 src/sop_board/skills/playwright
 
 产品展示名称统一为 Flow Board；安装包、命令、Python 模块、环境变量、数据目录及适配就绪标记沿用既有 sop-board 标识。
 
+录屏证据在场景详情页通过原生 video controls 内联播放，保留下载链接；仅预加载元数据，不自动播放，视频证据 GET 支持单段 Range/206 与无效范围 416，方便拖动进度。
+
 缺陷链接必填但原样保存，不校验、不补前缀；只有 http(s) 渲染为链接。仅 https://*.atlassian.net/browse/<单号> 识别为 Jira，凭据只读 JIRA_EMAIL、JIRA_API_TOKEN，只发往识别出的站点；Jira 站点与凭据由各项目使用方自行配置，搭建时代理只按变量名核对（D40、D41、D44）。
 
 安装：pyproject.toml 的 uv cache-keys 让源码或提交变化时重新构建（D49）。搭建报告固定七节：已验证的事实、推断及依据、待回答的问题、工作树建立与清理方式、外部工具与外部依赖、验证技能摘要、Jira 读取（D50）。
