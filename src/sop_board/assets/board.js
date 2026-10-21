@@ -8,6 +8,7 @@
   let writes = 0;
   const executionMessages = new Map();
   const reviewMessages = new Map();
+  const sopBases = new Map();
   const renderWaiting = (container, review) => {
     container.replaceChildren(...review.waiting.map(reason => {
       const message = document.createElement("p");
@@ -51,7 +52,13 @@
   window.addEventListener("popstate", () => applyCurrentFilter());
   const hasDraft = () => Array.from(document.querySelectorAll(".review-form")).some(form =>
     !form.querySelector("[data-review-fields]").hidden &&
-    ["defect_url", "note"].some(name => form.elements.namedItem(name).value.length > 0));
+    ["defect_url", "note"].some(name => form.elements.namedItem(name).value.length > 0)) ||
+    Array.from(document.querySelectorAll("[data-sop-upload]")).some(form => {
+      const field = name => form.elements.namedItem(name);
+      return (!field("batch").readOnly && field("batch").value.length > 0) ||
+        field("confirmed_by").value.length > 0 || field("file").files.length > 0;
+    }) || Array.from(document.querySelectorAll("[data-draft-form] textarea")).some(field => field.value.length > 0) ||
+    Boolean(document.querySelector("#draft-confirm-dialog[open]"));
   const deferRefresh = () => {
     const notice = document.getElementById("refresh-message");
     if (notice) {
@@ -319,6 +326,167 @@
         } finally {
           pending = false;
           submit.disabled = false;
+        }
+      });
+    }
+    document.querySelectorAll("[data-sop-upload]").forEach(form => {
+      const key = form.dataset.workspaceKey;
+      if (!sopBases.has(key)) sopBases.set(key, new Map(Object.entries(JSON.parse(form.dataset.sopHashes))));
+      const bases = sopBases.get(key);
+      const field = name => form.elements.namedItem(name);
+      const message = form.querySelector("[data-sop-message]");
+      const problems = form.querySelector("[data-sop-problems]");
+      const submit = form.querySelector("button[type='submit']");
+      let pending = false;
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (pending) return;
+        problems.replaceChildren();
+        if (!marker.value.trim()) {
+          show(message, "请先在身份栏填写标记人", "error");
+          focusIdentity(marker);
+          return;
+        }
+        const file = field("file").files[0];
+        if (!file) {
+          show(message, "请选择 SOP Markdown 或纯文本文件", "error");
+          field("file").focus();
+          return;
+        }
+        const batch = field("batch").value.trim();
+        if (!batch || !field("confirmed_by").value.trim()) {
+          show(message, "请填写批次名称和业务确认人", "error");
+          return;
+        }
+        if (file.size > 1024 * 1024) {
+          show(message, "上传失败：SOP 原文不能超过 1 MiB", "error");
+          return;
+        }
+        pending = true;
+        writes += 1;
+        submit.disabled = true;
+        saveIdentity();
+        try {
+          let content;
+          try {
+            content = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(await file.arrayBuffer());
+          } catch {
+            show(message, "上传失败：文件读取失败，SOP 原文必须为 UTF-8", "error");
+            return;
+          }
+          const target = "/api/v1/workspaces/" + encodeURIComponent(key) + "/batches/" + encodeURIComponent(batch) + "/sop";
+          const response = await fetch(target, {method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({filename: file.name, content, uploaded_by: marker.value.trim(),
+              confirmed_by: field("confirmed_by").value.trim(), base_sha256: bases.get(batch) || ""})});
+          const data = await response.json();
+          if (response.ok && data.ok) {
+            bases.set(batch, data.sha256);
+            form.reset();
+            show(message, data.unchanged ? "原文未变，保留已有版本。" : "业务 SOP 上传成功。");
+            const link = element("a", "查看 SOP 原文与版本");
+            link.href = "/w/" + encodeURIComponent(key) + "/b/" + encodeURIComponent(batch) + "/sop";
+            message.append(" ", link);
+          } else {
+            show(message, "上传失败", "error");
+            for (const problem of data.problems || []) {
+              problems.appendChild(element("li", problem.field + "：" + problem.problem));
+            }
+          }
+        } catch {
+          show(message, "文件读取或网络请求失败，请核对上传记录后重试。", "error");
+        } finally {
+          pending = false;
+          writes -= 1;
+          submit.disabled = false;
+        }
+      });
+    });
+    const draftIdentity = message => {
+      if (marker.value.trim()) {saveIdentity(); return true;}
+      show(message, "请先在身份栏填写标记人", "error");
+      focusIdentity(marker);
+      return false;
+    };
+    const submitDraft = async (url, body, message, button) => {
+      if (button.disabled) return false;
+      writes += 1;
+      button.disabled = true;
+      try {
+        const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          show(message, (data.problems || []).map(p => p.problem).join("；") || "操作失败", "error");
+          return false;
+        }
+        show(message, data.task ? "任务 #" + data.task.id + "：" + data.task.status : "已保存");
+        pendingRefresh = true;
+        return true;
+      } catch {
+        show(message, "网络请求失败，内容已保留。请先核对是否已保存，再决定是否重试。", "error");
+        return false;
+      } finally {
+        writes -= 1;
+        button.disabled = false;
+      }
+    };
+    document.querySelectorAll("[data-draft-form]").forEach(form => {
+      const field = name => form.elements.namedItem(name);
+      const message = form.querySelector("[data-draft-message]");
+      const button = form.querySelector("button[type='submit']");
+      const cancel = form.querySelector("[data-draft-cancel]");
+      cancel.addEventListener("click", async () => {
+        if (button.disabled) return;
+        form.reset();
+        form.closest("details").open = false;
+        show(message, "");
+        await refreshPage();
+      });
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (!draftIdentity(message)) return;
+        const rejecting = form.dataset.draftForm === "reject";
+        const input = field(rejecting ? "reason" : "text");
+        if (!input.value.trim()) {
+          show(message, rejecting ? "请填写未采纳理由" : "请填写批注内容", "error");
+          input.focus();
+          return;
+        }
+        const body = rejecting ? {reason: input.value, author: marker.value.trim()} :
+          {version: Number(field("version").value), target: field("target").value,
+            kind: field("kind").value, text: input.value, author: marker.value.trim()};
+        if (await submitDraft(form.action, body, message, button)) {
+          form.reset();
+          form.closest("details").open = false;
+        }
+        await refreshPage();
+      });
+    });
+    const draftActions = document.querySelector("[data-draft-actions]");
+    if (draftActions) {
+      const message = draftActions.querySelector("[data-draft-message]");
+      const revise = draftActions.querySelector("[data-draft-revise]");
+      revise.addEventListener("click", async () => {
+        await submitDraft(draftActions.dataset.draftActions + "/revise", {}, message, revise);
+        await refreshPage();
+      });
+      const dialog = document.getElementById("draft-confirm-dialog");
+      const confirm = dialog.querySelector("[data-draft-confirm-submit]");
+      draftActions.querySelector("[data-draft-confirm]").addEventListener("click", () => {
+        if (!draftIdentity(message)) return;
+        show(dialog.querySelector("[data-draft-message]"), "");
+        dialog.showModal();
+      });
+      dialog.querySelector("[data-draft-confirm-cancel]").addEventListener("click", () => {
+        if (!confirm.disabled) dialog.close();
+      });
+      dialog.addEventListener("cancel", event => {if (confirm.disabled) event.preventDefault();});
+      dialog.addEventListener("close", () => refreshPage());
+      confirm.addEventListener("click", async () => {
+        const message = dialog.querySelector("[data-draft-message]");
+        if (!draftIdentity(message)) return;
+        if (await submitDraft(draftActions.dataset.draftActions + "/confirm",
+          {version: Number(draftActions.dataset.version), confirmed_by: marker.value.trim()}, message, confirm)) {
+          window.location.reload();
         }
       });
     }

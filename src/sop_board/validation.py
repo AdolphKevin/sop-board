@@ -29,6 +29,34 @@ class Problems:
             raise APIError(422, self.code, self.items)
 
 
+def validate_batch(name):
+    if not name or name in ('.', '..') or any(c in name for c in ('/', '\\', '\0')):
+        raise APIError(422, 'batch-invalid', [dict(field='batch', problem='批次名称不能含路径分隔符')])
+
+
+def validate_sop_upload(body):
+    p = Problems('sop-invalid')
+    if not isinstance(body, dict):
+        p.add('body', '应为对象')
+        p.finish()
+    for key in ('filename', 'content', 'uploaded_by', 'confirmed_by'):
+        p.text(body.get(key), key)
+    filename = body.get('filename')
+    if isinstance(filename, str) and not filename.lower().endswith(('.md', '.txt')):
+        p.add('filename', '只接受 Markdown（.md）或纯文本（.txt）文件')
+    content = body.get('content')
+    if isinstance(content, str):
+        try:
+            if len(content.encode('utf-8')) > 1024 * 1024:
+                p.add('content', 'SOP 原文不能超过 1 MiB')
+        except UnicodeError:
+            p.add('content', 'SOP 原文必须为 UTF-8')
+    base = body.get('base_sha256')
+    if not isinstance(base, str) or base and not re.fullmatch('[a-f0-9]{64}', base):
+        p.add('base_sha256', '应为当前文件的 SHA-256 摘要，文件不存在时为空串')
+    p.finish()
+
+
 def validate_sop_sources(sources, p):
     if not isinstance(sources, list):
         p.add('sop_sources', '应为 SOP 原文数组')

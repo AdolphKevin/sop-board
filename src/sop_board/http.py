@@ -95,7 +95,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 try:
                     body = {} if developer and not raw else json.loads(raw.decode("utf-8"), parse_constant=invalid_constant)
-                except (ValueError, UnicodeError):
+                except UnicodeError:
+                    if re.fullmatch(r'/api/v1/workspaces/[^/]+/batches/[^/]+/sop', path):
+                        reject(422, 'sop-invalid', 'content', 'SOP 原文必须为 UTF-8')
+                    reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
+                except ValueError:
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
                 self.respond(200, pages.home(service.workspaces(local=local), environment=service.environment_status(local=local), local=local).encode(), "text/html; charset=utf-8")
@@ -118,6 +122,12 @@ class Handler(BaseHTTPRequestHandler):
                 key, batch = unquote(match[1]), unquote(match[2])
                 data = service.read_cases(key, batch, include_state=True)
                 self.respond(200, pages.cases(key, batch, data).encode(), "text/html; charset=utf-8")
+                return
+            if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/draft", path)):
+                key, batch = unquote(match[1]), unquote(match[2])
+                selected = parse_qs(urlsplit(self.path).query).get('version', [None])[0]
+                data = self.server.tasks.generations.read(key, batch, local=local)
+                self.respond(200, pages.draft(key, batch, data, selected, local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/merges", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -177,6 +187,20 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]), trigger='开发者指定独立场景', force_case=unquote(match[3]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
+            elif method == 'POST' and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/draft/annotations/([0-9]+)/reject", path)):
+                result = self.server.tasks.generations.reject_annotation(unquote(match[1]), unquote(match[2]), int(match[3]), body)
+            elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/draft(?:/(annotations|revise|confirm))?", path):
+                key, batch, action = unquote(match[1]), unquote(match[2]), match[3]
+                if method == 'GET' and action is None:
+                    result = self.server.tasks.generations.read(key, batch, local=local)
+                elif method == 'POST' and action == 'annotations':
+                    result = self.server.tasks.generations.annotate(key, batch, body)
+                elif method == 'POST' and action == 'revise':
+                    result = self.server.tasks.enqueue_generate(key, batch)
+                elif method == 'POST' and action == 'confirm':
+                    result = self.server.tasks.generations.confirm(key, batch, body)
+                else:
+                    reject(404, 'not-found', 'path', '接口不存在')
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/executions", path)):
                 if not isinstance(body, dict) or body.keys() - {'scope'}:
                     reject(422, 'invalid-scope', 'body', '执行请求只接受 scope 字段')
@@ -212,7 +236,7 @@ class Handler(BaseHTTPRequestHandler):
                              [("Content-Disposition", "inline; filename*=UTF-8''" + quote(name, safe="")),
                               ("Content-Security-Policy", "sandbox; default-src 'none'"), *extra])
                 return
-            elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|review-complete|cases|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
+            elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)(?:/(scenario-file|scenarios|rounds|marks|review-complete|cases|sop|cases\.yaml|state|report\.md|results\.yaml|results)(?:/([0-9]+))?)?", path):
                 key, batch, action, number = unquote(match[1]), unquote(match[2]), match[3], match[4]
                 if method == "PUT" and action == "scenario-file" and number is None:
                     result = service.push(key, batch, body)
@@ -224,6 +248,8 @@ class Handler(BaseHTTPRequestHandler):
                     result = service.review_complete(key, batch, body)
                 elif method == "POST" and action == "cases" and number is None:
                     result = service.upload_cases(key, batch, body)
+                elif method == "POST" and action == "sop" and number is None:
+                    result = service.upload_sop(key, batch, body)
                 elif method == "POST" and action == "results" and number is None:
                     result = service.import_results(key, batch, body)
                 elif method == "GET" and action == "cases" and number is None:
