@@ -1,5 +1,6 @@
 """在各仓修复目录启动适配，由新会话复测问题与所有可能受影响场景。"""
 import json
+from contextlib import nullcontext
 from importlib.resources import files
 from pathlib import Path
 from string import Template
@@ -13,6 +14,7 @@ from .service import canonical, fingerprint
 from .tasks import terminate_group, codex_failure
 from .validation import validate_round
 from .playwright import driver_skill, write_scope
+from .credentials import append_blocked, blocked_results, names as credential_names
 
 
 class ValidationContext:
@@ -71,7 +73,11 @@ class FixValidation:
         if info['dirty']:
             return dict(status='fail', reason='复测目录有未提交的产品改动', evidence=[], scenarios=[])
         try:
-            if any(snapshot['entries']['entries'][s['verify']]['surface'] == 'web' for s in selected):
+            preflight = self.fixes.service.environment.agent_environment(directories, self.tasks.worktree_environments[task['id']])
+            blocked = blocked_results(selected, workspace.entries, preflight)
+            blocked_ids = {(row['batch'], row['scenario']) for row in blocked}
+            runnable = [scene for scene in selected if (scene['batch'], scene['id']) not in blocked_ids]
+            if any(snapshot['entries']['entries'][s['verify']]['surface'] == 'web' for s in runnable):
                 while self.active(task):
                     with self.tasks.lock:
                         if self.tasks.browser_owner in (None, task['id']):
@@ -79,17 +85,20 @@ class FixValidation:
                             break
                         self.tasks.update(task['id'], error='等待验收浏览器')
                     self.tasks.stopping.wait(.1)
-            with self.fixes.service.environment.use_repair(directories, self.tasks.worktree_environments[task['id']]) as environment:
+            context = self.fixes.service.environment.use_repair(directories, self.tasks.worktree_environments[task['id']]) if runnable else nullcontext(preflight)
+            with context as environment:
                 if not self.active(task):
                     return
-                addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items() if entry.get('address_env') and entry['address_env'] in environment}
-                (directory / 'retest.json').write_text(canonical([dict(batch=s['batch'], scenario=s['id'], scene={k:v for k,v in s.items() if k != 'batch'}) for s in selected]), encoding='utf-8')
+                addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items()
+                    if entry.get('address_env') and entry['address_env'] in environment and entry['address_env'] not in credential_names(workspace.entries)}
+                (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
+                (directory / 'retest.json').write_text(canonical([dict(batch=s['batch'], scenario=s['id'], scene={k:v for k,v in s.items() if k != 'batch'}) for s in runnable]), encoding='utf-8')
                 (directory / 'entries.json').write_text(canonical(dict(entries=workspace.execution_entries(), addresses=addresses)), encoding='utf-8')
                 (directory / 'snapshot.json').write_text(canonical(dict(snapshot, repositories=info['repos'])), encoding='utf-8')
                 (directory / 'cases.json').write_text(canonical(snapshot['cases']), encoding='utf-8')
                 web_scopes = []
-                for index, batch in enumerate(dict.fromkeys(scene['batch'] for scene in selected), 1):
-                    batch_scenes = [scene for scene in selected if scene['batch'] == batch and workspace.entries[scene['verify']]['surface'] == 'web' and workspace.entries[scene['verify']].get('driver') in (None, 'playwright-acceptance')]
+                for index, batch in enumerate(dict.fromkeys(scene['batch'] for scene in runnable), 1):
+                    batch_scenes = [scene for scene in runnable if scene['batch'] == batch and workspace.entries[scene['verify']]['surface'] == 'web' and workspace.entries[scene['verify']].get('driver') in (None, 'playwright-acceptance')]
                     if not batch_scenes:
                         continue
                     folder = directory / 'playwright' / str(index)
@@ -108,30 +117,36 @@ class FixValidation:
                 (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
                 if workspace.skill_changed(snapshot):
                     return dict(status='void', reason='验证技能变化', evidence=[], scenarios=[])
-                with self.tasks.lock:
-                    process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
-                    self.tasks.processes[task['id']] = process
-                try:
-                    code = process.wait(timeout=self.tasks.timeout)
-                except subprocess.TimeoutExpired:
-                    terminate_group(process)
-                    raise ValueError('复测会话超时')
+                if runnable:
+                    with self.tasks.lock:
+                        process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
+                        self.tasks.processes[task['id']] = process
+                    try:
+                        code = process.wait(timeout=self.tasks.timeout)
+                    except subprocess.TimeoutExpired:
+                        terminate_group(process)
+                        raise ValueError('复测会话超时')
+                    if code:
+                        raise ValueError(codex_failure(directory, code, label='复测会话'))
+                    for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
+                        event = json.loads(line)
+                        if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
+                            session = event['thread_id']
+                            break
+                    if not session or session == task['session_id']:
+                        raise ValueError('复测没有独立的新会话编号')
+                else:
+                    session = 'Flow Board 入口检查'
                 if workspace.skill_changed(snapshot):
                     raise ValueError('验证技能变化')
-                if code:
-                    raise ValueError(codex_failure(directory, code, label='复测会话'))
-                for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
-                    event = json.loads(line)
-                    if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
-                        session = event['thread_id']
-                        break
-                if not session or session == task['session_id']:
-                    raise ValueError('复测没有独立的新会话编号')
                 executions = Executions(ValidationContext(self.tasks, directory))
-                for batch in dict.fromkeys(s['batch'] for s in selected):
-                    group = [s for s in selected if s['batch'] == batch]
+                for batch in dict.fromkeys(s['batch'] for s in runnable):
+                    group = [s for s in runnable if s['batch'] == batch]
                     bound = dict(task, input_json='{}', scope_json='[]', snapshot_json=canonical(dict(scenarios={s['id']: fingerprint(s) for s in group})))
                     rows.extend(executions.read_results(bound, group, session, batch=batch))
+                append_blocked(directory, blocked)
+                fingerprints = {(s['batch'], s['id']): fingerprint(s) for s in selected}
+                rows.extend(dict(row, fingerprint=fingerprints[(row['batch'], row['scenario'])], session=str(task['id'])) for row in blocked)
                 raw = [json.loads(line) for line in (directory / 'results.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
                 if any((r.get('batch'), r.get('scenario')) not in {(s['batch'], s['id']) for s in selected} for r in raw):
                     raise ValueError('复测结果有范围外批次或场景')

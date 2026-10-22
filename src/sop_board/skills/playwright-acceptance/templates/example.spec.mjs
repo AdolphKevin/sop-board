@@ -1,5 +1,6 @@
 // 通用只读示例：将映射与步骤替换为项目 surface-map.md 中已核对的内容。
 // 此文件中的视图名和选择器只是示例，不是业务预期或跨项目默认值。
+// 验收脚本保存在仓库外；产品回归测试的建设使用 regression-distill 技能。
 import { test, expect, step, shot, blocked, tags } from './fixtures.mjs';
 
 const SCENARIO = 'SOP-EXAMPLE-P01';

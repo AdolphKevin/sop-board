@@ -221,6 +221,7 @@ def batch(workspace, data, *, environment=None, local=False):
             f"<p>{text(p.get('path', ''))} 第 {p['line']} 行：{text(p['field'])} {text(p['problem'])}</p>"
             for p in data["workspace_problems"]) + "</section>"
     report_link = environment_panel(environment, local) + workspace_info + execution_list(data) + f"<p><a href='{text(api + '/report.md')}'>导出报告</a></p>"
+    report_link += regression_panel(data.get('regression_links', []))
     report_link += execution_controls(workspace, data['name'], data, local=local)
     report_link += automation_controls(data, local=local) + identity_bar()
     report_link += sop_upload(workspace, {data['name']: data['sop_sha256']}, data['name'])
@@ -326,6 +327,34 @@ def evidence_preview(evidence):
     return f"<p>{download}</p>"
 
 
+def regression_panel(links, summary=None, *, expanded=False):
+    from .regressions import LAYERS, RUN_STATUS, ci_label, coverage_lines
+    content = '<section><h2>回归覆盖</h2>'
+    if not links:
+        return content + '<p>暂无记录</p></section>'
+    manual = (summary or {}).get('latest_manual')
+    if manual and manual['status'] in ('fail', 'blocked'):
+        content += '<p class="notice">关联测试待核查</p>'
+    for link in links:
+        covered, remaining = coverage_lines(link)
+        content += (f"<details class='regression-link' data-disclosure='regression-{link['id']}'{' open' if expanded else ''}>"
+                    f"<summary>{text(link['scenario'])} · {text(link['test_id'])} · {text(link['status'])} · 本机：{text(RUN_STATUS[link['local_run']['status']])} · CI：{text(ci_label(link['ci']))}</summary>"
+                    f"<p>仓库：{text(link['repo'])} · 层级：{text(LAYERS[link['layer']])} · 提交：{text(link['commit_id'] or '尚未提交')}</p>"
+                    f"<p>本机运行：{text(RUN_STATUS[link['local_run']['status']])} · CI：{text(ci_label(link['ci']))}</p>"
+                    f"<p>{'独立验收已完成' if link['independent_acceptance'] == 'completed' else '独立验收未完成'}</p>"
+                    '<h3>覆盖的预期</h3><ul>' + ''.join('<li>' + text(item) + '</li>' for item in covered) + '</ul>'
+                    '<h3>仍需真实入口验收的部分</h3>' + ('<ul>' + ''.join('<li>' + text(item) + '</li>' for item in remaining) + '</ul>'
+                        if remaining else '<p>无未覆盖项；独立业务验收仍须执行。</p>'))
+        if 'command' in link:
+            content += ''.join('<p>' + label + '：<code>' + text(value) + '</code></p>' for label, value in [
+                ('仓库路径', link['root']), ('测试文件', link['path']), ('测试名', link['test_name']),
+                ('运行命令', link['command']), ('本机原始输出', link['local_run']['output']),
+                ('CI 任务与命令', link['ci']['job'] + ' · ' + link['ci']['command']),
+                ('CI 运行与提交', link['ci']['run'] + ' · ' + link['ci']['commit']), ('CI 原始输出', link['ci']['output'])])
+        content += f"<p>登记人：{text(link['registered_by'])} · {time_tag(link['registered_at'])}</p></details>"
+    return content + '</section>'
+
+
 def scenario(data):
     base = batch_url(data["workspace"], data["batch"])
     titles = {}
@@ -372,7 +401,8 @@ def scenario(data):
             f"{removed}<p>节点：{text(data['node'])} · {'正向' if data['polarity'] == 'positive' else '反向'} · 优先级：{text(data['priority'])}</p>"
             f"<p>验证入口：{text(data['verify'])}</p>"
             f"<p>场景文件最新推送时间：{time_tag(data['pushed_at'])}</p>{identity_bar() if data['current'] else ''}"
-            f"{review_completion(data['workspace'], data['batch'], data) if data['current'] else ''}{review}{''.join(sections)}")
+            f"{review_completion(data['workspace'], data['batch'], data) if data['current'] else ''}{review}"
+            f"{regression_panel(data.get('regression_links', []), summary, expanded=True)}{''.join(sections)}")
     return layout(data["scenario"], body, watch=(data["workspace"], data["batch"], data["etag"]))
 
 

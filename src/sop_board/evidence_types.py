@@ -12,10 +12,19 @@ def content_type(name):
         return "application/x-ndjson"
     if suffix in (".md", ".log"):
         return "text/markdown" if suffix == ".md" else "text/plain"
+    if suffix in (".yaml", ".yml"):
+        return "application/yaml"
+    if suffix == ".jsonl":
+        return "application/x-ndjson"
+    if suffix in (".har",):
+        return "application/json"
+    if suffix in (".diff", ".patch", ".toml", ".ini", ".cfg", ".env", ".sql", ".sh", ".py", ".go", ".ts", ".js", ".mjs"):
+        return "text/plain"
     return mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
 def is_text(value):
+    value = value.split(";")[0].strip().lower()
     return value.startswith("text/") or value in (
         "application/json", "application/x-ndjson", "application/xml", "application/yaml", "application/x-yaml")
 

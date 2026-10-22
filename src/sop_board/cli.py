@@ -24,6 +24,12 @@ def main():
     if argv and argv[0] == 'playwright':
         from .playwright import command
         return command(argv[1:])
+    if argv and argv[0] == 'skills':
+        from .skill_install import command
+        return command(argv[1:])
+    if argv and argv[0] == 'distill':
+        from .distill import command
+        return command(argv[1:])
     action = argv.pop(0) if argv and argv[0] in ('guide', 'check', 'init') else 'serve'
     if action == 'guide':
         if argv:
@@ -58,6 +64,8 @@ def main():
         environment = Environment(workspace)
         if action == 'check':
             result = environment.check()
+            for credential in result['credentials']:
+                print(f"入口 {credential['entry']} · {credential['name']}：{credential['status']}", flush=True)
             for number, step in enumerate(result['steps'], 1):
                 print(f"{number}. {step['name']}：{step['status']} · {step['message']}", flush=True)
                 if step['log']:

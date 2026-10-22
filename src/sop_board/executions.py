@@ -1,5 +1,6 @@
 """固定工作区快照，在已就绪的适配环境中执行并登记结果。"""
 import hashlib
+from contextlib import nullcontext
 from importlib.resources import files
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ from .statistics import calculate, pending_scope
 from .tasks import terminate_group, judgment_object, invalid_judgment_constant, codex_failure
 from .validation import validate_round
 from .playwright import driver_skill, write_scope
+from .credentials import append_blocked, blocked_results, names as credential_names
 
 
 class Executions:
@@ -191,7 +193,7 @@ class Executions:
         addresses = {}
         for name, entry in inputs['entries'].items():
             variable = entry.get('address_env')
-            if variable:
+            if variable and variable not in credential_names(inputs['entries']):
                 if not environment.get(variable, '').strip():
                     raise ValueError('入口 ' + name + ' 缺少地址环境变量 ' + variable)
                 addresses[name] = environment[variable]
@@ -200,6 +202,10 @@ class Executions:
         (directory / 'cases.json').write_text(canonical([case for case in inputs['cases'] if case['id'] in referenced]), encoding='utf-8')
         (directory / 'pending.json').write_text(task['scope_json'], encoding='utf-8')
         (directory / 'previous-results.json').write_text(canonical(inputs['previous']), encoding='utf-8')
+        with self.store.connection() as db:
+            from .regressions import read_links
+            batch = self.service.batch(db, task['workspace'], task['batch'])
+            (directory / 'regression-links.json').write_text(canonical(read_links(db, batch, local=True)), encoding='utf-8')
         (directory / 'evidence').mkdir(exist_ok=True)
         snapshot = json.loads(task['snapshot_json'])
         changes = {}
@@ -308,6 +314,28 @@ class Executions:
             raise ValueError('、'.join(sorted(selected - seen)) + ' 缺少结果行')
         return rows
 
+    def blocked_impact(self, task, blocked):
+        """保留完整影响判定清单；凭据缺失项不能以原通过结果沿用。"""
+        if not blocked:
+            return
+        path = self.tasks.directory(task['id']) / 'impact.json'
+        if path.is_symlink():
+            raise ValueError('impact.json 不能是符号链接')
+        changed = {row['scenario'] for row in json.loads(task['scope_json']) if row['reason'] == 'source-changed'}
+        generated = [dict(scenario=row['scenario'], affected=True,
+                         reason='缺少凭据，尚无法证明不受影响，待环境就绪后经真实入口执行；' + row['finding'])
+                     for row in blocked if row['scenario'] in changed]
+        if generated:
+            previous = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=judgment_object,
+                                  parse_constant=invalid_judgment_constant) if path.is_file() else []
+            expected = changed - {row['scenario'] for row in generated}
+            if (not isinstance(previous, list) or any(not isinstance(row, dict) or not isinstance(row.get('scenario'), str) for row in previous)
+                    or len(previous) != len(expected) or {row['scenario'] for row in previous} != expected):
+                raise ValueError('impact.json 与本次可执行场景的影响判定范围不一致')
+            path.write_text(canonical(previous + generated), encoding='utf-8')
+        elif not path.exists():
+            path.write_text('[]', encoding='utf-8')
+
     def execute(self, task):
         directory = self.tasks.directory(task['id'])
         error = void_reason = session = ''
@@ -319,37 +347,50 @@ class Executions:
         try:
             with self.tasks.lock:
                 self.tasks.starting = None
-            with self.service.environment.use_baseline() as environment:
+            preflight = self.service.environment.agent_environment(self.service.workspace.repos)
+            blocked = blocked_results(inputs['scenes'], inputs['entries'], preflight)
+            blocked_ids = {row['scenario'] for row in blocked}
+            runnable = [scene for scene in inputs['scenes'] if scene['id'] not in blocked_ids]
+            scoped = dict(task, scope_json=canonical([row for row in json.loads(task['scope_json']) if row['scenario'] not in blocked_ids]))
+            context = self.service.environment.use_baseline() if runnable else nullcontext(preflight)
+            with context as environment:
                 if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '运行中':
                     return
                 void_reason = self.changes(task, snapshot)
                 if void_reason:
                     return
-                prompt = self.inputs(task, inputs, environment)
-                with self.tasks.lock:
-                    process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
-                    self.tasks.processes[task['id']] = process
-                try:
-                    code = process.wait(timeout=self.tasks.timeout)
-                except subprocess.TimeoutExpired:
-                    terminate_group(process)
-                    raise ValueError(f'Codex 运行超时（{self.tasks.timeout:g} 秒）')
+                (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
+                if runnable:
+                    prompt = self.inputs(scoped, dict(inputs, scenes=runnable), environment)
+                    with self.tasks.lock:
+                        process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
+                        self.tasks.processes[task['id']] = process
+                    try:
+                        code = process.wait(timeout=self.tasks.timeout)
+                    except subprocess.TimeoutExpired:
+                        terminate_group(process)
+                        raise ValueError(f'Codex 运行超时（{self.tasks.timeout:g} 秒）')
+                    if code:
+                        raise ValueError(codex_failure(directory, code))
+                    for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
+                        try:
+                            event = json.loads(line)
+                            if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
+                                session = event['thread_id']
+                                break
+                        except ValueError:
+                            continue
+                    if not session:
+                        raise ValueError('Codex 没有返回会话编号')
+                    rows = self.read_results(scoped, runnable, session)
+                else:
+                    session = 'Flow Board 入口检查'
                 void_reason = self.changes(task, snapshot)
                 if void_reason:
                     return
-                if code:
-                    raise ValueError(codex_failure(directory, code))
-                for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
-                    try:
-                        event = json.loads(line)
-                        if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
-                            session = event['thread_id']
-                            break
-                    except ValueError:
-                        continue
-                if not session:
-                    raise ValueError('Codex 没有返回会话编号')
-                rows = self.read_results(task, inputs['scenes'], session)
+                self.blocked_impact(task, blocked)
+                append_blocked(directory, blocked)
+                rows.extend(dict(row, fingerprint=snapshot['scenarios'][row['scenario']], session=str(task['id'])) for row in blocked)
                 with self.tasks.lock, self.store.transaction() as db:
                     if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '运行中':
                         return

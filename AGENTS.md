@@ -6,6 +6,8 @@
 
 Web 验收技能、模板、转换器和测试统一维护在 src/sop_board/skills/playwright-acceptance/，由 sop-board 包发行；不要依赖另一个 playwright-acceptance 检出目录。命令入口为 sop-board guide 与 sop-board playwright。
 
+回归沉淀技能维护在 src/sop_board/skills/regression-distill/，随包发行；sop-board skills install 安装两个客户端的技能链接，sop-board distill submit 在本机登记关联。产品侧另行授权的测试建设按该技能执行，场景执行与修复会话仍不写测试；本仓开发继续遵守下文“不新增测试”。关联不改变验收结论，数据库格式保持 5。入口凭据只通过 credential_env 声明名称并从启动进程传入会话，内网不显示名称，任何材料不写取值。
+
 ## 完成标准
 
 - 预期来自已确认的业务要求、SOP 或接口约定，不把当前实现输出当作正确答案。

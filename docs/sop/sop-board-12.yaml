@@ -1,20 +1,24 @@
 # SOP-BOARD-12 的验收场景
 # 预期依据 docs/proposals/2026-10-22-acceptance-standard-and-distill.md（修订 1，已批准）的 D60–D64。只写业务流程；验收只以本文件的场景经真实入口执行为准。
-# 本版本只含 S1（D60）；S2 的节点在实施对应分段时加入。
+# 版本 3（2026-10-22）：SOP-124-N02、SOP-129-N02 按用户确认的两级保证改写。版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
+# “沉淀演示仓库”：临时 Git 仓库 shop，Python 标准库 HTTP 服务 + SQLite，退款接口需用测试账号登录（密码经环境变量 DEMO_BUYER_PASSWORD），带一套已有的接口测试（pytest 或 unittest）与可运行的 CI 配置（GitHub Actions 文件，CI 实跑由推送到一个临时远端或标注“仅本机”）；预置一个已知缺陷提交 bug-refund-twice（同一订单可重复退款）。场景文件 docs/sop/refund.yaml 含两条已确认场景（sources 有 confirmed_by）与一条未确认场景。
 # “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含一个“退款申请”页面与接口），origin 为 https://example.invalid/...；搭建由新开的代理会话按 sop-board guide 完成。
 # “原标准”：team-workflow 仓库 main 分支 8be02e4 的 skills/team-workflow/references/business-acceptance.md、test-capability.md 与 templates/ 下的项目验收方案、交付记录、缺陷记录、每周复盘模板。
 # 独立验收串行进行。
 
 metadata:
-  requirement: "sop-board：承接业务验收标准，成为 SOP 验收的唯一正文"
+  requirement: "sop-board：承接业务验收标准；随包发行回归沉淀技能，登记场景与测试的关联；看板会话可取得入口凭据变量"
   batch: "sop-board-12"
-  version: 1
+  version: 3
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-acceptance-standard-and-distill.md 的 D60"
       version: "修订 1（2026-10-22 批准）"
       confirmed_by: "AdolphKevin"
-  tags: ["sop-board", "standard"]
+    - ref: "docs/proposals/2026-10-22-acceptance-standard-and-distill.md 的 D61–D65"
+      version: "修订 1（2026-10-22 批准），D65 为 2026-10-22 用户确认补入"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "standard", "regression-distill"]
 
 sops:
   - id: SOP-121
@@ -80,3 +84,332 @@ sops:
         expected: ["命中均已改为通用示例（如 example.invalid、PROJ-123、<数据目录>）"]
         forbidden_effects: ["出现个人本机绝对路径、内部项目名、真实站点或真实单号"]
         evidence_hints: ["检索命令与结果"]
+
+  - id: SOP-122
+    title: 开发会话中把已确认场景沉淀为分层回归测试
+    actor: 开发者
+    entry: Codex 与 Claude Code 开发会话（regression-distill 技能）
+    scenarios:
+      - id: SOP-122-P01
+        polarity: positive
+        title: 两个客户端都能按技能沉淀，测试按场景分层、实际运行、留给开发者提交
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["已安装本版 sop-board 并运行 sop-board skills install", "沉淀演示仓库基线提交已通过两条已确认场景的真实入口自检，自检记录含场景指纹、产品提交与执行者"]
+        steps: ["在 shop 仓库新开 Codex 会话，说“把 refund.yaml 中这两条场景沉淀为测试”", "在另一份相同的 shop 副本中用 Claude Code 会话说同一句话", "分别查看会话记录、git status、新增测试与 regression.json"]
+        expected: ["两个会话都使用了 regression-distill 技能", "仓库新增按成本分层的测试，测试名或标签含 <批次>#<场景编号>", "regression.json 列出每个声明的测试，并核对它们出现在实际执行清单中且通过", "改动留在工作区未提交，产品代码无改动", "报告逐项列出 expected 与 forbidden_effects 的覆盖情况及仍需真实入口验收的部分", "报告写明独立验收未完成"]
+        forbidden_effects: ["会话提交、推送或修改产品代码", "断言取自当前输出而非场景原文"]
+        evidence_hints: ["会话记录", "git status 与 diff", "regression.json"]
+      - id: SOP-122-P02
+        polarity: positive
+        title: 沉淀的测试能发现已知缺陷
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-122-P01 生成的测试"]
+        steps: ["把测试复制到 bug-refund-twice 提交的检出上运行"]
+        expected: ["覆盖“同一订单不可重复退款”预期的测试因该业务断言失败"]
+        forbidden_effects: ["因编译、依赖或环境错误失败"]
+        evidence_hints: ["运行输出"]
+      - id: SOP-122-P03
+        polarity: positive
+        title: CI 实际运行后报告记为已运行
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-122-P01 的测试已由开发者提交"]
+        steps: ["推送到临时远端触发 CI（无法触发时记受阻）", "按技能补登 CI 结果"]
+        expected: ["报告 CI 状态为已运行，含运行编号或链接、对应提交与实际执行的测试清单"]
+        forbidden_effects: ["没有 CI 证据却记为已运行"]
+        evidence_hints: ["CI 运行页面或日志", "regression.json"]
+      - id: SOP-122-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 预期与实现不符时保留失败用例
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["shop 处于 bug-refund-twice 提交，自检记录仍指向该提交"]
+        steps: ["要求沉淀覆盖“不可重复退款”的场景"]
+        expected: ["对应测试失败并保留", "报告列出现象、预期依据与疑似原因", "产品代码无改动"]
+        forbidden_effects: ["修改断言迁就实现", "修改产品代码"]
+        evidence_hints: ["会话记录、diff 与报告"]
+      - id: SOP-122-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 测试被跳过或未被执行时记为未运行
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-122-P01 的测试"]
+        steps: ["不设置测试数据库所需变量运行技能的本机运行步骤", "删掉一个声明测试所在的文件后再运行"]
+        expected: ["两次报告都把相关测试记为未运行并说明原因"]
+        forbidden_effects: ["记为通过"]
+        evidence_hints: ["两次输出与报告"]
+      - id: SOP-122-N03
+        polarity: negative
+        negative_type: other
+        title: 没有 CI 证据时 CI 状态如实
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["SOP-122-P01 的报告，未推送"]
+        steps: ["查看报告 CI 状态"]
+        expected: ["CI 状态为“已接入，未验证”或“未接入”"]
+        forbidden_effects: ["记为已运行"]
+        evidence_hints: ["regression.json"]
+
+  - id: SOP-123
+    title: 沉淀资格
+    actor: 开发者
+    entry: 开发会话（regression-distill 技能）
+    scenarios:
+      - id: SOP-123-P01
+        polarity: positive
+        title: 独立验收未完成时可以沉淀
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["场景已确认，只有开发者自检通过记录"]
+        steps: ["要求沉淀"]
+        expected: ["沉淀完成，报告与交付说明写明“独立验收未完成”"]
+        forbidden_effects: ["把自检写成独立验收"]
+        evidence_hints: ["报告"]
+      - id: SOP-123-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 预期没有确认人时停止
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["refund.yaml 中未确认的场景"]
+        steps: ["要求沉淀该场景"]
+        expected: ["技能停止并说明缺少确认人，仓库无改动"]
+        forbidden_effects: ["生成测试"]
+        evidence_hints: ["会话记录与 git status"]
+      - id: SOP-123-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 通过证据与当前场景或产品不符时停止
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["场景已确认；自检记录的场景指纹与当前文件不同，或从未经真实入口通过"]
+        steps: ["要求沉淀"]
+        expected: ["技能停止并说明需要先经真实入口重新执行"]
+        forbidden_effects: ["生成测试"]
+        evidence_hints: ["会话记录"]
+
+  - id: SOP-124
+    title: 看板登记场景与测试的关联
+    actor: 开发者与测试同事
+    entry: sop-board distill submit 与看板页面
+    scenarios:
+      - id: SOP-124-P01
+        polarity: positive
+        title: 登记待提交关联，提交后变为已提交
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["shop 已登记为看板工作区，SOP-122-P01 的测试未提交"]
+        steps: ["运行 sop-board distill submit <工作区> --report regression.json", "打开场景详情与导出报告", "开发者提交测试后再次运行 distill submit"]
+        expected: ["场景详情显示待提交关联、覆盖项、部分覆盖范围与 CI 状态", "报告“回归覆盖”段与页面一致", "再次登记后关联变为已提交并记录提交"]
+        forbidden_effects: ["登记改变场景的验收结论"]
+        evidence_hints: ["命令输出、页面截图、报告"]
+      - id: SOP-124-P02
+        polarity: positive
+        title: 场景修改后关联显示已过期
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["SOP-124-P01 的已提交关联"]
+        steps: ["修改其中一条场景的 expected 并让看板读到新版本", "打开该场景详情"]
+        expected: ["关联显示“已过期，需重新沉淀”"]
+        forbidden_effects: ["仍显示为有效"]
+        evidence_hints: ["页面截图"]
+      - id: SOP-124-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 指纹或测试文件摘要不符时拒绝登记
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-122-P01 的报告"]
+        steps: ["把报告中一条场景的内容指纹改错后登记", "恢复后改动一个测试文件内容再登记"]
+        expected: ["两次登记都被拒绝并说明原因", "关联表无新增"]
+        forbidden_effects: ["登记成功"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-124-N02
+        polarity: negative
+        negative_type: permission
+        title: 内网看不到测试命令与本机路径
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["看板以 --lan 启动，存在已登记关联", "有一份文本证据含数据目录、仓库目录、用户目录与临时目录下的路径，分别以原文、反斜杠转义斜杠（一层与两层）、URL 编码与大小写变体写出"]
+        steps: ["经非回环地址打开场景详情、报告页及对应接口、任务列表与详情、任务附件链接、证据下载", "直接请求提示词、会话记录等代理材料"]
+        expected: ["可见场景、覆盖与状态", "看板生成的页面字段、接口与报告中没有本机绝对路径与测试命令", "代理材料返回 403，任务附件列表只含协作材料", "文本证据中上述已知目录下的路径在每种写法下都显示为 <本机路径>，其余内容与换行保留，JSON 响应仍可解析"]
+        forbidden_effects: ["看板生成的内容出现本机绝对路径或测试命令", "已知目录下的路径以上述任一写法出现在内网响应中"]
+        evidence_hints: ["页面截图、HTML 与 JSON 检索", "探针证据经内网读取的原文"]
+
+  - id: SOP-125
+    title: 回归测试与场景验收的关系
+    actor: 开发者与测试同事
+    entry: 看板执行与人工复核
+    scenarios:
+      - id: SOP-125-P01
+        polarity: positive
+        title: 没有沉淀的批次照常完成验收与报告
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个从未沉淀的批次"]
+        steps: ["执行全部场景并导出报告"]
+        expected: ["验收与报告照常完成，回归覆盖段为空"]
+        forbidden_effects: ["因未沉淀而阻止验收或报告"]
+        evidence_hints: ["报告"]
+      - id: SOP-125-P02
+        polarity: positive
+        title: 只新增测试的提交按完整改动范围沿用
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["SOP-124-P01 提交了测试，此前场景已通过"]
+        steps: ["执行待执行场景"]
+        expected: ["已通过场景按完整改动范围判定，只有测试改动的沿用并写理由", "统计中沿用与重跑分开计数"]
+        forbidden_effects: ["关联测试的通过直接替代需要重跑的场景"]
+        evidence_hints: ["impact.json、轮次结果、统计"]
+      - id: SOP-125-P03
+        polarity: positive
+        title: 人工不通过而有关联测试时提示待核查
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["有已提交关联的场景"]
+        steps: ["人工把该场景标为不通过"]
+        expected: ["场景结论为不通过", "详情显示“关联测试待核查”"]
+        forbidden_effects: ["自动记为测试漏检或改变关联状态"]
+        evidence_hints: ["页面截图"]
+      - id: SOP-125-N01
+        polarity: negative
+        negative_type: other
+        title: 沉淀失败不改变场景结论
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["SOP-122-N01 中沉淀失败的场景，此前已通过"]
+        steps: ["查看场景结论与统计"]
+        expected: ["场景结论与统计保持原样"]
+        forbidden_effects: ["场景被改为失败或待执行"]
+        evidence_hints: ["页面截图"]
+
+  - id: SOP-126
+    title: 数据目录兼容
+    actor: 开发者
+    entry: sop-board 启动
+    scenarios:
+      - id: SOP-126-P01
+        polarity: positive
+        title: 现有格式 5 数据目录直接可用
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["用 main 上 S1 发布版建立并使用过的数据目录：含批次、轮次、证据、修复、草稿、批注、确认与配对记录"]
+        steps: ["用本版启动该数据目录", "逐页核对既有记录"]
+        expected: ["全部既有记录完整可见", "数据库 user_version 仍为 5，关联表已建立"]
+        forbidden_effects: ["拒绝打开或丢失记录"]
+        evidence_hints: ["启动输出、页面截图、sqlite 查询"]
+      - id: SOP-126-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 其他数据格式照旧拒绝
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["user_version 为 4 的数据目录"]
+        steps: ["用本版启动"]
+        expected: ["拒绝打开并提示用 init 新建"]
+        forbidden_effects: ["就地升级或改写该数据库"]
+        evidence_hints: ["启动输出与文件摘要"]
+
+  - id: SOP-128
+    title: 技能安装
+    actor: 开发者
+    entry: sop-board skills install
+    scenarios:
+      - id: SOP-128-P01
+        polarity: positive
+        title: 两个客户端解析到本包技能，重复安装与升级保持一致
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["临时 HOME，~/.agents/skills 与 ~/.claude/skills 为空"]
+        steps: ["sop-board skills install", "再运行一次", "从更新后的检出重新安装 sop-board 后再运行"]
+        expected: ["两个目录都有 regression-distill 与 playwright-acceptance，指向本包", "命令输出每个客户端实际解析到的路径与版本", "重复运行结果不变", "升级后指向新版本"]
+        forbidden_effects: ["产生重复或断开的链接"]
+        evidence_hints: ["命令输出与 ls -l"]
+      - id: SOP-128-N01
+        polarity: negative
+        negative_type: duplicate
+        title: 已有其他来源同名技能时跳过
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["临时 HOME 中 ~/.agents/skills/playwright-acceptance 是普通目录，~/.claude/skills/regression-distill 是指向别处的链接"]
+        steps: ["sop-board skills install"]
+        expected: ["这两项列出来源并跳过，其余正常安装"]
+        forbidden_effects: ["覆盖或删除已有技能"]
+        evidence_hints: ["命令输出与前后 ls -l"]
+
+  - id: SOP-129
+    title: 入口凭据变量传递给看板会话
+    actor: 开发者与测试同事
+    entry: config.yaml、sop-board check 与看板执行
+    scenarios:
+      - id: SOP-129-P01
+        polarity: positive
+        title: 声明的凭据变量传入执行会话，取值不落盘
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["shop 工作区入口声明 credential_env: [DEMO_BUYER_PASSWORD]", "以设置了该变量的环境启动看板"]
+        steps: ["执行需要登录的退款场景", "在数据目录、任务目录、提示词、日志、报告、页面 HTML 中检索变量取值"]
+        expected: ["场景经真实入口执行通过", "检索不到变量取值"]
+        forbidden_effects: ["取值出现在任何落盘文件或页面"]
+        evidence_hints: ["执行结果与检索输出"]
+      - id: SOP-129-P02
+        polarity: positive
+        title: check 报告变量已设置
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["同 SOP-129-P01"]
+        steps: ["sop-board check shop"]
+        expected: ["列出 DEMO_BUYER_PASSWORD 已设置，不显示取值"]
+        forbidden_effects: ["显示取值"]
+        evidence_hints: ["check 输出"]
+      - id: SOP-129-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 未设置变量时场景受阻并写明变量名
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["未设置 DEMO_BUYER_PASSWORD 启动看板"]
+        steps: ["执行该退款场景", "sop-board check shop"]
+        expected: ["涉及该入口的场景受阻，finding 写 DEMO_BUYER_PASSWORD", "check 列出该变量未设置"]
+        forbidden_effects: ["场景记为通过或失败"]
+        evidence_hints: ["场景结果与 check 输出"]
+      - id: SOP-129-N02
+        polarity: negative
+        negative_type: permission
+        title: 内网看不到凭据变量名
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["看板以 --lan 启动", "有一份文本证据含 DEMO_BUYER_PASSWORD 的原文、整串与部分 \\u 转义、以及嵌入 JSON 字符串后的转义写法"]
+        steps: ["经非回环地址打开工作区、场景与任务页面及对应接口、任务附件与证据下载"]
+        expected: ["看板生成的页面与接口中没有 DEMO_BUYER_PASSWORD", "文本证据中该变量名在每种写法下都显示为 [credential variable]，JSON 响应仍可解析"]
+        forbidden_effects: ["看板生成的内容出现变量名", "变量名以上述任一写法出现在内网响应中"]
+        evidence_hints: ["HTML 与 JSON 检索", "探针证据经内网读取的原文"]

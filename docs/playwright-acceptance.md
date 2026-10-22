@@ -7,6 +7,7 @@
 ```sh
 uv tool install /path/to/sop-board
 sop-board guide
+sop-board skills install
 sop-board playwright guide
 ```
 
@@ -42,6 +43,8 @@ sop-board playwright submit --results /work/round/results.jsonl --scope /work/sc
 完整执行默认拒绝漏测；部分试跑显式 --allow-partial，并检查 coverage.json。保留旧数据目录：main 的 v9 版本不读取或迁移旧看板数据，不把手工登记当成迁移工具。
 
 ## 验证与维护
+
+用户要求把已确认且经真实入口通过的场景保留为产品回归测试时，另用随包 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md) 按成本选择测试层、核对实际运行并登记关联。浏览器验收脚本与界面地图保留在仓库外的任务目录；本技能不把它们直接复制为产品回归套件，只有产品已有端到端设施且业务需要时才由 regression-distill 编写浏览器测试。
 
 遵循 main 的场景验收方式，通过实际命令、工作区 HTTP 入口与页面核对，不恢复上游删除的根 tests/。现有技能资源随包保留；发行包应包含技能、模板和转换器。提交后核对工作区、批次、编号、轮次、证据及进度，不以 Playwright 的绿色数量代替整批业务结果。
 

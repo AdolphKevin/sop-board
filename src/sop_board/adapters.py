@@ -119,6 +119,11 @@ class Environment:
         env = {k: v for k, v in os.environ.items() if not is_board_input(k)}
         # Explicit repository inputs always override values inherited by the board.
         env.update(extra or {})
+        from .credentials import names
+        for key in names(self.workspace.entries):
+            env.pop(key, None)
+            if os.environ.get(key):
+                env[key] = os.environ[key]
         for alias, path in directories.items():
             suffix = alias.upper().replace('-', '_')
             env['SOP_REPO_' + suffix] = str(path)
@@ -128,6 +133,7 @@ class Environment:
 
     def agent_environment(self, directories, extra=None):
         from .tasks import codex_environment
+        from .credentials import AgentEnvironment, names
         full = self.environment(directories, extra)
         env = dict(codex_environment(), **(extra or {}))
         for key, value in full.items():
@@ -137,7 +143,13 @@ class Environment:
             key = entry.get('address_env')
             if key and key in full:
                 env[key] = full[key]
-        return env
+        declared = names(self.workspace.entries)
+        for key in declared:
+            # 凭据只取启动看板的进程环境，不能被工作树适配返回值替换。
+            env.pop(key, None)
+            if os.environ.get(key):
+                env[key] = os.environ[key]
+        return AgentEnvironment(env, declared)
 
     def command(self, name):
         argv = list(self.workspace.adapter[name])
@@ -173,7 +185,9 @@ class Environment:
             lines.pop()
         # 最后一行可能含环境值，不进入日志、任务输出或自检报告。
         visible = lines[:-1] if json_output else lines
-        log.write_text('\n'.join(visible) + '\n' + stderr.decode('utf-8', errors='replace'), encoding='utf-8')
+        from .credentials import names, redact
+        secrets = [os.environ[name] for name in names(self.workspace.entries) if os.environ.get(name)]
+        log.write_bytes(redact(('\n'.join(visible) + '\n' + stderr.decode('utf-8', errors='replace')).encode(), secrets))
         if failure or process.returncode:
             raise ValueError(f'adapter.{name} ' + (failure or f'退出码 {process.returncode}') + '；日志：' + str(log))
         return lines[-1] if json_output and lines else ''
@@ -259,13 +273,17 @@ class Environment:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             self.state['pid'] = self.process.pid
             process = self.process
+            from .credentials import names, StreamRedactor
+            secrets = [os.environ[name] for name in names(self.workspace.entries) if os.environ.get(name)]
             def read():
+                redactor = StreamRedactor(secrets)
                 with self.log.open('wb') as stream:
                     for line in iter(process.stdout.readline, b''):
-                        stream.write(line)
+                        stream.write(redactor.feed(line))
                         stream.flush()
                         if line.rstrip(b'\r\n') == b'sop-board: ready':
                             ready.set()
+                    stream.write(redactor.feed(b'', final=True))
             self.reader = threading.Thread(target=read, name='adapter-output', daemon=True)
             self.reader.start()
             deadline = time.monotonic() + self.workspace.adapter['ready_timeout']
@@ -390,7 +408,9 @@ class Environment:
             started = stamp()
             directory = self.workspace.data / 'checks'
             directory.mkdir(exist_ok=True)
-            result = dict(started_at=started, config_digest=self.workspace.config_digest, ok=True, steps=[])
+            from .credentials import statuses
+            result = dict(started_at=started, config_digest=self.workspace.config_digest, ok=True, steps=[],
+                          credentials=statuses(self.workspace.entries))
             def step(name, action):
                 if not result['ok']:
                     result['steps'].append(dict(name=name, status='未执行', message='前一步未通过', log=None))

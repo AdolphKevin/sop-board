@@ -8,6 +8,8 @@ $repositories
 - 用例并集：$cases_file
 - 本次新增问题与上次验证证据：$feedback_file
 
+入口 credential_env 声明的凭据变量已从启动看板的环境传入，使用须遵循项目手册与本任务授权记录；仅在进程环境和获授权请求中使用，关闭命令跟踪，脚本、日志、截图、报告与最终答复只记变量名，证据先脱敏。变量缺失属于环境问题，交开发者处理。
+
 对全部问题做一份根因分析，逐项判定 product、execution、environment、scenario、requirement 或 unfixable。
 每个问题用 root_repo 指出根因仓库别名；product 必须给出本任务中的别名，其他类别无法定位到仓库时填 null。
 只修 product；其他问题写明理由与开发者方案，不为它们改代码。根因在被 Git 忽略的本机配置或运行环境时，必须判为 environment，指出配置项和位置后转开发者；不读取或输出凭证值，不产生代码修补。

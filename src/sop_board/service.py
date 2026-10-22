@@ -19,6 +19,7 @@ from .jira import identify
 from .scenario_file import load_scenarios
 from .reports import markdown
 from .result_files import export_results, load_results
+from .regressions import read_links
 from .statistics import calculate, pending_scope, ratio
 from .validation import Problems, validate_batch, validate_mark, validate_push, validate_round, validate_sop_upload
 
@@ -47,6 +48,11 @@ class Service:
         self.execution_callback = None
         # 发现与合并落地共享锁，防止看板写入在登记版本前被自己的扫描发现。
         self.workspace_lock = threading.RLock()
+        from .credentials import declared_in
+        with self.store.connection() as db:
+            for row in db.execute('SELECT input_json,snapshot_json FROM tasks'):
+                for value in row:
+                    workspace.credential_names.update(declared_in(json.loads(value)))
 
     def automation_paused(self, db):
         row = db.execute("SELECT value FROM settings WHERE key='automation_paused'").fetchone()
@@ -135,6 +141,10 @@ class Service:
         with self.store.transaction() as db:
             return self.store.save_evidence(db, raw, name)
 
+    def submit_regressions(self, report):
+        from .regressions import submit
+        return submit(self, report)
+
     def evidence(self, sha):
         with self.store.connection() as db:
             row = db.execute("SELECT * FROM evidence WHERE sha256=?", (sha,)).fetchone()
@@ -172,7 +182,10 @@ class Service:
                     self.workspace.aliases(document)
                 except ValueError as error:
                     problems.append(dict(field='metadata.repos', problem=str(error)))
-        return dict(ok=not problems, entries=self.workspace.entries, problems=public_problems(problems, local=local))
+        entries = self.workspace.entries if local else {
+            name: {k: v for k, v in entry.items() if k != 'credential_env'} if isinstance(entry, dict) else {}
+            for name, entry in self.workspace.entries.items()}
+        return dict(ok=not problems, entries=entries, problems=public_problems(problems, local=local))
 
     def require_ready(self, key):
         if key != self.workspace.name:
@@ -216,6 +229,9 @@ class Service:
             (batch['workspace'], batch['name']))]
         if fixes:
             etag += '-f' + hashlib.sha256(canonical(fixes).encode()).hexdigest()[:12]
+        regressions = [dict(r) for r in db.execute('SELECT * FROM regression_links WHERE batch=? ORDER BY id', (batch['id'],))]
+        if regressions:
+            etag += '-reg' + hashlib.sha256(canonical(regressions).encode()).hexdigest()[:12]
         etag += '-pairs' + hashlib.sha256(canonical([self.case_pairings(db, batch), self.flow_choices(db, batch)]).encode()).hexdigest()[:12]
         etag += '-env' + hashlib.sha256(canonical(self.environment.public()).encode()).hexdigest()[:12]
         if self.automation_paused(db):
@@ -231,7 +247,7 @@ class Service:
             batch = self.batch(db, key, name)
             return dict(ok=True, etag=self.batch_etag(db, batch))
 
-    def report_data(self, db, batch):
+    def report_data(self, db, batch, *, local=False):
         summary = calculate(db, batch)
         cases = self.case_union(db, batch)
         pairings = self.case_pairings(db, batch, cases)
@@ -239,16 +255,16 @@ class Service:
                            (batch['workspace'], batch['name'])).fetchone()
         fixes, fix_statistics = self.batch_fixes(db, batch)
         return dict(batch=dict(batch), workspace=dict(db.execute("SELECT key,root,name FROM workspaces WHERE key=?", (batch["workspace"],)).fetchone(), repositories=self.workspace.public()["repositories"]),
-                    fixes=fixes, fix_statistics=fix_statistics,
+                    fixes=fixes, fix_statistics=fix_statistics, regression_links=read_links(db, batch, local=local),
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
                     pairings=pairings, coverage=ratio(len(pairings), len(cases)),
                     latest_upload=db.execute("SELECT COALESCE(MAX(number),0) FROM case_uploads WHERE batch=?", (batch["id"],)).fetchone()[0])
 
-    def report(self, key, name):
+    def report(self, key, name, *, local=False):
         with self.store.connection() as db:
             db.execute("BEGIN")
-            data = self.report_data(db, self.batch(db, key, name))
+            data = self.report_data(db, self.batch(db, key, name), local=local)
             return markdown(data, datetime.now().astimezone().isoformat()).encode()
 
     def results_yaml(self, key, name):
@@ -542,6 +558,7 @@ class Service:
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
                     review=self.fix_review_state(db, batch['workspace'], batch['name']),
                     execution=execution, execution_tasks=tasks, fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
+                    regression_links=read_links(db, batch, local=local),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
                     dirty=bool(version["dirty"]) if version else None,
@@ -560,6 +577,7 @@ class Service:
                 summary = calculate(db, batch)
                 for scene in summary['scenarios']:
                     scene['fix_tasks'] = self.scenario_fixes(db, batch, scene['scenario'], scene['fingerprint'])
+                    scene['regression_links'] = read_links(db, batch, scene['scenario'], local=local)
                 version = self.latest_version(db, batch)
                 nodes = yaml.safe_load(version["content"])["sops"] if version else []
                 return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
@@ -603,7 +621,7 @@ class Service:
                         implementer=row["implementer"], submitted_by=row["submitted_by"], submitted_at=row["submitted_at"],
                         results=results)
 
-    def read_scenario(self, key, name, scenario):
+    def read_scenario(self, key, name, scenario, *, local=True):
         """详情保留当前与历史内容，不受 calculate 的当前版本过滤影响。"""
         with self.store.connection() as db:
             db.execute("BEGIN")
@@ -639,6 +657,7 @@ class Service:
                 '(SELECT 1 FROM sop_versions newer WHERE newer.batch=v.batch AND newer.path=v.path AND newer.version>v.version) ORDER BY path',
                 (batch['id'],))]
             return dict(workspace=key, batch=name, etag=self.batch_etag(db, batch), scenario=scenario, node=latest["node"], title=latest["title"],
+                        regression_links=read_links(db, batch, scenario, local=local),
                         review=self.fix_review_state(db, key, name),
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
                         fingerprint=latest["fingerprint"], current=bool(latest["current"]),
