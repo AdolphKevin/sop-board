@@ -8,6 +8,8 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 # SOP-BOARD-4：看板发起的执行与回归检查
 
+> 以 team-workflow 为契约来源的段落已由 D60 取代，现行契约见 [src/sop_board/scenario_file.py](../../src/sop_board/scenario_file.py) 与 [docs/reference.md](../reference.md)；验收标准见 [docs/standard.md](../standard.md)。
+
 > 本文件是 tw 任务 SOP-BOARD-4 的方案原文。总体设计见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v8），本需求对应其第 8 节 SOP-BOARD-4 一行，以及 D2、D4、D9、D21、D22、D23 与 S2 中属于本需求的部分。验收场景见 [docs/sop/sop-board-4.yaml](../sop/sop-board-4.yaml)。
 >
 > 状态：修订 2。修订 1 于 2026-10-20 经 AdolphKevin 授权由 Claude 代批；修订 2 按测试代理 sop-board-4-tester 的 31 个待确认问题与 6 处出入，以总体方案 v8 为准补写，同日代批。

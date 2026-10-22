@@ -1,12 +1,12 @@
 ---
 title: "Flow Board 项目总览"
-source: ["README.md", "docs/designs/SOP-BOARD-8.md", "docs/designs/SOP-BOARD-9.md", "docs/designs/SOP-BOARD-10.md"]
+source: ["README.md", "docs/standard.md", "docs/designs/SOP-BOARD-8.md", "docs/designs/SOP-BOARD-9.md", "docs/designs/SOP-BOARD-10.md"]
 ---
 # Flow Board 项目总览
 
 Flow Board 流程验收看板。代理在工作区适配环境执行；测试同事上传用例、查看证据、复核结果和提交缺陷。看板展示轮次、通过率与进度，并导出验收结果。默认仅监听本机，可开放内网，不提供服务器部署。
 
-行为以 docs/designs/ 当前方案与 v9 决策为准。场景和结果字段由本仓校验器及内置 Web 技能契约维护。验收以 docs/sop/ 经真实入口执行为准，开发中不写测试；操作和留证见 docs/verification.md，.tw/config.json 保持原样。
+行为以 docs/designs/ 当前方案与 v9 决策为准。[docs/standard.md](../docs/standard.md) 是业务验收标准的唯一正文，场景写法见 docs/sop-guide.md，四份记录模板在 docs/templates/；场景和结果字段由本仓校验器及 docs/reference.md 维护。验收以 docs/sop/ 经真实入口执行为准，开发中不写测试；本项目操作和留证见 docs/verification.md，历史知识数据保持读取兼容。
 
 D31：普通写入免令牌，页面仅保存标记人；开发者操作仅接受实际回环连接，内网页面隐藏按钮。POST/PUT 检查同源与 JSON 类型，二进制证据上传仅免 JSON 类型要求。
 
@@ -14,7 +14,7 @@ D31：普通写入免令牌，页面仅保存标记人；开发者操作仅接�
 
 适配环境：配置对应的自检全部通过且配置未变才启用执行与修复。环境按声明端口互斥，端口不重叠的工作区可同时运行，被占时每 10 秒重试（D48）；基线与修复目录共用端口；环境日志和自检详情仅本机显示，内网页面与接口不显示本机路径（D45）。未提交产品改动等待提交，提交改变后先重启环境。自检第 1 步核对各仓 Git 提交身份，第 3、4 步核对入口地址变量（D47、D52）。
 
-验证：搭建代理按项目写出数据目录中的项目验证技能，执行与复测先读它；Web 入口缺省用随包 playwright-acceptance，其他入口不按 surface 缺省（D38）。技能变化使本轮作废，不使历史结果失效。产品变化后，会话写 impact.json，判定不受影响的必须沿用并写理由，看板核对判定与结果一致；rerun 全量不得沿用（D39、D46）。同批次合并进行中时执行等待合并结束（D51）。
+验证：真实验证手册在产品仓库保存操作正文，工作区 entries 用简短说明引用手册章节；搭建代理在数据目录写项目验证技能，执行与复测先读技能，再读对应产品版本的手册及本任务授权记录（D60）。Web 入口缺省用随包 playwright-acceptance，其他入口不按 surface 缺省（D38）。技能变化使本轮作废，不使历史结果失效。产品变化后，会话写 impact.json，判定不受影响的必须沿用并写理由，看板核对判定与结果一致；rerun 全量不得沿用（D39、D46）。同批次合并进行中时执行等待合并结束（D51）。
 
 D33/I3 修订 3：先确认工作树建法和外部工具依赖；worktree/cleanup 适配替代旧准备命令，未声明才用默认 Git 建立/删除。路径须为对应仓库根目录，共用 Git common dir 且检出指定分支，自检与修复共用此核对。
 
@@ -22,7 +22,7 @@ D33/I3 修订 3：先确认工作树建法和外部工具依赖；worktree/clean
 
 D35、I6：每条用例明确归为 flow/detail 并说明理由，仅 flow 生成场景；detail 的原预期带来源编号并入本次流程。配对绑定场景版本和用例内容，供页面与报告共用。本机指定单独成场景的选择持久保存，后续合并必须遵守。报告逐轮列出沿用数量与理由。模拟合并和报表记录须明确标记，不能替代真实 Codex 或独立验收。
 
-Web 验收技能随 sop-board 发行，维护于 src/sop_board/skills/playwright-acceptance/，不再依赖 team-workflow。总览优先展示执行进度、Agent 通过率和复核进度；其他指标可展开，队列同时显示场景名称和编号，复核身份默认折叠，刷新保留展开状态。
+Web 验收技能随 sop-board 发行，维护于 src/sop_board/skills/playwright-acceptance/。总览优先展示执行进度、Agent 通过率和复核进度；其他指标可展开，队列同时显示场景名称和编号，复核身份默认折叠，刷新保留展开状态。
 
 产品展示名称统一为 Flow Board；安装包、命令、Python 模块、环境变量、数据目录及适配就绪标记沿用既有 sop-board 标识。
 

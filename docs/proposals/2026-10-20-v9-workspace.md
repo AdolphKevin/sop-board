@@ -1,5 +1,7 @@
 # SOP 看板 v9：代理搭建项目适配、跨仓修复与免令牌（修订 3）
 
+> 以 team-workflow 为契约来源的段落已由 D60 取代，现行契约见 [src/sop_board/scenario_file.py](../../src/sop_board/scenario_file.py) 与 [docs/reference.md](../reference.md)；验收标准见 [docs/standard.md](../standard.md)。
+
 > 状态：修订 3 已批准，待实施 · 日期：2026-10-20 · 方案负责人：Claude · 批准人：AdolphKevin
 >
 > 修订对象：[总体方案 v8](2026-10-19-standalone-sop-verification.md) 的 D13（项目）、D14（启动与令牌）、D16（合并规则）、D20（可写授权与开发者令牌）、D22–D25（执行、候选、修复与合入）、D29（沉淀）和第 8 节的阶段。v8 其余决定继续有效。

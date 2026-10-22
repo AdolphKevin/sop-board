@@ -2,7 +2,7 @@
 
 ## 当前入口
 
-以 README.md、docs/verification.md、docs/playwright-acceptance.md 和 .tw/ 中仍适用的项目事实为依据。team-workflow 与 team-knowledge 已不再作为本仓开发或验收的前置工具；不运行 tw 命令。保留历史 .tw 数据及旧契约的读取兼容，不删除历史记录。
+开发、验收、缺陷复验与质量复盘先读 [docs/standard.md](docs/standard.md)，它是验收标准的唯一正文。搭建、项目操作与 Web 驱动分别读取 README.md、docs/verification.md、docs/playwright-acceptance.md，并直接读取 .tw/ 中仍适用的项目事实；不运行 tw 命令。保留历史 .tw 数据及旧契约的读取兼容。
 
 Web 验收技能、模板、转换器和测试统一维护在 src/sop_board/skills/playwright-acceptance/，由 sop-board 包发行；不要依赖另一个 playwright-acceptance 检出目录。命令入口为 sop-board guide 与 sop-board playwright。
 

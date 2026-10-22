@@ -10,7 +10,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 > 本文件是 tw 任务 SOP-BOARD-9 的方案原文，修订 v9 方案 D34 的修复触发方式，并取代原有的缺陷链接前缀规则。验收只以场景经真实入口执行为准，开发中不写单元、接口与集成测试。
 >
-> 状态：修订 3。修订 3 新增 D44（搭建时引导配置 Jira 读取）与 D45（SOP-BOARD-8 独立评审 Q3–Q5：内网不显示本机路径、搭建指引与手册更正），2026-10-20 经 AdolphKevin 批准（会话答复“批准”与“按你建议进行”）。Jira 站点与凭据由各项目使用方自行配置，文中 channelwill 链接只是格式示例；SOP-91-P02、SOP-94-P01 由项目使用方用自己的凭据与测试单据执行（2026-10-20 用户说明）。修订 1 于 2026-10-20 经 AdolphKevin 批准；修订 2 并入 SOP-BOARD-8 独立验收 A 发现的自检端口误报（D43），2026-10-20 经 AdolphKevin 批准。修订 1 批准时批准前确认：缺陷链接不校验、不加前缀，填什么存什么；含 atlassian 的链接识别为 Jira，用 API token 读取单据；SOP 验证运行完后汇总全部失败项统一修复；人工失败在测试同事点“复核完成”后统一修复；不通过时缺陷链接必填，内容不校验。
+> 状态：修订 3。修订 3 新增 D44（搭建时引导配置 Jira 读取）与 D45（SOP-BOARD-8 独立评审 Q3–Q5：内网不显示本机路径、搭建指引与手册更正），2026-10-20 经 AdolphKevin 批准（会话答复“批准”与“按你建议进行”）。Jira 站点与凭据由各项目使用方自行配置，文中 example.atlassian.net 链接只是虚构格式示例；SOP-91-P02、SOP-94-P01 由项目使用方用自己的凭据与测试单据执行（2026-10-20 用户说明）。修订 1 于 2026-10-20 经 AdolphKevin 批准；修订 2 并入 SOP-BOARD-8 独立验收 A 发现的自检端口误报（D43），2026-10-20 经 AdolphKevin 批准。修订 1 批准时批准前确认：缺陷链接不校验、不加前缀，填什么存什么；含 atlassian 的链接识别为 Jira，用 API token 读取单据；SOP 验证运行完后汇总全部失败项统一修复；人工失败在测试同事点“复核完成”后统一修复；不通过时缺陷链接必填，内容不校验。
 
 ## 全局范围
 <!-- tw-section id=scope-global type=global-scope -->
@@ -40,7 +40,7 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 ## 按链接识别 Jira（D41）
 <!-- tw-section id=I2 type=interface depends=scope-global,I1 -->
-缺陷链接同时满足以下三条时识别为 Jira：scheme 为 `https`；主机名转小写后以 `.atlassian.net` 结尾；路径为 `/browse/<单号>`，单号匹配 `[A-Z][A-Z0-9_]*-[0-9]+`。查询参数和片段忽略，例如 `https://channelwill.atlassian.net/browse/CACB-657?atlOrigin=…` 识别为站点 `https://channelwill.atlassian.net` 上的单号 `CACB-657`。不满足的链接，包括路径或查询参数里含 `atlassian` 但主机名不符的，都不识别为 Jira，不发出任何携带凭据的请求。
+缺陷链接同时满足以下三条时识别为 Jira：scheme 为 `https`；主机名转小写后以 `.atlassian.net` 结尾；路径为 `/browse/<单号>`，单号匹配 `[A-Z][A-Z0-9_]*-[0-9]+`。查询参数和片段忽略，例如 `https://example.atlassian.net/browse/PROJ-123?atlOrigin=…` 识别为站点 `https://example.atlassian.net` 上的单号 `PROJ-123`。不满足的链接，包括路径或查询参数里含 `atlassian` 但主机名不符的，都不识别为 Jira，不发出任何携带凭据的请求。
 
 Jira 站点取链接中的 `https://<主机名>`，不再读取 `JIRA_URL`。认证沿用 `JIRA_EMAIL`、`JIRA_API_TOKEN` 环境变量，只发往识别出的站点，不跟随重定向。三处使用：
 

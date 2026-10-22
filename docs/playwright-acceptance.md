@@ -1,6 +1,6 @@
 # 内置 Web 验收
 
-技能、模板、转换器及既有资源统一维护于 `src/sop_board/skills/playwright-acceptance/`，随包发行，不依赖 team-workflow 或单独的技能检出目录。
+技能、模板、转换器及既有资源统一维护于 `src/sop_board/skills/playwright-acceptance/`，随包发行。业务验收遵循[统一标准](standard.md)，项目操作、账号、观察与清理按产品仓库真实验证手册执行。
 
 ## 安装与入口
 
