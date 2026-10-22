@@ -127,33 +127,43 @@ class StreamRedactor:
         return b''.join(output)
 
 
+def name_pattern(name):
+    """已声明变量名的常见编码：每个字符可为原文或任意层转义的 \\u 写法（十六进制大小写均可）。"""
+    parts = []
+    for c in name:
+        code = f'{ord(c):04x}'.encode()
+        parts.append(rb'(?:' + re.escape(c.encode()) + rb'|\\+u' + code + rb')')
+    return re.compile(b''.join(parts), re.IGNORECASE)
+
+
 def hide_names(raw, credential_names):
     # 变量名出现即遮蔽，不依赖前后字符（转义的中文、终端控制符之后同样遮蔽）。
     for name in sorted(credential_names, key=len, reverse=True):
-        raw = raw.replace(name.encode(), b'[credential variable]')
+        raw = name_pattern(name).sub(b'[credential variable]', raw)
     return raw
 
 
-# 路径只由常见路径字符组成，遇到引号、反斜杠转义、HTML 实体、中文等其他字符即结束。
-PATH_CHARS = rb'[A-Za-z0-9._~+@%-]'
-LOCAL_PATH = re.compile(rb'(?:/Users/|/home/|/private/|/tmp/|/var/folders/|/Volumes/)(?:' + PATH_CHARS + rb'|/)*')
-# JSON 中斜杠被转义的写法（\/Users\/...），只吞成对的 \/，保留其后的转义引号。
-ESCAPED_PATH = re.compile(rb'\\/(?:Users|home|private|tmp|var\\/folders|Volumes)\\/(?:' + PATH_CHARS + rb'|\\/)*')
-TEXT_TYPES = ('text/', 'application/json', 'application/x-ndjson', 'application/yaml')
-TEXT_SUFFIXES = ('.json', '.jsonl', '.txt', '.log', '.md', '.yaml', '.yml', '.html', '.xml', '.csv')
+# 本机路径的常见编码：任意层数的反斜杠转义斜杠、URL 编码的斜杠，大小写不敏感（macOS 默认不区分大小写）。
+SLASH = rb'(?:\\*/|%2[fF])'
+PATH_TAIL = rb'(?:[A-Za-z0-9._~+@-]|' + SLASH + rb'|%(?![0-9a-fA-F]{2}))*'
+COMMON_ROOTS = ('/Users/', '/home/', '/private/', '/tmp/', '/var/folders/', '/Volumes/')
+
+
+def path_pattern(root):
+    parts = [SLASH if c == '/' else re.escape(c.encode()) for c in root.rstrip('/')]
+    return b''.join(parts) + PATH_TAIL
+
+
+LOCAL_PATH = re.compile(b'|'.join(rb'(?:' + path_pattern(r) + rb')' for r in COMMON_ROOTS), re.IGNORECASE)
 
 
 def hide_local_paths(raw, local_roots=()):
-    """内网响应遮蔽本机路径：看板数据目录、仓库目录与常见的用户及临时目录，连同其后的路径整段替换。"""
+    """内网响应遮蔽已知本机目录（看板数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径，连同其后的路径整段替换。"""
     import tempfile
     placeholder = '<本机路径>'.encode()
     roots = {str(r) for r in (*local_roots, Path.home(), tempfile.gettempdir(), Path(tempfile.gettempdir()).resolve()) if r}
     for root in sorted(roots, key=len, reverse=True):
-        plain = root.encode()
-        escaped = root.replace('/', '\\/').encode()
-        raw = re.sub(re.escape(plain) + rb'(?:' + PATH_CHARS + rb'|/)*', placeholder, raw)
-        raw = re.sub(re.escape(escaped) + rb'(?:' + PATH_CHARS + rb'|\\/)*', placeholder, raw)
-    raw = ESCAPED_PATH.sub(placeholder, raw)
+        raw = re.sub(path_pattern(root), placeholder, raw, flags=re.IGNORECASE)
     return LOCAL_PATH.sub(placeholder, raw)
 
 
@@ -170,11 +180,13 @@ def response_bytes(raw, content_type, credential_names, *, local, local_roots=()
         output = BytesIO()
         with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as target:
             for entry in source.infolist():
-                text = entry.filename.lower().endswith(TEXT_SUFFIXES)
+                from .evidence_types import content_type as guess, is_text
+                text = is_text(guess(entry.filename))
                 target.writestr(clean(entry.filename.encode()).decode(), clean(source.read(entry.filename), text))
             target.comment = clean(source.comment)
         return output.getvalue()
-    return clean(raw, (content_type or '').startswith(TEXT_TYPES))
+    from .evidence_types import is_text
+    return clean(raw, is_text(content_type or ''))
 
 
 def clean_task_output(directory, secrets):

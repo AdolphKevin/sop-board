@@ -1,6 +1,6 @@
 # SOP-BOARD-12 的验收场景
 # 预期依据 docs/proposals/2026-10-22-acceptance-standard-and-distill.md（修订 1，已批准）的 D60–D64。只写业务流程；验收只以本文件的场景经真实入口执行为准。
-# 版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
+# 版本 3（2026-10-22）：SOP-124-N02、SOP-129-N02 按用户确认的两级保证改写。版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
 # “沉淀演示仓库”：临时 Git 仓库 shop，Python 标准库 HTTP 服务 + SQLite，退款接口需用测试账号登录（密码经环境变量 DEMO_BUYER_PASSWORD），带一套已有的接口测试（pytest 或 unittest）与可运行的 CI 配置（GitHub Actions 文件，CI 实跑由推送到一个临时远端或标注“仅本机”）；预置一个已知缺陷提交 bug-refund-twice（同一订单可重复退款）。场景文件 docs/sop/refund.yaml 含两条已确认场景（sources 有 confirmed_by）与一条未确认场景。
 # “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含一个“退款申请”页面与接口），origin 为 https://example.invalid/...；搭建由新开的代理会话按 sop-board guide 完成。
 # “原标准”：team-workflow 仓库 main 分支 8be02e4 的 skills/team-workflow/references/business-acceptance.md、test-capability.md 与 templates/ 下的项目验收方案、交付记录、缺陷记录、每周复盘模板。
@@ -9,7 +9,7 @@
 metadata:
   requirement: "sop-board：承接业务验收标准；随包发行回归沉淀技能，登记场景与测试的关联；看板会话可取得入口凭据变量"
   batch: "sop-board-12"
-  version: 2
+  version: 3
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-acceptance-standard-and-distill.md 的 D60"
@@ -247,11 +247,11 @@ sops:
         actor: 测试同事
         priority: P1
         verify: web
-        initial_state: ["看板以 --lan 启动，存在已登记关联"]
-        steps: ["经非回环地址打开场景详情与报告页"]
-        expected: ["可见场景、覆盖与状态", "看不到测试命令与本机路径"]
-        forbidden_effects: ["出现本机绝对路径或测试命令"]
-        evidence_hints: ["页面截图与 HTML 检索"]
+        initial_state: ["看板以 --lan 启动，存在已登记关联", "有一份文本证据含数据目录、仓库目录、用户目录与临时目录下的路径，分别以原文、反斜杠转义斜杠（一层与两层）、URL 编码与大小写变体写出"]
+        steps: ["经非回环地址打开场景详情、报告页及对应接口、任务列表与详情、任务附件链接、证据下载", "直接请求提示词、会话记录等代理材料"]
+        expected: ["可见场景、覆盖与状态", "看板生成的页面字段、接口与报告中没有本机绝对路径与测试命令", "代理材料返回 403，任务附件列表只含协作材料", "文本证据中上述已知目录下的路径在每种写法下都显示为 <本机路径>，其余内容与换行保留，JSON 响应仍可解析"]
+        forbidden_effects: ["看板生成的内容出现本机绝对路径或测试命令", "已知目录下的路径以上述任一写法出现在内网响应中"]
+        evidence_hints: ["页面截图、HTML 与 JSON 检索", "探针证据经内网读取的原文"]
 
   - id: SOP-125
     title: 回归测试与场景验收的关系
@@ -408,8 +408,8 @@ sops:
         actor: 测试同事
         priority: P1
         verify: web
-        initial_state: ["看板以 --lan 启动"]
-        steps: ["经非回环地址打开工作区、场景与任务页面及对应接口"]
-        expected: ["页面与接口响应中没有 DEMO_BUYER_PASSWORD"]
-        forbidden_effects: ["出现变量名"]
-        evidence_hints: ["HTML 与 JSON 检索"]
+        initial_state: ["看板以 --lan 启动", "有一份文本证据含 DEMO_BUYER_PASSWORD 的原文、整串与部分 \\u 转义、以及嵌入 JSON 字符串后的转义写法"]
+        steps: ["经非回环地址打开工作区、场景与任务页面及对应接口、任务附件与证据下载"]
+        expected: ["看板生成的页面与接口中没有 DEMO_BUYER_PASSWORD", "文本证据中该变量名在每种写法下都显示为 [credential variable]，JSON 响应仍可解析"]
+        forbidden_effects: ["看板生成的内容出现变量名", "变量名以上述任一写法出现在内网响应中"]
+        evidence_hints: ["HTML 与 JSON 检索", "探针证据经内网读取的原文"]

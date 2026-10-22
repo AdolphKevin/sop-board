@@ -23,6 +23,7 @@ pending.json 中 reason 为 rerun 的场景必须实际执行并保存新证据�
 在任务目录写 results.jsonl，每条所选场景恰好一行。
 字段：scenario、status（pass/fail/blocked/skip）、actual、executed_at（带时区 ISO 8601）、executor、evidence（相对任务目录的路径数组），可选 finding、note、session。
 blocked/skip 必须有 finding；实际执行的 pass/fail 至少一份真实证据，写入 evidence/ 目录。
+证据面向内网的测试同事：文件路径写成相对仓库或任务目录的路径，凭据只写“已设置”之类的状态，不写本机绝对路径与凭据变量名。
 不要填写 fingerprint；executor 与 session 最终由看板绑定到本次会话与任务。
 
 入口 driver 缺省或为 playwright-acceptance 的 Web 场景先读取内置技能 $playwright_skill，设置 PW_SCOPE=$task_directory/scope.json、PW_SCENARIO_FILE=$task_directory/scenarios.yaml，
