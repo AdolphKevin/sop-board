@@ -133,19 +133,35 @@ def hide_names(raw, credential_names):
     return raw
 
 
-def response_bytes(raw, content_type, credential_names, *, local):
+LOCAL_PATH = re.compile(rb'(?:/Users/|/home/|/private/|/tmp/|/var/folders/|/Volumes/)[^\s"\'<>`)\]},;]*')
+TEXT_TYPES = ('text/', 'application/json', 'application/x-ndjson', 'application/yaml')
+TEXT_SUFFIXES = ('.json', '.jsonl', '.txt', '.log', '.md', '.yaml', '.yml', '.html', '.xml', '.csv')
+
+
+def hide_local_paths(raw, local_roots=()):
+    """内网响应遮蔽本机路径：看板数据目录、仓库目录与常见的用户及临时目录。"""
+    for root in sorted({str(r) for r in local_roots if r}, key=len, reverse=True):
+        raw = raw.replace(root.encode(), '<本机路径>'.encode())
+    return LOCAL_PATH.sub('<本机路径>'.encode(), raw)
+
+
+def response_bytes(raw, content_type, credential_names, *, local, local_roots=()):
     secrets = [os.environ[name] for name in credential_names if os.environ.get(name)]
-    def clean(value):
+    def clean(value, text=True):
         value = redact(value, secrets)
-        return value if local else hide_names(value, credential_names)
-    if content_type == 'application/zip' and credential_names:
+        if local:
+            return value
+        value = hide_names(value, credential_names)
+        return hide_local_paths(value, local_roots) if text else value
+    if content_type == 'application/zip' and (credential_names or not local):
         output = BytesIO()
         with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as target:
             for entry in source.infolist():
-                target.writestr(clean(entry.filename.encode()).decode(), clean(source.read(entry.filename)))
+                text = entry.filename.lower().endswith(TEXT_SUFFIXES)
+                target.writestr(clean(entry.filename.encode()).decode(), clean(source.read(entry.filename), text))
             target.comment = clean(source.comment)
         return output.getvalue()
-    return clean(raw)
+    return clean(raw, (content_type or '').startswith(TEXT_TYPES))
 
 
 def clean_task_output(directory, secrets):

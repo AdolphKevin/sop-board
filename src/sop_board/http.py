@@ -40,10 +40,12 @@ class Handler(BaseHTTPRequestHandler):
     def respond(self, status, raw, content_type, headers=()):
         if not urlsplit(self.path).path.startswith('/assets/'):
             from .credentials import response_bytes
-            raw = response_bytes(raw, content_type, self.server.service.workspace.credential_names,
-                                 local=is_loopback(self.client_address[0]))
-            headers = [(name, response_bytes(value.encode(), 'text/plain', self.server.service.workspace.credential_names,
-                                            local=is_loopback(self.client_address[0])).decode()) for name, value in headers]
+            workspace = self.server.service.workspace
+            local = is_loopback(self.client_address[0])
+            roots = [workspace.data, *workspace.repos.values()]
+            raw = response_bytes(raw, content_type, workspace.credential_names, local=local, local_roots=roots)
+            headers = [(name, response_bytes(value.encode(), 'text/plain', workspace.credential_names,
+                                            local=local, local_roots=roots).decode()) for name, value in headers]
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
