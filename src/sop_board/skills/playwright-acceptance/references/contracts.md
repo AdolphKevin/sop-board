@@ -22,6 +22,6 @@ pairs.json 顶层为 covered、conflict、disposed 数组。covered/conflict 含
 
 ## 回归
 
-当前版本仅通过场景验收，不接受 regression 字段或 checks 声明。入口来自工作区 config.yaml；既有历史格式的说明不代表恢复旧接口或测试套件。
+场景仍是验收单位，不接受场景 regression 字段或 checks 声明。用户另行授权的测试建设使用随包 [regression-distill](../../regression-distill/SKILL.md)，通过 `sop-board distill submit` 登记测试关联；关联不写场景执行轮次或改变验收结论。入口来自工作区 config.yaml；既有历史格式的说明不代表恢复旧接口或测试套件。
 
 当前入口唯一配置为工作区数据目录 config.yaml；scope 的兼容 project 字段存工作区键，手工 scope 使用 --workspace。旧 .tw 字段说明只用于理解历史契约，不恢复配置读取或令牌逻辑。

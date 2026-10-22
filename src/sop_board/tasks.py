@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from .errors import reject, APIError
 from .drafts import SCHEMA, assemble, section, schema_problems, normalize_judgment
+from .credentials import launch, shell_options
 
 import yaml
 from .service import canonical, now
@@ -84,38 +85,27 @@ def codex_failure(directory, code, label='Codex'):
 def start_codex(directory, prompt, sandbox='read-only', environment=None, work_directory=None, writable_directories=()):
     """可替换的启动边界；子进程只得到白名单环境及独立进程组。"""
     directory = Path(directory).resolve()
-    events = (directory / 'events.jsonl').open('wb')
-    stderr = (directory / 'stderr.txt').open('wb')
-    try:
-        options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
-        for path in writable_directories:
-            options.extend(['--add-dir', str(Path(path).resolve())])
-        schema = ['--output-schema', str(directory / 'schema.json')] if (directory / 'schema.json').is_file() else []
-        return subprocess.Popen(['codex', 'exec', '--json', '-s', sandbox, *options, '--skip-git-repo-check',
-            '-C', str(work_directory or directory), *schema,
-            '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory, env=environment if environment is not None else codex_environment(),
-            stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
-    finally:
-        events.close()
-        stderr.close()
+    options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
+    options += shell_options(environment)
+    for path in writable_directories:
+        options.extend(['--add-dir', str(Path(path).resolve())])
+    schema = ['--output-schema', str(directory / 'schema.json')] if (directory / 'schema.json').is_file() else []
+    return launch(['codex', 'exec', '--json', '-s', sandbox, *options, '--skip-git-repo-check',
+        '-C', str(work_directory or directory), *schema, '-o', str(directory / 'final.json'), prompt],
+        directory, environment if environment is not None else codex_environment(), work_directory or directory)
 
 
 def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directory=None, environment=None, writable_directories=(), schema=None):
     """续接指定会话；resume 的沙箱参数位于 Codex 根命令层。"""
     directory = Path(directory).resolve()
-    events = (directory / 'events.jsonl').open('wb')
-    stderr = (directory / 'stderr.txt').open('wb')
-    try:
-        options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
-        for path in writable_directories:
-            options.extend(['--add-dir', str(Path(path).resolve())])
-        schema_args = ['--output-schema', str(Path(schema).resolve())] if schema is not None else []
-        return subprocess.Popen(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
-            '--skip-git-repo-check', *schema_args, '-o', str(directory / 'final.json'), prompt], cwd=work_directory or directory,
-            env=environment if environment is not None else codex_environment(), stdin=subprocess.DEVNULL, stdout=events, stderr=stderr, start_new_session=True)
-    finally:
-        events.close()
-        stderr.close()
+    options = ['-c', 'sandbox_workspace_write.network_access=true'] if sandbox == 'workspace-write' else []
+    options += shell_options(environment)
+    for path in writable_directories:
+        options.extend(['--add-dir', str(Path(path).resolve())])
+    schema_args = ['--output-schema', str(Path(schema).resolve())] if schema is not None else []
+    return launch(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
+        '--skip-git-repo-check', *schema_args, '-o', str(directory / 'final.json'), prompt],
+        directory, environment if environment is not None else codex_environment(), work_directory or directory)
 
 
 def codex_available():
@@ -285,16 +275,16 @@ class Tasks:
     def enqueue_generate(self, key, name, version=None):
         return self.generations.enqueue(key, name, version)
 
-    def list(self, workspace=None, batch=None):
+    def list(self, workspace=None, batch=None, *, local=True):
         with self.store.connection() as db:
             ids = [r[0] for r in db.execute('SELECT id FROM tasks WHERE (? IS NULL OR workspace=?) AND (? IS NULL OR batch=?) ORDER BY id',
                                            (workspace, workspace, batch, batch))]
-        return dict(ok=True, tasks=[self.read(i) for i in ids])
+        return dict(ok=True, tasks=[self.read(i, local=local) for i in ids])
 
     def directory(self, task_id):
         return self.store.data.resolve() / 'tasks' / str(task_id)
 
-    def read(self, task_id, *, connection=None):
+    def read(self, task_id, *, connection=None, local=True):
         with (nullcontext(connection) if connection is not None else self.store.connection()) as db:
             row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if not row:
@@ -317,6 +307,8 @@ class Tasks:
             folders.sort()
             for name in sorted(names):
                 path = Path(parent) / name
+                if not local and name == 'regression-links.json':
+                    continue
                 if self.is_task_file(task_id, path):
                     relative = str(path.relative_to(directory))
                     task['files'][relative] = f'/api/v1/tasks/{task_id}/files/{quote(relative, safe="/")}'
@@ -334,6 +326,7 @@ class Tasks:
         public = {'events.jsonl', 'stderr.txt', 'final.json', 'results.jsonl', 'prompt.md', 'schema.json', 'input.json',
                   'cases.yaml', 'cases.json', 'case_choices.json', 'case_confirmations.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
                   'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'impact.json', 'pending.json', 'previous-results.json',
+                  'regression-links.json', 'credential-blocked.json',
                   'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json'}
         public |= {'sop.md', 'repos.json', 'draft.json', 'annotations.json', 'sop-before.md', 'sop.diff',
                    'original-sop.md', 'history.json', 'all-annotations.json', 'revision.json', 'cases-generated.yaml'}
@@ -349,7 +342,9 @@ class Tasks:
             return False
         return not any((parent / '.git').exists() for parent in path.parents if parent.is_relative_to(directory))
 
-    def file(self, task_id, name):
+    def file(self, task_id, name, *, local=True):
+        if not local and Path(name).name == 'regression-links.json':
+            reject(403, 'local-only', 'file', '回归测试的本机详情仅限本机查看')
         self.read(task_id)
         path = self.directory(task_id) / name
         if '\0' in name or Path(name).is_absolute() or '..' in Path(name).parts or not self.is_task_file(task_id, path):
@@ -626,6 +621,7 @@ class Tasks:
                         "AND status IN ('排队中','待提交','等待浏览器','等待合并') ORDER BY id")]
                     running_batches = {(r['workspace'], r['batch']) for r in db.execute("SELECT workspace,batch FROM tasks WHERE kind='execute' AND status='运行中'")}
                 for task in queued:
+                    needs_codex = True
                     if self.stopping.is_set():
                         break
                     if task['kind'] == 'fix':
@@ -649,7 +645,11 @@ class Tasks:
                         if (task['workspace'], task['batch']) in running_batches:
                             continue
                         inputs = json.loads(task['input_json'])
-                        if any(inputs['entries'][s['verify']]['surface'] == 'web' for s in inputs['scenes']):
+                        from .credentials import blocked_results
+                        blocked = {row['scenario'] for row in blocked_results(inputs['scenes'], inputs['entries'], os.environ)}
+                        runnable = [scene for scene in inputs['scenes'] if scene['id'] not in blocked]
+                        needs_codex = bool(runnable)
+                        if any(inputs['entries'][s['verify']]['surface'] == 'web' for s in runnable):
                             if self.browser_owner not in (None, task['id']):
                                 self.update(task['id'], status='等待浏览器')
                                 continue
@@ -659,7 +659,7 @@ class Tasks:
                     if task['kind'] in ('merge', 'generate') and not self.service.workspace.configured:
                         self.update(task['id'], error='尚未搭建，等待配置工作区')
                         continue
-                    error = codex_available()
+                    error = codex_available() if needs_codex else ''
                     if error:
                         self.update(task['id'], status='Codex 不可用', finished_at=now(), error=error)
                         if task['kind'] == 'generate':

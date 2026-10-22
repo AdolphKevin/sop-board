@@ -131,6 +131,7 @@ Flow Board 把它们收束成**一个以 SOP 场景为中心的闭环**：每条
 # 1. 安装并阅读随包指引（完整搭建契约）
 uv tool install <本地看板检出路径>
 sop-board guide
+sop-board skills install
 
 # 2. 登记工作区：名称 + 全部产品仓库（可分散在任意目录）
 sop-board init demo /absolute/app /another/location/lib
@@ -145,6 +146,8 @@ sop-board demo --lan --port 8787
 > [!TIP]
 > **交给 AI 搭建**：在 Codex 或 Claude Code 中告诉代理工作区名称与仓库目录，让它运行 `sop-board guide` 并按指引完成搭建。
 > 配置、适配和技能写入数据目录（缺省 `~/.sop-board/<名称>/`），真实验证手册在有对应写权限的产品仓库会话中编写或补齐。项目技能与入口配置引用手册章节，凭据仅经环境变量传递。
+
+`sop-board skills install` 将随包的 `regression-distill` 与 `playwright-acceptance` 链接到当前 `HOME` 下的 `~/.agents/skills/`（Codex）和 `~/.claude/skills/`（Claude Code），输出各客户端实际解析路径及包版本。重复执行或升级后执行会更新本包链接；其他来源的同名目录或链接会列出并跳过。随后可在开发会话中要求“把已确认场景沉淀为回归测试”，按 `regression-distill` 分层编写、运行并登记关联，改动留给开发者审核提交。
 
 <details>
 <summary><b>最小配置示例 <code>config.yaml</code></b></summary>

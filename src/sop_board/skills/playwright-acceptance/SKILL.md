@@ -1,6 +1,6 @@
 ---
 name: playwright-acceptance
-description: 用 Playwright 连接用户已打开的 Chrome，按场景文件中的明确步骤执行 Web 场景验收（含 Shopify 内嵌应用），录屏、截图与 trace 进入 Playwright HTML report，结果交回 sop-board 登记并沉淀为回归检查。适用于：按 SOP 场景做浏览器黑盒验收、把已通过的场景固化成 Playwright 回归、在 report 中按上游用例编号查看结果。
+description: 用 Playwright 连接用户已打开的 Chrome，按已确认的 SOP 步骤执行 Web 场景验收（含 Shopify 内嵌应用），保存录屏、截图与 trace，并将结果交回 sop-board。适用于浏览器黑盒验收和按上游用例编号查看报告；把场景沉淀为产品回归测试时使用 regression-distill。
 disable-model-invocation: true
 ---
 
@@ -64,7 +64,7 @@ npx --no-install playwright show-report <目录>/html
 
 ## 回归沉淀
 
-首次验收后的浏览器执行脚本和界面地图保留在看板任务目录，后续按场景重新执行。入口由工作区 config.yaml 声明，不新增 checks 或场景 regression 字段，不恢复已删除的测试套件。依赖已登录 Chrome 的脚本只在本机运行，如实报告实际执行与独立性。
+浏览器执行脚本和界面地图保留在仓库外的看板任务目录，后续按场景重新执行。用户另行要求把已确认且经真实入口通过的场景沉淀为产品测试时，使用随包 [regression-distill](../regression-distill/SKILL.md)，由它调查已有设施、按成本分层、运行并登记关联，改动留给开发者审核。只有产品已有端到端设施且业务需要时才编写浏览器回归。入口仍由工作区 config.yaml 声明，不新增 checks 或场景 regression 字段。依赖已登录 Chrome 的脚本只在本机运行，如实报告实际执行与独立性。
 
 ## 参考
 

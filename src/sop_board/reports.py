@@ -2,6 +2,8 @@
 
 from html import escape
 
+from .regressions import RUN_STATUS, ci_label, coverage_lines
+
 
 STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
 MANUAL = {**STATUS, "fail": "不通过（失败）", "blocked": "不通过（受阻）"}
@@ -75,7 +77,22 @@ def markdown(data, generated_at):
                   r['merged_commit'] or '未合入', r['merge_status'], r['merge_reason']] for r in task['repositories']]))
     sections.append('## 修复记录\n\n' + ('\n\n'.join(records) + '\n\n### 自动修复统计\n\n' + '\n'.join(
         '- ' + label + '：' + str(fix_statistics[key]) for key, label in FIX_METRICS) if records else '暂无记录'))
-    sections.append('## 回归覆盖\n\n暂无记录')
+    regressions = []
+    for link in data.get('regression_links', []):
+        covered, remaining = coverage_lines(link)
+        detail = ''
+        if 'command' in link:
+            detail = '\n\n' + '\n'.join('- ' + label + '：' + cell(value) for label, value in [
+                ('仓库路径', link['root']), ('测试文件', link['path']), ('测试名', link['test_name']),
+                ('运行命令', link['command']), ('本机原始输出', link['local_run']['output']),
+                ('CI 任务与命令', link['ci']['job'] + ' · ' + link['ci']['command']),
+                ('CI 运行与提交', link['ci']['run'] + ' · ' + link['ci']['commit']), ('CI 原始输出', link['ci']['output'])])
+        regressions.append('### ' + cell(link['scenario'] + ' · ' + link['test_id']) + '\n\n' +
+            table(['状态', '仓库', '提交', '本机运行', 'CI', '独立验收'], [[link['status'], link['repo'], link['commit_id'] or '尚未提交',
+                RUN_STATUS[link['local_run']['status']], ci_label(link['ci']),
+                '已完成' if link['independent_acceptance'] == 'completed' else '独立验收未完成']]) + '\n' +
+            table(['覆盖的预期', '仍需真实入口验收的部分'], [['；'.join(covered) or '无', '；'.join(remaining) or '无未覆盖项；独立验收仍须执行']]) + detail)
+    sections.append('## 回归覆盖\n\n' + ('\n\n'.join(regressions) if regressions else '暂无记录'))
     merge = data.get('merge')
     if not merge:
         sections.append('## 合并记录\n\n暂无记录')

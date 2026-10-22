@@ -147,6 +147,7 @@ class Workspace:
             raise ValueError('工作区登记不存在或不是当前格式；请用 sop-board init <名称> <仓库目录>... 新建，不读取或迁移旧数据') from error
         self.config_path = self.data / 'config.yaml'
         self.repos, self.identities, self.entries = {}, {}, {}
+        self.credential_names = set()
         self.adapter, self.problems, self.config_digest = {}, [], ''
         self.skill, self.driver_paths, self.skill_problems = None, {}, []
         self.scenarios, self.scenario_repo = None, None
@@ -260,6 +261,8 @@ class Workspace:
         problems.extend(skill_problems)
         changed = fingerprint != self.config_digest
         self.repos, self.identities, self.entries, self.adapter = repos, identities, entries if isinstance(entries, dict) else {}, adapter
+        from .credentials import names
+        self.credential_names.update(names(self.entries))
         self.scenarios, self.scenario_repo, self.problems, self.config_digest = scenarios, scenario_repo, problems, fingerprint
         return changed
 

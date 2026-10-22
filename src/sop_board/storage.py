@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS scenarios (
     verify TEXT NOT NULL, body TEXT NOT NULL, current INTEGER NOT NULL,
     UNIQUE(batch, scenario, fingerprint)
 );
+CREATE TABLE IF NOT EXISTS regression_links (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id),
+    scenario TEXT NOT NULL, fingerprint TEXT NOT NULL, scenario_file TEXT NOT NULL,
+    session TEXT NOT NULL, repo TEXT NOT NULL, identity TEXT NOT NULL, root TEXT NOT NULL,
+    path TEXT NOT NULL, sha256 TEXT NOT NULL, test_id TEXT NOT NULL, test_name TEXT NOT NULL,
+    layer TEXT NOT NULL, command TEXT NOT NULL, commit_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('待提交','已提交','已放弃')),
+    coverage_json TEXT NOT NULL, pass_evidence_json TEXT NOT NULL, local_run_json TEXT NOT NULL,
+    ci_json TEXT NOT NULL, details_json TEXT NOT NULL,
+    registered_at TEXT NOT NULL, registered_by TEXT NOT NULL,
+    UNIQUE(batch,scenario,fingerprint,identity,path,test_name)
+);
 CREATE TABLE IF NOT EXISTS evidence (
     sha256 TEXT PRIMARY KEY, size INTEGER NOT NULL, name TEXT NOT NULL
 );

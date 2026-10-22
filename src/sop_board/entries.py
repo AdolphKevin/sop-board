@@ -8,7 +8,7 @@ import stat
 import yaml
 
 
-FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver'}
+FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env'}
 
 
 def public_problems(problems, *, local):
@@ -53,6 +53,11 @@ def validate_entries(entries):
                 problems.append(dict(field=field + '.' + key, problem='应为非空文字数组'))
         if 'address_env' in entry and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(entry['address_env'])):
             problems.append(dict(field=field + '.address_env', problem='应为环境变量名'))
+        if 'credential_env' in entry:
+            values = entry['credential_env']
+            if (not isinstance(values, list) or not all(isinstance(v, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', v) for v in values)
+                    or len(set(values)) != len(values)):
+                problems.append(dict(field=field + '.credential_env', problem='应为不重复的环境变量名数组'))
         if 'driver' in entry and not skill_name(entry['driver']):
             problems.append(dict(field=field + '.driver', problem='应为技能目录名'))
     return problems

@@ -1,6 +1,6 @@
 ---
 title: "Flow Board 项目总览"
-source: ["README.md", "docs/standard.md", "docs/designs/SOP-BOARD-8.md", "docs/designs/SOP-BOARD-9.md", "docs/designs/SOP-BOARD-10.md"]
+source: ["README.md", "docs/standard.md", "docs/designs/SOP-BOARD-8.md", "docs/designs/SOP-BOARD-9.md", "docs/designs/SOP-BOARD-10.md", "docs/proposals/2026-10-22-acceptance-standard-and-distill.md"]
 ---
 # Flow Board 项目总览
 
@@ -23,6 +23,10 @@ D33/I3 修订 3：先确认工作树建法和外部工具依赖；worktree/clean
 D35、I6：每条用例明确归为 flow/detail 并说明理由，仅 flow 生成场景；detail 的原预期带来源编号并入本次流程。配对绑定场景版本和用例内容，供页面与报告共用。本机指定单独成场景的选择持久保存，后续合并必须遵守。报告逐轮列出沿用数量与理由。模拟合并和报表记录须明确标记，不能替代真实 Codex 或独立验收。
 
 Web 验收技能随 sop-board 发行，维护于 src/sop_board/skills/playwright-acceptance/。总览优先展示执行进度、Agent 通过率和复核进度；其他指标可展开，队列同时显示场景名称和编号，复核身份默认折叠，刷新保留展开状态。
+
+D61–D65 第一段：regression-distill 随包发行，在开发会话把已确认、通过证据与当前内容一致的场景按成本分层沉淀；产品代码保持原样，测试改动留给调用方审核。skills install 将两项随包技能链接到 HOME 下的 Codex 与 Claude Code 目录，其他来源同名项保留并跳过。distill submit 只在本机核对整份报告的场景指纹、仓库身份及实际文件摘要，全部合格才登记 regression_links；同一测试提交后再次登记更新，过期按场景指纹计算，数据库格式仍为 5。页面与报告展示逐项覆盖和运行状态，内网隐藏测试命令与本机路径；人工不通过时提示关联测试待核查。关联不改变场景结论、轮次或交付判定，影响判断仍以完整改动及依赖关系为先；看板调度沉淀属于第二段。
+
+入口 credential_env 是变量名称数组；执行、修复与修复复测只从启动进程取得声明的凭据，适配返回值不覆盖凭据。缺变量的涉及场景由看板记受阻，check 逐项报告设置状态；材料不保存取值，内网页面、接口与文本附件不显示名称。实际使用继续遵守任务开始时的账号授权。
 
 产品展示名称统一为 Flow Board；安装包、命令、Python 模块、环境变量、数据目录及适配就绪标记沿用既有 sop-board 标识。
 
