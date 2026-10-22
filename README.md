@@ -54,6 +54,8 @@ Flow Board 把它们收束成**一个以 SOP 场景为中心的闭环**：每条
 
 用退款案例讲清什么是 SOP、怎样写场景，见 **[SOP 业务场景编写指南](docs/sop-guide.md)**。
 
+验收的统一正文是 **[业务验收与质量改进标准](docs/standard.md)**：项目手册设计、账号授权、独立执行、人工复核、重跑与沿用、交付和缺陷复验都从这里进入。[四份记录模板](docs/templates)供项目直接使用。
+
 ## 🧬 五个阶段
 
 ### `01` SOP 草稿、用例上传与合并
@@ -142,7 +144,7 @@ sop-board demo --lan --port 8787
 
 > [!TIP]
 > **交给 AI 搭建**：在 Codex 或 Claude Code 中告诉代理工作区名称与仓库目录，让它运行 `sop-board guide` 并按指引完成搭建。
-> 代理只向数据目录（缺省 `~/.sop-board/<名称>/`）写入配置，产品仓库保持只读，不记录凭证。
+> 配置、适配和技能写入数据目录（缺省 `~/.sop-board/<名称>/`），真实验证手册在有对应写权限的产品仓库会话中编写或补齐。项目技能与入口配置引用手册章节，凭据仅经环境变量传递。
 
 <details>
 <summary><b>最小配置示例 <code>config.yaml</code></b></summary>
@@ -157,10 +159,10 @@ entries:
   web:
     surface: web
     address_env: APP_URL
-    operate: 通过真实浏览器执行场景
-    observe: [页面, 持久化数据]
-    evidence: [截图, 数据查询结果]
-    isolation: 每轮独立数据，结束后清理
+    operate: "按 app 仓库 docs/operations/verification.md 第 2 节 web 入口操作"
+    observe: ["按同手册第 3 节核对页面、数据和禁止副作用"]
+    evidence: ["按同手册第 3 节保存截图和数据查询"]
+    isolation: "按同手册第 4 节准备隔离数据、留证后清理"
 adapter:
   env: [python3, env.py]
   ports: [8000]
@@ -213,6 +215,8 @@ adapter:
 | 文档 | 内容 |
 | --- | --- |
 | [`sop-board guide`](src/sop_board/guide.md) | 工作区搭建完整指引（代理与开发者共用） |
+| [业务验收与质量改进标准](docs/standard.md) | 验收标准唯一正文；项目手册、授权、独立验收、交付、缺陷与复盘 |
+| [记录模板](docs/templates) | 项目验收方案、交付验收、缺陷复验与保护、每周质量复盘 |
 | [SOP 业务场景编写指南](docs/sop-guide.md) | 场景文件结构、四要素写法、正反向类型、测试用例模板 |
 | [参考手册](docs/reference.md) | 配置、环境、合并执行、跨仓修复、访问范围与全部接口契约 |
 | [Web 验收集成](docs/playwright-acceptance.md) | 随包 Playwright 技能、`sop-board playwright` 命令 |

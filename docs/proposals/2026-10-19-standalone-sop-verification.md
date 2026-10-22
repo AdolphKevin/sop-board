@@ -1,5 +1,7 @@
 # SOP 验证独立化：`sop-verify` 与协作看板 `sop-board` 由独立仓库维护，项目仓只放场景（v8，2026-10-19）
 
+> 以 team-workflow 为契约来源的段落已由 D60 取代，现行契约见 [src/sop_board/scenario_file.py](../../src/sop_board/scenario_file.py) 与 [docs/reference.md](../reference.md)；验收标准见 [docs/standard.md](../standard.md)。
+
 ## 批准记录
 
 - v1（2026-10-19）：在 team-workflow 内新增 `tw sop` 命令组与 `sop-verify` 技能。

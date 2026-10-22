@@ -8,6 +8,8 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 # SOP-BOARD-3：Codex 任务、可写授权与以用例为准的合并
 
+> 以 team-workflow 为契约来源的段落已由 D60 取代，现行契约见 [src/sop_board/scenario_file.py](../../src/sop_board/scenario_file.py) 与 [docs/reference.md](../reference.md)；验收标准见 [docs/standard.md](../standard.md)。
+
 > 本文件是 tw 任务 SOP-BOARD-3 的方案原文。总体设计见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v8），本需求对应其第 8 节 SOP-BOARD-3 一行，以及 D15、D16、D17、D20、D21 与 S7 中属于本需求的部分。验收场景见 [docs/sop/sop-board-3.yaml](../sop/sop-board-3.yaml)。
 >
 > 状态：修订 2。修订 1 于 2026-10-19 经 AdolphKevin 授权由 Claude 代批；修订 2 按测试代理 sop-board-3-tester 的 25 个待确认问题与 8 处与总体方案的出入，以总体方案 v8 为准补写，2026-10-20 同样代批；修订 3 补写配对时发现的细节（超时取值的核对时机、触发原因写法、节点编号、relocate 与推断入口字段、任务文件的子路径、SOP 原文的独立登记），并为 SOP-VERIFY-2 的 pull 与 pending 在任务与场景接口中补充字段，同日代批。

@@ -8,6 +8,8 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 # SOP-BOARD-2：人工复核改版与用例协作
 
+> 以 team-workflow 为契约来源的段落已由 D60 取代，现行契约见 [src/sop_board/scenario_file.py](../../src/sop_board/scenario_file.py) 与 [docs/reference.md](../reference.md)；验收标准见 [docs/standard.md](../standard.md)。
+
 > 本文件是 tw 任务 SOP-BOARD-2 的方案原文。总体设计见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v8），本需求对应其第 8 节 SOP-BOARD-2 一行，以及 D6、D7、D13、D18、D26、D27 中属于本需求的部分。验收场景见 [docs/sop/sop-board-2.yaml](../sop/sop-board-2.yaml)。
 >
 > 状态：修订 3。修订 1 于 2026-10-19 经 AdolphKevin 授权由 Claude 代批；修订 2 答复测试代理 sop-board-2-tester 的 22 个待确认问题（显示用语、错误代码、空值与边界写法）；修订 3 按用例核对覆盖时补写五处细节（重复编号的行号、无前缀且未配置 Jira 时单号的说明、导出时间的时区、报告与比率写法），均同日代批。

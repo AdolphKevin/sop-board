@@ -8,6 +8,8 @@ roles: {"design_owner":"Claude","implementation_owner":"Codex","acceptance_owner
 
 # SOP-BOARD-1：看板核心
 
+> 以 team-workflow 为契约来源的段落已由 D60 取代，现行契约见 [src/sop_board/scenario_file.py](../../src/sop_board/scenario_file.py) 与 [docs/reference.md](../reference.md)；验收标准见 [docs/standard.md](../standard.md)。
+
 > 本文件是 tw 任务 SOP-BOARD-1 的方案原文。总体设计与决定见本仓 [docs/proposals/2026-10-19-standalone-sop-verification.md](../proposals/2026-10-19-standalone-sop-verification.md)（v7 起草于 team-workflow，2026-10-19 随 v8 移入本仓），本需求对应其第 8 节 SOP-BOARD-1 一行。验收场景见 [docs/sop/sop-board.yaml](../sop/sop-board.yaml)。
 >
 > 状态：修订 3。修订 1 由 AdolphKevin 于 2026-10-19 批准；修订 2 按第 1 轮验收的三条观察补充启动与时间显示要求，AdolphKevin 同日要求本期修复；修订 3 导入测试代理的 51 条用例核对覆盖后，补充场景并新增验收 A7（项目设置），经 AdolphKevin 授权由 Claude 代批。

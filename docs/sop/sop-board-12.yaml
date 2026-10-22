@@ -1,0 +1,82 @@
+# SOP-BOARD-12 的验收场景
+# 预期依据 docs/proposals/2026-10-22-acceptance-standard-and-distill.md（修订 1，已批准）的 D60–D64。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# 本版本只含 S1（D60）；S2 的节点在实施对应分段时加入。
+# “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含一个“退款申请”页面与接口），origin 为 https://example.invalid/...；搭建由新开的代理会话按 sop-board guide 完成。
+# “原标准”：team-workflow 仓库 main 分支 8be02e4 的 skills/team-workflow/references/business-acceptance.md、test-capability.md 与 templates/ 下的项目验收方案、交付记录、缺陷记录、每周复盘模板。
+# 独立验收串行进行。
+
+metadata:
+  requirement: "sop-board：承接业务验收标准，成为 SOP 验收的唯一正文"
+  batch: "sop-board-12"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/proposals/2026-10-22-acceptance-standard-and-distill.md 的 D60"
+      version: "修订 1（2026-10-22 批准）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "standard"]
+
+sops:
+  - id: SOP-121
+    title: 业务验收标准由本仓承接，开发会话与看板读同一份正文
+    actor: 开发者
+    entry: 仓库文档与 sop-board 命令行
+    scenarios:
+      - id: SOP-121-P01
+        polarity: positive
+        title: 原标准每项要求在本仓都有现行正文
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["本仓检出实现分支并以 uv tool install 安装", "原标准文件可读"]
+        steps: ["逐行对照 D60 去向表，在 docs/standard.md、docs/sop-guide.md、docs/templates/ 中找到每一项的正文", "对照原标准逐节核对要求是否被承接：原则、场景粒度、重跑与沿用、交付记录、为项目设计验收方式、真实验证操作手册最低内容、测试账号与授权、入口缺口与过渡、缺陷关联与复验、每周复盘", "运行 sop-board guide，阅读 README"]
+        expected: ["D60 表中每一项都能定位到具体章节；原标准的每条要求在新正文中有对应表述，或在去向表中写明由哪项现有能力承接", "场景粒度、E2E 起终点只在 docs/sop-guide.md 定义一次，docs/standard.md 引用它", "docs/templates/ 有项目验收方案、交付记录、缺陷记录、每周复盘四份模板", "测试账号与授权写明：账号类别、任务开始时向用户取得一次授权、记录环境与账号及操作范围、同一任务沿用", "docs/standard.md 末尾有可直接放进使用者全局指引的推荐文字，覆盖需求完成标准、预期来源、首次独立验收、测试账号授权与如实报告", "README 与 sop-board guide 的输出都指向 docs/standard.md"]
+        forbidden_effects: ["新正文出现 tw team、scenarios submit、scenarios carry、start --grant 等 team-workflow 命令作为操作步骤", "多代理派遣协议被写成本仓要求"]
+        evidence_hints: ["对照表（原要求 → 新章节）", "sop-board guide 输出摘录"]
+      - id: SOP-121-P02
+        polarity: positive
+        title: 按标准为演示产品写验证手册，工作区入口引用手册，执行会话按手册操作
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区尚未搭建", "app 仓库没有验证手册"]
+        steps: ["新开代理会话，按 sop-board guide 与 docs/standard.md 搭建演示工作区，并在 app 仓库写真实验证手册", "运行 sop-board check 演示工作区", "启动看板，对一条退款场景执行一次待执行验证", "查看该次执行会话的记录"]
+        expected: ["app 仓库新增的验证手册包含标准要求的最低内容：环境与依赖、干净环境与连续重跑、失败证据、隔离与清理、测试账号类别", "config.yaml 的 entries 只含本机绑定与对手册章节的简短引用，必填字段均有值", "sop-board check 全部通过", "执行会话记录显示先读取了项目验证技能与 app 仓库的验证手册，按手册章节操作"]
+        forbidden_effects: ["入口的操作步骤、账号说明在 config.yaml 与手册中各写一份完整正文", "凭证值出现在手册、配置或会话记录中"]
+        evidence_hints: ["手册与 config.yaml 摘录", "check 输出", "执行会话记录摘录"]
+      - id: SOP-121-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 旧方案中以 team-workflow 为契约来源的段落都标明已被取代
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["本仓检出实现分支"]
+        steps: ["在 docs/ 与 README、AGENTS.md 中检索 team-workflow、tw team、.tw/config.json、acceptance_entries", "逐处判断是现行契约、历史记录还是取代说明"]
+        expected: ["v8 总体方案、SOP-BOARD-3、SOP-BOARD-4 中以 team-workflow 为准的段落所在文件文首带“已由 D60 取代”的说明并指向现行契约", "docs/verification.md 不再出现 .tw/config.json 旧检查的说明", "其余命中均为历史记录或取代说明"]
+        forbidden_effects: ["现行文档把 team-workflow 写成场景格式、结果契约或入口声明的依据"]
+        evidence_hints: ["检索结果与逐处判断"]
+      - id: SOP-121-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 入口只写手册引用而缺少必填字段时，check 指出缺项
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-121-P02 搭建好的演示工作区"]
+        steps: ["把 config.yaml 中一个入口的 operate 字段删掉", "运行 sop-board check 演示工作区", "恢复该字段后再运行一次"]
+        expected: ["第一次 check 失败并指出缺少的入口字段", "恢复后 check 通过"]
+        forbidden_effects: ["check 在缺字段时报告通过"]
+        evidence_hints: ["两次 check 输出"]
+      - id: SOP-121-N03
+        polarity: negative
+        negative_type: other
+        title: 公开文档不含内部标识
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["本仓检出实现分支"]
+        steps: ["在本仓已跟踪的文档、方案、设计、场景与知识条目中检索内部项目名、个人本机绝对路径、真实站点域名与真实单号"]
+        expected: ["命中均已改为通用示例（如 example.invalid、PROJ-123、<数据目录>）"]
+        forbidden_effects: ["出现个人本机绝对路径、内部项目名、真实站点或真实单号"]
+        evidence_hints: ["检索命令与结果"]
