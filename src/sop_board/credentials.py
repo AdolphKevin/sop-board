@@ -174,10 +174,18 @@ def hide_local_paths(raw, local_roots=()):
             segment = pattern.sub(placeholder, segment)
         return segment
 
+    def mask_url(url):
+        # 服务器上的路径段保持原样；指向本机文件的链接（vscode://file/...）与查询参数、锚点中的路径照常遮蔽。
+        authority = re.match(rb'[^:]+:(?:\\*/){2}([^/\\?#]*)', url)
+        if authority and authority.group(1).lower() == b'file':
+            return url[:authority.end(1)] + LOCAL_PATH.sub(placeholder, url[authority.end(1):])
+        split = re.search(rb'[?#]', url)
+        return url if not split else url[:split.start()] + LOCAL_PATH.sub(placeholder, url[split.start():])
+
     raw = mask_known(raw)
     pieces, last = [], 0
     for match in URL.finditer(raw):
-        pieces += [LOCAL_PATH.sub(placeholder, raw[last:match.start()]), match.group()]
+        pieces += [LOCAL_PATH.sub(placeholder, raw[last:match.start()]), mask_url(match.group())]
         last = match.end()
     pieces.append(LOCAL_PATH.sub(placeholder, raw[last:]))
     return b''.join(pieces)
