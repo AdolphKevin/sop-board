@@ -155,8 +155,9 @@ def path_pattern(root):
     return rb'(?<!\\)' + b''.join(parts) + rb'(?![A-Za-z0-9._~+@-])' + PATH_TAIL
 
 
-# URL（file: 除外）中的通用根目录段（/home/、/tmp/ 等）保持原样；已知的具体本机目录在 URL 内同样遮蔽。
-URL = re.compile(rb'(?<![A-Za-z0-9+.-])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:(?:\\*/){2}[^\s"\'<>,;]*', re.IGNORECASE)
+# URL（file: 除外）只由 URL 允许的 ASCII 字符组成，遇到中文、|、括号、引号、逗号、分号或 JSON 转义（\\n 等）即结束；
+# 其中的通用根目录段（/home/、/tmp/ 等）保持原样，已知的具体本机目录在 URL 内同样遮蔽。
+URL = re.compile(rb"(?<![A-Za-z0-9+.-])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:(?:\\*/){2}(?:[A-Za-z0-9._~:/?#\[\]@!$&*+=%-]|\\+/)*", re.IGNORECASE)
 
 
 LOCAL_PATH = re.compile(b'|'.join(rb'(?:' + path_pattern(r) + rb')' for r in COMMON_ROOTS), re.IGNORECASE)
@@ -166,7 +167,15 @@ def hide_local_paths(raw, local_roots=()):
     """内网响应遮蔽已知本机目录（看板数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径，连同其后的路径整段替换；URL 中只保留通用根目录段。"""
     import tempfile
     placeholder = '<本机路径>'.encode()
-    roots = {str(r) for r in (*local_roots, Path.home(), tempfile.gettempdir(), Path(tempfile.gettempdir()).resolve()) if r}
+    roots = set()
+    for root in (*local_roots, Path.home(), tempfile.gettempdir()):
+        if not root:
+            continue
+        # 同一目录的常见写法：原样、解析后（/private/tmp/...）、去掉 macOS /private 前缀（/tmp/...）。
+        for form in (str(root), str(Path(root).resolve())):
+            roots.add(form)
+            if form.startswith('/private/'):
+                roots.add(form[len('/private'):])
     patterns = [re.compile(path_pattern(root), re.IGNORECASE) for root in sorted(roots, key=len, reverse=True)]
 
     def mask_known(segment):
@@ -175,9 +184,9 @@ def hide_local_paths(raw, local_roots=()):
         return segment
 
     def mask_url(url):
-        # 服务器上的路径段保持原样；指向本机文件的链接（vscode://file/...）与查询参数、锚点中的路径照常遮蔽。
+        # 服务器上的路径段保持原样；指向本机文件的链接（主机为 file 或为空，如 vscode://file/...、note:///...）与查询参数、锚点中的路径照常遮蔽。
         authority = re.match(rb'[^:]+:(?:\\*/){2}([^/\\?#]*)', url)
-        if authority and authority.group(1).lower() == b'file':
+        if authority and authority.group(1).lower() in (b'file', b''):
             return url[:authority.end(1)] + LOCAL_PATH.sub(placeholder, url[authority.end(1):])
         split = re.search(rb'[?#]', url)
         return url if not split else url[:split.start()] + LOCAL_PATH.sub(placeholder, url[split.start():])
