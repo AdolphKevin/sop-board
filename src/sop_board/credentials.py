@@ -155,30 +155,31 @@ def path_pattern(root):
     return rb'(?<!\\)' + b''.join(parts) + rb'(?![A-Za-z0-9._~+@-])' + PATH_TAIL
 
 
-# URL（file: 除外）整体跳过，保留其中的 /home/、/tmp/ 等路径段；含任意层转义的斜杠。
-URL = re.compile(rb'(?<![A-Za-z0-9+.-])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:(?:\\*/){2}[^\s"\'<>]*', re.IGNORECASE)
+# URL（file: 除外）中的通用根目录段（/home/、/tmp/ 等）保持原样；已知的具体本机目录在 URL 内同样遮蔽。
+URL = re.compile(rb'(?<![A-Za-z0-9+.-])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:(?:\\*/){2}[^\s"\'<>,;]*', re.IGNORECASE)
 
 
 LOCAL_PATH = re.compile(b'|'.join(rb'(?:' + path_pattern(r) + rb')' for r in COMMON_ROOTS), re.IGNORECASE)
 
 
 def hide_local_paths(raw, local_roots=()):
-    """内网响应遮蔽已知本机目录（看板数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径，连同其后的路径整段替换；URL 保持原样。"""
+    """内网响应遮蔽已知本机目录（看板数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径，连同其后的路径整段替换；URL 中只保留通用根目录段。"""
     import tempfile
     placeholder = '<本机路径>'.encode()
     roots = {str(r) for r in (*local_roots, Path.home(), tempfile.gettempdir(), Path(tempfile.gettempdir()).resolve()) if r}
     patterns = [re.compile(path_pattern(root), re.IGNORECASE) for root in sorted(roots, key=len, reverse=True)]
 
-    def mask(segment):
+    def mask_known(segment):
         for pattern in patterns:
             segment = pattern.sub(placeholder, segment)
-        return LOCAL_PATH.sub(placeholder, segment)
+        return segment
 
+    raw = mask_known(raw)
     pieces, last = [], 0
     for match in URL.finditer(raw):
-        pieces += [mask(raw[last:match.start()]), match.group()]
+        pieces += [LOCAL_PATH.sub(placeholder, raw[last:match.start()]), match.group()]
         last = match.end()
-    pieces.append(mask(raw[last:]))
+    pieces.append(LOCAL_PATH.sub(placeholder, raw[last:]))
     return b''.join(pieces)
 
 
