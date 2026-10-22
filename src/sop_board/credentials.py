@@ -129,11 +129,16 @@ class StreamRedactor:
 
 def hide_names(raw, credential_names):
     for name in sorted(credential_names, key=len, reverse=True):
-        raw = re.sub(rb'(?<![A-Za-z0-9_])' + re.escape(name.encode()) + rb'(?![A-Za-z0-9_])', b'[credential variable]', raw)
+        # JSON 转义（如 \n、\t）后的变量名同样遮蔽。
+        raw = re.sub(rb'(?:(?<=\\[nrt])|(?<![A-Za-z0-9_]))' + re.escape(name.encode()) + rb'(?![A-Za-z0-9_])',
+                     b'[credential variable]', raw)
     return raw
 
 
-LOCAL_PATH = re.compile(rb'(?:/Users/|/home/|/private/|/tmp/|/var/folders/|/Volumes/)[^\s"\'<>`)\]},;]*')
+# 路径在空白、引号、括号、HTML 实体（&）与中文标点处结束。
+PATH_END = '、，。；：（）【】「」'
+LOCAL_PATH = re.compile(rb'(?:/Users/|/home/|/private/|/tmp/|/var/folders/|/Volumes/)(?:(?!'
+                        + b'|'.join(re.escape(c.encode()) for c in PATH_END) + rb')[^\s"\'<>`)\]},;&])*')
 TEXT_TYPES = ('text/', 'application/json', 'application/x-ndjson', 'application/yaml')
 TEXT_SUFFIXES = ('.json', '.jsonl', '.txt', '.log', '.md', '.yaml', '.yml', '.html', '.xml', '.csv')
 
@@ -151,8 +156,9 @@ def response_bytes(raw, content_type, credential_names, *, local, local_roots=()
         value = redact(value, secrets)
         if local:
             return value
-        value = hide_names(value, credential_names)
-        return hide_local_paths(value, local_roots) if text else value
+        if not text:
+            return value
+        return hide_local_paths(hide_names(value, credential_names), local_roots)
     if content_type == 'application/zip' and (credential_names or not local):
         output = BytesIO()
         with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as target:

@@ -307,9 +307,7 @@ class Tasks:
             folders.sort()
             for name in sorted(names):
                 path = Path(parent) / name
-                if not local and name == 'regression-links.json':
-                    continue
-                if self.is_task_file(task_id, path):
+                if self.is_task_file(task_id, path) and (local or self.is_shared_file(directory, path)):
                     relative = str(path.relative_to(directory))
                     task['files'][relative] = f'/api/v1/tasks/{task_id}/files/{quote(relative, safe="/")}'
         if task['kind'] == 'fix':
@@ -342,14 +340,30 @@ class Tasks:
             return False
         return not any((parent / '.git').exists() for parent in path.parents if parent.is_relative_to(directory))
 
+    # 内网只开放测试同事协作所需的材料；提示词、会话记录、快照与证据等代理材料仅限本机（D45、D62）。
+    SHARED_FILES = {'sop.md', 'original-sop.md', 'sop-before.md', 'sop.diff', 'draft.json', 'annotations.json',
+                    'all-annotations.json', 'revision.json', 'history.json', 'cases.yaml', 'cases.json', 'cases-generated.yaml',
+                    'case_choices.json', 'case_confirmations.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
+                    'results.jsonl', 'pairs.json', 'problems.json', 'feedback.json'}
+
+    def is_shared_file(self, directory, path):
+        relative = path.relative_to(directory)
+        return relative.name in self.SHARED_FILES and (len(relative.parts) == 1 or relative.parts[0] == 'sop')
+
     def file(self, task_id, name, *, local=True):
-        if not local and Path(name).name == 'regression-links.json':
-            reject(403, 'local-only', 'file', '回归测试的本机详情仅限本机查看')
         self.read(task_id)
-        path = self.directory(task_id) / name
+        directory = self.directory(task_id)
+        path = directory / name
         if '\0' in name or Path(name).is_absolute() or '..' in Path(name).parts or not self.is_task_file(task_id, path):
             reject(404, 'task-file-not-found', 'file', '任务文件不存在')
-        return path.read_bytes()
+        if not local and not self.is_shared_file(directory, path):
+            reject(403, 'local-only', 'file', '该任务材料仅限本机查看')
+        raw = path.read_bytes()
+        if not local:
+            from .credentials import hide_names, hide_local_paths
+            raw = hide_local_paths(hide_names(raw, self.service.workspace.credential_names),
+                                   [self.service.workspace.data, *self.service.workspace.repos.values()])
+        return raw
 
     def merge_result(self, key, name, task_id):
         task = self.read(task_id)
