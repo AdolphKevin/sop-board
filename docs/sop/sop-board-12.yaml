@@ -1,6 +1,6 @@
 # SOP-BOARD-12 的验收场景
 # 预期依据 docs/proposals/2026-10-22-acceptance-standard-and-distill.md（修订 1，已批准）的 D60–D64。只写业务流程；验收只以本文件的场景经真实入口执行为准。
-# 版本 3（2026-10-22）：SOP-124-N02、SOP-129-N02 按用户确认的两级保证改写。版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
+# 版本 4（2026-10-22）：加入 S2 第二段（D62 入口二）的 SOP-127。版本 3（2026-10-22）：SOP-124-N02、SOP-129-N02 按用户确认的两级保证改写。版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
 # “沉淀演示仓库”：临时 Git 仓库 shop，Python 标准库 HTTP 服务 + SQLite，退款接口需用测试账号登录（密码经环境变量 DEMO_BUYER_PASSWORD），带一套已有的接口测试（pytest 或 unittest）与可运行的 CI 配置（GitHub Actions 文件，CI 实跑由推送到一个临时远端或标注“仅本机”）；预置一个已知缺陷提交 bug-refund-twice（同一订单可重复退款）。场景文件 docs/sop/refund.yaml 含两条已确认场景（sources 有 confirmed_by）与一条未确认场景。
 # “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含一个“退款申请”页面与接口），origin 为 https://example.invalid/...；搭建由新开的代理会话按 sop-board guide 完成。
 # “原标准”：team-workflow 仓库 main 分支 8be02e4 的 skills/team-workflow/references/business-acceptance.md、test-capability.md 与 templates/ 下的项目验收方案、交付记录、缺陷记录、每周复盘模板。
@@ -9,7 +9,7 @@
 metadata:
   requirement: "sop-board：承接业务验收标准；随包发行回归沉淀技能，登记场景与测试的关联；看板会话可取得入口凭据变量"
   batch: "sop-board-12"
-  version: 3
+  version: 4
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-acceptance-standard-and-distill.md 的 D60"
@@ -413,3 +413,102 @@ sops:
         expected: ["看板生成的页面与接口中没有 DEMO_BUYER_PASSWORD", "文本证据中该变量名在每种写法下都显示为 [credential variable]，JSON 响应仍可解析"]
         forbidden_effects: ["看板生成的内容出现变量名", "变量名以上述任一写法出现在内网响应中"]
         evidence_hints: ["HTML 与 JSON 检索", "探针证据经内网读取的原文"]
+
+  - id: SOP-127
+    title: 看板调度本机 Codex 沉淀回归测试
+    actor: 开发者与测试同事
+    entry: 看板本机场景页与任务页
+    scenarios:
+      - id: SOP-127-P01
+        polarity: positive
+        title: 本机发起沉淀，测试留在 worktree 由开发者提交后关联转为已提交
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["沉淀演示仓库已登记为看板工作区，两条场景已确认且在当前产品上 Agent 通过", "工作区没有运行中的执行或修复任务"]
+        steps: ["在本机场景页勾选这两条场景，点“沉淀为回归测试”", "观察任务状态直至待开发者审核", "查看任务页的 worktree 路径与改动摘要，在该 worktree 中检查并提交测试", "在任务页标记“已处理”并填写提交", "确认清理"]
+        expected: ["任务依次显示排队、沉淀中、待开发者审核", "sop-board/distill/<编号> 分支的 worktree 中有按场景分层的测试且未提交，产品代码无改动", "两条场景的关联已自动登记为待提交", "标记已处理后关联变为已提交并记录该提交", "清理前列出的未提交改动为空，确认后 worktree 被清理，任务显示已处理"]
+        forbidden_effects: ["看板提交、合入或推送测试", "改变两条场景的验收结论"]
+        evidence_hints: ["任务页截图与状态序列", "worktree 的 git status 与 diff", "关联状态前后截图"]
+      - id: SOP-127-P02
+        polarity: positive
+        title: 沉淀中重启看板后可重试并保留上一次记录
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个沉淀任务处于沉淀中"]
+        steps: ["停止并重新启动看板", "在任务页点重试", "等待任务结束后查看任务目录"]
+        expected: ["重启后任务显示已中断", "重试复用原 worktree 与分支，重新固定输入后新建会话", "上一次的报告与会话记录位于 attempts/<序号>/", "成功后关联只登记一份"]
+        forbidden_effects: ["重启后任务仍显示沉淀中", "重复登记同一关联"]
+        evidence_hints: ["任务状态前后截图", "任务目录清单"]
+      - id: SOP-127-P03
+        polarity: positive
+        title: 需要看板环境时切换到 worktree 并在结束后恢复基线
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["场景的测试需要运行中的服务", "基线环境已启动"]
+        steps: ["发起沉淀", "任务运行期间发起一次执行待执行场景", "任务结束后查看环境状态"]
+        expected: ["任务运行期间基线环境停止、由 worktree 启动环境", "执行任务排队到沉淀结束后开始", "沉淀结束后基线环境恢复运行"]
+        forbidden_effects: ["执行与沉淀同时使用环境"]
+        evidence_hints: ["环境状态与日志", "任务时间线"]
+      - id: SOP-127-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网不能发起或操作沉淀任务，只看到状态
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["看板以 --lan 启动，存在一个待开发者审核的沉淀任务"]
+        steps: ["经非回环地址打开场景页与任务页", "直接请求发起、重试、标记已处理、放弃、清理接口", "请求该任务的详情接口与附件"]
+        expected: ["页面没有沉淀相关按钮", "各操作接口返回 403 local-only", "任务详情只含状态、场景与时间", "附件列表不含 regression.json、提示词、会话记录与 worktree 文件"]
+        forbidden_effects: ["内网响应出现 worktree 路径、测试命令或会话编号"]
+        evidence_hints: ["页面截图", "接口响应原文"]
+      - id: SOP-127-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 运行期间输入变化时本次结果作废
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["一个沉淀任务处于沉淀中"]
+        steps: ["修改其中一条场景的 expected 并提交", "等待会话结束"]
+        expected: ["任务显示已作废及变化项", "关联未登记", "worktree 保留供重试"]
+        forbidden_effects: ["登记基于旧输入的关联"]
+        evidence_hints: ["任务页截图", "关联列表"]
+      - id: SOP-127-N03
+        polarity: negative
+        negative_type: incomplete-input
+        title: 产品有未提交改动时等待提交
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["产品仓库有一处未提交的产品改动"]
+        steps: ["发起沉淀"]
+        expected: ["任务显示待提交并列出未提交的路径", "提交后任务自动开始"]
+        forbidden_effects: ["从未提交的工作区建立 worktree"]
+        evidence_hints: ["任务页截图"]
+      - id: SOP-127-N04
+        polarity: negative
+        negative_type: interrupted
+        title: 放弃保留历史，清理失败保留现场
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个待开发者审核的沉淀任务"]
+        steps: ["标记放弃并确认清理", "另一个任务中让适配的清理命令失败后确认清理"]
+        expected: ["放弃后关联显示已放弃并保留", "清理失败时任务显示清理失败、worktree 保留，可再次清理"]
+        forbidden_effects: ["放弃后删除关联记录", "清理失败时丢失 worktree 中的改动"]
+        evidence_hints: ["任务页截图", "关联列表", "worktree 目录"]
+      - id: SOP-127-N05
+        polarity: negative
+        negative_type: invalid-input
+        title: 不满足发起条件的场景不能发起
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一条场景没有确认人，另一条在当前产品上最新 Agent 结果为失败"]
+        steps: ["在本机场景页查看这两条场景", "直接请求以它们发起沉淀"]
+        expected: ["两条都不可勾选并显示原因", "接口拒绝并说明原因，不建立任务"]
+        forbidden_effects: ["建立沉淀任务或 worktree"]
+        evidence_hints: ["页面截图", "接口响应"]
