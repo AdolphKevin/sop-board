@@ -150,23 +150,36 @@ COMMON_ROOTS = ('/Users/', '/home/', '/private/', '/tmp/', '/var/folders/', '/Vo
 
 
 def path_pattern(root):
-    # 根目录须是完整的目录段（/home 不匹配 /homebrew），且不接在主机名或其他路径之后（URL 中的 /tmp/ 段保留）。
+    # 根目录须是完整的目录段（/home 不匹配 /homebrew）；匹配从第一个反斜杠开始，保持 JSON 转义完整。
     parts = [SLASH if c == '/' else re.escape(c.encode()) for c in root.rstrip('/')]
-    return (rb'(?<![A-Za-z0-9._~+@%:\\-])' + b''.join(parts)
-            + rb'(?![A-Za-z0-9._~+@-])' + PATH_TAIL)
+    return rb'(?<!\\)' + b''.join(parts) + rb'(?![A-Za-z0-9._~+@-])' + PATH_TAIL
+
+
+# URL（file: 除外）整体跳过，保留其中的 /home/、/tmp/ 等路径段；含任意层转义的斜杠。
+URL = re.compile(rb'(?<![A-Za-z0-9+.-])(?!file:)[A-Za-z][A-Za-z0-9+.-]*:(?:\\*/){2}[^\s"\'<>]*', re.IGNORECASE)
 
 
 LOCAL_PATH = re.compile(b'|'.join(rb'(?:' + path_pattern(r) + rb')' for r in COMMON_ROOTS), re.IGNORECASE)
 
 
 def hide_local_paths(raw, local_roots=()):
-    """内网响应遮蔽已知本机目录（看板数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径，连同其后的路径整段替换。"""
+    """内网响应遮蔽已知本机目录（看板数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径，连同其后的路径整段替换；URL 保持原样。"""
     import tempfile
     placeholder = '<本机路径>'.encode()
     roots = {str(r) for r in (*local_roots, Path.home(), tempfile.gettempdir(), Path(tempfile.gettempdir()).resolve()) if r}
-    for root in sorted(roots, key=len, reverse=True):
-        raw = re.sub(path_pattern(root), placeholder, raw, flags=re.IGNORECASE)
-    return LOCAL_PATH.sub(placeholder, raw)
+    patterns = [re.compile(path_pattern(root), re.IGNORECASE) for root in sorted(roots, key=len, reverse=True)]
+
+    def mask(segment):
+        for pattern in patterns:
+            segment = pattern.sub(placeholder, segment)
+        return LOCAL_PATH.sub(placeholder, segment)
+
+    pieces, last = [], 0
+    for match in URL.finditer(raw):
+        pieces += [mask(raw[last:match.start()]), match.group()]
+        last = match.end()
+    pieces.append(mask(raw[last:]))
+    return b''.join(pieces)
 
 
 def looks_like_text(raw, content_type):
@@ -193,8 +206,9 @@ def response_bytes(raw, content_type, credential_names, *, local, local_roots=()
         with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as target:
             for entry in source.infolist():
                 from .evidence_types import content_type as guess, is_text
-                text = is_text(guess(entry.filename))
-                target.writestr(clean(entry.filename.encode()).decode(), clean(source.read(entry.filename), text))
+                content = source.read(entry.filename)
+                text = is_text(guess(entry.filename)) or looks_like_text(content, 'application/octet-stream')
+                target.writestr(clean(entry.filename.encode()).decode(), clean(content, text))
             target.comment = clean(source.comment)
         return output.getvalue()
     from .evidence_types import is_text
