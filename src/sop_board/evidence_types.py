@@ -24,6 +24,7 @@ def content_type(name):
 
 
 def is_text(value):
+    value = value.split(";")[0].strip().lower()
     return value.startswith("text/") or value in (
         "application/json", "application/x-ndjson", "application/xml", "application/yaml", "application/x-yaml")
 

@@ -44,8 +44,10 @@ class Handler(BaseHTTPRequestHandler):
             local = is_loopback(self.client_address[0])
             roots = [workspace.data, *workspace.repos.values()]
             raw = response_bytes(raw, content_type, workspace.credential_names, local=local, local_roots=roots)
+            # 响应头只能用 latin-1；遮蔽后的占位符改为 ASCII。
             headers = [(name, response_bytes(value.encode(), 'text/plain', workspace.credential_names,
-                                            local=local, local_roots=roots).decode()) for name, value in headers]
+                                            local=local, local_roots=roots).decode().replace('<本机路径>', '<local-path>'))
+                       for name, value in headers]
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))

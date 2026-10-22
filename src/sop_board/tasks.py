@@ -348,7 +348,8 @@ class Tasks:
 
     def is_shared_file(self, directory, path):
         relative = path.relative_to(directory)
-        return relative.name in self.SHARED_FILES and (len(relative.parts) == 1 or relative.parts[0] == 'sop')
+        # 合并任务 sop/ 下是 SOP 原文，属于协作材料。
+        return (len(relative.parts) > 1 and relative.parts[0] == 'sop') or (len(relative.parts) == 1 and relative.name in self.SHARED_FILES)
 
     def file(self, task_id, name, *, local=True):
         self.read(task_id)

@@ -150,8 +150,10 @@ COMMON_ROOTS = ('/Users/', '/home/', '/private/', '/tmp/', '/var/folders/', '/Vo
 
 
 def path_pattern(root):
+    # 根目录须是完整的目录段（/home 不匹配 /homebrew），且不接在主机名或其他路径之后（URL 中的 /tmp/ 段保留）。
     parts = [SLASH if c == '/' else re.escape(c.encode()) for c in root.rstrip('/')]
-    return b''.join(parts) + PATH_TAIL
+    return (rb'(?<![A-Za-z0-9._~+@%:\\-])' + b''.join(parts)
+            + rb'(?![A-Za-z0-9._~+@-])' + PATH_TAIL)
 
 
 LOCAL_PATH = re.compile(b'|'.join(rb'(?:' + path_pattern(r) + rb')' for r in COMMON_ROOTS), re.IGNORECASE)
@@ -165,6 +167,16 @@ def hide_local_paths(raw, local_roots=()):
     for root in sorted(roots, key=len, reverse=True):
         raw = re.sub(path_pattern(root), placeholder, raw, flags=re.IGNORECASE)
     return LOCAL_PATH.sub(placeholder, raw)
+
+
+def looks_like_text(raw, content_type):
+    """类型未知（application/octet-stream）的内容按 UTF-8 文本判断：无 NUL 字节且能解码。"""
+    if (content_type or '').split(';')[0].strip() not in ('', 'application/octet-stream'):
+        return False
+    try:
+        return b'\0' not in raw[:8192] and bool(raw.decode('utf-8') or True)
+    except UnicodeDecodeError:
+        return False
 
 
 def response_bytes(raw, content_type, credential_names, *, local, local_roots=()):
@@ -186,7 +198,7 @@ def response_bytes(raw, content_type, credential_names, *, local, local_roots=()
             target.comment = clean(source.comment)
         return output.getvalue()
     from .evidence_types import is_text
-    return clean(raw, is_text(content_type or ''))
+    return clean(raw, is_text(content_type or '') or looks_like_text(raw, content_type))
 
 
 def clean_task_output(directory, secrets):
