@@ -135,17 +135,17 @@ def hide_names(raw, credential_names):
     return raw
 
 
-# 路径在空白、引号、括号、HTML 实体（&）与中文标点处结束。
-PATH_END = '、，。；：（）【】「」'
-LOCAL_PATH = re.compile(rb'(?:/Users/|/home/|/private/|/tmp/|/var/folders/|/Volumes/)(?:(?!'
-                        + b'|'.join(re.escape(c.encode()) for c in PATH_END) + rb')[^\s"\'<>`)\]},;&])*')
+# 路径只由常见路径字符组成，遇到引号、反斜杠转义、HTML 实体、中文等其他字符即结束。
+LOCAL_PATH = re.compile(rb'(?:/Users/|/home/|/private/|/tmp/|/var/folders/|/Volumes/)[A-Za-z0-9._~+@%/-]*')
 TEXT_TYPES = ('text/', 'application/json', 'application/x-ndjson', 'application/yaml')
 TEXT_SUFFIXES = ('.json', '.jsonl', '.txt', '.log', '.md', '.yaml', '.yml', '.html', '.xml', '.csv')
 
 
 def hide_local_paths(raw, local_roots=()):
     """内网响应遮蔽本机路径：看板数据目录、仓库目录与常见的用户及临时目录。"""
-    for root in sorted({str(r) for r in local_roots if r}, key=len, reverse=True):
+    import tempfile
+    roots = {str(r) for r in (*local_roots, Path.home(), tempfile.gettempdir(), Path(tempfile.gettempdir()).resolve()) if r}
+    for root in sorted(roots, key=len, reverse=True):
         raw = raw.replace(root.encode(), '<本机路径>'.encode())
     return LOCAL_PATH.sub('<本机路径>'.encode(), raw)
 
