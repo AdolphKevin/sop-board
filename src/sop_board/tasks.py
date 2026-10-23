@@ -12,7 +12,7 @@ from importlib.resources import files
 from urllib.parse import quote
 
 # 旧模块路径仍转导出进程入口；实现只在 kernel 中保留。
-from .kernel import (Kernel, MERGE_DEDUP, MERGE_RESULTS, OUTPUT_ACTIVE, S, sql_states,
+from .kernel import (ALL_STATES, Kernel, MERGE_DEDUP, MERGE_RESULTS, OUTPUT_ACTIVE, S, sql_states,
                      parse_timeout, codex_environment, codex_failure, start_codex, resume_codex,
                      codex_available, terminate_group, queue_view)
 
@@ -121,7 +121,9 @@ class Tasks:
                     reject(409, 'case-kind-invalid', 'case', '当前合并中此用例不是细节用例')
                 db.execute('INSERT OR IGNORE INTO case_flow_choices(batch,case_id,chosen_at) VALUES (?,?,?)', (batch['id'], force_case, now()))
             snapshot, scenario_sha, digest = self.freeze_merge(db, key, name, batch, version, cases)
-            states = OUTPUT_ACTIVE if trigger == '重新合并' or fresh else MERGE_DEDUP
+            # 开发者重新合并只复用排队或运行中的同输入任务；上传与场景变化按 SOP-BOARD-3 只与有效结果去重；
+            # 启动或配置扫描是核对而非新事件，任何已有的同输入合并（含已中断、已放弃）都不再新建，由开发者重试或放弃。
+            states = OUTPUT_ACTIVE if trigger == '重新合并' or fresh else ALL_STATES if trigger == '配置变化' else MERGE_DEDUP
             placeholders = ','.join('?' for _ in states)
             # 已落地的合并以写入后的输入登记 landed_digest，重启扫描不再以自己的输出为依据重复合并。
             previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "

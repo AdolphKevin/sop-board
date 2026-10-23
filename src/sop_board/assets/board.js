@@ -145,10 +145,12 @@
         finally {button.disabled = false;}
       });
     });
+    // 任务页没有身份栏，其余操作仍须绑定；需要标记人的操作沿用已保存的标记人。
     const identity = document.getElementById("review-identity");
-    if (!identity) return;
-    const marker = identity.querySelector("[name='marker']");
+    const marker = identity?.querySelector("[name='marker']") || {value: ""};
+    const identityHint = identity ? "请先在身份栏填写标记人" : "请先在批次页的身份栏填写标记人";
     const focusIdentity = field => {
+      if (!identity) return;
       identity.querySelector("details")?.setAttribute("open", "");
       field?.focus();
     };
@@ -157,16 +159,18 @@
       element.dataset.state = state;
     };
     const saveIdentity = () => {
-      localStorage.setItem("sop-board.marker", marker.value.trim());
+      if (identity) localStorage.setItem("sop-board.marker", marker.value.trim());
     };
     marker.value = localStorage.getItem("sop-board.marker") || "";
-    for (const event of ["input", "change"]) {
-      marker.addEventListener(event, saveIdentity);
+    if (identity) {
+      for (const event of ["input", "change"]) {
+        marker.addEventListener(event, saveIdentity);
+      }
+      document.getElementById("save-identity").addEventListener("click", () => {
+        saveIdentity();
+        show(document.getElementById("identity-message"), "标记人已保存，可随时更换。");
+      });
     }
-    document.getElementById("save-identity").addEventListener("click", () => {
-      saveIdentity();
-      show(document.getElementById("identity-message"), "标记人已保存，可随时更换。");
-    });
     const distillRequest = async (url, body) => {
       const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
       const data = await response.json();
@@ -221,7 +225,7 @@
       if (saved) show(message, saved.text, saved.state);
       button.addEventListener("click", async () => {
         if (!marker.value.trim()) {
-          show(message, "请先在身份栏填写标记人", "error");
+          show(message, identityHint, "error");
           focusIdentity(marker);
           return;
         }
@@ -361,7 +365,7 @@
         if (pending) return;
         problems.replaceChildren();
         if (!marker.value.trim()) {
-          show(message, "请先在身份栏填写标记人", "error");
+          show(message, identityHint, "error");
           focusIdentity(marker);
           return;
         }
@@ -418,7 +422,7 @@
         if (pending) return;
         problems.replaceChildren();
         if (!marker.value.trim()) {
-          show(message, "请先在身份栏填写标记人", "error");
+          show(message, identityHint, "error");
           focusIdentity(marker);
           return;
         }
@@ -478,7 +482,7 @@
     });
     const draftIdentity = message => {
       if (marker.value.trim()) {saveIdentity(); return true;}
-      show(message, "请先在身份栏填写标记人", "error");
+      show(message, identityHint, "error");
       focusIdentity(marker);
       return false;
     };
@@ -657,7 +661,7 @@
       let pending = false;
       const checkIdentity = () => {
         if (marker.value.trim()) return true;
-        show(message, "请先在身份栏填写标记人", "error");
+        show(message, identityHint, "error");
         focusIdentity(marker);
         return false;
       };

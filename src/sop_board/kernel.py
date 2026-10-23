@@ -72,7 +72,9 @@ DISTILL_RECOVERY = frozenset((S.INTERRUPTED, S.FAILED, S.DISTILLING))
 OUTPUT_RETRY = frozenset((S.FAILED, S.INTERRUPTED, S.UNAVAILABLE))
 OUTPUT_CANCEL = frozenset((S.QUEUED, S.RUNNING, S.INTERRUPTED, S.NEEDS_SYNC, S.NEEDS_INPUT))
 MERGE_RESULTS = frozenset((S.COMPLETED, S.NEEDS_SYNC))
-MERGE_DEDUP = OUTPUT_ACTIVE | OUTPUT_RETRY | MERGE_RESULTS | {S.NEEDS_INPUT, S.ABANDONED, S.SESSION}
+# SOP-BOARD-3：只与已完成、待同步、待补充、排队中或运行中（含会话处理中）的合并输入相同才不建任务；
+# 失败、已中断、Codex 不可用与已放弃的输入再次出现时照常建任务。
+MERGE_DEDUP = OUTPUT_ACTIVE | MERGE_RESULTS | {S.NEEDS_INPUT, S.SESSION}
 
 FIX_ATTENTION = frozenset((S.DEVELOPER, S.DEVELOPER_MERGE))
 FIX_RETRY = frozenset((S.INTERRUPTED, S.UNAVAILABLE))
@@ -83,6 +85,13 @@ GENERATE_CANCEL_BUTTON = frozenset((S.QUEUED, S.RUNNING, S.INTERRUPTED))
 EXECUTION_RETRY = frozenset((S.FAILED, S.INTERRUPTED, S.UNAVAILABLE, S.VOID))
 EXECUTION_CANCEL = frozenset((S.QUEUED, S.RUNNING, S.INTERRUPTED, S.NEEDS_SYNC, S.NEEDS_INPUT, S.WAIT_COMMIT, S.WAIT_BROWSER, S.WAIT_MERGE))
 ATTEMPT_RESUMABLE = frozenset((S.RUNNING, S.INTERRUPTED, S.WAIT_COMMIT))
+
+
+def failures_exhausted(db, task_id):
+    """连续三次有效尝试都未通过。作废、中断、环境等不计次的结果跳过，不打断此前的累计（SOP-BOARD-5）。"""
+    recent = [row[0] for row in db.execute(
+        "SELECT outcome FROM fix_attempts WHERE task=? AND outcome IN ('未通过','通过') ORDER BY number DESC LIMIT 3", (task_id,))]
+    return recent == ['未通过'] * 3
 
 
 def sql_states(states):
@@ -109,11 +118,17 @@ POLICIES = {
                       frozenset((S.DISTILLING,)), frozenset((S.DISTILLING,))),
 }
 MAX_RUNNING = 3
-# (作用范围，互斥类型)。包含同类任务，防止同工作区的两个执行同时占环境。
+# (作用范围，任务类型，与之互斥的运行中类型)。前三组包含同类任务，防止同工作区的两个执行同时占环境。
+_ENVIRONMENT = frozenset(('execute', 'fix', 'distill'))
+_BATCH_EXECUTE = frozenset(('merge', 'generate', 'execute'))
+_BATCH_DISTILL = frozenset(('merge', 'generate', 'distill'))
 EXCLUSIONS = (
-    ('workspace', frozenset(('execute', 'fix', 'distill'))),
-    ('batch', frozenset(('merge', 'generate', 'execute'))),
-    ('batch', frozenset(('merge', 'generate', 'distill'))),
+    ('workspace', _ENVIRONMENT, _ENVIRONMENT),
+    ('batch', _BATCH_EXECUTE, _BATCH_EXECUTE),
+    ('batch', _BATCH_DISTILL, _BATCH_DISTILL),
+    # 合并会改写修复快照所依据的场景：只在修复与合并之间互斥，不同批次的合并仍可并行（D72，2026-10-23 补充）。
+    ('workspace', frozenset(('fix',)), frozenset(('merge',))),
+    ('workspace', frozenset(('merge',)), frozenset(('fix',))),
 )
 # 等待已经排队的前置任务；优先级不同于业务依赖，不能仅靠优先级推导。
 DEPENDENCIES = {
@@ -123,7 +138,7 @@ DEPENDENCIES = {
 KIND_NAMES = dict(fix='修复', execute='执行', merge='合并', generate='草稿', distill='沉淀')
 KIND_NAMES['author-sop'] = '编写 SOP'
 SCHEDULING_STATES = frozenset((S.SESSION,)).union(*(p.queued | p.running for p in POLICIES.values()))
-TASK_COLUMNS = 'id,kind,workspace,batch,status'
+TASK_COLUMNS = 'id,kind,workspace,batch,status,started_at'
 _queue_view = ContextVar('task_queue_view', default=None)
 
 
@@ -136,7 +151,7 @@ def scheduling_tasks(db):
 def session_scheduling_tasks(db):
     """会话同时核对运行状态与尚未完成环境恢复的看板工作线程。"""
     rows = {row['id']: dict(row) for row in scheduling_tasks(db)}
-    for row in db.execute('SELECT t.id,t.kind,t.workspace,t.batch,t.status,w.pid FROM tasks t JOIN task_workers w ON w.task=t.id'):
+    for row in db.execute('SELECT t.id,t.kind,t.workspace,t.batch,t.status,t.started_at,w.pid FROM tasks t JOIN task_workers w ON w.task=t.id'):
         if process_alive(row['pid']):
             rows[row['id']] = dict(row, worker=True)
     return list(rows.values())
@@ -169,13 +184,154 @@ def queue_view():
         _queue_view.reset(token)
 
 
+def same_scope(task, other, scope):
+    """批次为空的任务（修复、会话独立复验）涉及整个工作区，按批次互斥时与任一批次相交。"""
+    if task['workspace'] != other['workspace']:
+        return False
+    return scope == 'workspace' or not task['batch'] or not other['batch'] or task['batch'] == other['batch']
+
+
+def excluded(task, other):
+    return any(task['kind'] in kinds and other['kind'] in others and same_scope(task, other, scope)
+               for scope, kinds, others in EXCLUSIONS)
+
+
+def depends(task, other):
+    return any(other['kind'] in kinds and same_scope(task, other, scope)
+               for scope, kinds in DEPENDENCIES.get(task['kind'], ()))
+
+
+def find_blocker(task, rows, running):
+    """互斥只看正在运行的任务；依赖只看仍在排队的前置任务。rows 按优先级排序。"""
+    for other in rows:
+        if other['id'] == task['id'] or other['kind'] not in POLICIES:
+            continue
+        if running(other) and excluded(task, other):
+            return other
+        if other['status'] in POLICIES[other['kind']].queued and depends(task, other):
+            return other
+    return None
+
+
+SLOT_REASON = '等待 Codex 名额'
+WAIT_REASON = re.compile('等待(?:' + '|'.join(re.escape(name) for name in sorted(set(KIND_NAMES.values()))) + r')任务 #[0-9]+ 结束')
+
+
+def wait_reason(other):
+    return f"等待{KIND_NAMES[other['kind']]}任务 #{other['id']} 结束"
+
+
+def is_wait_reason(error):
+    """内核写入的阻挡原因；阻挡解除后应清除，类型自己的说明（如未提交路径）不在此列。"""
+    return bool(error) and (error == SLOT_REASON or bool(WAIT_REASON.fullmatch(error)))
+
+
+def row_running(row):
+    policy = POLICIES.get(row['kind'])
+    return bool(row.get('worker')) or row['status'] == S.SESSION or bool(policy and row['status'] in policy.running)
+
+
+# 自身在等外部条件（提交、在新产品上通过）的任务，在其他任务能开始时不会先开始。
+SELF_WAITING = frozenset((S.WAIT_COMMIT, S.WAIT_VALIDATION))
+
+
+class _ScopeCounts:
+    """按工作区、批次与类型计数，使每次阻挡判断不必遍历全部任务。"""
+
+    def __init__(self):
+        self.workspace, self.batch = {}, {}
+
+    def add(self, row, delta):
+        key = (row['workspace'], row['kind'])
+        self.workspace[key] = self.workspace.get(key, 0) + delta
+        key = (row['workspace'], row['batch'], row['kind'])
+        self.batch[key] = self.batch.get(key, 0) + delta
+
+    def any(self, task, scope, kinds):
+        workspace = task['workspace']
+        if scope == 'workspace' or not task['batch']:
+            return any(self.workspace.get((workspace, kind), 0) > 0 for kind in kinds)
+        return any(self.batch.get((workspace, task['batch'], kind), 0) > 0 or
+                   self.batch.get((workspace, '', kind), 0) > 0 for kind in kinds)
+
+
+def start_order(rows, claimed=frozenset()):
+    """按当前互斥、依赖、优先级与运行名额推算排队任务的开始先后（估算）。
+
+    每次在空闲名额内按优先级开始所有不被阻挡的任务；没有可开始的任务时，假定最早开始的
+    运行中任务先结束，再重新挑选。待提交、待验证的任务要等外部条件，只在没有任何任务
+    运行、其他任务也不能开始时才排进去。会话认领的任务占用环境但不占看板名额。
+    """
+    pending = queue(None, rows=rows, claimed=claimed)
+    running, queued = _ScopeCounts(), _ScopeCounts()
+    active = []
+    # 已运行的任务按实际开始时间排列（先开始先结束）；没有开始时间的视为最早开始，同时刻按编号。
+    for row in sorted((row for row in rows if row_running(row) and row['kind'] in POLICIES),
+                      key=lambda row: (row.get('started_at') or '', row['id'])):
+        active.append((row, row['status'] != S.SESSION))
+        running.add(row, 1)
+    for task in pending:
+        queued.add(task, 1)
+    used = sum(1 for _, slot in active if slot)
+
+    def blocked(task):
+        queued.add(task, -1)
+        try:
+            return (any(running.any(task, scope, others) for scope, kinds, others in EXCLUSIONS if task['kind'] in kinds) or
+                    any(queued.any(task, scope, kinds) for scope, kinds in DEPENDENCIES.get(task['kind'], ())))
+        finally:
+            queued.add(task, 1)
+
+    def begin(task):
+        nonlocal used
+        pending.remove(task)
+        queued.add(task, -1)
+        running.add(task, 1)
+        active.append((task, True))
+        used += 1
+        order.append(task)
+
+    def fill(include_waiting):
+        started = False
+        for task in list(pending):
+            if used >= MAX_RUNNING:
+                break
+            if task['status'] in SELF_WAITING and not include_waiting:
+                continue
+            if not blocked(task):
+                begin(task)
+                started = True
+        return started
+
+    order = []
+    while pending:
+        fill(False)
+        if not pending:
+            break
+        if active:
+            # 名额已满或其余任务被运行中的任务挡住：最早开始的任务先结束后再挑选。
+            row, slot = active.pop(0)
+            running.add(row, -1)
+            if slot:
+                used -= 1
+            continue
+        if fill(True):
+            continue
+        # 剩余任务互相等待时按优先级推进，避免推算停滞。
+        begin(pending[0])
+    return order
+
+
 def queue_positions(db):
     view = _queue_view.get()
-    if view is None:
-        return {task['id']: index for index, task in enumerate(queue(db))}
-    if 'positions' not in view:
-        view['positions'] = {task['id']: index for index, task in enumerate(queue(db))}
-    return view['positions']
+    if view is not None and 'positions' in view:
+        return view['positions']
+    rows = session_scheduling_tasks(db)
+    claimed = {row[0] for row in db.execute('SELECT task FROM session_tasks')}
+    positions = {task['id']: index for index, task in enumerate(start_order(rows, claimed))}
+    if view is not None:
+        view['positions'] = positions
+    return positions
 
 
 def queued_ahead(db, task_id):
@@ -488,36 +644,25 @@ class Kernel:
         for handler in self.handlers.values():
             handler.recover()
 
-    @staticmethod
-    def same_scope(task, other, scope):
-        return task['workspace'] == other['workspace'] and (scope == 'workspace' or task['batch'] == other['batch'])
+    def running(self, row):
+        return row_running(row) or row['id'] in self.tasks.workers
 
     def blocker(self, task, rows):
-        for other in rows:
-            if other['id'] == task['id'] or other['kind'] not in POLICIES:
-                continue
-            policy = POLICIES[other['kind']]
-            running = other.get('worker', False) or other['id'] in self.tasks.workers or other['status'] in policy.running or other['status'] == S.SESSION
-            for scope, kinds in EXCLUSIONS:
-                if running and task['kind'] in kinds and other['kind'] in kinds and self.same_scope(task, other, scope):
-                    return other
-            if other['status'] in policy.queued:
-                for scope, kinds in DEPENDENCIES.get(task['kind'], ()):
-                    if other['kind'] in kinds and self.same_scope(task, other, scope):
-                        return other
-        return None
+        return find_blocker(task, rows, self.running)
 
     def session_blocker(self, task, rows):
-        """会话不继承看板队列依赖，只等待实际占用或恢复环境的任务。"""
-        for other in rows:
-            if other['id'] == task['id'] or other['workspace'] != task['workspace'] or other['kind'] not in ('execute','fix','distill'):
+        """会话不继承看板队列依赖，只等待实际占用或恢复环境的任务，以及与之互斥的运行中任务。"""
+        for other in sorted(rows, key=task_order):
+            if other['id'] == task['id'] or other['workspace'] != task['workspace'] or other['kind'] not in POLICIES:
                 continue
-            if other.get('worker') or other['id'] in self.tasks.workers or other['status'] == S.SESSION or other['status'] in POLICIES[other['kind']].running:
+            if not self.running(other):
+                continue
+            if other['kind'] in _ENVIRONMENT or excluded(task, other):
                 return other
         return None
 
     def block(self, task, other):
-        reason = f"等待{KIND_NAMES[other['kind']]}任务 #{other['id']} 结束"
+        reason = wait_reason(other)
         # 阻挡只更新原因；保留待提交、等待浏览器、待验证等更具体的状态。
         self.tasks.update(task['id'], error=reason)
         self.handlers[task['kind']].blocked(task, other)
@@ -536,8 +681,9 @@ class Kernel:
 
     def start(self, task, target, status, *, error=''):
         from .service import now
-        self.tasks.update(task['id'], status=status, started_at=now(), finished_at=None, error=error)
-        self.worker_rows[task['id']] = {key: task[key] for key in TASK_COLUMNS.split(',')} | {'status': status}
+        started = now()
+        self.tasks.update(task['id'], status=status, started_at=started, finished_at=None, error=error)
+        self.worker_rows[task['id']] = {key: task.get(key) for key in TASK_COLUMNS.split(',')} | {'status': status, 'started_at': started}
         self.tasks.starting = task['id']
         with self.tasks.store.transaction() as db:
             db.execute('INSERT OR REPLACE INTO task_workers(task,pid) VALUES (?,?)', (task['id'], os.getpid()))
@@ -593,12 +739,16 @@ class Kernel:
                             self.block(task, blocker)
                             continue
                         if tasks.starting is not None or len(tasks.workers) >= MAX_RUNNING:
-                            tasks.update(task['id'], error='等待 Codex 名额')
+                            tasks.update(task['id'], error=SLOT_REASON)
                             continue
                         # 只有进入类型准备时才加载该任务的完整输入。
                         with tasks.store.connection() as db:
-                            full = db.execute('SELECT * FROM tasks WHERE id=?', (task['id'],)).fetchone()
-                        self.handlers[task['kind']].schedule(dict(full))
+                            full = dict(db.execute('SELECT * FROM tasks WHERE id=?', (task['id'],)).fetchone())
+                        if is_wait_reason(full['error']):
+                            # 阻挡已解除：清掉过时的等待原因，具体状态由类型准备重新判断。
+                            tasks.update(task['id'], error='')
+                            full['error'] = ''
+                        self.handlers[task['kind']].schedule(full)
                     finally:
                         # 类型准备也可能直接写数据库；本轮后续任务必须看到新的状态。
                         with tasks.store.connection() as db:

@@ -8,7 +8,7 @@ import subprocess
 
 import yaml
 
-from .kernel import (S, codex_failure, session_id, terminate_group, wait_codex)
+from .kernel import (InputChanged, S, codex_failure, session_id, terminate_group, wait_codex)
 
 from .errors import APIError
 from .executions import Executions
@@ -16,6 +16,7 @@ from .service import canonical, fingerprint
 from .validation import validate_round
 from .playwright import driver_skill, write_scope
 from .credentials import append_blocked, blocked_results, names as credential_names
+from .repair_repositories import head
 
 
 class ValidationContext:
@@ -74,6 +75,30 @@ class FixValidation:
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 
+    def input_change(self, task, info, aliases, directories):
+        """复验依据的场景、用例、配置或产品代码变化时返回原因；输入变化不是复测未通过（SOP-BOARD-5）。"""
+        workspace = self.fixes.service.workspace
+        workspace.reload()
+        stale = self.fixes.snapshot_changes(task)
+        if stale:
+            return stale
+        if self.tasks.validation_type.inputs(task, product=info).changed(workspace.product(aliases, directories)):
+            return '复测期间仓库代码变化'
+        return ''
+
+    def commit_change(self, task):
+        """修复提交登记后，工作树又被提交或移动时返回原因；复验依据的产品已不是这次修复。"""
+        with self.store.connection() as db:
+            attempt = db.execute('SELECT commits_json,start_commits_json FROM fix_attempts WHERE task=? ORDER BY number DESC LIMIT 1',
+                                 (task['id'],)).fetchone()
+        if attempt is None:
+            return ''
+        commits, starts = json.loads(attempt['commits_json']), json.loads(attempt['start_commits_json'])
+        moved = [repo['alias'] for repo in self.fixes.repositories.rows(task['id'])
+                 if (repo['repair_commit'] or commits.get(repo['alias'], starts.get(repo['alias'])))
+                 and head(repo['worktree']) != (repo['repair_commit'] or commits.get(repo['alias'], starts.get(repo['alias'])))]
+        return '修复提交后、复验开始前产品发生变化：' + '、'.join(moved) if moved else ''
+
     def read_output(self, task, runtime, session):
         if not session or session.casefold().strip() == (task.get('session_id') or '').casefold().strip():
             raise ValueError('复验须由未参与修复的新会话执行，执行者不能与修复会话相同')
@@ -94,12 +119,12 @@ class FixValidation:
         raw = [json.loads(line) for line in (directory / 'results.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
         if any((r.get('batch'), r.get('scenario')) not in {(s['batch'], s['id']) for s in selected} for r in raw):
             raise ValueError('复测结果有范围外批次或场景')
-        workspace.reload()
-        stale = self.fixes.snapshot_changes(task)
+        changed = self.input_change(task, info, aliases, directories)
         if workspace.skill_changed(snapshot):
             raise ValueError('验证技能变化')
-        if stale or self.tasks.validation_type.inputs(task, product=info).changed(workspace.product(aliases, directories)):
-            raise ValueError(stale or '复测期间仓库代码变化')
+        if changed:
+            # 输入变化不是复测未通过，按 SOP-BOARD-5 不计入连续三次的上限。
+            raise InputChanged(changed)
         failed = [r for r in rows if r.get('status') != 'pass']
         reason = '；'.join(str(r.get('actual', '')) for r in failed) or ('存在未通过场景' if failed else '')
         return reason
@@ -117,6 +142,14 @@ class FixValidation:
             workspace.reload()
             if workspace.skill_changed(snapshot):
                 return dict(status='void', reason='验证技能变化', evidence=evidence, scenarios=[], skill_digest=snapshot['skill_digest'])
+            if 'aliases' in runtime:
+                # 已持有写事务：同时到达的用例上传、场景推送须等本次登记结束，检查与登记之间不会插入输入变化。
+                try:
+                    changed = self.input_change(task, info, runtime['aliases'], runtime['directories'])
+                except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                    changed = '登记前无法重新核对输入：' + str(error)
+                if changed:
+                    return dict(status='void', reason=changed, evidence=evidence, scenarios=[])
             for row in rows:
                 row['evidence'] = [dict(name=p.name, sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
             for batch in dict.fromkeys(s['batch'] for s in selected):
@@ -161,7 +194,7 @@ class FixValidation:
         snapshot = task['snapshot']
         stale = self.fixes.snapshot_changes(task)
         if stale:
-            return dict(status='fail', reason=stale, evidence=[], scenarios=[])
+            return dict(status='void', reason=stale, evidence=[], scenarios=[])
         try:
             snapshot = dict(snapshot, skill_digest=workspace.skill_digest())
             self.tasks.worktree_environments[task['id']] = self.fixes.repositories.ensure(task['id'], snapshot['aliases'])
@@ -184,12 +217,18 @@ class FixValidation:
         try:
             selected, aliases = self.selection(task, problems)
         except ValueError as error:
-            return dict(status='fail', reason=str(error), evidence=[], scenarios=[])
-        rows, session, reason = [], '', ''
+            # 问题场景已不在固定快照中：输入变化，不是复测未通过（SOP-BOARD-5）。
+            return dict(status='void', reason=str(error), evidence=[], scenarios=[])
+        rows, session, reason, changed = [], '', '', ''
         process = None
         info = workspace.product(aliases, directories)
-        if info['dirty']:
-            return dict(status='fail', reason='复测目录有未提交的产品改动', evidence=[], scenarios=[])
+        try:
+            moved = self.commit_change(task)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            moved = '复验前无法核对修复提交：' + str(error)
+        if info['dirty'] or moved:
+            # 修复提交后产品又被改动：复验依据已不是这次修复，记为作废，不计入连续未通过。
+            return dict(status='void', reason=moved or '修复提交后复测目录出现未提交的产品改动', evidence=[], scenarios=[])
         try:
             preflight = self.fixes.service.environment.agent_environment(directories, self.tasks.worktree_environments[task['id']])
             blocked = blocked_results(selected, workspace.entries, preflight)
@@ -221,6 +260,8 @@ class FixValidation:
                 else:
                     session = 'Flow Board 入口检查'
                 reason = self.tasks.validation_type.consume(task, runtime=runtime, session=session, validator=self, register=False)
+        except InputChanged as error:
+            changed = str(error)
         except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError, APIError) as error:
             reason = '；'.join(p['problem'] for p in error.problems) if isinstance(error, APIError) else str(error)
         finally:
@@ -232,8 +273,11 @@ class FixValidation:
                     self.tasks.browser_owner = None
         if not self.active(task):
             return
+        if changed:
+            return dict(status='void', reason=changed, evidence=[], scenarios=[])
+        # 会话失败、结果缺失等普通异常也可能与输入变化同时出现；登记事务内统一复核，输入变化优先记为作废。
         runtime = dict(directory=directory, snapshot=snapshot, info=info, rows=rows,
-            selected=selected, number=number, sequence=sequence)
+            selected=selected, number=number, sequence=sequence, aliases=aliases, directories=directories)
         return self.tasks.validation_type.consume(task, runtime=runtime, session=session, reason=reason, validator=self)
 
     def active(self, task):

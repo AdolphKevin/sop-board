@@ -10,7 +10,7 @@ import os
 
 import yaml
 
-from .kernel import (ATTEMPT_RESUMABLE, FIX_ACTIVE, FIX_LIVE, FIX_NO_CANCEL, FIX_RECOVERY, FIX_RETRY,
+from .kernel import (ATTEMPT_RESUMABLE, failures_exhausted, FIX_ACTIVE, FIX_LIVE, FIX_NO_CANCEL, FIX_RECOVERY, FIX_RETRY,
                      S, codex_available, codex_failure, session_id, sql_states,
                      terminate_group, wait_codex, queue_view)
 
@@ -661,8 +661,7 @@ class Fixes:
         with self.store.transaction() as db:
             db.execute("UPDATE fix_attempts SET outcome='未通过',finished_at=?,reason=?,result_json=?,validation_json=? WHERE task=? AND number=?",
                 (now(), reason, canonical(answer or {}), canonical(validation or {}), task['id'], number))
-            recent = [r[0] for r in db.execute('SELECT outcome FROM fix_attempts WHERE task=? ORDER BY number DESC LIMIT 3', (task['id'],))]
-        exhausted = recent == ['未通过'] * 3
+            exhausted = failures_exhausted(db, task['id'])
         self.tasks.update(task['id'], attempt=number, status=S.DEVELOPER if exhausted else S.QUEUED,
             error='连续三次未通过：' + reason if exhausted else reason, result_json=canonical(answer or {}))
         self.archive(task)

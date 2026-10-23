@@ -88,7 +88,7 @@ class Visibility:
         error = task.get('error', '')
         if not error and task['status'] == S.NEEDS_SYNC:
             error = '任务输入已变化，请开发者在本机核对后重新合并'
-        safe = bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀)任务 #[0-9]+ 结束', error))
+        safe = bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀|编写 SOP)任务 #[0-9]+ 结束', error))
         if error and not safe and error not in ('等待 Codex 名额', '等待浏览器', '等待验收浏览器', '等待工作区自检通过'):
             error = {S.QUEUED: '任务已排队，等待开始', S.RUNNING: '任务正在运行',
                      S.ANALYZING: '正在分析问题原因', S.FIXING: '正在修复问题',

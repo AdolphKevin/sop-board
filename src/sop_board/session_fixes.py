@@ -263,6 +263,9 @@ class SessionFixes:
             row.update(executor=owner,session=owner)
         with self.store.transaction() as db:
             validation=validator.register(fix,runtime,owner,reason,connection=db)
+            if validation['status']=='void':
+                # 登记事务内发现输入变化：回滚本事务，不登记轮次、不改修复尝试，交由作废处理重新准备。
+                raise InputChanged(validation['reason'])
             rounds=[]
             for batch_name in dict.fromkeys(s['batch'] for s in runtime['selected']):
                 batch=self.service.batch(db,fix['workspace'],batch_name);version=self.service.latest_version(db,batch)

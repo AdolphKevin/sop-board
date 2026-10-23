@@ -4,7 +4,7 @@ import os
 import sqlite3
 import subprocess
 
-from .kernel import (DISTILL_RETRY, DISTILL_TERMINAL, EXECUTION_QUEUE, FIX_NO_CANCEL, FIX_RETRY, Inputs,
+from .kernel import (failures_exhausted, DISTILL_RETRY, DISTILL_TERMINAL, EXECUTION_QUEUE, FIX_NO_CANCEL, FIX_RETRY, Inputs,
                      Launch, WaitCondition, MERGE_WAIT_UPDATE, OUTPUT_CANCEL, OUTPUT_RETRY, S, codex_available)
 
 from . import task_visibility
@@ -268,6 +268,10 @@ class ExecuteType(TaskType):
 
     def blocked(self, task, other):
         if other['kind'] not in ('merge', 'generate') or other['batch'] != task['batch']:
+            # “等待合并”只表示正在等同一批次的合并或草稿；改等其他任务时回到排队中，原因由内核写明。
+            # 合并后刷新范围的标记保留在输入中，不因此丢失。
+            if task['status'] == S.WAIT_MERGE:
+                self.tasks.update(task['id'], status=S.QUEUED)
             return
         with self.tasks.store.connection() as db:
             inputs = db.execute('SELECT input_json,snapshot_json FROM tasks WHERE id=?', (task['id'],)).fetchone()
@@ -284,6 +288,16 @@ class ExecuteType(TaskType):
 
     def schedule(self, task):
         tasks = self.tasks
+        if task['status'] == S.WAIT_MERGE:
+            with tasks.store.connection() as db:
+                merge = tasks.executions.waiting_merge(db, task['workspace'], task['batch'])
+            if not merge:
+                # 合并已结束：先回到排队中，再判断环境等其他条件；合并后刷新范围的标记仍在输入中。
+                values = dict(status=S.QUEUED)
+                if (task.get('error') or '').startswith('等待合并'):
+                    values['error'] = ''
+                tasks.update(task['id'], **values)
+                task.update(values)
         try:
             if not tasks.service.environment.approved():
                 tasks.update(task['id'], error='尚未搭建或自检未通过，等待工作区就绪')
@@ -356,8 +370,8 @@ class FixType(TaskType):
                 status = S.VERIFYING if products else S.DEVELOPER
                 if previous['outcome'] == '未通过':
                     with self.tasks.store.connection() as db:
-                        recent = [r[0] for r in db.execute('SELECT outcome FROM fix_attempts WHERE task=? ORDER BY number DESC LIMIT 3', (task['id'],))]
-                    status = S.DEVELOPER if recent == ['未通过'] * 3 else S.QUEUED
+                        exhausted = failures_exhausted(db, task['id'])
+                    status = S.DEVELOPER if exhausted else S.QUEUED
                 self.tasks.update(task['id'], attempt=number, status=status,
                     result_json=previous['result_json'], error=previous['reason'])
             with self.tasks.store.transaction() as db:
