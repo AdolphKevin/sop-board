@@ -10,7 +10,7 @@ import os
 
 import yaml
 
-from .kernel import (ATTEMPT_RESUMABLE, failures_exhausted, FIX_ACTIVE, FIX_LIVE, FIX_NO_CANCEL, FIX_RECOVERY, FIX_RETRY,
+from .kernel import (ATTEMPT_RESUMABLE, failures_exhausted, FIX_ACTIVE, FIX_LIVE, FIX_NO_CANCEL, FIX_RECOVERY, FIX_RETRY, FIX_TERMINAL,
                      S, codex_available, codex_failure, session_id, sql_states,
                      terminate_group, wait_codex, queue_view)
 
@@ -106,7 +106,8 @@ class Fixes:
             self.verify(dict(task, attempt=attempt['number'] - 1), products)
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
             with self.tasks.lock:
-                if not self.tasks.stopping.is_set():
+                # 复验期间已放弃（或已合入）的任务保持原状态，不改回待开发者处理。
+                if not self.tasks.stopping.is_set() and not self.ended(task):
                     with self.store.transaction() as db:
                         db.execute("UPDATE fix_tasks SET retry_reason='preparation' WHERE task=?", (task['id'],))
                     self.tasks.update(task['id'], status=S.DEVELOPER, error='无法恢复复验：' + str(error))
@@ -293,7 +294,8 @@ class Fixes:
                 self.verify(task, products)
         except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
             with self.tasks.lock:
-                if not self.tasks.stopping.is_set():
+                # 修复或复测期间已放弃（或已合入）的任务保持原状态，不改回待开发者处理。
+                if not self.tasks.stopping.is_set() and not self.ended(task):
                     self.tasks.update(task['id'], status=S.DEVELOPER, error=str(error))
         finally:
             process = self.tasks.processes.get(task['id'])
@@ -667,6 +669,12 @@ class Fixes:
 
     def live(self, task):
         return not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] in FIX_LIVE
+
+    def ended(self, task):
+        """已放弃、已合入或已处理：收尾中的线程出错时不再改写状态与尝试记录；未结束的任务照旧处理。"""
+        with self.store.connection() as db:
+            row = db.execute('SELECT status FROM tasks WHERE id=?', (task['id'],)).fetchone()
+        return row is None or row['status'] in FIX_TERMINAL
 
     def archive(self, task):
         return self.tasks.kernel.archive(task, move=False)

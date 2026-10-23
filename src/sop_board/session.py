@@ -377,13 +377,19 @@ class Session:
                     self.archive_submission(task)
                 return dict(ok=ok, task=current, problems=current['result'].get('problems', []))
             except InputChanged as error:
-                self.tasks.update(task_id, status=S.VOID, void_reason=str(error), error='', finished_at=now())
+                self.submission_failed(task_id, status=S.VOID, void_reason=str(error), error='', finished_at=now())
                 return dict(ok=False, task=self.tasks.read(task_id), problems=[dict(field='snapshot', problem=str(error))])
             except (OSError, ValueError, KeyError, TypeError, RecursionError, APIError) as error:
                 problems = error.problems if isinstance(error, APIError) else [dict(field='output', problem=str(error))]
-                self.tasks.update(task_id, status=S.SESSION, error='；'.join(str(p) for p in problems), result_json=canonical(dict(ok=False, problems=problems)))
+                self.submission_failed(task_id, error='；'.join(str(p) for p in problems), result_json=canonical(dict(ok=False, problems=problems)))
                 self.archive_submission(task)
                 return dict(ok=False, task=self.tasks.read(task_id), problems=problems)
+
+    def submission_failed(self, task_id, **values):
+        """提交未成功只改写仍在会话处理中的任务；已放弃、已作废或已登记的状态保持原样，不复活旧任务。"""
+        with self.store.transaction() as db:
+            db.execute('UPDATE tasks SET ' + ','.join(k + '=?' for k in values) + ' WHERE id=? AND status=?',
+                       (*values.values(), task_id, S.SESSION))
 
     def archive_submission(self, task):
         self.tasks.kernel.archive(task, move=False, checkpoint='session-submit', names=('final.json', 'results.jsonl', 'impact.json'))

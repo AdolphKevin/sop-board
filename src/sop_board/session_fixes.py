@@ -139,6 +139,10 @@ class SessionFixes:
         product = self.workspace.product(info['snapshot']['aliases'])
         status = S.WAIT_VALIDATION if products else S.DEVELOPER
         with self.store.transaction() as db:
+            # 提交前的状态检查在事务外，放弃可能在其后完成：写事务内复核，已放弃等状态不登记尝试结论。
+            current = db.execute('SELECT status FROM tasks WHERE id=?', (task['id'],)).fetchone()[0]
+            if current != S.SESSION:
+                reject(409, 'task-state-invalid', 'task', '任务当前状态不能提交：' + current + '；本次修复输出未登记')
             receipt = self.tasks.kernel.receipt(task, connection=db, phase='fix-output', number=number)
             if receipt:
                 return receipt['products']
@@ -262,6 +266,13 @@ class SessionFixes:
         for row in runtime['rows']:
             row.update(executor=owner,session=owner)
         with self.store.transaction() as db:
+            # 取消复验或放弃原修复可能在事务外的检查之后完成：写事务内复核两者，变化时不登记轮次与结论。
+            current=db.execute('SELECT status FROM tasks WHERE id=?',(task['id'],)).fetchone()[0]
+            if current!=S.SESSION:
+                reject(409,'task-state-invalid','task','复验任务当前状态不能提交：'+current+'；本次复验未登记')
+            parent=db.execute('SELECT status,attempt FROM tasks WHERE id=?',(fix['id'],)).fetchone()
+            if parent['status'] not in (S.WAIT_VALIDATION,S.WAIT_COMMIT) or parent['attempt'] != inputs['attempt']:
+                raise InputChanged('原修复已取消或已有新的修复尝试')
             validation=validator.register(fix,runtime,owner,reason,connection=db)
             if validation['status']=='void':
                 # 登记事务内发现输入变化：回滚本事务，不登记轮次、不改修复尝试，交由作废处理重新准备。
