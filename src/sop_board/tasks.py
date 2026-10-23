@@ -295,9 +295,13 @@ class Tasks:
         task.pop('input_json')
         task['result'] = json.loads(task.pop('result_json'))
         task['gaps'] = task['result'].get('gaps', [])
-        task['reused_count'] = task['result'].get('reused_count', 0)
         for field in ('scope', 'snapshot', 'rounds'):
             task[field] = json.loads(task.pop(field + '_json'))
+        task['reused_count'] = task['rerun_count'] = 0
+        if task['kind'] == 'execute' and task['rounds']:
+            from .statistics import task_counts
+            with (nullcontext(connection) if connection is not None else self.store.connection()) as db:
+                task.update(task_counts(db, task['workspace'], task['batch'], task['rounds']))
         directory = self.directory(task_id)
         task['files'] = {}
         for parent, folders, names in (os.walk(directory, followlinks=False) if local else ()):

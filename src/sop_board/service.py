@@ -621,14 +621,17 @@ class Service:
         version = self.latest_version(db, batch)
         _, fix_statistics = self.batch_fixes(db, batch)
         tasks = []
-        for row in db.execute("SELECT id,kind,trigger,status,scope_json,started_at,finished_at,error,void_reason,rounds_json,result_json "
+        by_number = {r['number']: r for r in result['rounds']}
+        for row in db.execute("SELECT id,kind,trigger,status,scope_json,started_at,finished_at,error,void_reason,rounds_json "
                               "FROM tasks WHERE workspace=? AND batch=? AND kind='execute' ORDER BY id", (batch['workspace'], batch['name'])):
             task = dict(row)
             task['session_task'] = session_claim(db, task['id'])
             task['ownership'] = claim_message(task['session_task'])
             task['scope'] = json.loads(task.pop('scope_json'))
-            task['reused_count'] = json.loads(task.pop('result_json')).get('reused_count', 0)
             task['rounds'] = json.loads(task.pop('rounds_json'))
+            # 沿用与重跑按任务登记的轮次计算，看板、会话与旧任务一致。
+            for key in ('reused_count', 'rerun_count'):
+                task[key] = sum(by_number[n][key] for n in task['rounds'] if not isinstance(n, dict) and n in by_number)
             tasks.append(project_task(task, local=local))
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
                     review=self.fix_review_state(db, batch['workspace'], batch['name']),

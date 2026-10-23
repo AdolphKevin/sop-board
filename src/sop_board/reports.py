@@ -37,7 +37,7 @@ def markdown(data, generated_at):
         ("工作区", workspace["name"]), ("仓库", "、".join(r["alias"] + "：" + r["identity"] for r in workspace["repositories"])), ("批次", data["batch"]["name"]),
         ("场景版本", version["version"] if version else "无"), ("推送提交号", version["commit_id"] if version else "无"),
         ("用例并集的最新上传序号", data["latest_upload"] or "无"),
-        ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("沿用场景", summary["reused_count"]), ("生成时间", generated_at)])]
+        ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("沿用场景", summary["reused_count"]), ("重跑场景", summary["rerun_count"]), ("生成时间", generated_at)])]
     matched, unmatched = [], []
     pairings = {p["case"]: p for p in data["pairings"]}
     holds = data.get('holds', {})
@@ -66,8 +66,8 @@ def markdown(data, generated_at):
     stats = summary["statistics"]
     sections.append("## Agent 统计\n\n当前执行进度：" + fraction(stats['executed_progress']) + "\n\nAgent 验收通过率：" + fraction(stats["agent_pass_rate"]) +
                     "\n\n一次通过率：" + fraction(stats["first_pass_rate"]) + "\n\n" +
-                    table(["轮次", "种类", "每轮通过率", "沿用场景数", "验证技能摘要"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
-                                                               fraction(r["pass_rate"]), r["reused_count"], (r["skill_digest"] or "")[:12] or "无记录"] for r in summary["rounds"]]))
+                    table(["轮次", "种类", "每轮通过率", "沿用场景数", "重跑场景数", "验证技能摘要"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
+                                                               fraction(r["pass_rate"]), r["reused_count"], r["rerun_count"], (r["skill_digest"] or "")[:12] or "无记录"] for r in summary["rounds"]]))
     sections.append("## 执行入口与独立性\n\n当前 Agent 结果（分别计数）：\n\n" +
         table(['类别', '场景数'], [[INDEPENDENCE_LABELS[k], v] for k, v in stats['independence_counts'].items()]) +
         "\n每轮身份记录：\n\n" + table(['轮次', '执行入口', '执行者', '实现者', '独立性'],

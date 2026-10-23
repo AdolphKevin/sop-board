@@ -366,8 +366,9 @@ class Session:
                         scoped = dict(task, scope_json=canonical([r for r in json.loads(task['scope_json']) if r['scenario'] not in ids]))
                         result = self.tasks.types[kind].consume(task, claim['session_id'], implementer=identity(implementer) if implementer is not None else None,
                             execution_origin='session', blocked=blocked, runnable=[s for s in inputs['scenes'] if s['id'] not in ids], scoped=scoped)
+                    counts = self.tasks.executions.counts(result['rows']) if 'rows' in result else {}
                     self.tasks.kernel.finish(task, dict(status=S.COMPLETED, finished_at=now(), error='',
-                        rounds_json=canonical(result['rounds']), result_json=canonical(dict(ok=True, problems=[])), session_id=claim['session_id']))
+                        rounds_json=canonical(result['rounds']), result_json=canonical(dict(ok=True, problems=[], **counts)), session_id=claim['session_id']))
                 else:
                     result = self.tasks.types[kind].consume(task) if kind=='fix' else self.tasks.types[kind].consume(task, claim['session_id'])
                 current = self.tasks.read(task_id)

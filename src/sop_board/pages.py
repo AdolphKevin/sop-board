@@ -291,10 +291,10 @@ def execution_list(data, workspace):
         f"<td>{text(t['trigger'])}</td><td>{len(t['scope'])}</td><td>{task_status(t)}</td>"
         f"<td>{time_tag(t['started_at']) if t['started_at'] else ''}</td>"
         f"<td>{time_tag(t['finished_at']) if t['finished_at'] else ''}</td>"
-        f"<td>{text(t['void_reason'] or t['error'])}</td><td>{t['reused_count']}</td><td>{text('、'.join('第 '+str(n)+' 轮' for n in t['rounds']))}</td></tr>"
+        f"<td>{text(t['void_reason'] or t['error'])}</td><td>{t['reused_count']}</td><td>{t['rerun_count']}</td><td>{text('、'.join('第 '+str(n)+' 轮' for n in t['rounds']))}</td></tr>"
         for t in data['execution_tasks'])
     return ('<section><h2>执行任务</h2><div class="table-scroll"><table><thead><tr><th>编号</th><th>种类</th>'
-        '<th>触发原因</th><th>范围条数</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>原因</th><th>沿用</th><th>轮次</th>'
+        '<th>触发原因</th><th>范围条数</th><th>状态</th><th>开始时间</th><th>结束时间</th><th>原因</th><th>沿用</th><th>重跑</th><th>轮次</th>'
         '</tr></thead><tbody>' + rows + '</tbody></table></div></section>')
 
 
@@ -364,7 +364,7 @@ def batch(workspace, data, *, environment=None, local=False, merge=None):
     findings = findings or '<tr><td colspan="4" class="empty-state">暂无误判记录</td></tr>'
     content = ("<nav class='breadcrumbs' aria-label='位置'><a href='/'>全部工作区</a><span>/</span><span>批次总览</span></nav>"
                f"<div class='page-heading'><div><h1>验收总览</h1><p class='batch-id'>{text(data['name'])}</p>"
-               f"<p class='batch-meta'><span class='access-badge'>{access}</span> 场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条 · 沿用 {data['reused_count']} 条</p></div>"
+               f"<p class='batch-meta'><span class='access-badge'>{access}</span> 场景版本 {data['version']} · 当前场景 {data['scenario_count']} 条 · 沿用 {data['reused_count']} 条 · 重跑 {data['rerun_count']} 条</p></div>"
                f"<div class='page-actions'><a class='button button-primary' href='{text(base + '/scenarios')}'>查看场景</a>"
                f"<a class='button button-secondary' href='{text(api + '/report.md')}'>导出报告</a></div></div>"
                f"{batch_nav(workspace, data['name'], 'overview')}"

@@ -123,6 +123,13 @@ class Executions:
                       selection=request.get('selection', 'explicit'), refresh_after_merge=False)
         return snapshot, inputs
 
+    @staticmethod
+    def counts(rows):
+        """沿用与重跑分开计数：重跑是实际执行并得出通过或失败的场景，受阻、跳过不计入两者。"""
+        reused = [isinstance(r.get('note'), str) and r['note'].startswith('沿用：') for r in rows]
+        return dict(reused_count=sum(reused),
+                    rerun_count=sum(not used and r.get('status') in ('pass', 'fail') for used, r in zip(reused, rows)))
+
     def committed(self, task):
         """被阻挡期间只核对产品是否已无未提交改动；开始前仍按 freeze 完整冻结并核对输入。"""
         workspace = self.service.workspace
@@ -498,8 +505,7 @@ class Executions:
                 if self.tasks.browser_owner == task['id']:
                     self.tasks.browser_owner = None
                 if not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == S.RUNNING:
-                    result = dict(ok=not error and not void_reason, problems=[error] if error else [],
-                                  reused_count=sum(isinstance(r.get('note'), str) and r['note'].startswith('沿用：') for r in rows))
+                    result = dict(ok=not error and not void_reason, problems=[error] if error else [], **self.counts(rows))
                     (directory / 'result.json').write_text(canonical(result), encoding='utf-8')
                     self.tasks.update(task['id'], status=S.VOID if void_reason else S.FAILED if error else S.COMPLETED,
                         finished_at=now(), error=error, session_id=session or None, void_reason=void_reason,

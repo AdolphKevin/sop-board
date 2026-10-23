@@ -248,7 +248,7 @@ class ExecuteType(TaskType):
                 "AND NOT EXISTS (SELECT 1 FROM session_tasks s WHERE s.task=t.id)", (S.INTERRUPTED,)).fetchall()
             for row in rows:
                 receipt = json.loads(row['result_json'])
-                result = dict(ok=True, problems=[], reused_count=sum(str(r.get('note','')).startswith('沿用：') for r in receipt['rows']))
+                result = dict(ok=True, problems=[], **self.tasks.executions.counts(receipt['rows']))
                 db.execute("UPDATE tasks SET status=?,finished_at=?,rounds_json=?,result_json=?,session_id=?,error='' WHERE id=?",
                     (S.COMPLETED, row['registered_at'], canonical(receipt['rounds']), canonical(result), receipt.get('session'), row['id']))
 
