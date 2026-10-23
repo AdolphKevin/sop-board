@@ -1,6 +1,6 @@
 # SOP-BOARD-14 的验收场景
 # 预期依据 docs/proposals/2026-10-22-integrated-rework.md（已批准，2026-10-22）的 D72～D82 与附录；只写业务流程，验收只以本文件、sop-board-12.yaml 的 SOP-127 与 sop-board-13.yaml 的 SOP-131～135 经真实入口执行为准。
-# 版本 4（2026-10-23）：新增 SOP-149-N02（复验期间输入变化作废、不计入连续三次未通过，依据 docs/designs/SOP-BOARD-5.md 计数规则）。版本 3（2026-10-23）：SOP-143-P02 的答复改用演示用例已有的说法（积分周期、UTC、每月 1 日切换），原答复含用例中没有的概念，按 D68 应先追问，与本条“采纳”预期矛盾。版本 2（2026-10-23）：统一验收中按 AdolphKevin 同意改写 SOP-149-P03——优先级只在资源可用时生效，被互斥阻挡的高优先级任务不阻止不冲突的低优先级任务开始；修复运行时合并等待；状态与原因一致、排队位置与实际开始顺序一致仍为预期。版本 1（2026-10-22）：SOP-141～149。
+# 版本 5（2026-10-23）：统一验收 G4 后修订——SOP-146-N01 接受准备或提交两处拒绝（复验身份已在准备时核对）；SOP-147-P02、N02 写明退款期限冲突等问题的业务答复。版本 4（2026-10-23）：新增 SOP-149-N02（复验期间输入变化作废、不计入连续三次未通过，依据 docs/designs/SOP-BOARD-5.md 计数规则）。版本 3（2026-10-23）：SOP-143-P02 的答复改用演示用例已有的说法（积分周期、UTC、每月 1 日切换），原答复含用例中没有的概念，按 D68 应先追问，与本条“采纳”预期矛盾。版本 2（2026-10-23）：统一验收中按 AdolphKevin 同意改写 SOP-149-P03——优先级只在资源可用时生效，被互斥阻挡的高优先级任务不阻止不冲突的低优先级任务开始；修复运行时合并等待；状态与原因一致、排队位置与实际开始顺序一致仍为预期。版本 1（2026-10-22）：SOP-141～149。
 # “演示工作区”：按 docs/verification.md 以名称 demo 登记的两仓（app 经真实 HTTP 调用 lib，lib 含明确植入的缺陷），入口声明 web 与 api，自检通过；看板以 --lan 启动，真实 Codex。
 # “会话入口环境”：只装 sop-board（从集成分支安装）并运行 sop-board skills install；Codex 与 Claude Code 各开新会话，工作目录为 app 仓库；触发只用自然语言，不点名技能。
 # “使用者”：在会话中扮演开发者并给出业务答复与确认人的验收执行者助手 dev-a；业务答复取自本文件写明的内容，执行者不自行编造答复。
@@ -9,7 +9,7 @@
 metadata:
   requirement: "sop-board：任务内核统一、开发会话中可完成写 SOP、生成草稿、合并用例、执行验收、修复复验，独立性如实登记"
   batch: "sop-board-14"
-  version: 4
+  version: 5
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-integrated-rework.md 的 D72～D82 与附录"
@@ -335,8 +335,8 @@ sops:
         priority: P0
         verify: cli
         initial_state: ["修复任务处于待验证"]
-        steps: ["用修复会话的标识提交复验结果"]
-        expected: ["提交被拒并说明复验须由新会话执行"]
+        steps: ["用修复会话的标识准备复验（execute prepare --fix）", "若已有由其他会话准备的复验任务，再用修复会话的标识提交其结果"]
+        expected: ["准备即被拒，或提交被拒，均说明复验须由未参与修复的新会话执行", "没有登记复验轮次"]
         forbidden_effects: []
         evidence_hints: ["命令输出"]
       - id: SOP-146-N02
@@ -411,7 +411,7 @@ sops:
         priority: P0
         verify: agent
         initial_state: ["SOP-147-P01 的 SOP 有待确认问题"]
-        steps: ["dev-a 逐条答复并说“确认人 dev-a，登记这份 SOP”", "说“生成验收场景草稿”"]
+        steps: ["dev-a 逐条答复：退款期限问题答“以 PRD 为准，签收后 7 天内可申请”，部分退款问题答“允许，按商品行退”，其余问题答“这一项本批不定，列入未覆盖范围”", "dev-a 说“确认人 dev-a，登记这份 SOP”", "说“生成验收场景草稿”"]
         expected: ["答复写回 SOP 并注明答复人", "批次 SOP 原文登记，确认人 dev-a，记录来源资料清单", "随后生成的草稿以该 SOP 为依据"]
         forbidden_effects: []
         evidence_hints: ["看板 SOP 页", "草稿页"]
@@ -434,7 +434,7 @@ sops:
         actor: 开发者
         priority: P1
         verify: agent
-        initial_state: ["SOP 问题均已答复"]
+        initial_state: ["SOP 问题已按 SOP-147-P02 第一步的答复逐条答复"]
         steps: ["dev-a 说“登记吧”，不给确认人"]
         expected: ["agent 询问确认人，没有登记"]
         forbidden_effects: []
