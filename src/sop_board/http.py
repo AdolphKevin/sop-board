@@ -1,6 +1,7 @@
 """标准库 HTTP 适配层；不承担统计与持久化规则。"""
 
 from http.server import BaseHTTPRequestHandler
+from contextlib import nullcontext
 from importlib.resources import files
 import json
 import re
@@ -8,6 +9,7 @@ import sqlite3
 from urllib.parse import quote, unquote, urlsplit, parse_qs
 
 from .errors import APIError, reject
+from .kernel import queue_view
 from . import pages
 from .network import is_loopback
 from .evidence_types import content_type as evidence_content_type, is_text, video_response
@@ -61,6 +63,12 @@ class Handler(BaseHTTPRequestHandler):
         self.respond(status, json.dumps(result, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def handle_api(self):
+        # 只读请求的页面、变化标记和任务列表共享一次排队计算。
+        # 写入请求不沿用操作前的队列，返回值仍反映操作后的状态。
+        with (queue_view() if self.command == 'GET' else nullcontext()):
+            self._handle_api()
+
+    def _handle_api(self):
         try:
             service = self.server.service
             path = urlsplit(self.path).path
@@ -75,10 +83,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, files("sop_board").joinpath("assets", name).read_bytes(), content_type)
                 return
             if method in ("POST", "PUT"):
-                developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel|approve)", path) or
-                                 re.fullmatch(r"/api/v1/automation/(pause|resume)", path) or
+                developer = bool(re.fullmatch(r"/api/v1/tasks/[^/]+/(retry|cancel|approve|handled|abandon|cleanup)", path) or
+                                 re.fullmatch(r"/api/v1/automation/(pause|resume|auto-execute)", path) or
                                  re.fullmatch(r"/api/v1/environment/(check|restart)", path) or
-                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/(merges|executions)", path) or
+                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/fixes/handoff", path) or
+                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/(merges|executions|distill)", path) or
                                  re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/cases/[^/]+/flow", path))
                 if developer and not local:
                     reject(403, "local-only", "client", "此操作仅限本机")
@@ -114,24 +123,38 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/":
                 self.respond(200, pages.home(service.workspaces(local=local), environment=service.environment_status(local=local), local=local).encode(), "text/html; charset=utf-8")
                 return
+            if method == 'GET' and (match := re.fullmatch(r'/w/([^/]+)/tasks/([0-9]+)', path)):
+                key, task_id = unquote(match[1]), int(match[2])
+                task = self.server.tasks.read(task_id, local=local)
+                if task['workspace'] != key:
+                    reject(404, 'task-not-found', 'task', '任务不存在')
+                case_data = service.read_cases(key, task['batch']) if task['kind'] == 'merge' else None
+                if task['kind'] == 'merge':
+                    task['progress'] = self.server.tasks.merge_progress(task, local=local)
+                actions = self.server.tasks.types[task['kind']].actions(task) if local else set()
+                self.respond(200, pages.task_page(key, task, actions=actions, case_data=case_data, local=local).encode(), 'text/html; charset=utf-8')
+                return
             if method == 'GET' and (match := re.fullmatch(r'/w/([^/]+)/fixes', path)):
                 key = unquote(match[1])
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
-                data = self.server.tasks.fixes.list(key)
-                self.respond(200, pages.fixes(key, data['tasks'], selected, review=data['review'], local=local).encode(), 'text/html; charset=utf-8')
+                data = self.server.tasks.fixes.list(key, local=local)
+                self.respond(200, pages.fixes(key, data['tasks'], selected, review=data['review'], local=local,
+                    session_failures=data['session_failures']).encode(), 'text/html; charset=utf-8')
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.batch(key, service.read_batch(key, batch, local=local), environment=service.environment_status(local=local), local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.batch(key, service.read_batch(key, batch, local=local), environment=service.environment_status(local=local),
+                    local=local, merge=self.server.tasks.latest_merge(key, batch)).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/scenarios", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True, local=local), local=local).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenarios(key, batch, service.read_batch(key, batch, scenarios=True, local=local),
+                    local=local, merge=self.server.tasks.latest_merge(key, batch)).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/cases", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
                 data = service.read_cases(key, batch, include_state=True)
-                self.respond(200, pages.cases(key, batch, data).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.cases(key, batch, data, merge=self.server.tasks.latest_merge(key, batch)).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/draft", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -141,9 +164,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/merges", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
-                service.read_batch(key, batch, local=local)
+                data = service.read_batch(key, batch, local=local)
                 selected = parse_qs(urlsplit(self.path).query).get('task', [None])[0]
-                self.respond(200, pages.merges(key, batch, self.server.tasks.list(key, batch, local=local)['tasks'], service.read_cases(key, batch), selected, local=local).encode(), "text/html; charset=utf-8")
+                tasks = self.server.tasks.list(key, batch, local=local, kind='merge')['tasks']
+                for task in tasks:
+                    if task['kind'] == 'merge':
+                        task['progress'] = self.server.tasks.merge_progress(task, local=local)
+                self.respond(200, pages.merges(key, batch, tasks, service.read_cases(key, batch), selected,
+                    local=local, etag=data['etag'], conversation=self.server.tasks.conversation.read(key, batch)).encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/sop", path)):
                 key, batch = unquote(match[1]), unquote(match[2])
@@ -160,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == "GET" and (match := re.fullmatch(r"/w/([^/]+)/b/([^/]+)/s/([^/]+)", path)):
                 key, batch, scenario = (unquote(match[i]) for i in (1, 2, 3))
-                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario, local=local)).encode(), "text/html; charset=utf-8")
+                self.respond(200, pages.scenario(service.read_scenario(key, batch, scenario, local=local), local=local).encode(), "text/html; charset=utf-8")
                 return
             if method == 'GET' and path == '/api/v1/environment':
                 result = dict(ok=True, **service.environment_status(local=local))
@@ -178,6 +206,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/automation/(pause|resume)", path)):
                 result = service.set_automation_paused(match[1] == 'pause')
+            elif method == 'POST' and path == '/api/v1/automation/auto-execute':
+                result = service.set_auto_execute(body)
             elif method == "GET" and path == "/api/v1/tasks":
                 query = parse_qs(urlsplit(self.path).query)
                 result = self.server.tasks.list(query.get('workspace', [None])[0], query.get('batch', [None])[0], local=local)
@@ -188,11 +218,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, raw, "application/octet-stream", [("Content-Security-Policy", "sandbox; default-src 'none'")])
                 return
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges/([0-9]+)/(scenario-file|pairs\.json)", path)):
-                raw = self.server.tasks.merge_result(unquote(match[1]), unquote(match[2]), int(match[3]))
+                raw = self.server.tasks.merge_result(unquote(match[1]), unquote(match[2]), int(match[3]), local=local)
                 if match[4] == 'pairs.json':
-                    raw = self.server.tasks.file(int(match[3]), 'pairs.json')
+                    raw = self.server.tasks.file(int(match[3]), 'pairs.json', local=local)
                 self.respond(200, raw, 'application/json; charset=utf-8' if match[4] == 'pairs.json' else 'text/yaml; charset=utf-8')
                 return
+            elif method == 'GET' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/merge-conversation', path)):
+                result = self.server.tasks.conversation.read(unquote(match[1]), unquote(match[2]))
+            elif method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/merge-conversation/(messages|exclusions)', path)):
+                operation = self.server.tasks.conversation.submit if match[3] == 'messages' else self.server.tasks.conversation.exclude
+                result = operation(unquote(match[1]), unquote(match[2]), body)
+            elif method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/cases/([^/]+)/include', path)):
+                result = self.server.tasks.conversation.exclude(unquote(match[1]), unquote(match[2]), body, include=unquote(match[3]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/cases/([^/]+)/flow", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]), trigger='开发者指定独立场景', force_case=unquote(match[3]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges", path)):
@@ -215,8 +252,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict) or body.keys() - {'scope'}:
                     reject(422, 'invalid-scope', 'body', '执行请求只接受 scope 字段')
                 result = self.server.tasks.enqueue_execution(unquote(match[1]), unquote(match[2]), body.get('scope', 'pending'))
+            elif method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/distill', path)):
+                result = self.server.tasks.distill.enqueue(unquote(match[1]), unquote(match[2]), body)
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/(retry|cancel)", path)):
-                result = self.server.tasks.action(int(match[1]), match[2])
+                result = self.server.tasks.action(int(match[1]), match[2], body)
+            elif method == 'POST' and (match := re.fullmatch(r'/api/v1/tasks/([0-9]+)/(handled|abandon|cleanup)', path)):
+                result = self.server.tasks.distill.action(self.server.tasks.read(int(match[1])), match[2], body)
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/tasks/([0-9]+)/approve", path)):
                 result = self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', body.get('note', '')) if isinstance(body, dict) else self.server.tasks.fixes.action(self.server.tasks.read(int(match[1])), 'approve', None)
             elif method == "GET" and path == "/api/v1/workspaces":
@@ -226,9 +267,11 @@ class Handler(BaseHTTPRequestHandler):
             elif method == 'GET' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/scenarios/([^/]+)', path)):
                 result = service.read_scenario(*(unquote(match[i]) for i in (1, 2, 3)), local=local)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/fixes", path)):
-                result = self.server.tasks.fixes.list(unquote(match[1]))
+                result = self.server.tasks.fixes.list(unquote(match[1]), local=local)
+            elif method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/fixes/handoff', path)):
+                result = self.server.tasks.fixes.handoff(unquote(match[1]),body)
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/attention", path)):
-                result = self.server.tasks.fixes.attention(unquote(match[1]), 'http://' + self.headers.get('Host', 'localhost'))
+                result = self.server.tasks.fixes.attention(unquote(match[1]), 'http://' + self.headers.get('Host', 'localhost'), local=local)
             elif method == "GET" and path == "/api/v1/jira/summary":
                 result = self.server.jira.summary(parse_qs(urlsplit(self.path).query).get('url', [''])[0])
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/rounds/([0-9]+)/export", path)):
@@ -291,7 +334,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif method == "GET" and action in (None, "scenarios") and number is None:
                     result = service.read_batch(key, batch, scenarios=action == "scenarios", local=local)
                 elif method == "GET" and action == "rounds" and number is not None:
-                    result = service.read_round(key, batch, int(number))
+                    result = service.read_round(key, batch, int(number), local=local)
                 else:
                     reject(404, "not-found", "path", "接口不存在")
             else:

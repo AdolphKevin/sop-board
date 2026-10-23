@@ -13,9 +13,9 @@ sop-board playwright guide
 
 `guide` 保留 main 的工作区搭建指引并列出 Web 入口，不启动服务。`playwright guide` 只显示 Web 操作。默认使用包内技能；显式 SOP_BOARD_SKILLS_DIR 下存在 playwright-acceptance/SKILL.md 时可覆盖。自检使用同一解析规则，其余驱动遵守工作区配置。
 
-## 自动执行与修复复测
+## 看板执行与修复复测
 
-执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。保持工作区已启动的适配环境，按入口操作，不自行启停服务。Web 连接在同一 worker 共用 CDP，每条实际执行场景独立录屏、截图及 trace。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1；首个意外失败或受阻后停止本轮，避免 worker 重启引发连续调试授权。剩余未执行范围单列，部分转换显式加 --allow-partial。
+看板执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。看板已准备适配环境，执行者按入口操作，不自行启停服务。Web 连接在同一执行进程共用浏览器调试连接（CDP），每条实际执行场景独立录屏、截图及 trace。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1；首个意外失败或受阻后停止本轮，避免进程重启引发连续调试授权。剩余未执行范围单列，部分转换显式加 --allow-partial。
 
 ```sh
 sop-board playwright convert --report <报告.json> --out <任务目录> \
@@ -27,6 +27,14 @@ sop-board playwright convert --report <报告.json> --out <任务目录> \
 
 修复复测通过 playwright-scopes.json 按批次获取独立场景原文和 scope，分别转换后补 batch，证据路径统一相对任务目录 evidence/。修复复测不沿用原通过结果。
 
+## 开发会话执行与独立复验
+
+先读取 `sop-board status <工作区> --json` 的 setup_check.ok，核对最近已完成自检是否仍适用。latest_attempt.completed=false 的尝试不替换原有效结论。Codex 沙箱内不运行 check；缺少合格结果时请使用者在沙箱外完成。普通执行使用 `sop-board execute prepare <工作区> <批次> --session <执行者标识>`，默认交未参与实现的新会话；修复复验使用 `sop-board execute prepare <工作区> --fix <修复编号> --session <复验标识>`，范围由原修复记录确定。
+
+会话入口从任务目录 repos.json 读取仓库路径，按项目验证技能与手册自行准备入口与隔离数据；结束前停止自己本轮启动的服务，在结果 note 中列名称、PID 或进程组及停止结果，清理失败如实列仍运行的进程，不停止使用者已有服务或浏览器；地址及声明凭据来自会话自身环境，账号授权沿用本任务记录。以 prepare 返回的提示词、origin.json 和 Web 材料为准，不能套用“看板已启动环境”的前置。写入权限包含数据目录；执行时产品代码仍只读。
+
+转换命令与上节相同。已有 prepare 任务时只向任务目录写完整结果与证据，随后 `sop-board execute submit <工作区> --task <执行任务编号> --implementer <实际实现者>`；复验的实现者已绑定原修复会话，不另填或替换。不要再用 playwright submit 登记第二个轮次。普通执行中同一实现者和执行者登记为自检，未声明实现者为未声明；独立性字段不能代替实际独立执行证据。
+
 ## 手工登记
 
 ```sh
@@ -35,12 +43,15 @@ sop-board playwright convert --report /work/report.json --out /work/round \
   --scope /work/scope.json --scenario-file <原文.yaml> --executor <执行者>
 sop-board playwright submit --results /work/round/results.jsonl --scope /work/scope.json \
   --scenario-file <原文.yaml> --product /work/product.json \
-  --idempotency-key <本轮唯一编号> --submitted-by <执行者> --url http://127.0.0.1:8787
+  --idempotency-key <本轮唯一编号> --submitted-by <执行者> --url http://127.0.0.1:8787 \
+  --implementer <实际实现者>
 ```
 
 工作区键使用页面与 API 中的实际名称，不把仓库身份转换为旧项目键。scope 的既有 project 字段保存该工作区键，--project 仅为兼容参数别名。看板须先有同一场景原文；submit 使用 `/api/v1/workspaces/<键>/batches/<批次>/rounds`，无需令牌，不跟随重定向，上传证据前核对原文版本。地址也可通过 SOP_BOARD_URL 提供。product.json 包含 commit、digest（兼容 product_digest/product_fingerprint）、dirty；多仓版本取当前工作区快照，不把 HEAD 当成运行态证明。
 
 完整执行默认拒绝漏测；部分试跑显式 --allow-partial，并检查 coverage.json。保留旧数据目录：main 的 v9 版本不读取或迁移旧看板数据，不把手工登记当成迁移工具。
+
+手工 submit 保留旧参数，--implementer 可省略，省略时独立性为未声明；登记入口为会话。pass/fail 必须有真实证据，blocked/skip 可用空 evidence 数组但须说明 finding。部分试跑成功只说明所交范围已登记，不代表整批完成。配对文件转为用例标签使用 `sop-board playwright tags --pairs <pairs.json> --out <cases.json>`。
 
 ## 验证与维护
 

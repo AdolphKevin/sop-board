@@ -1,0 +1,521 @@
+# SOP-BOARD-14 的验收场景
+# 预期依据 docs/proposals/2026-10-22-integrated-rework.md（已批准，2026-10-22）的 D72～D82 与附录；只写业务流程，验收只以本文件、sop-board-12.yaml 的 SOP-127 与 sop-board-13.yaml 的 SOP-131～135 经真实入口执行为准。
+# 版本 1（2026-10-22）：SOP-141～149。
+# “演示工作区”：按 docs/verification.md 以名称 demo 登记的两仓（app 经真实 HTTP 调用 lib，lib 含明确植入的缺陷），入口声明 web 与 api，自检通过；看板以 --lan 启动，真实 Codex。
+# “会话入口环境”：只装 sop-board（从集成分支安装）并运行 sop-board skills install；Codex 与 Claude Code 各开新会话，工作目录为 app 仓库；触发只用自然语言，不点名技能。
+# “使用者”：在会话中扮演开发者并给出业务答复与确认人的验收执行者助手 dev-a；业务答复取自本文件写明的内容，执行者不自行编造答复。
+# 测试同事 tester-a 用第二个浏览器以非回环地址访问看板。独立验收串行进行。
+
+metadata:
+  requirement: "sop-board：任务内核统一、开发会话中可完成写 SOP、生成草稿、合并用例、执行验收、修复复验，独立性如实登记"
+  batch: "sop-board-14"
+  version: 1
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/proposals/2026-10-22-integrated-rework.md 的 D72～D82 与附录"
+      version: "已批准（2026-10-22）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "kernel", "session-entry"]
+
+sops:
+  - id: SOP-141
+    title: 开发会话发现入口技能并先核对前置
+    actor: 开发者
+    entry: Codex 与 Claude Code 会话
+    scenarios:
+      - id: SOP-141-P01
+        polarity: positive
+        title: 安装后两个客户端都能解析到 sop-board 技能
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["会话入口环境，~/.agents/skills 与 ~/.claude/skills 中没有 sop-board"]
+        steps: ["运行 sop-board skills install", "查看两个技能目录"]
+        expected: ["输出 sop-board、regression-distill、playwright-acceptance 三条技能在 Codex 与 Claude Code 各自解析到的路径与包版本", "两个目录各有指向本包的 sop-board 链接"]
+        forbidden_effects: ["覆盖其他来源的同名技能"]
+        evidence_hints: ["命令输出", "ls -l 两个目录"]
+      - id: SOP-141-P02
+        polarity: positive
+        title: 说“为这份 SOP 生成验收场景”时先报告待处理事项
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["演示工作区已登记，看板上有一条待开发者处理的事项"]
+        steps: ["在 app 仓库的新会话中说“为 docs/refund.md 这份 SOP 生成验收场景”"]
+        expected: ["agent 先运行 sop-board status，报告该事项的种类、原因与链接并询问是否先处理", "得到答复后继续生成草稿"]
+        forbidden_effects: ["跳过待处理事项直接执行"]
+        evidence_hints: ["会话记录", "status 输出"]
+      - id: SOP-141-N01
+        polarity: negative
+        negative_type: not-found
+        title: 仓库不属于任何工作区时停止并引导登记
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["一个未登记的 Git 仓库"]
+        steps: ["在该仓库的新会话中说“为这份 SOP 生成验收场景”"]
+        expected: ["agent 说明当前仓库不属于任何工作区，引导按 sop-board guide 运行 sop-board init", "没有新的数据目录或任务记录"]
+        forbidden_effects: ["在没有工作区的情况下生成或保存草稿"]
+        evidence_hints: ["会话记录", "数据目录列表"]
+
+  - id: SOP-142
+    title: 开发会话生成并确认草稿
+    actor: 开发者
+    entry: Codex 与 Claude Code 会话；看板草稿页
+    scenarios:
+      - id: SOP-142-P01
+        polarity: positive
+        title: 会话生成的草稿出现在看板并记录会话
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["演示工作区，批次 refund 已上传 SOP 原文"]
+        steps: ["在会话中说“为 refund 批次的 SOP 生成验收场景草稿”", "在看板草稿页查看"]
+        expected: ["看板草稿页出现新版本，版本记录本会话的标识", "草稿含规则、正反向用例、待确认问题，依据为代码的预期标注了仓库、路径与行号且行号存在", "任务页显示该任务由会话处理"]
+        forbidden_effects: ["看板另起 Codex 会话处理同一任务"]
+        evidence_hints: ["会话记录", "草稿页截图", "任务接口响应"]
+      - id: SOP-142-P02
+        polarity: positive
+        title: 对话中的答复记为批注并在修订版中处理
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["SOP-142-P01 的草稿有待确认问题"]
+        steps: ["dev-a 在对话中答复第一个问题“退款在 7 天内可申请”", "说“按答复修订草稿”"]
+        expected: ["看板批注作者为 dev-a，内容为答复原文", "修订版处理了该批注，相关用例预期写入 7 天"]
+        forbidden_effects: ["批注作者显示为 agent 或会话标识"]
+        evidence_hints: ["草稿页批注与版本对比截图"]
+      - id: SOP-142-P03
+        polarity: positive
+        title: 使用者给出确认人后确认草稿
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["草稿问题均已答复"]
+        steps: ["dev-a 说“确认草稿，确认人 dev-a”"]
+        expected: ["草稿确认人为 dev-a，转为 sop-draft 来源的用例", "随后的合并不自动执行"]
+        forbidden_effects: []
+        evidence_hints: ["用例页", "任务列表"]
+      - id: SOP-142-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 引用不存在代码行的草稿提交被拒
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["一次会话草稿任务已准备，最终输出中某条代码依据的行号超出文件行数"]
+        steps: ["运行 sop-board draft submit 提交该输出"]
+        expected: ["提交被拒并列出该用例与超出的行号", "任务保持会话处理中，可修正后再次提交", "看板草稿版本数不变"]
+        forbidden_effects: ["登记引用不存在代码位置的草稿"]
+        evidence_hints: ["命令输出", "草稿接口响应"]
+      - id: SOP-142-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 使用者没有给出确认人时不确认
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["草稿问题均已答复"]
+        steps: ["dev-a 说“草稿可以了”，不提确认人"]
+        expected: ["agent 询问确认人，未运行确认命令", "草稿仍为待确认"]
+        forbidden_effects: ["agent 以自己或会话标识作为确认人"]
+        evidence_hints: ["会话记录", "草稿页"]
+      - id: SOP-142-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 提交前 SOP 原文变化，本次草稿作废
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话草稿任务已准备"]
+        steps: ["在看板重新上传修改过的 SOP 原文", "提交会话草稿输出"]
+        expected: ["任务作废，原因写明业务 SOP 已变化", "看板草稿版本数不变"]
+        forbidden_effects: ["按旧 SOP 登记草稿"]
+        evidence_hints: ["命令输出", "任务接口响应"]
+
+  - id: SOP-143
+    title: 开发会话合并测试同事的用例
+    actor: 开发者
+    entry: Codex 与 Claude Code 会话；看板合并页与合并对话
+    scenarios:
+      - id: SOP-143-P01
+        polarity: positive
+        title: 会话合并结果与看板合并遵守同一规则
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["批次 member-cycle 不存在；sop-board-13.yaml 中的“缺口用例”8 条"]
+        steps: ["在会话中提供缺口用例文件，说“把这些测试用例合并为验收场景”"]
+        expected: ["用例以 dev-a 为上传人登记", "合并页显示该任务由会话处理", "会员开通 3 条落地为场景，积分周期与邀请暂缓，缺口按业务场景格式列出"]
+        forbidden_effects: ["为暂缓用例编造预期"]
+        evidence_hints: ["会话记录", "合并页与用例页截图", "场景文件"]
+      - id: SOP-143-P02
+        polarity: positive
+        title: 对话中的缺口答复以“会话”来源出现在看板合并对话
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["SOP-143-P01 合并后有积分周期缺口"]
+        steps: ["agent 在对话中呈报缺口", "dev-a 答复“额度周期 30 天、时区 UTC、切换日为安装日”"]
+        expected: ["看板合并对话出现该答复，回复人 dev-a，来源为会话", "下一轮合并采纳后用例更新，积分周期场景落地并写入 30 天、UTC"]
+        forbidden_effects: []
+        evidence_hints: ["合并对话截图", "用例页对比", "场景文件"]
+      - id: SOP-143-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 看板合并运行中时会话不能准备同一批次的合并
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["看板对批次 member-cycle 的合并任务正在运行"]
+        steps: ["运行 sop-board merge prepare demo member-cycle --session <标识>"]
+        expected: ["命令被拒并说明正在运行的任务编号", "没有新任务"]
+        forbidden_effects: ["同一批次两个合并同时运行"]
+        evidence_hints: ["命令输出", "任务列表"]
+      - id: SOP-143-N02
+        polarity: negative
+        negative_type: permission
+        title: agent 不代替使用者答复缺口或选择本批不纳入
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["合并有一个业务缺口与一个入口缺口"]
+        steps: ["dev-a 说“缺口你看着办”"]
+        expected: ["agent 逐项询问，不写入任何答复，不执行本批不纳入"]
+        forbidden_effects: ["以 agent 推断的内容作为业务答复写入"]
+        evidence_hints: ["会话记录", "合并对话"]
+
+  - id: SOP-144
+    title: 开发会话执行场景验收并如实登记独立性
+    actor: 开发者
+    entry: Codex 与 Claude Code 会话；看板批次页、场景详情与报告
+    scenarios:
+      - id: SOP-144-P01
+        polarity: positive
+        title: 实现会话派新会话执行，登记为独立验收
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["演示工作区批次 refund 有待执行场景；当前会话刚在 app 中实现了退款改动"]
+        steps: ["说“执行这批场景验收”"]
+        expected: ["agent 派出新会话执行，交接只含任务目录、项目验证技能与手册、入口环境说明", "登记的轮次实现者为当前会话、执行者为新会话，独立性为独立验收", "批次页、场景详情与报告显示执行入口、执行者、实现者与独立性"]
+        forbidden_effects: ["当前会话自己执行却登记为独立验收"]
+        evidence_hints: ["会话记录", "轮次接口", "报告"]
+      - id: SOP-144-P02
+        polarity: positive
+        title: 使用者要求当前会话执行时登记为自检
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["同 SOP-144-P01"]
+        steps: ["说“你自己执行这批场景验收”"]
+        expected: ["轮次独立性为实现者自检", "统计中自检与独立验收分开"]
+        forbidden_effects: []
+        evidence_hints: ["轮次接口", "批次页统计"]
+      - id: SOP-144-P03
+        polarity: positive
+        title: 在未提交改动上执行，提交后结果仍有效
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["app 有未提交的退款改动"]
+        steps: ["会话执行一条场景并通过", "开发者提交这些改动，不做其他修改", "查看该场景状态"]
+        expected: ["轮次记录 dirty 与产品内容摘要", "提交后该场景仍为通过，不进入待判定"]
+        forbidden_effects: []
+        evidence_hints: ["轮次接口", "场景详情"]
+      - id: SOP-144-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 执行期间场景变化，本轮作废
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话执行任务已准备"]
+        steps: ["修改其中一条场景的预期并推送", "提交执行结果"]
+        expected: ["任务作废并写明场景内容变化", "没有登记轮次"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出", "轮次列表"]
+      - id: SOP-144-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 结果缺场景或证据不存在时提交被拒
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话执行任务包含两条场景"]
+        steps: ["提交只含一条场景的结果", "提交两条场景、但其中一条证据文件不存在的结果"]
+        expected: ["两次都被拒并列出缺少的场景或证据", "没有登记轮次"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出"]
+      - id: SOP-144-N03
+        polarity: negative
+        negative_type: incomplete-input
+        title: 缺少声明的凭据变量时相关场景受阻
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["web 入口声明 credential_env DEMO_BUYER_PASSWORD，执行会话环境中未设置"]
+        steps: ["执行需要登录的场景"]
+        expected: ["该场景记受阻，finding 写变量名", "任何材料中没有变量取值"]
+        forbidden_effects: []
+        evidence_hints: ["轮次接口"]
+
+  - id: SOP-145
+    title: 看板入口与会话入口互不干扰
+    actor: 开发者与测试同事
+    entry: 命令行；看板页面与接口
+    scenarios:
+      - id: SOP-145-P01
+        polarity: positive
+        title: 看板未运行时完成阶段 2～4，启动后记录完整
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["演示工作区，看板进程未运行"]
+        steps: ["在会话中依次完成生成草稿、确认、合并、执行", "启动看板"]
+        expected: ["看板显示全部草稿版本、合并、场景与轮次，与命令输出一致"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出", "看板页面截图"]
+      - id: SOP-145-P02
+        polarity: positive
+        title: 看板运行中由会话登记的轮次自动刷新
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["看板运行中，tester-a 打开批次页"]
+        steps: ["会话登记一轮结果"]
+        expected: ["批次页在轮询周期内显示新结果，无需刷新"]
+        forbidden_effects: []
+        evidence_hints: ["录屏或带时间的截图"]
+      - id: SOP-145-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网访问不到会话入口的写操作与任务附件
+        actor: 测试同事
+        priority: P0
+        verify: api
+        initial_state: ["存在一个会话认领的任务"]
+        steps: ["tester-a 以非回环地址请求该任务详情、附件与任务页"]
+        expected: ["只返回白名单字段，没有会话编号、续接命令、输入快照、本机路径与命令", "附件请求被拒"]
+        forbidden_effects: []
+        evidence_hints: ["响应原文"]
+
+  - id: SOP-146
+    title: 开发会话分析并修复不通过的场景
+    actor: 开发者
+    entry: Codex 与 Claude Code 会话；看板修复与场景页
+    scenarios:
+      - id: SOP-146-P01
+        polarity: positive
+        title: 认领问题、写根因、在当前工作区修复并由新会话复验
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["演示工作区一条场景因 lib 的植入缺陷失败"]
+        steps: ["在 app 仓库的会话中说“分析并修复这个不通过的场景”"]
+        expected: ["agent 认领问题并写出根因，root_repo 为 lib", "只修改产品代码，未写测试、未提交", "随后派新会话复验，登记实现者为修复会话、执行者为复验会话，独立性为独立验收"]
+        forbidden_effects: ["改动场景文件或 SOP", "自行提交"]
+        evidence_hints: ["会话记录", "git status", "轮次接口"]
+      - id: SOP-146-P02
+        polarity: positive
+        title: 开发者提交后关闭修复记录并回写缺陷单
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-146-P01 复验通过；演示 Jira 已配置"]
+        steps: ["开发者审核并提交 lib 改动", "运行 sop-board fix land"]
+        expected: ["修复记录关闭", "缺陷单收到评论"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出", "缺陷单"]
+      - id: SOP-146-N01
+        polarity: negative
+        negative_type: permission
+        title: 复验会话与修复会话相同则拒收
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["修复任务处于待验证"]
+        steps: ["用修复会话的标识提交复验结果"]
+        expected: ["提交被拒并说明复验须由新会话执行"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出"]
+      - id: SOP-146-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 修复改动了场景文件时提交被拒
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话修复任务已准备"]
+        steps: ["在工作区修改场景文件后运行 sop-board fix submit"]
+        expected: ["提交被拒并列出受保护的文件"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出"]
+      - id: SOP-146-N03
+        polarity: negative
+        negative_type: concurrency
+        title: 看板修复与会话修复不重复认领
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["一条失败场景已在看板修复任务中；另一条失败场景未被认领"]
+        steps: ["会话尝试认领第一条", "会话认领第二条后等待看板发现周期"]
+        expected: ["第一条认领被拒", "看板不为第二条建立修复任务"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出", "修复页"]
+      - id: SOP-146-N04
+        polarity: negative
+        negative_type: other
+        title: 根因为环境问题时不进入复验
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["一条场景因演示服务未启动而失败"]
+        steps: ["说“分析并修复这个不通过的场景”"]
+        expected: ["根因分类为环境，任务交使用者处理，没有复验任务"]
+        forbidden_effects: ["为环境问题修改产品代码"]
+        evidence_hints: ["会话记录", "任务接口"]
+      - id: SOP-146-N05
+        polarity: negative
+        negative_type: stale-input
+        title: 提交内容与复验快照不一致时拒绝关闭
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["复验通过"]
+        steps: ["开发者在提交前又修改一处产品代码并一起提交", "运行 sop-board fix land"]
+        expected: ["命令拒绝并列出差异，须重新复验"]
+        forbidden_effects: []
+        evidence_hints: ["命令输出"]
+
+  - id: SOP-147
+    title: 开发会话根据需求资料写业务 SOP
+    actor: 开发者与业务确认人
+    entry: Codex 与 Claude Code 会话
+    scenarios:
+      - id: SOP-147-P01
+        polarity: positive
+        title: 根据 PRD 与技术方案写出可确认的业务 SOP
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["仓库外有一份退款 PRD 与一份技术方案（技术方案写了“退款单号用雪花算法生成”）"]
+        steps: ["说“根据这两份资料写退款的业务 SOP”"]
+        expected: ["SOP 含业务目标与范围、角色、按节点编号的规则（附来源文件与原文摘录）、mermaid 流程图、禁止的副作用、未覆盖范围与待确认问题", "待确认问题按业务场景格式书写", "雪花算法等实现细节没有成为规则预期"]
+        forbidden_effects: ["编造资料中没有的业务结果"]
+        evidence_hints: ["会话记录", "SOP 原文"]
+      - id: SOP-147-P02
+        polarity: positive
+        title: 答复与确认后登记为批次 SOP 并可生成草稿
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["SOP-147-P01 的 SOP 有待确认问题"]
+        steps: ["dev-a 逐条答复并说“确认人 dev-a，登记这份 SOP”", "说“生成验收场景草稿”"]
+        expected: ["答复写回 SOP 并注明答复人", "批次 SOP 原文登记，确认人 dev-a，记录来源资料清单", "随后生成的草稿以该 SOP 为依据"]
+        forbidden_effects: []
+        evidence_hints: ["看板 SOP 页", "草稿页"]
+      - id: SOP-147-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 资料之间矛盾时列为待确认问题
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["PRD 写“退款 7 天内可申请”，技术方案写“退款 15 天内可申请”"]
+        steps: ["说“根据这两份资料写退款的业务 SOP”"]
+        expected: ["该规则列为待确认问题，引用两处原文", "规则正文没有自行取 7 天或 15 天"]
+        forbidden_effects: []
+        evidence_hints: ["SOP 原文"]
+      - id: SOP-147-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 没有确认人时不登记
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["SOP 问题均已答复"]
+        steps: ["dev-a 说“登记吧”，不给确认人"]
+        expected: ["agent 询问确认人，没有登记"]
+        forbidden_effects: []
+        evidence_hints: ["会话记录", "看板 SOP 页"]
+
+  - id: SOP-148
+    title: praxis-skills 的 sop-verify 退役
+    actor: 开发者
+    entry: praxis-skills 仓库；Codex 与 Claude Code 会话
+    negative_exempt: "退役只删除旧技能并给出迁移说明；会话入口的反向情形由 SOP-141 的场景覆盖"
+    scenarios:
+      - id: SOP-148-P01
+        polarity: positive
+        title: praxis-skills 不再发行 sop-verify 并给出迁移说明
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["praxis-skills 退役改动已就位"]
+        steps: ["查看 praxis-skills 仓库目录与 README"]
+        expected: ["没有 sop-verify 目录", "README 写明改为安装 sop-board 并运行 sop-board skills install，以及怎样移除旧技能"]
+        forbidden_effects: []
+        evidence_hints: ["目录列表", "README 摘录"]
+      - id: SOP-148-P02
+        polarity: positive
+        title: 原先对 sop-verify 说的话由 sop-board 技能承接
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["会话入口环境，已移除旧 sop-verify"]
+        steps: ["说“验证 docs/refund.md 这份 SOP”"]
+        expected: ["agent 使用 sop-board 技能，先运行 sop-board status"]
+        forbidden_effects: []
+        evidence_hints: ["会话记录"]
+
+  - id: SOP-149
+    title: 任务内核统一后各类任务的恢复、互斥与进度
+    actor: 开发者与测试同事
+    entry: 看板页面与接口
+    scenarios:
+      - id: SOP-149-P01
+        polarity: positive
+        title: 各类任务有统一的任务页、状态名与进度
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["演示工作区有草稿、合并、执行、修复、沉淀各至少一个任务"]
+        steps: ["依次打开各任务页"]
+        expected: ["每类任务都有任务页，显示状态、开始时间、已用时长、超时上限、最近活动与可用操作", "合并页默认显示最新的合并任务，即使最新任务是沉淀"]
+        forbidden_effects: []
+        evidence_hints: ["各任务页截图"]
+      - id: SOP-149-P02
+        polarity: positive
+        title: 运行中重启看板后各类任务正确恢复并可重试
+        actor: 开发者
+        priority: P0
+        verify: api
+        initial_state: ["合并、执行、沉淀各有一个运行中的任务"]
+        steps: ["停止并重新启动看板", "对已中断的任务各重试一次"]
+        expected: ["运行中的任务记为已中断，等待提交与待验证的沉淀保持原状态", "重试时上一次的输出与会话记录归档到 attempts/<序号>/，重新固定输入快照", "登记不重复"]
+        forbidden_effects: ["重启后重复登记结果"]
+        evidence_hints: ["任务接口响应", "任务目录列表"]
+      - id: SOP-149-P03
+        polarity: positive
+        title: 互斥与优先级按统一规则执行
+        actor: 开发者
+        priority: P1
+        verify: api
+        initial_state: ["同一工作区同时排队修复、执行、合并、沉淀，且执行与合并属于同一批次"]
+        steps: ["观察任务开始顺序与等待原因"]
+        expected: ["按修复、执行、合并、沉淀的顺序开始；同一工作区的执行、修复、沉淀不同时运行；沉淀等待同一批次的合并结束", "被阻挡的任务保留待提交、等待浏览器等具体状态，原因写明等待的任务编号", "合并状态条的排队位置与实际开始顺序一致"]
+        forbidden_effects: []
+        evidence_hints: ["任务接口响应序列"]
+      - id: SOP-149-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网只看到各类任务的白名单字段
+        actor: 测试同事
+        priority: P0
+        verify: api
+        initial_state: ["各类任务各有一个，含已结束与运行中"]
+        steps: ["tester-a 以非回环地址请求任务列表、各任务详情、任务页与附件"]
+        expected: ["只出现白名单字段与时长、最近活动时间", "没有会话编号、续接命令、事件摘要、输入快照、本机路径、命令与凭据变量名", "非共享附件请求被拒"]
+        forbidden_effects: []
+        evidence_hints: ["响应原文"]

@@ -8,7 +8,17 @@
   let writes = 0;
   const executionMessages = new Map();
   const reviewMessages = new Map();
+  const clarificationMessages = new Map();
   const sopBases = new Map();
+  const updateMergeElapsed = () => {
+    document.querySelectorAll("[data-merge-started]").forEach(node => {
+      const started = Date.parse(node.dataset.mergeStarted);
+      if (!Number.isFinite(started)) return;
+      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const minutes = Math.floor(elapsed / 60), seconds = elapsed % 60;
+      node.textContent = minutes ? `${minutes} 分钟${seconds ? ` ${seconds} 秒` : ""}` : `${seconds} 秒`;
+    });
+  };
   const renderWaiting = (container, review) => {
     container.replaceChildren(...review.waiting.map(reason => {
       const message = document.createElement("p");
@@ -57,8 +67,13 @@
       const field = name => form.elements.namedItem(name);
       return (!field("batch").readOnly && field("batch").value.length > 0) ||
         field("confirmed_by").value.length > 0 || field("file").files.length > 0;
-    }) || Array.from(document.querySelectorAll("[data-draft-form] textarea")).some(field => field.value.length > 0) ||
-    Boolean(document.querySelector("#draft-confirm-dialog[open]"));
+    }) || Boolean(document.querySelector("#cases-upload input[type='file']")?.files.length) ||
+    Array.from(document.querySelectorAll("[data-draft-form] textarea")).some(field => field.value.length > 0) ||
+    Boolean(document.querySelector("#draft-confirm-dialog[open]")) ||
+    Boolean(document.querySelector("[data-distill-scenario]:checked")) ||
+    Array.from(document.querySelectorAll("[data-distill-commit]")).some(field => field.value.length > 0) ||
+    Boolean(document.getElementById('developer-note')?.value.trim()) ||
+    Array.from(document.querySelectorAll("[data-clarification-form] textarea")).some(field => field.value.length > 0);
   const deferRefresh = () => {
     const notice = document.getElementById("refresh-message");
     if (notice) {
@@ -74,8 +89,8 @@
       const response = await fetch(window.location.href, {cache: "no-store"});
       if (!response.ok) return;
       const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
-      const next = parsed.querySelector("main[data-state-url]");
-      if (!next) return;
+      const next = parsed.querySelector("main");
+      if (!next || (!next.dataset.stateUrl && !next.querySelector("[data-task-state-url]"))) return;
       if (hasDraft() || writes) {deferRefresh(); return;}
       const disclosures = Array.from(document.querySelectorAll("details[data-disclosure][open]"), item => item.dataset.disclosure);
       next.querySelectorAll("details[data-disclosure]").forEach(item => {item.open = disclosures.includes(item.dataset.disclosure);});
@@ -87,6 +102,7 @@
     } finally {refreshing = false;}
   };
   const initialize = () => {
+    updateMergeElapsed();
     applyCurrentFilter = () => {};
     document.querySelectorAll("[data-execution-url]").forEach(renderExecutionMessage);
     const hydrateJira = root => {
@@ -151,6 +167,53 @@
       saveIdentity();
       show(document.getElementById("identity-message"), "标记人已保存，可随时更换。");
     });
+    const distillRequest = async (url, body) => {
+      const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error((data.problems || []).map(p => p.field + "：" + p.problem).join("；") || "操作失败");
+      return data;
+    };
+    document.querySelectorAll("[data-distill-create]").forEach(panel => {
+      const button = panel.querySelector("[data-distill-start]");
+      const message = panel.querySelector("[data-distill-message]");
+      button.addEventListener("click", async () => {
+        const scenarios = Array.from(document.querySelectorAll("[data-distill-scenario]:checked"), input => input.dataset.distillScenario);
+        if (!scenarios.length) {show(message, "请先勾选可沉淀的场景", "error"); return;}
+        writes += 1;
+        button.disabled = true;
+        try {
+          const data = await distillRequest(panel.dataset.distillCreate, {scenarios,
+            needs_environment: panel.querySelector("[name='needs_environment']").checked});
+          window.location.assign(panel.dataset.taskUrl + data.task.id);
+        } catch (error) {show(message, error.message, "error");}
+        finally {writes -= 1; button.disabled = false;}
+      });
+    });
+    document.querySelectorAll("[data-distill-action]").forEach(button => {
+      button.addEventListener("click", async () => {
+        const panel = button.closest("[data-distill-task]");
+        const message = panel.querySelector("[data-distill-message]");
+        const action = button.dataset.distillAction;
+        if (action === "abandon" && !window.confirm("放弃本次沉淀？已有测试关联将保留为已放弃，工作树另行确认清理。")) return;
+        writes += 1;
+        button.disabled = true;
+        try {
+          const body = action === "handled" ? {commits: Object.fromEntries(Array.from(panel.querySelectorAll("[data-distill-commit]"),
+            input => [input.dataset.distillCommit, input.value.trim()]))} : {};
+          let data = await distillRequest(panel.dataset.distillTask + "/" + action, body);
+          if (action === "cleanup") {
+            const lines = Object.entries(data.cleanup.changes).flatMap(([repo, changes]) => changes.map(change => repo + ": " + change));
+            const listing = lines.length ? lines.join("\n") : "无未提交改动";
+            if (!window.confirm("即将清理本任务的工作树。尚未提交的改动：\n" + listing + "\n确认清理？")) return;
+            data = await distillRequest(panel.dataset.distillTask + "/cleanup", {confirmation: data.cleanup.confirmation});
+          }
+          panel.querySelectorAll("[data-distill-commit]").forEach(input => {input.value = "";});
+          show(message, "任务 #" + data.task.id + "：" + data.task.status);
+          pendingRefresh = true;
+        } catch (error) {show(message, error.message, "error");}
+        finally {writes -= 1; button.disabled = false; await refreshPage();}
+      });
+    });
     document.querySelectorAll("[data-review-complete]").forEach(controls => {
       const button = controls.querySelector("[data-review-complete-button]");
       const message = controls.querySelector("[data-review-complete-message]");
@@ -190,7 +253,8 @@
     document.querySelectorAll("[data-developer-action]").forEach(button => {
       button.addEventListener("click", async () => {
         const controls = button.closest("[data-execution-url]");
-        const message = controls?.querySelector("[data-execution-message]") || document.getElementById("developer-message");
+        const message = controls?.querySelector("[data-execution-message]") ||
+          button.closest("[data-validation-control]")?.querySelector("[data-validation-message]") || document.getElementById("developer-message");
         if (controls) delete message.dataset.taskId;
         saveIdentity();
         writes += 1;
@@ -199,7 +263,10 @@
         try {
           const response = await fetch(button.dataset.developerAction, {
             method: "POST", headers: {"Content-Type": "application/json"},
-            body: button.dataset.executionScope ? JSON.stringify({scope: button.dataset.executionScope}) :
+            body: button.dataset.autoExecuteEnabled !== undefined ? JSON.stringify({enabled: button.dataset.autoExecuteEnabled === 'true'}) :
+              button.dataset.fixHandoff !== undefined ? JSON.stringify({result_id: Number(button.dataset.fixHandoff)}) :
+              button.dataset.executionScenarios ? JSON.stringify({scope: JSON.parse(button.dataset.executionScenarios)}) :
+              button.dataset.executionScope ? JSON.stringify({scope: button.dataset.executionScope}) :
               button.dataset.developerNote !== undefined ? JSON.stringify({note: document.getElementById("developer-note")?.value || ""}) : "{}",
           });
           const data = await response.json();
@@ -207,6 +274,14 @@
             const hint = response.status === 409 && data.error_code === "nothing-to-execute" ?
               "；可改用“重新验证全部场景”。" : "";
             show(message, (data.error_code || "操作失败") + "：" + (data.problems || []).map(p => p.problem).join("；") + hint, "error");
+          } else if (button.dataset.fixHandoff !== undefined) {
+            show(message, data.notice || "已交给看板修复");
+            button.textContent = "已交给看板修复";
+            button.dataset.choiceSaved = "true";
+            if (data.task) window.location.assign(button.dataset.fixTaskBase + String(data.task.id));
+          } else if (button.dataset.autoExecuteEnabled !== undefined && typeof data.enabled === "boolean") {
+            renderAutoExecute(button.closest('[data-auto-execute]'), data.enabled);
+            show(message, data.enabled ? "自动执行已开启；此前待执行场景不会补发" : "自动执行已关闭，场景保持待执行");
           } else if (typeof data.paused === "boolean") {
             const notice = document.getElementById("automation-state");
             notice.textContent = data.paused ? "自动任务已暂停" : "";
@@ -429,6 +504,41 @@
         button.disabled = false;
       }
     };
+    document.querySelectorAll("[data-clarification-form]").forEach(form => {
+      const message = form.querySelector("[data-clarification-message]");
+      const button = form.querySelector("button[type='submit']");
+      const messageKey = form.action + ':' + form.dataset.gap;
+      if (clarificationMessages.has(messageKey)) show(message, clarificationMessages.get(messageKey));
+      form.addEventListener("reset", () => setTimeout(() => refreshPage(), 0));
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (!draftIdentity(message) || button.disabled) return;
+        const operation = form.dataset.clarificationForm;
+        const body = {author: marker.value.trim()};
+        if (operation === "messages") body.messages = [{gap: form.dataset.gap || null, text: form.elements.namedItem("text").value}];
+        if (operation === "exclusions") Object.assign(body, {gap: form.dataset.gap, reason: form.elements.namedItem("reason").value});
+        writes += 1;
+        button.disabled = true;
+        try {
+          const response = await fetch(form.action, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            show(message, (data.problems || []).map(p => p.field + "：" + p.problem).join("；") || "保存失败", "error");
+            return;
+          }
+          form.reset();
+          show(message, data.notice || "已保存");
+          clarificationMessages.set(messageKey, data.notice || "已保存");
+          pendingRefresh = true;
+        } catch {
+          show(message, "网络请求失败，内容已保留。请先核对对话记录，再决定是否重试。", "error");
+        } finally {
+          writes -= 1;
+          button.disabled = false;
+          await refreshPage();
+        }
+      });
+    });
     document.querySelectorAll("[data-draft-form]").forEach(form => {
       const field = name => form.elements.namedItem(name);
       const message = form.querySelector("[data-draft-message]");
@@ -626,6 +736,16 @@
   };
   initialize();
   let fixPolling = false;
+  function renderAutoExecute(panel, enabled) {
+    if (!panel) return;
+    panel.querySelector('[data-auto-execute-state]').textContent = '场景写入后自动执行：' +
+      (enabled ? '已开启' : '自动执行已关闭，场景保持待执行');
+    const button = panel.querySelector('[data-auto-execute-enabled]');
+    if (button) {
+      button.dataset.autoExecuteEnabled = String(!enabled);
+      button.textContent = enabled ? '关闭自动执行' : '开启自动执行';
+    }
+  }
   setInterval(async () => {
     const panel = document.querySelector("[data-fix-state]");
     if (!panel || fixPolling) return;
@@ -639,14 +759,17 @@
   }, 3000);
   setInterval(async () => {
     const controls = Array.from(document.querySelectorAll("[data-execution-url]"));
-    if (!controls.length || executionPolling || writes || refreshing) return;
+    const home = document.querySelector("[data-execution-home]");
+    if ((!controls.length && !home) || executionPolling || writes || refreshing) return;
     executionPolling = true;
     try {
-      const home = document.querySelector("[data-execution-home]");
       const response = await fetch(home ? "/api/v1/workspaces" : controls[0].dataset.executionUrl, {cache: "no-store"});
       if (!response.ok) return;
       const data = await response.json();
       if (!data.ok || writes || refreshing) return;
+      if (home) document.querySelectorAll('[data-auto-execute]').forEach((panel, index) => {
+        renderAutoExecute(panel, data.workspaces[index]?.auto_execute ?? true);
+      });
       const batches = home ? new Map(data.workspaces.flatMap(workspace => workspace.batches.map(batch =>
         ["/api/v1/workspaces/" + encodeURIComponent(workspace.key) + "/batches/" + encodeURIComponent(batch.name), batch]))) :
         new Map([[controls[0].dataset.executionUrl, data]]);
@@ -671,6 +794,7 @@
     } catch { /* Keep the last server-provided counts until the next successful read. */ }
     finally {executionPolling = false;}
   }, 3000);
+  setInterval(updateMergeElapsed, 1000);
   if (document.querySelector("main[data-state-url]")) setInterval(async () => {
     if (polling || refreshing) return;
     polling = true;
@@ -696,6 +820,8 @@
       document.getElementById("environment-state").textContent = "环境" + data.status;
       document.getElementById("environment-ports").textContent = "环境端口：" + (data.ports.join("、") || "未声明");
       document.getElementById("environment-check-state").textContent = data.checking ? "自检中" : (data.check_passed ? "最近自检通过" : "尚未通过自检") + (data.checked_at ? " · " + data.checked_at : "");
+      const checkNotice = document.getElementById("environment-check-notice");
+      if (checkNotice) checkNotice.textContent = data.check_notice || "";
       const jira = document.getElementById("environment-jira");
       if (jira) jira.textContent = "Jira 读取：" + (data.jira_configured ? "已配置" : "未配置");
       const setup = document.getElementById("environment-setup");
@@ -706,9 +832,10 @@
       }));
       setup.hidden = data.setup_instructions.length === 0;
       const steps = document.getElementById("environment-check-steps");
-      if (steps && data.latest_check) {
+      const checkAttempt = data.latest_check_attempt || data.latest_check;
+      if (steps && checkAttempt) {
         steps.replaceChildren();
-        for (const step of data.latest_check.steps) {
+        for (const step of checkAttempt.steps) {
           const line = document.createElement("li");
           line.textContent = step.name + "：" + step.status + " · " + step.message;
           steps.appendChild(line);
@@ -718,5 +845,21 @@
       if (log) log.textContent = (data.log_lines || []).join("\n");
       document.querySelectorAll("[data-requires-ready]").forEach(button => {button.disabled = !data.enabled;});
     } catch { /* Preserve the last visible state while reconnecting. */ }
+  }, 3000);
+  setInterval(async () => {
+    const panel = document.querySelector('[data-task-state-url]');
+    if (!panel || writes || polling) return;
+    polling = true;
+    try {
+      const response = await fetch(panel.dataset.taskStateUrl, {cache: 'no-store'});
+      const data = await response.json();
+      if (!data.ok) return;
+      const task = data.task, progress = task.progress || {};
+      const version = ['status','error','void_reason','started_at','finished_at','ownership'].map(key => task[key] ?? null);
+      version.push(progress.ahead ?? null, progress.last_activity ?? null);
+      if (JSON.stringify(version) !== JSON.stringify(JSON.parse(panel.dataset.taskVersion))) pendingRefresh = true;
+      await refreshPage();
+    } catch { /* Keep the last visible state until the next poll. */ }
+    finally {polling = false;}
   }, 3000);
 })();

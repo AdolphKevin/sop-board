@@ -63,6 +63,8 @@ def port_owners(ports):
                         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                     sock.bind(address)
             except OSError as error:
+                if error.errno in (errno.EACCES, errno.EPERM):
+                    raise
                 if family == socket.AF_INET6 and error.errno in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
                     continue
                 busy = True
@@ -83,6 +85,32 @@ class PortBusy(ValueError):
     def __init__(self, port, owner):
         self.port, self.owner = port, owner
         super().__init__(f'端口 {port} 正由工作区 {owner} 的环境使用')
+
+
+class CheckUnavailable(ValueError):
+    """当前运行条件不足，不能据此否定已完成的配置自检。"""
+
+
+def permission_failure(value):
+    value = value.decode('utf-8', errors='replace') if isinstance(value, bytes) else str(value or '')
+    return next((message for message in ('operation not permitted','permission denied','read-only file system')
+                 if message in value.casefold()), '')
+
+
+def unavailable_reason(error):
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if isinstance(error,(CheckUnavailable,PermissionError,FileNotFoundError,subprocess.TimeoutExpired)):
+            return str(error)
+        if isinstance(error,OSError) and error.errno in (errno.EACCES,errno.EPERM,errno.EROFS,errno.ENOSPC):
+            return str(error)
+        if isinstance(error,subprocess.CalledProcessError):
+            reason = permission_failure(error.stderr) or permission_failure(error.output)
+            if reason:
+                return '进程操作被当前环境拒绝：' + reason
+        error = error.__cause__ or error.__context__
+    return ''
 
 
 class Environment:
@@ -114,6 +142,36 @@ class Environment:
         record = self.latest_check()
         return bool(self.workspace.configured and record and record['ok'] and
                     record['config_digest'] == self.workspace.config_digest)
+
+    def latest_check_attempt(self):
+        directory = self.workspace.data / 'checks'
+        paths = [*directory.glob('*.json'), *directory.glob('unavailable/*.json')]
+        if not paths:
+            return None
+        path = max(paths,key=lambda p:p.name)
+        try:
+            return dict(json.loads(path.read_text(encoding='utf-8')),path=str(path))
+        except (OSError,ValueError,TypeError):
+            return None
+
+    def save_check(self, result):
+        result['finished_at'] = stamp()
+        directory = self.workspace.data / 'checks'
+        if not result['completed']:
+            directory /= 'unavailable'
+            result['message'] = ('自检未能在当前环境运行：' + result['reason'] +
+                '。请在沙箱外按已授权范围运行 sop-board check；本次不替换已完成的自检结果。')
+        path = directory / (result['started_at'] + '.json')
+        temporary = path.with_suffix('.tmp')
+        try:
+            directory.mkdir(parents=True,exist_ok=True)
+            temporary.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+            temporary.replace(path)
+        except OSError as error:
+            # 报告目录不可写也不是配置失败；不尝试改动旧报告或另存到用户目录。
+            return dict(result,ok=False,completed=False,path=None,reason=str(error),
+                message='自检未能在当前环境运行：无法保存报告：'+str(error)+'。请在沙箱外核对数据目录权限后运行 sop-board check。')
+        return dict(result,path=str(path))
 
     def environment(self, directories, extra=None, log_dir=None):
         env = {k: v for k, v in os.environ.items() if not is_board_input(k)}
@@ -189,7 +247,10 @@ class Environment:
         secrets = [os.environ[name] for name in names(self.workspace.entries) if os.environ.get(name)]
         log.write_bytes(redact(('\n'.join(visible) + '\n' + stderr.decode('utf-8', errors='replace')).encode(), secrets))
         if failure or process.returncode:
-            raise ValueError(f'adapter.{name} ' + (failure or f'退出码 {process.returncode}') + '；日志：' + str(log))
+            permission = permission_failure(stderr) or permission_failure(stdout)
+            kind = CheckUnavailable if permission or failure == '看板正在退出' else ValueError
+            raise kind(f'adapter.{name} ' + (failure or f'退出码 {process.returncode}') +
+                ('；当前环境权限不足：' + permission if permission else '') + '；日志：' + str(log))
         return lines[-1] if json_output and lines else ''
 
     def _release_ports(self):
@@ -289,9 +350,14 @@ class Environment:
             deadline = time.monotonic() + self.workspace.adapter['ready_timeout']
             while not ready.wait(.05):
                 if process.poll() is not None:
+                    self.reader.join(timeout=2)
+                    permission = permission_failure(self.log.read_bytes())
+                    if permission:
+                        raise CheckUnavailable('adapter.env 被当前环境拒绝：' + permission + '；日志：' + str(self.log))
                     raise ValueError(f'adapter.env 就绪前退出（退出码 {process.returncode}）；日志：{self.log}')
                 if self.stopping or time.monotonic() >= deadline:
-                    raise ValueError('adapter.env 等待就绪超时或看板正在退出；日志：' + str(self.log))
+                    kind = CheckUnavailable if self.stopping else ValueError
+                    raise kind('adapter.env 等待就绪超时或看板正在退出；日志：' + str(self.log))
             if process.poll() is not None:
                 raise ValueError('adapter.env 就绪后退出；日志：' + str(self.log))
             self.state['status'] = '就绪'
@@ -381,6 +447,7 @@ class Environment:
         if self.process and self.process.poll() is not None:
             state['status'] = '已退出'
         record = self.latest_check()
+        attempt = self.latest_check_attempt()
         approved = self.approved()
         checking = bool(self.check_thread and self.check_thread.is_alive())
         instructions = [] if approved else [
@@ -393,34 +460,40 @@ class Environment:
                       checked_at=record['finished_at'] if record else None, check_passed=approved,
                       setup_instructions=instructions,
                       ports=self.workspace.adapter['ports'] if self.workspace.configured else [])
+        result['check_notice'] = ((attempt.get('message','自检未能在当前环境运行') if local else
+            '自检未能在当前环境运行，请开发者在沙箱外处理；已完成的自检结果保留')
+            if attempt and attempt.get('completed') is False else '')
         if local:
             lines = self.log.read_text(encoding='utf-8', errors='replace').splitlines()[-50:] if self.log and self.log.exists() else []
-            result.update(state=state, latest_check=record, log_lines=lines, problems=self.workspace.problems)
+            result.update(state=state, latest_check=record, latest_check_attempt=attempt, log_lines=lines, problems=self.workspace.problems)
         return result
 
     def check(self):
+        started = stamp()
+        result = dict(started_at=started,config_digest=self.workspace.config_digest,ok=True,completed=True,steps=[],credentials=[])
         if not self.operation.acquire(blocking=False):
-            raise ValueError('环境正在被执行或修复使用，不能开始自检')
+            return self.save_check(dict(result,ok=False,completed=False,reason='环境正在被执行或修复使用，不能开始自检'))
         try:
             if self.process:
                 self._stop()
             self.workspace.reload()
-            started = stamp()
             directory = self.workspace.data / 'checks'
             directory.mkdir(exist_ok=True)
             from .credentials import statuses
-            result = dict(started_at=started, config_digest=self.workspace.config_digest, ok=True, steps=[],
-                          credentials=statuses(self.workspace.entries))
+            result.update(config_digest=self.workspace.config_digest,credentials=statuses(self.workspace.entries))
             def step(name, action):
                 if not result['ok']:
-                    result['steps'].append(dict(name=name, status='未执行', message='前一步未通过', log=None))
+                    result['steps'].append(dict(name=name, status='未执行', message='前一步未通过' if result['completed'] else '前一步未能完成', log=None))
                     return
                 try:
                     message, log = action()
                     result['steps'].append(dict(name=name, status='通过', message=message, log=log))
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     result['ok'] = False
-                    result['steps'].append(dict(name=name, status='失败', message=str(error), log=getattr(error, 'log', str(self.log) if self.log else None)))
+                    reason = unavailable_reason(error)
+                    if reason:
+                        result.update(completed=False,reason=reason)
+                    result['steps'].append(dict(name=name, status='未能运行' if reason else '失败', message=str(error), log=getattr(error, 'log', str(self.log) if self.log else None)))
             def config():
                 problems = [p for p in self.workspace.problems if p not in self.workspace.skill_problems]
                 if problems:
@@ -472,6 +545,18 @@ class Environment:
                         registered = [p for root in self.workspace.repos.values() for p in self.worktrees.registered(root)]
                         if established and parent.exists() and not any(p.is_relative_to(parent) for p in registered):
                             shutil.rmtree(parent)
+                        elif not established and not parent.is_symlink() and parent.is_dir() and not any(
+                                p.is_relative_to(parent) or parent.is_relative_to(p) for p in registered):
+                            # 建立失败时只删本次目录中的空目录；诊断文件、链接和未知现场原样保留。
+                            for root, _, _ in os.walk(parent, topdown=False, followlinks=False):
+                                path = Path(root)
+                                if path.is_symlink():
+                                    continue
+                                try:
+                                    path.rmdir()
+                                except OSError as error:
+                                    if error.errno not in (errno.ENOTEMPTY,errno.EEXIST,errno.ENOENT):
+                                        raise
                     except (OSError, ValueError, subprocess.SubprocessError) as error:
                         if failure:
                             raise WorktreeError(str(failure) + '；清理也失败：' + str(error), cleanup_log) from failure
@@ -491,14 +576,14 @@ class Environment:
             for name, action in [('配置与仓库', config), ('端口', ports), ('基线环境', baseline), ('临时工作树环境', worktrees), ('验证技能', skills)]:
                 step(name, action)
             if self.workspace.reload() or result['config_digest'] != self.workspace.config_digest:
-                result['ok'] = False
+                result.update(ok=False,completed=True)
                 result['steps'][0].update(status='失败', message='自检期间配置变化，请重新自检')
-            result['finished_at'] = stamp()
-            path = directory / (started + '.json')
-            temporary = path.with_suffix('.tmp')
-            temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
-            temporary.replace(path)
-            return dict(result, path=str(path))
+            return self.save_check(result)
+        except (OSError,ValueError,subprocess.SubprocessError) as error:
+            reason = unavailable_reason(error)
+            if not reason:
+                raise
+            return self.save_check(dict(result,ok=False,completed=False,reason=reason))
         finally:
             if not self.process:
                 self._release_ports()
@@ -509,12 +594,13 @@ class Environment:
             if self.check_thread and self.check_thread.is_alive():
                 raise ValueError('自检正在运行')
             if not self.operation.acquire(blocking=False):
-                raise ValueError('环境正在被执行或修复使用')
+                self.check()
+                return
             self.operation.release()
             def run():
                 try:
                     result = self.check()
-                    if result['ok'] and not self.stopping:
+                    if (result['ok'] or result.get('completed') is False and self.approved()) and not self.stopping:
                         with self.operation:
                             self.ensure_baseline()
                 except PortBusy:

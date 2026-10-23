@@ -3,14 +3,14 @@
 任务目录：$task_directory
 读取 scenarios.yaml、cases.json、entries.json、pending.json、snapshot.json、changes.json、previous-results.json 与 regression-links.json。
 场景 expected 中标注“[用例 编号]”的细节预期也必须核对；cases.json 提供这些来源用例的前置条件、步骤和原始预期，应在所属流程的本次执行中验证，不另建场景或遗漏细节。
-看板已经用工作区配置启动了实际环境；按 entries.json 的 operate、observe 和 evidence 操作。
+$environment_preparation
 先读取并遵循项目验证技能：$skill_path
 入口在 entries.json 中有 driver_path 时（声明了 driver，或 Web 入口缺省使用随包的 playwright-acceptance），再读取并使用该绝对路径的辅助技能；没有 driver_path 的入口只按项目验证技能操作。
-地址从 entries.json 的 addresses 取得；各仓库目录由 SOP_REPO_<别名> 环境变量提供。
-入口 credential_env 只列变量名，取值已由启动看板的环境传入本会话。按项目手册与本任务授权记录使用；凭据仅在进程环境和获授权请求中使用，关闭命令跟踪，不打印取值或含凭据的请求，不写入脚本、截图、结果、日志或报告，证据先脱敏。地址变量同时声明为凭据时也从环境读取。缺变量的场景由看板写为受阻并排除在本次 pending 之外，不能借用其他账号或凭据。
+$repository_instruction
+入口 credential_env 只列变量名，取值已由${environment_origin}的环境传入本会话。按项目手册与本任务授权记录使用；凭据仅在进程环境和获授权请求中使用，关闭命令跟踪，不打印取值或含凭据的请求，不写入脚本、截图、结果、日志或报告，证据先脱敏。地址变量同时声明为凭据时也从环境读取。缺变量的场景由看板写为受阻并排除在本次 pending 之外，不能借用其他账号或凭据。
 操作前只按名称核对执行命令能取得声明变量；若客户端另有过滤而未取得，相关场景写 blocked，finding 仅列缺少的变量名与原因，不尝试绕过客户端规则。
 
-不启动或替换环境，不修改任何仓库中的产品文件，不写单元、接口或集成测试，不提交代码，不更改场景预期。
+${environment_restriction}不修改任何仓库中的产品文件，不写单元、接口或集成测试，不提交代码，不更改场景预期。
 根据真实入口观察结果，不能只看源码就判为通过。
 
 对于 pending.json 中 reason 为 source-changed 的场景，先依据 changes.json 的完整提交范围、实际 git diff、场景内容与依赖关系判定是否受影响。regression-links.json 中未过期关联测试的通过结果，须核对原始运行证据及其产品版本后，才可作为补充依据写进沿用理由，不能据此认定不受影响或把历史通过写成当前运行。受影响或无法证明不受影响时必须经真实入口重新执行；只有测试改动也须说明完整改动范围与依赖关系。

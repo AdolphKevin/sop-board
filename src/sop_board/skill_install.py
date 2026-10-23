@@ -8,7 +8,7 @@ import sys
 from uuid import uuid4
 
 
-SKILLS = ('regression-distill', 'playwright-acceptance')
+SKILLS = ('sop-board', 'regression-distill', 'playwright-acceptance')
 CLIENTS = (('Codex', '.agents'), ('Claude Code', '.claude'))
 
 

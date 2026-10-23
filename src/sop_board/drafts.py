@@ -162,9 +162,10 @@ def schema_problems(value, schema=SCHEMA, path='$'):
     kinds = schema.get('type')
     kinds = kinds if isinstance(kinds, list) else [kinds]
     valid = {'object': isinstance(value, dict), 'array': isinstance(value, list),
-             'string': isinstance(value, str), 'boolean': type(value) is bool, 'null': value is None}
+             'string': isinstance(value, str), 'integer': type(value) is int,
+             'boolean': type(value) is bool, 'null': value is None}
     if not any(valid.get(kind, False) for kind in kinds):
-        labels = {'object': 'JSON 对象', 'array': '数组', 'string': '字符串', 'boolean': '布尔值', 'null': 'null'}
+        labels = {'object': 'JSON 对象', 'array': '数组', 'string': '字符串', 'integer': '整数', 'boolean': '布尔值', 'null': 'null'}
         label = '或'.join(labels[kind] for kind in kinds)
         return [f'{path} 应为 {label}']
     if 'enum' in schema and value not in schema['enum']:
@@ -199,7 +200,7 @@ def normalize_judgment(result):
     return result
 
 
-def judgment_problems(snapshot, result):
+def judgment_problems(snapshot, result, held=()):
     problems = []
     cases = {c['id']: c for c in snapshot['cases']}
     original = yaml.safe_load(snapshot['scenarios']) or {}
@@ -213,22 +214,22 @@ def judgment_problems(snapshot, result):
         if sid not in cases or sid in seen:
             problems.append(f'cases 未知或重复用例：{sid}')
         seen.add(sid)
-        if not item['actor'].strip():
+        if sid not in held and not item['actor'].strip():
             problems.append(f'{sid} actor 不能为空')
-        if item['verify'] not in entries:
+        if sid not in held and item['verify'] not in entries:
             problems.append(f"{sid} verify {item['verify']} 不在入口声明中")
         if not item['kind_reason'].strip():
             problems.append(f'{sid} 缺少分类理由')
         if item['kind'] == 'flow':
             if 'merged_into' in item:
                 problems.append(f'{sid} flow 的 merged_into 必须为 null')
-            if sid in cases and 'negative' in cases[sid]['tags'] and item.get('negative_type') not in NEGATIVE_TYPES:
+            if sid not in held and sid in cases and 'negative' in cases[sid]['tags'] and item.get('negative_type') not in NEGATIVE_TYPES:
                 problems.append(f'{sid} negative_type 不在枚举内')
         else:
             target = item.get('merged_into')
             if target not in flows or target not in cases:
                 problems.append(f'{sid} merged_into 必须指向本次生成的流程场景')
-            elif (item['actor'], item['verify']) != (judgments[target]['actor'], judgments[target]['verify']):
+            elif sid not in held and (item['actor'], item['verify']) != (judgments[target]['actor'], judgments[target]['verify']):
                 problems.append(f'{sid} 与所属流程的角色或验收入口不一致，不能并入')
         if sid in snapshot['forced_flow'] and item['kind'] != 'flow':
             problems.append(f'{sid} 已被开发者指定为独立流程场景')
@@ -269,9 +270,6 @@ def destinations(snapshot, result, problems):
         if name not in sections or name in nodes:
             problems.append(f'nodes 未知或重复 section：{name}')
         nodes[name] = item
-        for key in ('actor', 'entry'):
-            if not item[key].strip():
-                problems.append(f'节点 {name} 的 {key} 不能为空')
         if 'merge_into' in item and name in positive:
             problems.append(f'节点 {name} 有正向用例，不可 merge_into')
     problems += [f'nodes 缺少 section：{name}' for name in sorted(sections - nodes.keys())]
@@ -290,13 +288,129 @@ def destinations(snapshot, result, problems):
     return nodes, routes, positive
 
 
+def gap_problems(snapshot, gaps):
+    cases = {c['id'] for c in snapshot['cases']}
+    problems, seen = [], set()
+    for gap in gaps:
+        gid = gap['id']
+        if not re.fullmatch(r'G[1-9][0-9]*', gid) or gid in seen:
+            problems.append(f'缺口编号不合格或本轮重复：{gid}')
+        seen.add(gid)
+        if not gap['cases']:
+            problems.append(f'缺口 {gid} 的 cases 不能为空')
+        for cid in gap['cases']:
+            if cid not in cases:
+                problems.append(f'缺口 {gid} 引用了不存在的用例：{cid}')
+        for field in ('title', 'scenario', 'current', 'missing', 'question'):
+            if not gap[field].strip():
+                problems.append(f'缺口 {gid} 的 {field} 不能为空')
+        if len(gap['options']) > 3:
+            problems.append(f'缺口 {gid} 的 options 不能超过 3 项')
+    return problems
+
+
+def held_cases(snapshot, result, routes, positive):
+    """从缺口计算闭包；保留缺口编号和传播原因，供后续澄清及页面共用。"""
+    cases = {c['id']: c for c in snapshot['cases']}
+    decisions = {c['id']: c for c in result['cases']}
+    gaps = deepcopy(result['gaps'])
+    members = {}
+    for cid, case in cases.items():
+        decision = decisions.get(cid, {})
+        flow = cases.get(decision.get('merged_into'), case) if decision.get('kind') == 'detail' else case
+        name = section(flow)
+        members.setdefault(routes.get(name, name), []).append(cid)
+    used = {g['id'] for g in gaps}
+    for name, ids in members.items():
+        if name in routes.values() and name not in positive:
+            # 同组已有问题时复用其编号并覆盖整组，避免模型与看板重复提问。
+            same_group = next((gap for gap in gaps if set(gap['cases']) == set(ids)), None)
+            if same_group is not None:
+                continue
+            number = 1
+            while f'G{number}' in used:
+                number += 1
+            gid = f'G{number}'
+            used.add(gid)
+            examples = ['；'.join([cases[cid]['title'], *cases[cid].get('preconditions', []), *cases[cid]['steps']]) for cid in ids]
+            gaps.append(dict(id=gid, kind='business', cases=ids,
+                title=f'“{name}”这组用例只有失败或异常情况，没有一条正常完成的流程',
+                scenario='\n'.join(examples), current='这组用例只描述了失败或异常时的操作和结果。',
+                missing='没有正常完成时应该看到的结果，无法判断正常操作是否符合业务要求。',
+                question='补一条正常完成的用例，或说明这组并入哪个分组', known=None, options=[]))
+    held = {}
+    original = yaml.safe_load(snapshot['scenarios']) or {}
+    existing = {s['id'] for n in original.get('sops', []) for s in n['scenarios']}
+    prior_pairs = snapshot.get('prior_pairs', [])
+    owners = {cid: {cid} & existing for cid in cases}
+    whole = {cid: {cid} & existing for cid in cases}
+    for pair in prior_pairs:
+        if pair['case'] in owners:
+            owners[pair['case']].update(set(pair['scenarios']) & existing)
+            if pair['kind'] == 'flow':
+                whole[pair['case']].update(set(pair['scenarios']) & existing)
+
+    def add(cid, refs, reasons):
+        item = held.setdefault(cid, dict(case=cid, gaps=[], reasons=[]))
+        before = (len(item['gaps']), len(item['reasons']))
+        item['gaps'] = sorted(set(item['gaps']) | set(refs))
+        item['reasons'] = list(dict.fromkeys(item['reasons'] + reasons))
+        return before != (len(item['gaps']), len(item['reasons']))
+
+    for gap in gaps:
+        for cid in gap['cases']:
+            add(cid, [gap['id']], [gap['question']])
+    changed = True
+    while changed:
+        changed = False
+        for cid, decision in decisions.items():
+            target = decision.get('merged_into')
+            if decision['kind'] == 'detail' and target in held:
+                changed |= add(cid, held[target]['gaps'], [f'所属流程 {target} 暂缓'] + held[target]['reasons'])
+        for name, ids in members.items():
+            flows = [cid for cid in ids if decisions.get(cid, {}).get('kind') == 'flow' and 'negative' not in cases[cid]['tags']]
+            if flows and all(cid in held for cid in flows):
+                refs = [ref for cid in flows for ref in held[cid]['gaps']]
+                reasons = [f'“{name}”这组用例的正常流程全部待补充'] + [reason for cid in flows for reason in held[cid]['reasons']]
+                for cid in ids:
+                    changed |= add(cid, refs, reasons)
+        # 整条流程暂缓时沿用其旧配对；细节暂缓不反过来阻止流程更新。
+        retained = {}
+        for cid in held:
+            for sid in whole.get(cid, ()):
+                retained.setdefault(sid, []).append(cid)
+        for pair in prior_pairs:
+            cid = pair['case']
+            if cid not in cases or pair['kind'] != 'detail':
+                continue
+            for sid in set(pair['scenarios']) & retained.keys():
+                refs = [ref for other in retained[sid] for ref in held[other]['gaps']]
+                reasons = [f'原来所属的流程 {sid} 待补充']
+                reasons += [reason for other in retained[sid] for reason in held[other]['reasons']]
+                changed |= add(cid, refs, reasons)
+    for cid, item in held.items():
+        item['scenarios'] = sorted(owners.get(cid, ()))
+        item['retention'] = 'scenario' if whole.get(cid) else 'detail' if item['scenarios'] else 'none'
+    return gaps, held
+
+
 def assemble(snapshot, result):
     """使用入口已核对并规范化的判断；不让模型改写用例。"""
     entries = snapshot['entries']['entries']
     if not entries:
         return None, dict(ok=False, problems=['工作区缺少入口声明，请先搭建适配'])
-    problems = judgment_problems(snapshot, result)
+    problems = gap_problems(snapshot, result['gaps'])
     nodes, routes, positive = destinations(snapshot, result, problems)
+    if problems:
+        return None, dict(ok=False, problems=problems)
+    gaps, held = held_cases(snapshot, result, routes, positive)
+    problems += judgment_problems(snapshot, result, held)
+    active_nodes = {routes[section(c)] for c in snapshot['cases'] if c['id'] not in held
+                    and any(d['id'] == c['id'] and d['kind'] == 'flow' for d in result['cases'])}
+    for name in active_nodes:
+        for key in ('actor', 'entry'):
+            if not nodes[name][key].strip():
+                problems.append(f'节点 {name} 的 {key} 不能为空')
     original = yaml.safe_load(snapshot['scenarios']) or {}
     original_nodes = {n['id'] for n in original.get('sops', [])}
     exemptions = {}
@@ -307,31 +421,27 @@ def assemble(snapshot, result):
         if not item['reason'].strip():
             problems.append(f'节点 {name} 的 negative_exempt 理由不能为空')
         exemptions[name] = item
-    for key in ('gaps', 'notes'):
-        if any(not value.strip() for value in result[key]):
-            problems.append(f'{key} 不可包含空字符串')
+    if any(not value.strip() for value in result['notes']):
+        problems.append('notes 不可包含空字符串')
     if problems:
         return None, dict(ok=False, problems=problems)
-    gaps = list(result['gaps'])
-    for name, target in routes.items():
-        if target not in positive and not any(name in gap for gap in gaps):
-            gaps.append(f'{name} 没有正向依据')
-    if gaps:
-        return None, dict(ok=True, problems=[], gaps=gaps)
-
-    entries = snapshot.get('entries', {}).get('entries', {})
-    if not entries:
-        return None, dict(ok=False, problems=['缺少入口声明：请随场景文件推送 entries'])
-    original_scenarios = {s['id']: s for n in original.get('sops', []) for s in n['scenarios']}
     judgments = {item['id']: item for item in result['cases']}
-    dispositions = {item['id']: item for item in result['scenarios']}
+    prior_pairs = snapshot.get('prior_pairs', [])
+    preserved = {sid for item in held.values() if item['retention'] == 'scenario' for sid in item['scenarios']}
+    dispositions = {item['id']: deepcopy(item) for item in result['scenarios']}
+    for sid, item in dispositions.items():
+        if sid in preserved or item.get('target') in held:
+            item.update(action='kept', reason='所属用例暂缓，沿用原有场景')
+    active = {cid for cid in judgments if cid not in held}
+    if not any(judgments[cid]['kind'] == 'flow' for cid in active):
+        return None, dict(ok=True, problems=[], gaps=gaps, held=list(held.values()), preserved=sorted(preserved))
     groups = {name: dict(id=snapshot['nodes'][name], title=name, actor=nodes[name]['actor'],
                          entry=nodes[name]['entry'], scenarios=[])
-              for name in sorted(nodes, key=lambda n: int(snapshot['nodes'][n][1:])) if routes[name] == name}
+              for name in sorted(nodes, key=lambda n: int(snapshot['nodes'][n][1:])) if name in active_nodes}
     generated, inferences, notes = {}, [], list(result['notes'])
     for case in sorted(snapshot['cases'], key=lambda c: c['id']):
         decision = judgments[case['id']]
-        if decision['kind'] != 'flow':
+        if decision['kind'] != 'flow' or case['id'] not in active:
             continue
         initial = case.get('preconditions') or decision.get('initial_state')
         if not isinstance(initial, list) or not initial or any(not v.strip() for v in initial):
@@ -350,13 +460,39 @@ def assemble(snapshot, result):
             scene['negative_type'] = decision['negative_type']
         generated[case['id']] = scene
         groups[routes[section(case)]]['scenarios'].append(scene)
+    old_scenes = {s['id']: s for n in original.get('sops', []) for s in n['scenarios']}
+    prior_by_case = {p['case']: p for p in prior_pairs}
+    retained_details = []
+    # 新细节和沿用细节采用同一顺序，避免仅因暂缓而重排预期、触发无意义的执行。
     for case in sorted(snapshot['cases'], key=lambda c: c['id']):
-        decision = judgments[case['id']]
-        if decision['kind'] == 'detail':
+        cid = case['id']
+        decision = judgments[cid]
+        if decision['kind'] == 'detail' and cid in active:
             target = generated[decision['merged_into']]
-            target['expected'].extend('[用例 ' + case['id'] + '] ' + value for value in case['expected_results'])
-            target['refs'].append(case['id'])
-            target['forbidden_effects'] = list(dict.fromkeys(target['forbidden_effects'] + snapshot['merged_forbidden_effects'].get(case['id'], [])))
+            target['expected'].extend('[用例 ' + cid + '] ' + value for value in case['expected_results'])
+            target['refs'].append(cid)
+            target['forbidden_effects'] = list(dict.fromkeys(target['forbidden_effects'] + snapshot['merged_forbidden_effects'].get(cid, [])))
+        pair = prior_by_case.get(cid)
+        if cid not in held or not pair or pair['kind'] != 'detail':
+            continue
+        sid = pair['scenarios'][0]
+        if sid in preserved:
+            continue
+        if sid not in generated:
+            problems.append(f'{cid} 仍待补充，原来所属的流程 {sid} 必须保留，不能移除或改为细节')
+            continue
+        old = old_scenes.get(sid, {})
+        prefix = f'[用例 {cid}]'
+        expected = [value for value in old.get('expected', []) if value.startswith(prefix)]
+        if not expected or cid not in old.get('refs', []):
+            problems.append(f'{cid} 的原配对 {sid} 缺少可沿用的预期条目或来源引用，请核对上一版场景')
+            continue
+        generated[sid]['expected'].extend(expected)
+        generated[sid]['refs'].append(cid)
+        # 曾确认并转入此细节的禁止副作用同样不能因新缺口消失。
+        generated[sid]['forbidden_effects'] = list(dict.fromkeys(generated[sid]['forbidden_effects'] +
+            snapshot['merged_forbidden_effects'].get(cid, [])))
+        retained_details.append(deepcopy(pair))
     for sid, item in dispositions.items():
         if item['action'] == 'duplicate':
             target = generated[item['target']]
@@ -367,9 +503,21 @@ def assemble(snapshot, result):
     kept_nodes = []
     for node in original.get('sops', []):
         kept = deepcopy(node)
-        kept['scenarios'] = [s for s in kept['scenarios'] if dispositions.get(s['id'], {}).get('action') == 'kept']
+        kept['scenarios'] = [s for s in kept['scenarios'] if s['id'] in preserved or dispositions.get(s['id'], {}).get('action') == 'kept']
         if not kept['scenarios']:
             continue
+        if node['id'] in by_node:
+            target = by_node[node['id']]
+            if any(s['polarity'] == 'positive' for s in kept['scenarios']):
+                target['scenarios'].extend(kept['scenarios'])
+                for field in ('must', 'negative_exempt'):
+                    if field in kept:
+                        target[field] = deepcopy(kept[field])
+                continue
+            target['scenarios'].extend(s for s in kept['scenarios'] if s['id'] in preserved)
+            kept['scenarios'] = [s for s in kept['scenarios'] if s['id'] not in preserved]
+            if not kept['scenarios']:
+                continue
         if any(s['polarity'] == 'positive' for s in kept['scenarios']):
             if not any(s['polarity'] == 'negative' for s in kept['scenarios']) and node['id'] in exemptions:
                 exemption = exemptions[node['id']]
@@ -389,9 +537,9 @@ def assemble(snapshot, result):
         problems.append(f'relocate {sid} 不适用于保留正向场景的节点或被移除的场景')
     for name, node in groups.items():
         if not any(s['polarity'] == 'negative' for s in node['scenarios']):
-            if name not in exemptions:
+            if name not in exemptions and not node.get('negative_exempt'):
                 problems.append(f'节点 {name} 缺少反向豁免理由')
-            else:
+            elif name in exemptions:
                 node['negative_exempt'] = exemptions[name]['reason']
                 if exemptions[name].get('inferred'):
                     inferences.append(dict(id=node['id'], field='negative_exempt', content=node['negative_exempt']))
@@ -400,12 +548,17 @@ def assemble(snapshot, result):
     meta = snapshot['case_metadata']
     source = dict(ref=f"批次 {snapshot['batch']} 用例上传 #{snapshot['upload']}", version=snapshot['upload'], confirmed_by=meta['owner'])
     # 只带有保留补充场景的文件才需要延续旧来源，避免重复合并累加看板生成的来源。
-    old_sources = deepcopy(original.get('metadata', {}).get('sources', [])) if dispositions or any(snapshot['merged_forbidden_effects'].values()) else []
+    old_sources = deepcopy(original.get('metadata', {}).get('sources', [])) if preserved or retained_details or dispositions or any(snapshot['merged_forbidden_effects'].values()) else []
     sources = [source] + [s for s in old_sources if s != source]
     uploaded_sop = snapshot.get('uploaded_sop')
     if uploaded_sop:
         sources = [s for s in sources if s['ref'] != uploaded_sop['ref']]
         sources.append(deepcopy(uploaded_sop))
+    for source in snapshot.get('clarification_sources', []):
+        sources = [s for s in sources if s['ref'] != source['ref']]
+        sources.append(deepcopy(source))
+    # 新采纳的来源与经过 JSON 快照读取的来源使用同一字段顺序。
+    sources = [dict(ref=s['ref'], version=s['version'], confirmed_by=s['confirmed_by']) for s in sources]
     document = dict(metadata=dict(requirement=original.get('metadata', {}).get('requirement', meta['feature']),
                                  batch=snapshot['batch'], version=snapshot['upload'], owner=meta['owner'],
                                  sources=sources),
@@ -413,13 +566,52 @@ def assemble(snapshot, result):
     if 'repos' in original.get('metadata', {}):
         document['metadata']['repos'] = original['metadata']['repos']
     raw = annotated_yaml(document, inferences)
+    raw = preserve_scenario_text(raw, snapshot['scenarios'], preserved)
     try:
-        load_scenarios(raw, entries=set(entries))
+        retained_entries = {s['verify'] for n in original.get('sops', []) for s in n['scenarios'] if s['id'] in preserved}
+        load_scenarios(raw, entries=set(entries) | retained_entries)
     except APIError as error:
         return None, dict(ok=False, problems=error.problems)
     pairs = [dict(case=item['id'], scenarios=[item['id'] if item['kind'] == 'flow' else item['merged_into']],
-                  kind=item['kind'], kind_reason=item['kind_reason'], note=item['kind_reason']) for item in result['cases']]
-    return raw, dict(ok=True, problems=[], gaps=[], notes=notes, inferences=inferences, pairs=pairs, scenarios=result['scenarios'])
+                  kind=item['kind'], kind_reason=item['kind_reason'], note=item['kind_reason']) for item in result['cases'] if item['id'] in active]
+    pairs += [deepcopy(p) for p in prior_pairs if p['scenarios'][0] in preserved]
+    pairs += retained_details
+    return raw, dict(ok=True, problems=[], gaps=gaps, held=list(held.values()), preserved=sorted(preserved),
+                    notes=notes, inferences=inferences, pairs=pairs, scenarios=list(dispositions.values()))
+
+
+def preserve_scenario_text(raw, original, preserved):
+    """沿用场景的块文本，包括内部注释；只按新位置调整缩进。"""
+    if not preserved:
+        return raw
+
+    def blocks(content):
+        document = yaml.compose(content)
+        fields = {k.value: v for k, v in document.value}
+        found = {}
+        for node in fields['sops'].value:
+            scenes = next(v for k, v in node.value if k.value == 'scenarios')
+            for scene in scenes.value:
+                sid = next(v.value for k, v in scene.value if k.value == 'id')
+                if sid in preserved and not scene.flow_style:
+                    start, end = scene.start_mark, scene.end_mark
+                    last_line = end.line + int(end.index == len(content) and end.column > 0)
+                    found[sid] = (start.line, last_line, start.column - 2)
+        return found
+
+    before, after = blocks(original), blocks(raw)
+    old_lines, lines = original.splitlines(keepends=True), raw.splitlines(keepends=True)
+    for sid, (start, end, indent) in sorted(after.items(), key=lambda p: p[1][0], reverse=True):
+        if sid not in before:
+            continue
+        old_start, old_end, old_indent = before[sid]
+        if old_indent < 0 or not old_lines[old_start].lstrip().startswith('- '):
+            continue
+        chunk = [' ' * indent + line[old_indent:] if line.strip() else line for line in old_lines[old_start:old_end]]
+        if chunk and not chunk[-1].endswith('\n'):
+            chunk[-1] += '\n'
+        lines[start:end] = chunk
+    return ''.join(lines)
 
 
 def annotated_yaml(document, inferences):

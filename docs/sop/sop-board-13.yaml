@@ -1,0 +1,314 @@
+# SOP-BOARD-13 的验收场景
+# 预期依据 docs/designs/SOP-BOARD-13.md 的 D66–D70（修订 1，2026-10-22 会话决定）。只写业务流程；验收只以本文件的场景经真实入口执行为准。
+# 版本 4（2026-10-22）：澄清改为由看板更新用例，加入 SOP-133-P05/P06，改写 SOP-133-P01/N02/N03、SOP-134-P02、SOP-135-P02。版本 3：SOP-132-P01 加入缺口业务语言要求。版本 2：加入 D71 与 SOP-135 试点。版本 1：SOP-131～134。
+# “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含会员页面与接口），入口声明 web 与 api，不声明邮件入口；看板以 --lan 启动，真实 Codex。
+# “缺口用例”：批次 member-cycle 的用例 YAML，8 条用例分属“会员开通”“积分周期”“邀请”三个 section：
+#   - 会员开通 3 条（TC_MEMBER_OPEN_001～003，2 正向、1 反向），预期完整，其中 TC_MEMBER_OPEN_002 的预期含“开通会员须先选择发票抬头”；
+#   - 积分周期 3 条（TC_CYCLE_POINT_001～003），只写“按周期清零”，不写周期长度、计日时区与切换时刻，app 仓库与 SOP 原文均无此规则；
+#   - 邀请 2 条（TC_INVITE_MAIL_001～002），步骤为“受邀人在邮件中点击接受邀请”。
+# 测试同事 tester-a 用第二个浏览器以非回环地址访问；开发者 dev-a 在本机操作。独立验收串行进行。
+# “试点用例”：2026-10-22 从 cw2-live-chat 看板导出的「组织-品牌-店铺架构升级冒烟测试」93 条用例（仓库外 ~/sop-board-acceptance/sop-board-13/），不修改内容。
+# SOP-135 在 cw2-live-chat 工作区执行，全程关闭自动执行，不运行该工作区的任何场景验证；业务缺口由用户或其指定的业务确认人在看板中回复，验收执行者不代答。
+
+metadata:
+  requirement: "sop-board：合并缺口可在看板对话中澄清，有缺口时其余用例照常落地，合并进度可见"
+  batch: "sop-board-13"
+  version: 4
+  owner: "AdolphKevin"
+  sources:
+    - ref: "docs/designs/SOP-BOARD-13.md 的 D66–D71"
+      version: "修订 1（2026-10-22 会话决定，含 D71）"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "merge", "clarification"]
+
+sops:
+  - id: SOP-131
+    title: 合并进度无需刷新即可看到
+    actor: 测试同事与开发者
+    entry: 合并页、批次概览页、场景页与用例页
+    scenarios:
+      - id: SOP-131-P01
+        polarity: positive
+        title: 上传用例后各页自动显示合并的排队、运行与结束状态
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["演示工作区已搭建，批次 progress-a 不存在", "tester-a 在内网浏览器打开首页并填写标记人"]
+        steps: ["tester-a 上传会员开通 3 条用例到批次 progress-a", "不刷新页面，依次停留在合并页、批次概览页、场景页、用例页，观察到任务结束", "在本机开启第二个批次 progress-b 的上传，使其排队时观察 progress-b 的合并页"]
+        expected: ["3 秒内合并页出现合并任务，状态依次变为运行中与已完成，全程未手动刷新", "运行中显示开始时间、已用时长（随时间递增）、超时上限 30 分钟与最近活动时间", "批次概览页、场景页、用例页都有合并状态条，结束后场景页无需刷新即列出场景", "排队中的任务显示前面还有几个任务及同时运行上限 3", "每个状态条都链接到合并页对应任务"]
+        forbidden_effects: ["需要手动刷新才能看到状态变化"]
+        evidence_hints: ["各页状态条截图（运行中与结束各一）", "录屏或带时间的截图序列"]
+      - id: SOP-131-P02
+        polarity: positive
+        title: 本机可看到运行中的 Codex 活动摘要，内网只看到时长
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个合并任务处于运行中"]
+        steps: ["dev-a 在本机打开合并页查看该任务", "tester-a 在内网打开同一任务"]
+        expected: ["本机显示最近事件摘要（读取的文件、执行的命令或推理摘要），随运行增加，并显示 codex resume <session_id>", "内网显示开始时间、已用时长与最近活动时间"]
+        forbidden_effects: []
+        evidence_hints: ["本机与内网同一任务的截图"]
+      - id: SOP-131-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网看不到 Codex 活动内容
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["一个合并任务处于运行中，工作区声明了凭据变量名"]
+        steps: ["tester-a 在内网打开该任务", "tester-a 直接请求 GET /api/v1/tasks/<编号>/files/events.jsonl 与 GET /api/v1/tasks/<编号>"]
+        expected: ["页面不出现事件摘要与 codex resume", "events.jsonl 请求返回 403", "任务接口响应中不出现事件内容、本机路径或凭据名"]
+        forbidden_effects: ["内网取得代理会话材料"]
+        evidence_hints: ["内网页面截图", "两个响应"]
+
+  - id: SOP-132
+    title: 有缺口时其余用例照常落地
+    actor: 测试同事
+    entry: 用例上传表单、合并页、用例页与批次报告
+    scenarios:
+      - id: SOP-132-P01
+        polarity: positive
+        title: 缺口用例暂缓，其余用例落地为场景并自动执行
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["批次 member-cycle 不存在"]
+        steps: ["tester-a 上传缺口用例 8 条", "等待合并结束，查看合并页、app 仓库 docs/sop/member-cycle.yaml、用例页、批次概览页", "等待自动执行任务结束"]
+        expected: ["合并任务为已完成，并显示待补充至少 2 项、暂缓用例数", "缺口逐项显示类型、问题与受影响用例：积分周期的周期长度或时区为 business，并列出 TC_CYCLE_POINT_001～003 中受影响的用例；邮件接受邀请为 entry，并列出 TC_INVITE_MAIL_001～002", "每个缺口按标题、场景、用例目前的写法（入口类为现状）、缺什么、请确认、涉及用例（编号加标题）排版；场景用用例中的具体数值举例；全文不出现快照、SOP 原文、入口声明、flow、detail、节点、section 等内部术语；入口类标由开发者处理", "member-cycle.yaml 只含会员开通 3 条场景，不含任何暂缓用例的场景", "用例页暂缓用例标待补充并显示对应问题，其余用例显示对应场景", "自动执行任务只包含会员开通 3 条场景", "批次概览页与场景页显示待补充 N 项 · 暂缓 M 条用例，链接到合并对话"]
+        forbidden_effects: ["为暂缓用例编造周期长度、时区或邮件入口写入场景", "8 条用例因缺口全部不落地"]
+        evidence_hints: ["合并页缺口截图", "member-cycle.yaml", "用例页截图", "执行任务范围"]
+      - id: SOP-132-P02
+        polarity: positive
+        title: 批次报告写明暂缓用例与原因
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["SOP-132-P01 完成"]
+        steps: ["打开批次报告"]
+        expected: ["尚无对应场景一节列出每条暂缓用例及其缺口问题", "执行进度与通过率的分母只含已落地场景"]
+        forbidden_effects: ["暂缓用例计为未通过或已执行"]
+        evidence_hints: ["报告摘录"]
+      - id: SOP-132-P03
+        polarity: positive
+        title: 已落地用例改出新缺口时沿用上一版场景并标注
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["SOP-132-P01 完成，会员开通场景 TC_MEMBER_OPEN_001 已执行并有结果"]
+        steps: ["tester-a 把 TC_MEMBER_OPEN_001 的预期改为“开通后按会员等级发放欢迎积分”（等级与积分对应关系未给出），重新上传全部用例", "等待合并与自动执行结束，查看合并页、member-cycle.yaml、用例页、场景页"]
+        expected: ["合并已完成，缺口列出 TC_MEMBER_OPEN_001", "member-cycle.yaml 中 TC_MEMBER_OPEN_001 保持上一版内容，原有执行结果仍在", "用例页与场景页对该用例与场景标“用例已更新，新内容待补充”", "本次自动执行不包含 TC_MEMBER_OPEN_001", "在对话中回答等级与积分对应关系后，该场景按新预期重建并转为待执行"]
+        forbidden_effects: ["删除该场景或其执行历史", "以新用例内容中未确定的规则重建场景"]
+        evidence_hints: ["场景文件前后对比", "用例页与场景页标注截图", "执行任务范围"]
+      - id: SOP-132-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 全部用例都被暂缓时不写场景文件
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["批次 cycle-only 不存在"]
+        steps: ["tester-a 只上传积分周期 3 条用例到批次 cycle-only", "等待合并结束，查看合并页与 app 仓库"]
+        expected: ["任务为待补充，列出结构化缺口", "app 仓库没有 docs/sop/cycle-only.yaml", "没有执行任务"]
+        forbidden_effects: ["写出空的或编造预期的场景文件"]
+        evidence_hints: ["合并页截图", "git status"]
+      - id: SOP-132-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 缺口引用不存在的用例时本轮失败
+        actor: 看板
+        priority: P1
+        verify: web
+        initial_state: ["执行者在合并会话结束后、看板读取结果前，把 final.json 中一项缺口的 cases 改为不存在的编号 TC_NONE_XXX_001（人工构造，报告中注明）"]
+        steps: ["等待任务结束，查看合并页与 app 仓库"]
+        expected: ["任务失败，原因写明缺口引用了不存在的用例", "场景文件未改动"]
+        forbidden_effects: ["部分落地"]
+        evidence_hints: ["失败原因截图", "git status"]
+
+  - id: SOP-133
+    title: 在合并对话中澄清缺口
+    actor: 测试同事与开发者
+    entry: 合并页的合并对话
+    scenarios:
+      - id: SOP-133-P01
+        polarity: positive
+        title: 测试同事回答业务缺口后续接同一会话，暂缓用例补齐落地
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["SOP-132-P01 完成，积分周期缺口未解决", "记下最近一个合并任务的 session_id"]
+        steps: ["tester-a 在积分周期缺口的回复框写：“周期为自然月，按 UTC+8 计日，每月 1 日 00:00 切换（业务方 biz-owner 已确认）”，提交", "不刷新页面，等待合并结束", "查看对话记录、合并页、member-cycle.yaml 与用例页", "本机查看新任务的 session_id 与任务目录"]
+        expected: ["提交后立即出现触发原因为补充澄清的合并任务", "本机看到新任务续接了同一 session_id，任务目录有 clarifications.json，含这条回复", "对话记录显示 tester-a 的回复为已采纳，并显示 Codex 本轮答复", "用例页出现一次文件名为“合并澄清 第 1 轮（任务 #<编号>）”、上传人为 tester-a 的上传；受影响的 TC_CYCLE_POINT_00x 标“已按澄清 #n 更新”，可与上一版对比，前置条件或预期写入了自然月、UTC+8、每月 1 日 00:00，description 末行为“澄清依据：#n（tester-a，日期）”", "点“下载用例并集”得到的就是更新后的用例", "积分周期缺口消失，TC_CYCLE_POINT_001～003 按更新后的用例落地为场景", "member-cycle.yaml 的 metadata.sources 含 ref 为 看板合并澄清 #n、confirmed_by 为 tester-a 的来源", "新增场景自动入队执行；邀请缺口仍在，TC_INVITE_MAIL_001～002 仍暂缓", "本轮没有因用例被看板更新而转为待同步"]
+        forbidden_effects: ["用例或场景中出现回复之外的周期规则", "修改与这条回复无关的用例"]
+        evidence_hints: ["对话记录截图", "member-cycle.yaml 相关场景与 metadata", "session_id 对照"]
+      - id: SOP-133-P02
+        polarity: positive
+        title: 回复不充分时 Codex 追问，用例继续暂缓
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["批次 cycle-ask 已上传积分周期 3 条与会员开通 3 条用例，积分周期缺口未解决"]
+        steps: ["tester-a 回复积分周期缺口：“按周期清零即可”", "等待合并结束，查看对话记录"]
+        expected: ["该回复为已追问，Codex 答复说明仍缺周期长度、时区或切换时刻", "积分周期缺口仍在（可为更新后的问题），对应用例仍暂缓", "会员开通场景不受影响"]
+        forbidden_effects: ["因回复而落地含未确定周期规则的场景"]
+        evidence_hints: ["对话记录截图"]
+      - id: SOP-133-P03
+        polarity: positive
+        title: 合并运行中提交的回复在本轮结束后自动进入下一轮
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["批次 cycle-ask 有一个补充澄清合并任务正在运行"]
+        steps: ["dev-a 在本机用通用输入框写一条补充说明并提交", "等待当前任务与后续任务结束"]
+        expected: ["提交时提示将在当前合并结束后发送，回复为待处理", "当前任务的处理结论不包含这条回复", "当前任务结束后看板自动入队下一轮补充澄清，该轮对这条回复给出处理结论", "回复记录显示回复人 dev-a"]
+        forbidden_effects: ["同一批次同时运行两个合并任务", "运行中的回复被标为已处理"]
+        evidence_hints: ["对话记录截图", "任务列表"]
+      - id: SOP-133-P04
+        polarity: positive
+        title: 入口类缺口靠补入口声明消除，仅凭文字回复不能消除
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["SOP-133-P01 完成，邀请缺口（entry）仍在"]
+        steps: ["tester-a 回复邀请缺口：“直接用邮件链接即可”", "等待合并结束，查看缺口", "dev-a 在演示工作区 config.yaml 声明邮件入口并通过 sop-board check，再在合并页点重新合并", "等待合并结束"]
+        expected: ["仅凭回复后邀请缺口仍在，卡片标由开发者处理，用例仍暂缓", "补入口声明并重新合并后，邀请缺口消失，TC_INVITE_MAIL_001～002 落地，verify 为新声明的入口"]
+        forbidden_effects: ["仅凭文字回复把 entry 缺口标为已解决"]
+        evidence_hints: ["两轮缺口截图", "config.yaml 入口段", "场景文件"]
+      - id: SOP-133-P05
+        polarity: positive
+        title: 入口类缺口可决定本批不纳入，之后可重新纳入
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["批次 invite-skip 已上传会员开通 3 条与邀请 2 条用例，邀请缺口（entry）未解决"]
+        steps: ["tester-a 在邀请缺口卡片点“本批不纳入”，理由填“本批由人工完成”", "等待下一轮合并结束，查看合并页、用例页、批次概览页与场景文件", "tester-a 在用例页对 TC_INVITE_MAIL_001 点“重新纳入”，等待合并结束"]
+        expected: ["对话记录出现这条决定，回复人为 tester-a", "TC_INVITE_MAIL_001～002 标“本批不纳入：本批由人工完成（tester-a，日期）”，不生成场景，不计入缺口与暂缓数", "批次概览页不再显示该缺口", "重新纳入后 TC_INVITE_MAIL_001 回到下一轮合并，邀请缺口按实际情况重新出现，TC_INVITE_MAIL_002 仍不纳入"]
+        forbidden_effects: ["为不纳入的用例生成场景", "不纳入的用例仍计为待补充"]
+        evidence_hints: ["缺口卡片与用例页截图", "场景文件"]
+      - id: SOP-133-P06
+        polarity: positive
+        title: 回复与用例原文冲突时按回复更新用例
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["批次 member-cycle 中 TC_MEMBER_OPEN_002 的预期为“开通会员须先选择发票抬头”，已落地为场景"]
+        steps: ["tester-a 在通用输入框写：“已定：开通会员不需要选择发票抬头，可直接开通（业务方 biz-owner 2026-10-22 确认）”，提交", "等待合并结束，查看对话记录、用例页对比、下载的用例并集与场景文件"]
+        expected: ["这条回复为已采纳，Codex 答复说明改了 TC_MEMBER_OPEN_002 的哪条预期", "TC_MEMBER_OPEN_002 的预期按回复改写，不再要求选择发票抬头，description 末行为澄清依据", "下载的用例并集中 TC_MEMBER_OPEN_002 为更新后内容", "场景 TC_MEMBER_OPEN_002 按新预期重建并转为待执行，metadata.sources 记录 tester-a"]
+        forbidden_effects: ["修改与回复无关的用例或预期", "冲突的旧预期仍留在场景中"]
+        evidence_hints: ["用例对比截图", "场景前后差异"]
+      - id: SOP-133-N01
+        polarity: negative
+        negative_type: empty-input
+        title: 没有标记人或回复为空时拒绝提交
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["批次 cycle-ask 有未解决缺口"]
+        steps: ["清空身份栏的标记人后提交一条回复", "填写标记人后提交空白回复", "提交超过 4000 字的回复"]
+        expected: ["三次都提示原因且不保存", "没有新建合并任务"]
+        forbidden_effects: ["保存无回复人的业务依据"]
+        evidence_hints: ["提示截图", "任务列表"]
+      - id: SOP-133-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: Codex 漏答某条回复或按未采纳的回复更新用例时本轮失败
+        actor: 看板
+        priority: P1
+        verify: web
+        initial_state: ["一轮补充澄清处理两条回复；执行者在会话结束后、看板读取结果前，删掉 final.json 中一条回复的处理结论，并加入一条引用不存在回复编号的用例更新（人工构造，报告中注明）"]
+        steps: ["等待任务结束，查看合并页、对话记录与场景文件"]
+        expected: ["任务失败，原因逐条写明漏答的回复编号与无效的用例更新", "两条回复仍为待处理", "用例页没有新的上传，场景文件未改动"]
+        forbidden_effects: ["更新回复状态", "写入场景"]
+        evidence_hints: ["失败原因截图", "git status"]
+      - id: SOP-133-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 会话无法续接时以完整澄清历史新开会话
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state: ["批次 cycle-ask 最近合并任务的会话记录已被移出 Codex 会话目录（人工构造，报告中注明；验收后移回）"]
+        steps: ["tester-a 提交一条回复，等待合并结束", "本机查看任务记录与任务目录"]
+        expected: ["任务记录写明会话续接失败，已用完整历史新开会话", "新会话的 clarifications.json 含该批次全部历史回复", "此前按澄清更新的用例内容与场景保持不变"]
+        forbidden_effects: ["丢失此前已采纳的澄清"]
+        evidence_hints: ["任务记录", "clarifications.json", "场景文件"]
+
+  - id: SOP-134
+    title: 已有待补充批次与后续变更
+    actor: 测试同事
+    entry: 合并页与用例上传表单
+    scenarios:
+      - id: SOP-134-P01
+        polarity: positive
+        title: 升级前停在待补充的批次可直接在对话中继续
+        actor: 测试同事
+        priority: P0
+        verify: web
+        initial_state: ["升级前的看板数据中，批次 legacy-gap 的合并任务为待补充，缺口为旧格式字符串"]
+        steps: ["用新版本启动看板，打开 legacy-gap 的合并页", "tester-a 用通用输入框回答旧缺口并提交", "等待合并结束"]
+        expected: ["旧缺口以文字显示，可以提交通用回复", "新一轮合并的缺口为结构化格式，可确定的用例落地"]
+        forbidden_effects: ["旧任务或旧数据无法打开"]
+        evidence_hints: ["升级前后合并页截图"]
+      - id: SOP-134-P02
+        polarity: positive
+        title: 澄清后重新上传修改过的用例，已采纳的澄清继续生效
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["SOP-133-P01 完成"]
+        steps: ["tester-a 用本机旧用例文件（不含澄清后的周期规则）只修改 TC_CYCLE_POINT_001 的标题，重新上传全部用例", "等待合并结束，查看用例页、场景文件与对话记录"]
+        expected: ["新合并的触发原因为上传用例，快照含此前的澄清记录", "TC_CYCLE_POINT_001 采用新标题，同时按已采纳的澄清再次写入周期规则并带澄清依据，Codex 答复中说明", "不要求重新回答已解决的积分周期缺口"]
+        forbidden_effects: ["丢失已采纳的澄清"]
+        evidence_hints: ["场景文件差异"]
+      - id: SOP-134-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 澄清轮次运行中重新上传用例时本轮转为待同步
+        actor: 测试同事
+        priority: P1
+        verify: web
+        initial_state: ["批次 cycle-ask 有一个补充澄清合并任务正在运行"]
+        steps: ["tester-a 修改一条会员开通用例的预期后重新上传", "等待各任务结束，查看任务列表、对话记录与场景文件"]
+        expected: ["正在运行的补充澄清任务转为待同步，不写入场景", "看板以最新用例与全部澄清记录发起新合并，本轮回复的处理结论来自新合并", "场景文件反映修改后的预期"]
+        forbidden_effects: ["以旧用例的合并结果覆盖场景文件"]
+        evidence_hints: ["任务列表", "对话记录截图", "场景文件差异"]
+
+  - id: SOP-135
+    title: 真实批次试点：只生成场景，不运行验证
+    actor: 用户与开发者
+    entry: cw2-live-chat 看板的首页、用例页、合并页与合并对话
+    scenarios:
+      - id: SOP-135-P01
+        polarity: positive
+        title: 关闭自动执行后上传试点用例，可确定的场景落地且不产生执行任务
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["cw2-live-chat 看板已用实现分支重装并以 --lan 启动", "工作区中没有「组织-品牌-店铺架构升级冒烟测试」批次", "dev-a 在本机首页把场景写入后自动执行切换为关闭"]
+        steps: ["用户在内网浏览器上传试点用例 93 条到批次「组织-品牌-店铺架构升级冒烟测试」", "不刷新页面，观察合并状态条直到合并结束", "查看合并页缺口、cw2-live-chat 仓库 docs/sop/组织-品牌-店铺架构升级冒烟测试.yaml、用例页、批次概览页与任务列表"]
+        expected: ["首页与批次概览页显示自动执行已关闭", "合并运行中状态条显示开始时间、已用时长与最近活动时间，结束后自动更新", "合并已完成（部分落地）或待补充（全部暂缓），缺口逐项显示类型、问题与受影响用例", "落地时场景文件只含未暂缓用例的场景，暂缓用例在用例页标待补充", "任务列表中没有该批次的执行任务，场景页显示场景待执行"]
+        forbidden_effects: ["产生或运行任何执行任务", "启动 cw2-live-chat 的产品环境做场景验证"]
+        evidence_hints: ["首页开关截图", "合并状态条截图", "合并页缺口截图", "场景文件", "任务列表"]
+      - id: SOP-135-P02
+        polarity: positive
+        title: 在看板中补充缺口后暂缓用例生成场景
+        actor: 用户
+        priority: P0
+        verify: web
+        initial_state: ["SOP-135-P01 完成，存在业务缺口；用户已与业务确认人取得这些缺口的答复"]
+        steps: ["用户按 pilot-gap-answers.md 在合并对话中逐项回复业务缺口，填写自己的标记人", "对入口类缺口点“本批不纳入”，理由填“本批由人工完成”", "用户在通用输入框写入 phase2-3-tester-questions.md 中与本批用例相关的已定口径（第 12、13 条等）", "不刷新页面，等待各轮合并结束，查看对话记录、用例页（对比与下载）、场景文件"]
+        expected: ["每条回复都有处理结论（已采纳、已追问或不适用），并显示 Codex 每轮答复", "被采纳回复涉及的用例由看板更新并登记为合并澄清上传，下载的用例并集为更新后内容；TC_DISC_003、TC_ARCH_002 中与已定口径相反的预期被改写", "这些用例按更新后的内容落地为场景，metadata.sources 记录回复人", "入口类缺口涉及的用例标本批不纳入（本批由人工完成）", "仍未解决的缺口（如 Codex 追问）与暂缓用例在用例页与概览页如实列出", "全程任务列表中没有该批次的执行任务"]
+        forbidden_effects: ["用例或场景中出现回复之外的业务规则", "产生或运行任何执行任务"]
+        evidence_hints: ["对话记录截图", "场景文件前后差异", "任务列表"]
+      - id: SOP-135-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网不能切换自动执行开关
+        actor: 用户
+        priority: P1
+        verify: web
+        initial_state: ["自动执行处于关闭状态"]
+        steps: ["用户在内网浏览器查看首页", "从内网请求 POST /api/v1/automation/auto-execute，正文 {\"enabled\": true}"]
+        expected: ["内网首页只显示自动执行已关闭，没有切换按钮", "请求被拒绝，开关仍为关闭"]
+        forbidden_effects: ["内网开启自动执行"]
+        evidence_hints: ["内网首页截图", "拒绝响应"]

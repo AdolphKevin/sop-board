@@ -1,6 +1,6 @@
 # SOP-BOARD-12 的验收场景
 # 预期依据 docs/proposals/2026-10-22-acceptance-standard-and-distill.md（修订 1，已批准）的 D60–D64。只写业务流程；验收只以本文件的场景经真实入口执行为准。
-# 版本 4（2026-10-22）：加入 S2 第二段（D62 入口二）的 SOP-127；N03 按 D61“通过证据须对应当前产品内容”写明提交后先在新产品上验证。版本 3（2026-10-22）：SOP-124-N02、SOP-129-N02 按用户确认的两级保证改写。版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
+# 版本 5（2026-10-23）：SOP-127-N03 按整体改造方案 D77（已批准）明确以产品内容摘要决定是否待验证，内容不变直接开始；保留内容变化后的等待与通过要求。版本 4（2026-10-22）：加入 S2 第二段（D62 入口二）的 SOP-127；N03 按 D61“通过证据须对应当前产品内容”写明提交后先在新产品上验证。版本 3（2026-10-22）：SOP-124-N02、SOP-129-N02 按用户确认的两级保证改写。版本 1：S1（D60）。版本 2：加入 S2 第一段（D61、D62 入口一、D63、D64、D65）的节点 SOP-122～126、128、129；S2 第二段的 SOP-127 在实施该段时加入。
 # “沉淀演示仓库”：临时 Git 仓库 shop，Python 标准库 HTTP 服务 + SQLite，退款接口需用测试账号登录（密码经环境变量 DEMO_BUYER_PASSWORD），带一套已有的接口测试（pytest 或 unittest）与可运行的 CI 配置（GitHub Actions 文件，CI 实跑由推送到一个临时远端或标注“仅本机”）；预置一个已知缺陷提交 bug-refund-twice（同一订单可重复退款）。场景文件 docs/sop/refund.yaml 含两条已确认场景（sources 有 confirmed_by）与一条未确认场景。
 # “演示工作区”：以名称登记的临时 Git 仓库 app（HTTP 服务，含一个“退款申请”页面与接口），origin 为 https://example.invalid/...；搭建由新开的代理会话按 sop-board guide 完成。
 # “原标准”：team-workflow 仓库 main 分支 8be02e4 的 skills/team-workflow/references/business-acceptance.md、test-capability.md 与 templates/ 下的项目验收方案、交付记录、缺陷记录、每周复盘模板。
@@ -9,7 +9,7 @@
 metadata:
   requirement: "sop-board：承接业务验收标准；随包发行回归沉淀技能，登记场景与测试的关联；看板会话可取得入口凭据变量"
   batch: "sop-board-12"
-  version: 4
+  version: 5
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-acceptance-standard-and-distill.md 的 D60"
@@ -485,7 +485,7 @@ sops:
         verify: web
         initial_state: ["产品仓库有一处未提交的产品改动"]
         steps: ["发起沉淀"]
-        expected: ["任务显示待提交并列出未提交的路径", "提交后任务显示待验证，列出需要在新产品上通过的场景", "这些场景经执行或沿用在新产品上通过后，任务自动开始"]
+        expected: ["任务显示待提交并列出未提交的路径", "提交后，若通过证据的产品内容摘要与当前不同，任务显示待验证并列出需要在新产品上通过的场景；仅提交号变化、内容摘要相同时直接开始，不进入待验证", "这些场景经执行或沿用在新产品上通过后，任务自动开始"]
         forbidden_effects: ["从未提交的工作区建立 worktree"]
         evidence_hints: ["任务页截图"]
       - id: SOP-127-N04

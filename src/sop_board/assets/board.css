@@ -102,6 +102,13 @@ tbody tr:hover { background: #fafbfb; }
 .result p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fingerprint { font: 12px ui-monospace, monospace; overflow-wrap: anywhere; color: var(--muted); }
 .notice { color: var(--warning); background: #fcf2e5; padding: 12px 16px; border: 1px solid #ecd4b6; border-radius: 6px; }
+.gap-card { margin: 16px 0; padding: 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow-wrap: anywhere; }
+.gap-card h4 { margin: 8px 0 16px; font-size: 16px; }
+.gap-card .gap-kind { color: var(--muted); font-size: 13px; margin: 0; }
+.gap-card dl { margin: 0; }
+.gap-card dt { margin-top: 12px; font-weight: 600; }
+.gap-card dd { margin: 4px 0 0; white-space: pre-line; }
+.gap-card ul { margin: 4px 0; padding-left: 20px; }
 figure { margin: 20px 0; }
 figure img { display: block; max-width: 100%; max-height: 640px; object-fit: contain; border: 1px solid var(--line); }
 figcaption { color: var(--muted); font-size: 12px; }
@@ -218,3 +225,9 @@ textarea { resize: vertical; }
   .batch-entry { padding: 16px; }
   .batch-entry-open { width: 100%; }
 }
+
+/* 合并澄清保留原文换行，长内容不撑宽页面。 */
+.conversation-message {border-top: 1px solid var(--border, #d5dce3); padding: 1rem 0;}
+.conversation-message pre, .gap-card dd {white-space: pre-wrap; overflow-wrap: anywhere;}
+[data-clarification-form] {margin: 1rem 0;}
+[data-clarification-form] textarea {display: block; width: 100%; box-sizing: border-box;}

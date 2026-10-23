@@ -14,6 +14,10 @@ from .entries import validate_entries, verification_skills, skill_files
 from .repositories import git, product_files
 
 
+class WorkspaceNotFound(ValueError):
+    """没有已登记工作区，调用入口可提供初始化指引。"""
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -109,8 +113,8 @@ def locate_workspace():
     missing = '当前仓库没有登记的工作区；用 sop-board init <名称> <仓库目录>... 登记，或用 sop-board <名称> 指定已有工作区'
     try:
         root = Path(os.fsdecode(git(Path.cwd(), 'rev-parse', '--show-toplevel')).strip()).resolve()
-    except (OSError, subprocess.SubprocessError) as error:
-        raise ValueError(missing) from error
+    except subprocess.CalledProcessError as error:
+        raise ValueError('无法识别当前产品仓库；请指定工作区名称或 --data <目录>') from error
     matches = []
     for config in sorted((Path.home() / '.sop-board').glob('*/config.yaml')):
         try:
@@ -124,7 +128,7 @@ def locate_workspace():
         except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError, RecursionError):
             continue
     if not matches:
-        raise ValueError(missing)
+        raise WorkspaceNotFound(missing)
     if len(matches) != 1:
         raise ValueError('当前仓库属于多个工作区：' + '、'.join(p.name for p in matches) + '；请用 sop-board <名称> 或 sop-board check <名称> 指定')
     return matches[0]
@@ -143,8 +147,10 @@ class Workspace:
             self.name = workspace_name(registered.get('name'))
             if (self.data / 'board.sqlite3').exists():
                 raise ValueError('旧数据库')
-        except (OSError, ValueError) as error:
-            raise ValueError('工作区登记不存在或不是当前格式；请用 sop-board init <名称> <仓库目录>... 新建，不读取或迁移旧数据') from error
+        except FileNotFoundError as error:
+            raise WorkspaceNotFound('工作区登记不存在：' + str(marker)) from error
+        except ValueError as error:
+            raise ValueError('工作区登记不是当前格式；请指定当前格式的工作区数据目录，不读取或迁移旧数据') from error
         self.config_path = self.data / 'config.yaml'
         self.repos, self.identities, self.entries = {}, {}, {}
         self.credential_names = set()
