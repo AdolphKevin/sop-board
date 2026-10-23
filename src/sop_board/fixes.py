@@ -115,12 +115,7 @@ class Fixes:
                 if self.tasks.starting == task['id']:
                     self.tasks.starting = None
 
-    def prepare(self, task):
-        declarations = self.service.require_ready(task['workspace'])
-        external = bool(self.tasks.kernel.claim(task))
-        attempt = None if external else self.verification_attempt(task)
-        if attempt:
-            return self.prepare_verification(task, attempt)
+    def product_aliases(self, task):
         workspace = self.service.workspace
         with self.store.connection() as db:
             pending = [json.loads(r[0]) for r in db.execute(
@@ -132,6 +127,26 @@ class Fixes:
                 for alias in workspace.aliases(document):
                     if alias not in aliases:
                         aliases.append(alias)
+        return aliases
+
+    def committed(self, task):
+        """被阻挡期间核对待提交是否已解除，仓库范围与 prepare 相同；复验阶段不等提交。"""
+        try:
+            if self.verification_attempt(task):
+                return True
+            aliases = self.product_aliases(task)
+            return bool(aliases) and not self.service.workspace.product(aliases)['dirty']
+        except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError, sqlite3.Error, APIError, subprocess.SubprocessError):
+            return False
+
+    def prepare(self, task):
+        declarations = self.service.require_ready(task['workspace'])
+        external = bool(self.tasks.kernel.claim(task))
+        attempt = None if external else self.verification_attempt(task)
+        if attempt:
+            return self.prepare_verification(task, attempt)
+        workspace = self.service.workspace
+        aliases = self.product_aliases(task)
         if not aliases:
             self.tasks.update(task['id'], status=S.DEVELOPER, error='没有需要修复的仓库')
             return False
@@ -691,13 +706,14 @@ class Fixes:
             with self.store.transaction() as db:
                 db.execute('UPDATE fix_tasks SET developer_note=? WHERE task=?', (note, task['id']))
                 db.execute("UPDATE fix_problems SET category='',root_repo=NULL WHERE task=?", (task['id'],))
-            self.tasks.update(task['id'], status=S.QUEUED, error='开发者已批准方案')
+            self.tasks.update(task['id'], status=S.QUEUED, error='开发者已批准方案', void_reason='')
         elif action == 'retry':
             if task['status'] not in FIX_RETRY and not (task['status'] == S.DEVELOPER and task['retry_reason'] in ('preparation', 'interrupted', 'git-identity')):
                 reject(409, 'task-state-invalid', 'status', '任务当前状态不支持重试')
             self.tasks.kernel.archive(task, move=False)
             self.tasks.kernel.wake(task['id'])
-            self.tasks.update(task['id'], status=S.QUEUED,
+            # 作废原因属于上一次复验，尝试记录中保留；重试后任务不再显示它。
+            self.tasks.update(task['id'], status=S.QUEUED, void_reason='',
                 error=('开发者重试，沿用原尝试与提交重新复验' if self.verification_attempt(task) else
                        '开发者重试，从提交步骤继续' if task['retry_reason'] == 'git-identity' else '开发者重试，重新准备工作目录'), finished_at=None)
         elif action == 'cancel':

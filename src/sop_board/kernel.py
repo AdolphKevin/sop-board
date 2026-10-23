@@ -377,6 +377,10 @@ class WaitCondition:
     interval: float = 5
 
 
+# 被阻挡期间核对具体等待条件的节奏；与类型自己的核对分开计时，阻挡解除后的开始不因此推迟。
+BLOCKED_RECHECK = WaitCondition('阻挡期间的具体等待条件', 5)
+
+
 class TaskRepositories:
     """两种业务表保留原结构，任务工作树记录只经此边界读写。"""
     TABLES = {'fix': 'fix_repositories', 'distill': 'distill_repositories'}
@@ -662,10 +666,24 @@ class Kernel:
         return None
 
     def block(self, task, other):
-        reason = wait_reason(other)
-        # 阻挡只更新原因；保留待提交、等待浏览器、待验证等更具体的状态。
-        self.tasks.update(task['id'], error=reason)
-        self.handlers[task['kind']].blocked(task, other)
+        handler = self.handlers[task['kind']]
+        values = dict(error=wait_reason(other))
+        # 阻挡只更新原因，保留待提交、等待浏览器、待验证等更具体的状态；这些条件在阻挡期间解除时
+        # 改为解除后的状态，使显示的状态与原因一致。作废与开始前的输入核对仍留给类型准备。
+        if task['status'] == S.WAIT_BROWSER and self.tasks.browser_owner in (None, task['id']):
+            values['status'] = S.QUEUED
+        elif task['status'] in SELF_WAITING and self.check_due(task, BLOCKED_RECHECK):
+            with self.tasks.store.connection() as db:
+                full = db.execute('SELECT * FROM tasks WHERE id=?', (task['id'],)).fetchone()
+            status = handler.recheck(dict(full)) if full else None
+            if status and status != task['status']:
+                values['status'] = status
+        if 'status' in values and handler.waiting:
+            # 状态已随条件改变：清掉类型自身的核对期限，阻挡解除后同一轮即可准备，低优先级任务不能借此先开始。
+            self.next_checks.pop((task['id'], handler.waiting.name), None)
+        self.tasks.update(task['id'], **values)
+        task.update(values)
+        handler.blocked(task, other)
 
     def browser(self, task, needed, *, waiting_status=None, reason='等待浏览器'):
         if not needed:

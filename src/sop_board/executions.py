@@ -123,6 +123,18 @@ class Executions:
                       selection=request.get('selection', 'explicit'), refresh_after_merge=False)
         return snapshot, inputs
 
+    def committed(self, task):
+        """被阻挡期间只核对产品是否已无未提交改动；开始前仍按 freeze 完整冻结并核对输入。"""
+        workspace = self.service.workspace
+        try:
+            with self.store.connection() as db:
+                version = self.service.latest_version(db, self.service.batch(db, task['workspace'], task['batch']))
+            if not version:
+                return False
+            return not workspace.product(workspace.aliases(yaml.safe_load(version['content'])))['dirty']
+        except (OSError, ValueError, KeyError, yaml.YAMLError, APIError, subprocess.SubprocessError):
+            return False
+
     def prepare(self, task):
         with self.store.connection() as db:
             merge = self.waiting_merge(db, task['workspace'], task['batch'])

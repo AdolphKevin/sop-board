@@ -23,6 +23,10 @@ class TaskType:
     def blocked(self, task, other):
         pass
 
+    def recheck(self, task):
+        """被其他任务阻挡时核对自身的待提交、待验证条件，返回条件解除后应显示的状态；不作废，不写原因。"""
+        return None
+
 
 class MergeType(TaskType):
     visibility = task_visibility.MERGE
@@ -219,6 +223,9 @@ class DistillType(TaskType):
     def schedule(self, task):
         self.tasks.distill.schedule(task)
 
+    def recheck(self, task):
+        return self.tasks.distill.recheck(task)
+
     def recover(self):
         self.tasks.distill.recover()
 
@@ -265,6 +272,11 @@ class ExecuteType(TaskType):
     def actions(self, task):
         return ({'retry'} if task['status'] in OUTPUT_RETRY | {S.VOID} else set()) | (
             {'cancel'} if task['status'] in OUTPUT_CANCEL | EXECUTION_QUEUE else set())
+
+    def recheck(self, task):
+        if task['status'] == S.WAIT_COMMIT and self.tasks.executions.committed(task):
+            return S.QUEUED
+        return None
 
     def blocked(self, task, other):
         if other['kind'] not in ('merge', 'generate') or other['batch'] != task['batch']:
@@ -399,6 +411,11 @@ class FixType(TaskType):
     def recover(self):
         if self.tasks.service.workspace.configured:
             self.tasks.fixes.recover_promotions()
+
+    def recheck(self, task):
+        if task['status'] == S.WAIT_COMMIT and self.tasks.fixes.committed(task):
+            return S.QUEUED
+        return None
 
     def actions(self, task):
         allowed = set()

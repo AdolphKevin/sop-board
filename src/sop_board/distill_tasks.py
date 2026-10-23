@@ -99,6 +99,39 @@ class DistillTasks:
         except (OSError, ValueError, APIError, subprocess.SubprocessError) as error:
             return '输入无法重新核对：' + problem_text(error)
 
+    @staticmethod
+    def waiting(task, before):
+        """入队快照仍在等提交或在新产品上通过；阻挡期间已改回排队中、快照尚未刷新的也按等待核对。"""
+        stored = json.loads(task['input_json']).get('eligibility', {})
+        return (before['dirty'] or task['status'] == S.WAIT_VALIDATION
+                or any(not option['eligible'] for option in stored.values()))
+
+    def refresh(self, task, before, snapshot, inputs):
+        snapshot['queued_snapshot'] = before.get('queued_snapshot', before)
+        task['snapshot_json'], task['input_json'] = canonical(snapshot), canonical(inputs)
+        self.tasks.update(task['id'], snapshot_json=task['snapshot_json'], input_json=task['input_json'],
+                          input_digest=hashlib.sha256(task['snapshot_json'].encode()).hexdigest())
+
+    def recheck(self, task):
+        """被其他任务阻挡时核对待提交、待验证，返回条件变化后的状态。
+
+        不作废，也不写原因；输入变化留给开始前核对。转为待验证时与 schedule 一样刷新快照以列出
+        须通过的场景；条件都已满足时只改回排队中，快照在开始前刷新。"""
+        try:
+            before = self.tasks.types['distill'].inputs(task).snapshot
+            snapshot, inputs = self.current(task)
+            waiting = self.waiting(task, before)
+            if distill_inputs.changed(before, snapshot, waiting_commit=True, waiting_validation=waiting):
+                return None
+            if snapshot['dirty']:
+                return S.WAIT_COMMIT
+            if any(not option['eligible'] for option in inputs['eligibility'].values()):
+                self.refresh(task, before, snapshot, inputs)
+                return S.WAIT_VALIDATION
+            return S.QUEUED
+        except (OSError, ValueError, KeyError, APIError, sqlite3.Error, subprocess.SubprocessError):
+            return None
+
     def schedule(self, task):
         if task['id'] in self.tasks.workers or not self.tasks.kernel.check_due(task, self.tasks.types['distill'].waiting):
             return
@@ -109,7 +142,7 @@ class DistillTasks:
             except (OSError, ValueError, APIError, subprocess.SubprocessError) as error:
                 self.tasks.update(task['id'], status=S.VOID, void_reason='输入无法重新核对：' + problem_text(error), finished_at=now(), error='')
                 return
-            waiting = before['dirty'] or task['status'] == S.WAIT_VALIDATION
+            waiting = self.waiting(task, before)
             # 尚未开始时可采用同一产品内容的新提交；通过依据只比较内容摘要。
             reason = distill_inputs.changed(before, snapshot, waiting_commit=True, waiting_validation=waiting)
             if reason:
@@ -119,10 +152,7 @@ class DistillTasks:
                 self.tasks.update(task['id'], status=S.WAIT_COMMIT, error=self.dirty_reason(snapshot))
                 return
             if waiting or before['repos'] != snapshot['repos']:
-                snapshot['queued_snapshot'] = before.get('queued_snapshot', before)
-                task['snapshot_json'], task['input_json'] = canonical(snapshot), canonical(inputs)
-                self.tasks.update(task['id'], snapshot_json=task['snapshot_json'], input_json=task['input_json'],
-                                  input_digest=hashlib.sha256(task['snapshot_json'].encode()).hexdigest())
+                self.refresh(task, before, snapshot, inputs)
                 pending = [sid + '：' + '；'.join(option['reasons']) for sid, option in inputs['eligibility'].items() if not option['eligible']]
                 if pending:
                     self.tasks.update(task['id'], status=S.WAIT_VALIDATION, error='需要在新产品上通过的场景：' + '；'.join(pending))
