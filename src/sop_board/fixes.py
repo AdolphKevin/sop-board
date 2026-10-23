@@ -725,9 +725,11 @@ class Fixes:
             if process:
                 terminate_group(process)
             with self.store.transaction() as db:
-                # 正在进行或中断的尝试随任务一起结束；待提交、待验证的尝试保留原状态作为现场记录。
-                db.execute(f"UPDATE fix_attempts SET outcome='{S.ABANDONED}',finished_at=? WHERE task=? AND outcome IN ('{S.RUNNING}','{S.INTERRUPTED}')",
+                # 正在进行或中断的尝试随任务一起结束，中断时间保留；待提交、待验证的尝试保留原状态作为现场记录。
+                # 单独提交，后面的问题汇总出错时不回滚这一步。
+                db.execute(f"UPDATE fix_attempts SET outcome='{S.ABANDONED}',finished_at=COALESCE(finished_at,?) WHERE task=? AND outcome IN ('{S.RUNNING}','{S.INTERRUPTED}')",
                            (now(), task['id']))
+            with self.store.transaction() as db:
                 if not task['problems']:
                     for problem in self.unresolved(db, task['workspace'], automatic=True):
                         db.execute('INSERT OR IGNORE INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) VALUES (?,?,?,?,?,0,?)',
