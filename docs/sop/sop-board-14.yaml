@@ -1,23 +1,31 @@
 # SOP-BOARD-14 的验收场景
-# 预期依据 docs/proposals/2026-10-22-integrated-rework.md（已批准，2026-10-22）的 D72～D82 与附录；只写业务流程，验收只以本文件、sop-board-12.yaml 的 SOP-127 与 sop-board-13.yaml 的 SOP-131～135 经真实入口执行为准。
+# 预期依据 docs/proposals/2026-10-22-integrated-rework.md（已批准，2026-10-22）的 D72～D83 与附录（D83 及 D79 中注明“D83 修订”的执行环境段由方案负责人于 2026-10-23 补充，AdolphKevin 2026-10-24 确认），以及 docs/reference.md 的开发会话入口（会话准备阻挡、blocked/skip 证据、execution_origin 与会话结束清理）、会话修复与独立复验、跨仓修复中与 D83 对应的约定和放弃修复任务的约定（提交 4831b16、fbbc434、32ea410；AdolphKevin 2026-10-24 确认）；只写业务流程，验收只以本文件、sop-board-12.yaml 的 SOP-127 与 sop-board-13.yaml 的 SOP-131～135 经真实入口执行为准。
+# 版本 9（2026-10-24）：交付记录整理时发现 D83 与放弃修复任务的两项约定没有场景，按 docs/verification.md“K4 会话入口返工 1 定点复核”补齐——SOP-142 加 P04、N04（会话登记已有 SOP 原文，与看板上传同一校验）；SOP-144 加 P04、N04（受阻、跳过可不附证据但须写原因，实际执行的通过、失败须有证据）与 P05（按入口准备执行环境）；SOP-145 加 P03（仅排队或等待的看板任务不阻挡会话准备）、N02（运行或切换、占用环境的任务阻挡）、N03（同批次同类排队任务经同意才替换）、N04（已结束的任务不被接管或复活）；SOP-146 加 P03（等待中的看板修复不阻挡会话修复认领与复验准备）；新增节点 SOP-150（会话失败分流与修复任务放弃）。原有场景的编号与内容不变。两类依据（D83；放弃修复任务的约定）经 AdolphKevin 于 2026-10-24 确认，统一验收中按其同意由审核方改写；审核子代理复核后补齐前置、构造方法与执行顺序。SOP-150-N05 的“放弃会话修复不连带取消复验”属依据推断：docs/reference.md 会话修复段把“原修复已不在待验证或待提交时本次复验作废”列在放弃与提交交错的情形下，只有放弃不连带取消复验时该情形才会因放弃出现。补验 R-G8 发现 TC_MEMBER_OPEN_002 需要“已到期会员”前置而演示 app 无法准备，演示 app 能力补上设定会员到期。
 # 版本 8（2026-10-24）：复审后补齐——演示 app 的能力说明补上会员开通与增加积分，与入口声明的操作名一致；统一验收中按 AdolphKevin 同意由审核方改写。
 # 版本 7（2026-10-24）：审核子代理复核后补齐——入口声明写明演示操作名，与 sop-board-13.yaml 版本 7 一致；统一验收中按 AdolphKevin 同意由审核方改写。
 # 版本 6（2026-10-24）：补验 R-G4 发现 SOP-143-P02 的答复“30 天”与“每月 1 日切换”自相矛盾（版本 3 引入），且演示 app 没有积分操作、入口缺口不能靠文字回复消除；统一验收中按 AdolphKevin 同意由审核方改为自然月答复（与 sop-board-13.yaml 版本 6 的 SOP-134-P01 一致），演示工作区补积分操作能力，SOP-143-P01 写明三条各自成为一条场景。
 # 版本 5（2026-10-23）：统一验收 G4 后修订——SOP-146-N01 接受准备或提交两处拒绝（复验身份已在准备时核对）；SOP-147-P02、N02 写明退款期限冲突等问题的业务答复。版本 4（2026-10-23）：新增 SOP-149-N02（复验期间输入变化作废、不计入连续三次未通过，依据 docs/designs/SOP-BOARD-5.md 计数规则）。版本 3（2026-10-23）：SOP-143-P02 的答复改用演示用例已有的说法（积分周期、UTC、每月 1 日切换），原答复含用例中没有的概念，按 D68 应先追问，与本条“采纳”预期矛盾。版本 2（2026-10-23）：统一验收中按 AdolphKevin 同意改写 SOP-149-P03——优先级只在资源可用时生效，被互斥阻挡的高优先级任务不阻止不冲突的低优先级任务开始；修复运行时合并等待；状态与原因一致、排队位置与实际开始顺序一致仍为预期。版本 1（2026-10-22）：SOP-141～149。
 # “演示工作区”：按 docs/verification.md 以名称 demo 登记的两仓（app 经真实 HTTP 调用 lib，lib 含明确植入的缺陷），入口声明 web 与 api，自检通过；看板以 --lan 启动，真实 Codex。
-# app 另提供会员开通（含设定会员等级与发票抬头）、会员积分的查询、设定、增加，以及把演示时间推到指定 UTC 时刻的接口与页面（不实现清零规则），真实验证手册写明这些操作方法；入口声明的 operate 在引用手册章节的同时写明操作名：会员开通（含设定会员等级与发票抬头）、积分查询、设定与增加、把演示时间推进到指定 UTC 时刻。演示失败后的自动任务处理同 sop-board-13.yaml 文件头。
+# app 另提供会员开通（含设定会员等级、发票抬头与会员到期日，可把已有会员置为已到期）、会员积分的查询、设定、增加，以及把演示时间推到指定 UTC 时刻的接口与页面（不实现清零规则），真实验证手册写明这些操作方法；入口声明的 operate 在引用手册章节的同时写明操作名：会员开通（含设定会员等级、发票抬头与到期日）、把会员置为已到期、积分查询、设定与增加、把演示时间推进到指定 UTC 时刻。演示失败后的自动任务处理同 sop-board-13.yaml 文件头。
+# “缺陷场景”D1、D2：批次 refund 中经 api 入口执行、因 lib 植入缺陷而失败的两条场景。需要新的失败结果时由执行会话或看板重新执行取得；看板为它们建立的修复任务在本场景核对完成后由 dev-a 在本机放弃（场景另行写明沿用的除外），放弃须在复测通过前完成，不让修复合入 lib；会话修复留在工作区的改动，在下一条场景开始前由执行者在授权范围内还原为植入缺陷的状态。SOP-146-P02 已提交并关闭的修复，在依赖 D1、D2 失败的场景前由执行者在授权范围内以新提交恢复植入缺陷；为构造待提交而做的演示改动在场景结束后还原。
 # “会话入口环境”：只装 sop-board（从集成分支安装）并运行 sop-board skills install；Codex 与 Claude Code 各开新会话，工作目录为 app 仓库；触发只用自然语言，不点名技能。
 # “使用者”：在会话中扮演开发者并给出业务答复与确认人的验收执行者助手 dev-a；业务答复取自本文件写明的内容，执行者不自行编造答复。
 # 测试同事 tester-a 用第二个浏览器以非回环地址访问看板。独立验收串行进行。
 
 metadata:
-  requirement: "sop-board：任务内核统一、开发会话中可完成写 SOP、生成草稿、合并用例、执行验收、修复复验，独立性如实登记"
+  requirement: "sop-board：任务内核统一、开发会话中可完成写 SOP、生成草稿、合并用例、执行验收、修复复验，独立性如实登记；两个入口互不干扰，放弃修复任务后如实保留尝试与状态"
   batch: "sop-board-14"
-  version: 8
+  version: 9
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-integrated-rework.md 的 D72～D82 与附录"
       version: "已批准（2026-10-22）"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/proposals/2026-10-22-integrated-rework.md 的 D83，以及 D79 中注明“D83 修订”的执行环境段"
+      version: "方案负责人 2026-10-23 补充（K4 实机冒烟后），AdolphKevin 2026-10-24 确认"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/reference.md 的“开发会话入口”（会话准备阻挡、blocked/skip 证据、execution_origin 与会话结束清理）、“会话修复与独立复验”“跨仓修复”中与 D83 对应的约定，以及放弃修复任务的约定（提交 4831b16、fbbc434、32ea410）"
+      version: "feat/sop-board-14 90f7675，AdolphKevin 2026-10-24 确认"
       confirmed_by: "AdolphKevin"
   tags: ["sop-board", "kernel", "session-entry"]
 
@@ -136,6 +144,29 @@ sops:
         expected: ["任务作废，原因写明业务 SOP 已变化", "看板草稿版本数不变"]
         forbidden_effects: ["按旧 SOP 登记草稿"]
         evidence_hints: ["命令输出", "任务接口响应"]
+      - id: SOP-142-P04
+        polarity: positive
+        title: 会话登记已有 SOP 原文，随后的草稿由本会话认领
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示工作区，看板运行中，批次 refund-up 不存在", "dev-a 提供一份已有的退款 SOP 文件，并在本次请求中给出上传人与确认人 dev-a"]
+        steps: ["会话运行 sop-board sop upload demo refund-up <SOP 文件> --uploaded-by dev-a --confirmed-by dev-a --session <本会话标识>", "等待 30 秒，查看看板 SOP 页、任务列表与该草稿任务的任务页", "用同一文件再次运行同一命令", "修改 SOP 文件中的一条规则后再次运行该命令"]
+        expected: ["第一次成功：批次 refund-up 登记 SOP 第 1 版，上传人与确认人为 dev-a；同时建立的草稿任务为会话处理中，认领会话为本会话", "30 秒内看板没有为该草稿任务启动 Codex，任务页显示由会话处理", "第二次不新增 SOP 版本，也不新建草稿任务", "第三次登记第 2 版；原草稿任务为已作废，原因写明业务 SOP 已变化；新的草稿任务为会话处理中，仍由本会话认领"]
+        forbidden_effects: ["看板接管或调度会话认领的草稿任务", "重复上传产生新的 SOP 版本或第二个草稿任务"]
+        evidence_hints: ["四次命令输出", "SOP 页与任务页截图", "任务接口响应"]
+      - id: SOP-142-N04
+        polarity: negative
+        negative_type: invalid-input
+        title: 会话登记的 SOP 原文与看板上传遵守同一校验
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["批次 refund-up2 不存在", "准备空文件、GBK 编码文件和 1.5 MiB 的 Markdown 文件各一份（同 sop-board-11.yaml 的 SOP-111-N01），以及一份合格的 SOP 文件"]
+        steps: ["会话分别以三个不合格文件运行 sop-board sop upload demo refund-up2 <文件> --uploaded-by dev-a --confirmed-by dev-a --session <本会话标识>", "dev-a 在本机以同样三个文件向批次 refund-up2 上传 SOP（看板首页上传，或 POST …/batches/refund-up2/sop；用接口时 GBK 文件按原始字节写入 JSON 正文的 content）", "会话以合格文件运行同一命令，但 --confirmed-by 填本会话的标识", "查看看板 SOP 页、任务列表与场景目录"]
+        expected: ["三次命令都退出 1，ok 为 false，原因依次为为空、不是 UTF-8、超过 1 MiB，与看板上传对同一文件给出的原因一致", "以会话标识作确认人被拒，说明确认人须为使用者给出的姓名", "批次 refund-up2 没有 SOP 版本或草稿任务，场景目录没有新文件"]
+        forbidden_effects: ["写入场景目录", "建立草稿任务或启动 Codex"]
+        evidence_hints: ["命令输出与退出码", "看板上传的提示或响应原文", "任务列表与场景目录列表"]
 
   - id: SOP-143
     title: 开发会话合并测试同事的用例
@@ -263,6 +294,40 @@ sops:
         expected: ["该场景记受阻，finding 写变量名", "任何材料中没有变量取值"]
         forbidden_effects: []
         evidence_hints: ["轮次接口"]
+      - id: SOP-144-P04
+        polarity: positive
+        title: 受阻或跳过的结果可以不附证据，但须写明原因
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话执行任务已准备，范围为批次 refund 的四条场景：此前没有通过结果、实际执行会通过的 C1；缺陷场景 D1；需要测试账号登录的 L1（其入口声明的凭据变量已在执行会话环境中设置，但 dev-a 本轮没有授权使用该账号）；dev-a 要求本轮不执行的 K1", "结果尚未提交"]
+        steps: ["执行会话经真实入口执行 C1、D1 并保存证据", "L1 写 blocked，finding 为“本轮未授权使用测试账号”；K1 写 skip，finding 为“使用者要求本轮不执行”；两条的 evidence 都为空数组", "运行 sop-board execute submit"]
+        expected: ["提交成功，登记一个轮次", "L1 为受阻、K1 为跳过，finding 原文保留，没有证据文件", "C1 为通过、D1 为失败，各有证据"]
+        forbidden_effects: ["L1、K1 被登记为通过或失败"]
+        evidence_hints: ["命令输出", "轮次接口"]
+      - id: SOP-144-N04
+        polarity: negative
+        negative_type: incomplete-input
+        title: 实际执行的通过或失败没有证据、受阻或跳过没有原因时提交被拒
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["在 SOP-144-P04 第 3 步之前执行：该执行任务的四条结果已按其第 1、2 步写好，尚未提交"]
+        steps: ["把 C1 的 evidence 改为空数组后提交", "恢复 C1，把 D1 的 evidence 改为空数组后提交", "恢复 D1，删去 L1 的 finding 后提交", "恢复 L1，删去 K1 的 finding 后提交", "恢复 K1，按 SOP-144-P04 第 3 步提交"]
+        expected: ["前四次都退出 1，ok 为 false，problems 依次指出 C1、D1 缺少证据，L1、K1 缺少 finding", "前四次都没有登记轮次，任务保持会话处理中", "恢复后的提交成功，只登记一个轮次（按 SOP-144-P04 的预期核对）"]
+        forbidden_effects: ["登记没有证据的通过或失败结果", "登记没有原因的受阻或跳过结果"]
+        evidence_hints: ["五次命令输出与退出码", "轮次列表"]
+      - id: SOP-144-P05
+        polarity: positive
+        title: 会话执行由执行会话按手册准备入口并在结束后清理，看板入口的说明不变
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["演示工作区，看板未运行，演示服务都未启动（声明端口无监听）", "批次 refund 有待执行场景"]
+        steps: ["在会话中说“执行 refund 批次的待执行场景验收”；agent 运行 execute prepare 后立即检查声明端口与演示服务进程（来不及时以服务进程启动时间晚于执行会话启动时间为证）", "派出的执行会话按任务提示词完成执行并提交", "读取该任务目录的 input.json、origin.json 与 prompt.md", "启动看板，在本机对一条不受植入缺陷影响的场景发起看板执行，任务开始后读取其 origin.json 与 prompt.md"]
+        expected: ["prepare 后声明端口仍无监听，prepare 没有启动或切换环境", "会话任务的 input.json 与 origin.json 记录入口为 session，看板任务记录为 board", "会话任务的提示词要求执行会话按项目验证技能与手册准备入口、隔离数据并在结束后清理，不含看板已准备环境或不得启动环境的说法", "两份提示词只在环境准备、环境来源（含凭据来源与仓库目录的取得方式：会话从任务目录 repos.json 读取，看板沿用 SOP_REPO_<别名>）与启停约束上不同（任务编号、路径等本任务数据除外），预期、影响判断与证据条款相同", "看板任务的提示词沿用原说明，与 main 543daf6 在相同材料参数下渲染的原文相同", "执行会话按手册启动服务并在结束前停止；结果 note 列出已停止的服务名称、PID 或进程组与停止结果；提交后声明端口无监听"]
+        forbidden_effects: ["prepare 启动、停止或切换演示环境"]
+        evidence_hints: ["会话记录", "prepare 前后与提交后的 lsof 输出", "演示服务进程与执行会话的启动时间", "input.json 与 origin.json", "会话与看板两份 prompt.md 的全文 diff", "看板 prompt.md 与 main 543daf6 同参数渲染结果的 diff", "轮次接口中的 note"]
 
   - id: SOP-145
     title: 看板入口与会话入口互不干扰
@@ -303,6 +368,53 @@ sops:
         expected: ["只返回白名单字段，没有会话编号、续接命令、输入快照、本机路径与命令", "附件请求被拒"]
         forbidden_effects: []
         evidence_hints: ["响应原文"]
+      - id: SOP-145-P03
+        polarity: positive
+        title: 仅排队或等待中的看板任务不阻挡会话准备
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["看板修复任务 #F 处于待提交（D2 所涉仓库有一处未提交的演示改动时，tester-a 把缺陷场景 D2 标为人工不通过并完成复核）", "dev-a 暂停自动任务后在看板向批次 member-cycle 上传一份内容有变化的会员开通用例，看板合并任务 #M 为排队中", "批次 refund 没有未结束的草稿任务，批次 refund-v2 没有未结束的编写任务", "批次 member-cycle 有待执行场景且没有未结束的执行任务；除 #F、#M 外没有运行中、会话处理中或正在恢复环境的任务"]
+        steps: ["会话运行 sop-board execute prepare demo member-cycle --session <S>", "用 sop-board task cancel 取消该任务后，会话运行 sop-board draft prepare demo refund --session <S>", "取消该任务后，会话运行 sop-board sop prepare demo refund-v2 --source <退款 PRD> --session <S>", "读取 #F、#M 的任务接口"]
+        expected: ["三次准备都成功，各返回会话处理中的新任务，没有 task-blocked 或 task-queued", "#F 仍为待提交、#M 仍为排队中，编号与状态不变"]
+        forbidden_effects: ["会话准备取消、替换或接管 #F、#M"]
+        evidence_hints: ["三次命令输出", "#F、#M 的任务接口前后对比"]
+      - id: SOP-145-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 正在运行或切换、占用产品环境的看板任务阻挡会话准备
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示工作区，自动任务未暂停，批次 member-cycle 有待执行场景且没有未结束的执行任务；第 1 步时除 #E、第 2 步时除 #R 外没有运行中、会话处理中或正在恢复环境的任务"]
+        steps: ["看板对批次 refund 的执行任务 #E 运行中时，会话运行 sop-board execute prepare demo member-cycle --session <S>", "看板修复任务 #R 处于复测中（环境已切到修复目录）时，会话再次运行同一命令；核对后在复测结束前由 dev-a 在本机放弃 #R"]
+        expected: ["两次都退出 1，error_code 为 task-blocked", "两次都没有新建或认领任务，#E、#R 的状态不变"]
+        forbidden_effects: ["看板任务占用或切换环境期间，会话取得执行任务"]
+        evidence_hints: ["命令输出（含阻挡说明）", "同一时刻的任务接口响应"]
+      - id: SOP-145-N03
+        polarity: negative
+        negative_type: concurrency
+        title: 同批次同类看板任务排队中时，经使用者同意才替换
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["批次 refund 已有 SOP；dev-a 暂停自动任务后在看板上传 refund 的新版 SOP，看板草稿任务 #G1 为排队中"]
+        steps: ["在会话中说“为 refund 批次生成验收场景草稿”", "agent 呈报 #G1 后，dev-a 回答“同意替换”"]
+        expected: ["agent 运行 draft prepare 得到 task-queued 与 #G1，呈报编号并询问是否替换；同意前没有新任务，#G1 仍为排队中", "同意后 agent 加 --replace-queued 重新准备，输出的 replaced_tasks 含 #G1；#G1 为已放弃，会话得到会话处理中的草稿任务"]
+        forbidden_effects: ["未经使用者同意取消或替换 #G1", "#G1 与会话的草稿任务同时未结束"]
+        evidence_hints: ["会话记录", "两次命令输出", "任务接口"]
+      - id: SOP-145-N04
+        polarity: negative
+        negative_type: archived
+        title: 已中断、已放弃、已作废的任务不被接管或复活
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["批次 refund 的草稿任务依次处于已放弃、已中断、已作废（每次只构造一种，经真实入口构造：取消排队中的看板草稿、看板草稿运行中重启看板、会话草稿提交前登记新版 SOP；构造后批次没有其他未结束的草稿任务）", "批次 member-cycle 最近的合并任务与执行任务为已放弃或已中断，该批次有待执行场景", "会话 S 没有未结束的任务；工作区没有运行中、会话处理中或正在恢复环境的任务"]
+        steps: ["每构造一种草稿结束状态后，会话运行 sop-board draft prepare demo refund --session <S>，按返回任务的提示词写出合格草稿并 draft submit", "会话运行 sop-board merge prepare demo member-cycle --session <S>，核对后用 sop-board task cancel 取消；再运行 sop-board execute prepare demo member-cycle --session <S>，核对后取消", "会话 S 运行 sop-board execute prepare demo refund --session <S> 得到 #X，再运行一次同一命令"]
+        expected: ["第 1、2 步每次准备都得到新编号的会话处理中任务，原任务的编号与状态不变", "第 1 步每个新任务都提交成功并登记新的草稿版本，没有任务被作废后再次被认领", "第 3 步第二次返回 #X，不新建任务，已冻结的输入不变"]
+        forbidden_effects: ["已结束的任务被认领、回到会话处理中或再次作废"]
+        evidence_hints: ["命令输出", "任务接口前后对比", "草稿版本列表"]
 
   - id: SOP-146
     title: 开发会话分析并修复不通过的场景
@@ -391,6 +503,17 @@ sops:
         expected: ["命令拒绝并列出差异，须重新复验"]
         forbidden_effects: []
         evidence_hints: ["命令输出"]
+      - id: SOP-146-P03
+        polarity: positive
+        title: 排队或等待中的看板修复不阻挡会话修复认领与复验的准备
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["看板修复任务 #F 处于待提交（同 SOP-145-P03 的前置）", "D1 的最新结果为未交接的会话失败，不在任何修复任务中"]
+        steps: ["#F 待提交时，修复会话运行 sop-board fix prepare demo --scenario refund#<D1 编号> --session <修复会话>，在当前工作区修复后 fix submit 得到 #S", "未参与修复的新会话 R 运行 sop-board execute prepare demo --fix <#S> --session <R>", "读取 #F、#S 与新复验任务的任务接口"]
+        expected: ["fix prepare 成功认领 D1，没有 task-blocked；#S 提交后为待验证", "复验准备成功，返回会话处理中的复验任务", "#F 始终为待提交，编号与状态不变"]
+        forbidden_effects: ["因 #F 返回 task-blocked 或进入等待", "取消或接管 #F"]
+        evidence_hints: ["两次准备与 fix submit 的命令输出", "#F 的任务接口前后对比", "#S 与复验任务的任务接口"]
 
   - id: SOP-147
     title: 开发会话根据需求资料写业务 SOP
@@ -535,3 +658,135 @@ sops:
         expected: ["只出现白名单字段与时长、最近活动时间", "没有会话编号、续接命令、事件摘要、输入快照、本机路径、命令与凭据变量名", "非共享附件请求被拒"]
         forbidden_effects: []
         evidence_hints: ["响应原文"]
+
+  - id: SOP-150
+    title: 会话失败分流与修复任务放弃
+    actor: 开发者与测试同事
+    entry: 看板修复页、任务页与接口；sop-board 命令行；Codex 与 Claude Code 会话
+    scenarios:
+      - id: SOP-150-P01
+        polarity: positive
+        title: 会话登记的失败不自动修复，看板登记的失败照旧自动修复
+        actor: 开发者
+        priority: P0
+        verify: api
+        initial_state: ["演示工作区，看板运行中且自动任务未暂停；没有未结束的修复任务，各批次没有排队中、待提交、等待合并、等待浏览器或运行中的执行任务", "缺陷场景 D1、D2 不在任何修复任务中；除 D1、D2 外没有可自动纳入修复的失败"]
+        steps: ["执行会话以 execute prepare 准备只含 D1 的范围，经 api 入口执行（失败）后 execute submit", "等待 30 秒，请求修复接口、任务列表、sop-board status --json 与待处理事项接口，打开本机修复页", "dev-a 在本机发起只含 D2 的看板执行，执行结束后再等 30 秒，请求任务列表与修复接口", "核对后 dev-a 在本机放弃该看板修复任务"]
+        expected: ["D1 的新结果为失败，轮次入口为会话；30 秒内没有建立包含 D1 的修复任务，也没有启动修复会话", "待处理事项列出 D1 的这次失败，说明可在会话中修复或在本机修复页交给看板修复，并给出修复页链接；本机修复页在 D1 旁有“交给看板修复”按钮", "D2 的新结果为失败，轮次入口为看板；看板自动建立修复任务，问题只有 D2，不含尚未交接的 D1"]
+        forbidden_effects: ["看板为 D1 自动建立修复任务或启动修复会话", "D2 的修复任务夹带 D1"]
+        evidence_hints: ["轮次接口", "修复接口与任务列表前后", "status --json 与待处理事项接口响应", "本机修复页截图"]
+      - id: SOP-150-P02
+        polarity: positive
+        title: 本机交给看板修复后按原规则建立修复任务，暂停期间保存选择并等待
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["D1 的最新结果为会话登记的失败（结果 r1），尚未交接；没有未结束的修复任务", "除 D1 的 r1 外没有可自动纳入修复的问题（D2 最近的失败已在已放弃的修复任务中）", "dev-a 已在本机暂停自动任务"]
+        steps: ["dev-a 在本机修复页对 D1 点击“交给看板修复”", "等待 30 秒，请求修复接口与任务列表", "dev-a 在本机恢复自动任务，等待 30 秒后再次请求"]
+        expected: ["点击后修复页显示这次选择已保存、正在等待，原因为自动任务已暂停；暂停期间没有新的修复任务", "恢复后看板按原修复规则建立一个修复任务，问题只有 D1 的结果 r1"]
+        forbidden_effects: ["暂停期间建立修复任务", "修复任务包含 D1 以外的问题"]
+        evidence_hints: ["修复页截图", "交接请求与响应", "修复接口与任务列表前后"]
+      - id: SOP-150-P03
+        polarity: positive
+        title: 放弃分析或修复中的看板修复任务，本次尝试记为已放弃
+        actor: 开发者
+        priority: P0
+        verify: api
+        initial_state: ["看板修复任务 #F1 的问题只有 D2 的一条新看板失败，任务处于分析中或修复中，第 1 次尝试进行中，修复会话正在运行"]
+        steps: ["记录放弃前的任务状态、尝试状态与修复会话进程", "dev-a 在本机修复页点击放弃，记录点击时间", "读取任务接口与修复页的尝试记录，检查修复会话进程、修复工作树与修复分支"]
+        expected: ["#F1 为已放弃", "第 1 次尝试为已放弃，结束时间不早于点击放弃的时间", "修复会话进程已退出", "修复工作树与 sop-board/fix/<编号> 分支保留"]
+        forbidden_effects: ["放弃后尝试仍显示分析中、修复中或运行中", "删除修复分支或工作树中的改动"]
+        evidence_hints: ["放弃前后的任务接口响应", "修复页截图", "ps、git worktree list 与 git branch 输出"]
+      - id: SOP-150-P04
+        polarity: positive
+        title: 放弃已中断的看板修复任务，尝试记为已放弃并保留中断时间
+        actor: 开发者
+        priority: P1
+        verify: api
+        initial_state: ["看板修复任务 #F2（D2 的新看板失败）在修复会话运行时因看板重启而中断：任务为已中断，第 1 次尝试为已中断，结束时间为中断时刻 T1"]
+        steps: ["至少 2 分钟后，dev-a 在本机放弃 #F2", "读取任务接口与修复页的尝试记录"]
+        expected: ["#F2 为已放弃", "第 1 次尝试为已放弃，结束时间仍为 T1"]
+        forbidden_effects: ["尝试的结束时间改为放弃时刻", "放弃后尝试仍为已中断"]
+        evidence_hints: ["重启后与放弃后的任务接口响应", "修复页截图"]
+      - id: SOP-150-P05
+        polarity: positive
+        title: 放弃待开发者处理的看板修复任务时，待提交的尝试保持原状态
+        actor: 开发者
+        priority: P2
+        verify: api
+        initial_state: ["自检通过后，执行者在演示仓库 lib 以仓库级配置使提交身份为空（例如 user.email 设为空串，场景结束后恢复），不修改使用者的全局或系统 Git 配置；看板为 D2 的新看板失败建立的修复任务 #F4 由真实修复流程走到提交前核对，因没有 Git 提交身份转为待开发者处理，第 1 次尝试为待提交，修复工作树保留改动"]
+        steps: ["记录第 1 次尝试的状态、原因与时间", "dev-a 在本机放弃 #F4", "读取任务接口、修复页的尝试记录与修复工作树"]
+        expected: ["#F4 为已放弃", "第 1 次尝试仍为待提交，原因与时间不变", "修复工作树中的改动与修复分支保留"]
+        forbidden_effects: ["待提交的尝试被改为已放弃", "清除修复工作树中的改动"]
+        evidence_hints: ["放弃前后的任务接口响应", "修复工作树的 git status 与 git diff --stat"]
+      - id: SOP-150-P06
+        polarity: positive
+        title: 放弃尚未提交输出的会话修复，尝试记为已放弃并保留当前工作区改动
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话修复 #S1 认领 D1（SOP-150-N01 第 5 步）；修复会话已在 lib 改动文件并写出根因输出，尚未 fix submit"]
+        steps: ["记录 app、lib 的 git status 与改动文件摘要", "dev-a 运行 sop-board task cancel demo --task <#S1>", "读取任务接口、修复页、sop-board status --json 与 git status"]
+        expected: ["#S1 为已放弃，其尚未提交输出的尝试为已放弃", "app、lib 的未提交改动与放弃前一致", "任务与修复页没有声称保留了工作树", "待处理事项中没有空的续接命令"]
+        forbidden_effects: ["还原或删除开发者工作区中的改动"]
+        evidence_hints: ["命令输出", "放弃前后的 git status 与文件摘要", "status --json"]
+      - id: SOP-150-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 交接选择只绑定这一条当前失败
+        actor: 开发者
+        priority: P1
+        verify: api
+        initial_state: ["SOP-150-P02 完成后不放弃 #H，立即执行本场景：看板已为 D1 的结果 r1 建立修复任务 #H，#H 仍在分析或修复中，须在复测通过前放弃"]
+        steps: ["dev-a 在本机再次以 r1 请求 POST …/fixes/handoff，核对后放弃 #H", "执行会话重新执行 D1 得到新失败 r2；dev-a 暂停自动任务后以 r2 请求交接", "执行会话再次执行 D1 得到新失败 r3；dev-a 恢复自动任务，等待 30 秒后请求修复接口与待处理事项", "dev-a 以 r2 请求交接", "修复会话用 fix prepare 认领 D1 后，dev-a 以 r3 请求交接"]
+        expected: ["第 1 步不新建任务，D1 只在 #H 中", "第 2 步保存选择并等待", "第 3 步 30 秒内没有建立修复任务：r2 的选择不迁移到 r3，r3 作为未交接的会话失败出现在待处理事项中", "第 4 步返回 409，没有新任务或新的交接选择", "第 5 步被拒，说明该失败已被会话认领，没有新任务"]
+        forbidden_effects: ["同一失败出现两个修复任务", "旧选择为后续结果建立修复任务"]
+        evidence_hints: ["各次交接请求与响应", "修复接口与任务列表前后", "待处理事项接口响应"]
+      - id: SOP-150-N02
+        polarity: negative
+        negative_type: permission
+        title: 内网只能看到交接提示，不能交给看板修复
+        actor: 测试同事
+        priority: P0
+        verify: api
+        initial_state: ["D1 有一条未交接、未被会话修复认领的会话失败（在 SOP-150-N01 第 3 步之后、第 5 步之前执行，即 r3）"]
+        steps: ["tester-a 以非回环地址打开修复页", "tester-a 以非回环地址请求 POST …/fixes/handoff，正文为该失败记录编号"]
+        expected: ["修复页能看到 D1 这次失败的提示，没有“交给看板修复”按钮", "交接请求返回 403 local-only", "修复任务与交接选择都没有变化"]
+        forbidden_effects: ["内网请求建立修复任务或保存交接选择"]
+        evidence_hints: ["内网修复页原文与截图", "响应原文", "修复接口前后"]
+      - id: SOP-150-N03
+        polarity: negative
+        negative_type: interrupted
+        title: 复测期间放弃后，收尾出错也保持已放弃、不改写尝试
+        actor: 开发者
+        priority: P0
+        verify: api
+        initial_state: ["看板修复任务 #F3（D2 的新看板失败）已提交修复、处于复测中，复测会话正在运行，第 1 次尝试为待验证"]
+        steps: ["#F3 进入复测中且复测会话运行后，在复测通过前 dev-a 在本机放弃 #F3，记录响应时间", "此后 3 分钟内每 5 秒读取 #F3 的任务接口，并检查复测会话进程", "读取修复页的尝试记录与 lib 的基线分支"]
+        expected: ["放弃后 #F3 一直为已放弃，没有出现待开发者处理或其他状态", "复测会话进程已退出", "第 1 次尝试保持待验证，没有被改写为未通过、已作废或其他结论", "修复提交留在修复分支，lib 基线分支没有合入"]
+        forbidden_effects: ["任务改回待开发者处理", "尝试结论被改写", "修复被合入基线"]
+        evidence_hints: ["每 5 秒的任务接口响应序列", "ps 输出", "基线分支与修复分支的 git log", "放弃后复测线程的出错记录（看板日志或任务 error 历史）"]
+      - id: SOP-150-N04
+        polarity: negative
+        negative_type: stale-input
+        title: 放弃后再提交会话修复输出被拒，任务不复活
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-150-P06 放弃的 #S1，任务目录中有修复会话写好的、符合格式的根因输出"]
+        steps: ["修复会话运行 sop-board fix submit demo --task <#S1> --session <修复会话标识>", "读取任务接口、尝试记录与任务列表"]
+        expected: ["命令退出 1，ok 为 false，error_code 为 task-state-invalid，说明任务当前状态不能提交", "#S1 仍为已放弃，没有回到会话处理中或进入待验证", "尝试仍为已放弃，没有登记根因与改动清单", "没有新的复验任务"]
+        forbidden_effects: ["已放弃的修复被复活", "登记本次根因输出"]
+        evidence_hints: ["命令输出与退出码", "提交前后的任务接口响应"]
+      - id: SOP-150-N05
+        polarity: negative
+        negative_type: stale-input
+        title: 复验已取消或原修复已放弃后，复验结果不登记
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["会话修复 #S3 认领 D1 的新会话失败、已 fix submit，处于待验证", "未参与修复的复验会话 R1 已用 execute prepare --fix 准备复验任务 #V1，并经真实入口执行写好结果"]
+        steps: ["dev-a 运行 sop-board task cancel demo --task <#V1>，读取 #S3", "R1 运行 sop-board execute submit demo --task <#V1>", "未参与修复的新复验会话 R2 准备复验任务 #V2 并实际执行写好结果；R2 提交前，dev-a 运行 sop-board task cancel demo --task <#S3>", "R2 提交前读取 #V2 的任务接口", "R2 运行 sop-board execute submit demo --task <#V2>", "读取 #S3、#V1、#V2、轮次与修复页"]
+        expected: ["#V1 为已放弃；#S3 仍为待验证，等待说明不再引用 #V1", "#V1 的提交退出 1，ok 为 false，error_code 为 task-state-invalid，没有登记轮次", "放弃 #S3 后、R2 提交前，#V2 仍为会话处理中（放弃会话修复不连带取消复验）", "#V2 的提交返回 ok 为 false，没有登记轮次；#V2 为已作废，原因说明原修复已不在待验证或待提交", "#S3 为已放弃，已登记的尝试保持放弃前的结论；lib 工作区的修复改动保留"]
+        forbidden_effects: ["登记 #V1 或 #V2 的轮次", "#S3 进入等待开发者提交或回到待验证", "#V1、#V2 回到会话处理中"]
+        evidence_hints: ["各命令输出与退出码", "任务接口前后", "轮次接口", "修复页截图"]
