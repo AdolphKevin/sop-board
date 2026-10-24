@@ -379,7 +379,13 @@
         submit.disabled = true;
         saveIdentity();
         try {
-          const content = await file.text();
+          let content;
+          try {
+            content = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(await file.arrayBuffer());
+          } catch {
+            show(message, "上传失败：文件读取失败，用例文件必须为 UTF-8", "error");
+            return;
+          }
           const batch = uploadForm.elements.namedItem("batch")?.value.trim();
           if (uploadForm.dataset.workspaceKey && !batch) {
             show(message, "请填写批次名称", "error");

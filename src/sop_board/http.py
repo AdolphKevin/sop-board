@@ -117,6 +117,8 @@ class Handler(BaseHTTPRequestHandler):
                 except UnicodeError:
                     if re.fullmatch(r'/api/v1/workspaces/[^/]+/batches/[^/]+/sop', path):
                         reject(422, 'sop-invalid', 'content', 'SOP 原文必须为 UTF-8')
+                    if re.fullmatch(r'/api/v1/workspaces/[^/]+/batches/[^/]+/cases', path):
+                        reject(422, 'cases-invalid', 'content', '用例文件必须为 UTF-8')
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
                 except ValueError:
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
