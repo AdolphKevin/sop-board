@@ -264,7 +264,7 @@ class Tasks:
         if task['status'] == S.NEEDS_SYNC and not result['error']:
             result['error'] = '；'.join(str(problem) for problem in task['result'].get('problems', []))
             if not result['error'] and task['result'].get('workspace_changed'):
-                result['error'] = '场景文件已被修改，请核对工作区后重新合并'
+                result['error'] = '工作区中的场景文件与看板版本不一致（已被修改，或不是合法的场景文件），请核对后重新合并'
         if not local:
             result = self.types['merge'].visibility.project(dict(task, progress=result, error=result.get('error', ''),
                 session_task=result.get('session_task'), ownership=result.get('ownership', '')))['progress']

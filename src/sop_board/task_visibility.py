@@ -87,7 +87,7 @@ class Visibility:
         # 原始运行错误可能含命令、会话或路径；内网只说明可采取的业务动作。
         error = task.get('error', '')
         if not error and task['status'] == S.NEEDS_SYNC:
-            error = '任务输入已变化，请开发者在本机核对后重新合并'
+            error = '任务输入已变化，本轮结果未写入；看板未自动发起新合并时，请开发者在本机核对后重新合并'
         safe = bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀|编写 SOP)任务 #[0-9]+ 结束', error))
         if error and not safe and error not in ('等待 Codex 名额', '等待浏览器', '等待验收浏览器', '等待工作区自检通过'):
             error = {S.QUEUED: '任务已排队，等待开始', S.RUNNING: '任务正在运行',
@@ -99,7 +99,7 @@ class Visibility:
                      S.NEEDS_INPUT: '仍有信息待补充，请查看当前问题',
                      S.WAIT_BROWSER: '等待浏览器',
                      S.WAIT_COMMIT: '等待开发者提交产品改动', S.WAIT_VALIDATION: '等待当前产品验证通过',
-                     S.NEEDS_SYNC: '任务输入已变化，请开发者在本机核对后重新合并',
+                     S.NEEDS_SYNC: '任务输入已变化，本轮结果未写入；看板未自动发起新合并时，请开发者在本机核对后重新合并',
                      S.WAIT_MERGE: '等待合并结束', S.INTERRUPTED: '任务已中断，可由开发者在本机重试'}.get(
                          task['status'], '请开发者在本机查看任务原因')
         if 'error' in result:
