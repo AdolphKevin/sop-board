@@ -309,16 +309,18 @@ class Session:
                 task = self.raw(tid)
             directory = self.tasks.directory(task['id'])
             if (directory / 'prompt.md').is_file() and (directory / 'input.json').is_file():
+                self.tasks.conversation.taken(task)
                 return self.descriptor(task)
             directory.mkdir(parents=True, exist_ok=True)
             if kind == 'execute':
                 self.prepare_execution(task)
             else:
-                # cases upload 认领后，在第一次准备前纳入最新上传；准备后保持快照不变。
+                # cases upload 或答复认领后，在第一次准备前纳入最新上传与此前全部回复（这些回复计为已派发）；准备后保持快照不变。
                 if kind == 'merge' and existing:
                     self.tasks.update(task['id'], **self.tasks.refresh_merge(task))
                     task = self.raw(task['id'])
                 self.tasks.types[kind].prepare(task)
+                self.tasks.conversation.taken(task)
             return self.descriptor(self.raw(task['id']))
 
     def prepare_execution(self, task):
@@ -344,7 +346,8 @@ class Session:
             if task['kind'] != kind or not claim:
                 reject(409, 'task-not-owned', 'task', '任务类型不匹配或不是会话认领的任务')
             if owner is not None and identity(owner) != claim['session_id']:
-                reject(409, 'task-owned', 'session', '会话标识与任务认领不一致')
+                retest = kind == 'execute' and json.loads(task['input_json']).get('fix')
+                reject(409, 'task-owned', 'session', '会话标识与任务认领不一致' + ('；复验须由未参与修复的新会话准备并提交' if retest else ''))
             if task['status'] in (S.COMPLETED, S.NEEDS_INPUT) or kind=='fix' and task['status'] in (S.WAIT_VALIDATION,S.WAIT_COMMIT,S.DEVELOPER,S.HANDLED):
                 return dict(ok=True, task=self.tasks.read(task_id), duplicate=True)
             if task['status'] != S.SESSION:
@@ -404,7 +407,10 @@ class Session:
                     from .session_fixes import SessionFixes
                     if SessionFixes(self.tasks).cancel_validation(task_id):
                         return dict(ok=True,task=self.tasks.read(task_id))
-                self.tasks.update(task_id, status=S.ABANDONED, error='使用者取消会话任务', finished_at=now())
+                if task['kind'] == 'merge':
+                    self.tasks.conversation.abandon(task)
+                else:
+                    self.tasks.update(task_id, status=S.ABANDONED, error='使用者取消会话任务', finished_at=now())
                 if task['kind'] == 'generate':
                     self.tasks.generations.task_status(task_id, S.ABANDONED)
                 return dict(ok=True, task=self.tasks.read(task_id))
@@ -514,6 +520,15 @@ def parser_for(group):
     return parser
 
 
+def upload_text(path, code, problem):
+    """按字节读取上传文件并按 UTF-8 解码，不能解码时返回与看板上传相同的业务错误；换行仍按文本方式读取时统一。"""
+    try:
+        text = path.read_bytes().decode('utf-8')
+    except UnicodeDecodeError:
+        reject(422, code, 'content', problem)
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
 def target_args(group, args):
     target = list(args.targets)
     filename = None
@@ -588,12 +603,12 @@ def command(arguments):
                 if group == 'sop':
                     from .validation import validate_batch
                     validate_batch(batch)
-                    body = dict(filename=filename.name,content=filename.read_text(encoding='utf-8'),uploaded_by=app.person(args.uploaded_by),
+                    body = dict(filename=filename.name,content=upload_text(filename,'sop-invalid','SOP 原文必须为 UTF-8'),uploaded_by=app.person(args.uploaded_by),
                         confirmed_by=app.person(args.confirmed_by),base_sha256=app.service.sop_sha256(batch))
                     result = app.upload_sop(batch,body)
                 elif group == 'cases':
                     from .cases import load_cases
-                    body = dict(filename=filename.name, content=filename.read_text(encoding='utf-8'), uploaded_by=app.person(args.uploaded_by))
+                    body = dict(filename=filename.name, content=upload_text(filename, 'cases-invalid', '用例文件必须为 UTF-8'), uploaded_by=app.person(args.uploaded_by))
                     load_cases(body)
                     app.preflight('merge', batch)
                     result = app.service.upload_cases(app.key, batch, body)

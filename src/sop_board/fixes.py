@@ -760,6 +760,7 @@ class Fixes:
                 items.append(dict(kind='board-fix-requested' if problem['board_requested'] else 'session-failure',
                     batch=problem['batch'],scenario=problem['scenario'],result_id=problem['result_id'],
                     url=origin+f'/w/{key}/fixes',reason=problem['batch']+'#'+problem['scenario']+'：'+reason))
+            items += self.tasks.conversation.attention(db, key, origin, local=local)
         for task in self.tasks.list(key, local=local)['tasks']:
             if task['status'] == S.ABANDONED:
                 continue

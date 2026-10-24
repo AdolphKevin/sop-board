@@ -15,6 +15,8 @@ from .time_format import local_date
 
 
 ACTIONS = dict(adopted='已采纳', question='已追问', not_applicable='不适用')
+# 看板按会话归属派发补充澄清时写入任务原因，只作说明；认领会话 prepare 后清除。
+FOLLOWUP_NOTE = '看板已按会话归属派发补充澄清，等待认领会话 prepare'
 
 
 class MergeConversation:
@@ -55,6 +57,19 @@ class MergeConversation:
         return db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND kind='merge' AND status IN ({sql_states(OUTPUT_ACTIVE | {S.SESSION})}) LIMIT 1",
                           (batch['workspace'], batch['name'])).fetchone()
 
+    def prepared(self, task_id):
+        directory = self.tasks.directory(task_id)
+        return (directory / 'prompt.md').is_file() and (directory / 'input.json').is_file()
+
+    def unprepared(self, db, active):
+        """会话已认领、尚未 prepare 的合并：prepare 时按当时的全部回复冻结快照。"""
+        return bool(self.tasks.kernel.claim(dict(id=active['id']), connection=db)) and not self.prepared(active['id'])
+
+    def dispatched(self, db, batch_id):
+        """冻结的合并快照已包含此刻全部回复：待发轮次计为已派发，等待中的会话归属随之用掉。"""
+        db.execute('UPDATE merge_followups SET dispatched=requested WHERE batch=?', (batch_id,))
+        db.execute('DELETE FROM session_merge_followups WHERE batch=?', (batch_id,))
+
     def request(self, db, batch, session=None):
         db.execute('INSERT INTO merge_followups(batch,requested) VALUES (?,1) ON CONFLICT(batch) DO UPDATE SET requested=requested+1', (batch['id'],))
         active = self.active(db, batch)
@@ -64,17 +79,51 @@ class MergeConversation:
             db.execute('INSERT INTO session_merge_followups VALUES (?,?) ON CONFLICT(batch) DO UPDATE SET session_id=excluded.session_id', (batch['id'], owner))
         if active:
             return None
-        return self.enqueue_followup(db, batch)
+        return self.enqueue_followup(db, batch, session)
 
-    def enqueue_followup(self, db, batch):
+    def enqueue_followup(self, db, batch, session=None):
         owner = db.execute('SELECT session_id FROM session_merge_followups WHERE batch=?', (batch['id'],)).fetchone()
         result = self.tasks.enqueue_merge(batch['workspace'], batch['name'], trigger='补充澄清', connection=db, fresh=bool(owner))
         if result and owner:
             if result['task']['status'] == S.QUEUED:
                 self.tasks.kernel.assign(result['task']['id'], owner[0], connection=db)
+                if owner[0] != session:
+                    # 看板代为派发：只记认领与说明，不准备材料、不启动模型；会话 prepare 时按当时全部回复冻结。
+                    db.execute('UPDATE tasks SET error=? WHERE id=?', (FOLLOWUP_NOTE, result['task']['id']))
                 result['task'] = self.tasks.read(result['task']['id'], connection=db)
             db.execute('DELETE FROM session_merge_followups WHERE batch=?', (batch['id'],))
         return result
+
+    def taken(self, task):
+        """认领会话 prepare 接手看板代派的补充澄清后，任务原因与待处理事项不再提示等待。"""
+        if task['kind'] == 'merge' and task['error'].startswith(FOLLOWUP_NOTE):
+            self.tasks.update(task['id'], error='')
+
+    def abandon(self, task):
+        """会话取消认领的合并。尚未 prepare 时此前回复已交给这一轮，取消后留待下一次合并，看板不再自动另派。"""
+        prepared = self.prepared(task['id'])
+        with self.store.transaction() as db:
+            db.execute('UPDATE tasks SET status=?,error=?,finished_at=? WHERE id=?', (S.ABANDONED, '使用者取消会话任务', now(), task['id']))
+            if not prepared:
+                self.dispatched(db, self.service.batch(db, task['workspace'], task['batch'])['id'])
+
+    def attention(self, db, key, origin, *, local=True):
+        """已由会话认领、仍无 prepare 材料的合并；内网不显示会话标识与本机命令。"""
+        items = []
+        for row in db.execute("SELECT t.id,t.batch,t.trigger,t.error,s.session_id FROM tasks t JOIN session_tasks s ON s.task=t.id "
+                              "WHERE t.workspace=? AND t.kind='merge' AND t.status=? ORDER BY t.id", (key, S.SESSION)):
+            if self.prepared(row['id']):
+                continue
+            if local:
+                note = row['error'] if row['error'].startswith(FOLLOWUP_NOTE) else f"合并 #{row['id']}（{row['trigger']}）已由会话认领，尚未 prepare"
+                inputs = '这些答复' if row['trigger'] == '补充澄清' else '这些用例与答复'
+                reason = (f"{note}（会话 {row['session_id']}）：在该会话运行 merge prepare {row['batch']} --session {row['session_id']} 后提交；"
+                          f"不再处理时 task cancel --task {row['id']}；取消后{inputs}留待下一次合并（本机重新合并交给看板，或由会话 merge prepare）")
+            else:
+                reason = f"合并 #{row['id']}（{row['trigger']}）已由会话认领、尚未准备，等待开发者在本机会话中处理"
+            items.append(dict(kind='merge-followup', task=row['id'], batch=row['batch'],
+                              url=origin + f"/w/{key}/tasks/{row['id']}", reason=reason))
+        return items
 
     def continue_waiting(self):
         with self.store.connection() as db:
@@ -149,9 +198,13 @@ class MergeConversation:
                 raise APIError(422, 'clarification-invalid', problems)
             ids = [db.execute('INSERT INTO merge_messages(batch,author,created_at,gap,gap_json,text,source) VALUES (?,?,?,?,?,?,?)',
                 (batch['id'], author, now(), ref, canonical(gap), raw, source)).lastrowid for ref, gap, raw in checked]
+            active = self.active(db, batch)
+            absorbed = bool(active) and self.unprepared(db, active)
             queued = self.request(db, batch, session)
+        notice = ('已入队补充澄清' if queued else '已保存，将在会话准备当前合并时一并纳入' if absorbed
+                  else '已保存，将在当前合并结束后发送')
         return dict(ok=True, messages=ids, task=self.tasks.types['merge'].visibility.project(queued['task']) if queued else None,
-                    notice='已入队补充澄清' if queued else '已保存，将在当前合并结束后发送')
+                    notice=notice)
 
     def exclude(self, key, name, body, *, include=None, source='看板', session=None):
         if source not in ('看板', '会话'):

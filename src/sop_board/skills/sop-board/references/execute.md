@@ -2,7 +2,7 @@
 
 先完成 status 检查，并读取 [sessions.md](sessions.md)。默认由未参与实现的新会话执行；使用者明确要求当前会话执行时如实登记为自检。
 
-1. 确认工作区已登记，读取 `sop-board status --json` 的 setup_check。ok 表示最近已完成的自检结果是否仍适用；latest_attempt.completed 为 false 只说明最近尝试未能在当前环境运行，不据此推翻已有有效通过结果。不能在 Codex 沙箱内运行涉及 git worktree 写入的 check；没有有效通过结果或配置已变化时，请使用者在沙箱外运行 `sop-board check <工作区> [--data <目录>]`。选择批次与范围，运行 `sop-board execute prepare <工作区> <批次> --scope pending --session <执行会话标识>`。全量用 all，指定范围用场景编号列表。会话入口可以在未提交内容上执行；保持准备后的业务输入和产品内容不变。
+1. 确认工作区已登记，读取 `sop-board status --json` 的 setup_check。ok 表示最近已完成的自检结果是否仍适用；latest_attempt.completed 为 false 只说明最近尝试未能在当前环境运行，不据此推翻已有有效通过结果。不能在 Codex 沙箱内运行涉及 git worktree 写入的 check；没有有效通过结果或配置已变化时，请使用者在沙箱外运行 `sop-board check <工作区> [--data <目录>]`。选择批次与范围；需要使用者答复范围时（如“这批”指哪组场景），非交互客户端（如单轮 `codex exec`）先停止并等待下一轮输入，不自行假设范围。确定后运行 `sop-board execute prepare <工作区> <批次> --scope pending --session <执行会话标识>`。全量用 all，指定范围用场景编号列表。会话入口可以在未提交内容上执行；保持准备后的业务输入和产品内容不变。
 2. 读取返回的任务提示词、repos.json 中按别名列出的仓库目录、项目验证技能和它引用的产品真实验证手册。按手册准备入口、隔离数据和授权，环境来自执行会话自身；真实账号登录仍由使用者处理。将结果和证据写入任务目录指定位置。
 3. Web 入口使用随包 [playwright-acceptance](../../playwright-acceptance/SKILL.md) 与 `sop-board playwright guide`。接口、数据库、命令行按项目手册经真实入口操作，保存请求/命令、输出、前后数据和文件清单。场景执行会话不新增测试。
 4. 结束前按手册停止本轮自己启动的服务进程，核对已退出；只清理本轮获授权的资源，保留使用者已有的服务和浏览器。在结果 note 中列出已停止的服务名称、PID 或进程组及停止结果；没有启动时写“本轮未启动服务”，停止失败则列出仍运行的进程与原因，不声称已清理。保留沿用结果原有的理由，再补清理记录。

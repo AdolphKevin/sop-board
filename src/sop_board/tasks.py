@@ -134,7 +134,7 @@ class Tasks:
             else:
                 task_id = db.execute(f"INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at) VALUES ('merge',?,?,'{S.QUEUED}',?,?,?,?,?)",
                                      (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
-            db.execute('UPDATE merge_followups SET dispatched=requested WHERE batch=?', (batch['id'],))
+            self.conversation.dispatched(db, batch['id'])
             return dict(ok=True, task=self.read(task_id, connection=db))
 
     def freeze_merge(self, db, key, name, batch, version, cases):
@@ -199,6 +199,8 @@ class Tasks:
             batch = self.service.batch(db, task['workspace'], task['batch'])
             snapshot, sha, digest = self.freeze_merge(db, task['workspace'], task['batch'], batch,
                 self.service.latest_version(db, batch), self.service.case_union(db, batch))
+            # 会话 prepare 或重试重新冻结的快照包含此刻全部回复，与入队相同计为已派发，本轮结束后不再为它们补派。
+            self.conversation.dispatched(db, batch['id'])
         return dict(input_json=canonical(snapshot), input_digest=digest, scenario_file_sha256=sha, snapshot_json='{}')
 
     def merge_inputs(self, db, batch, version, cases):
