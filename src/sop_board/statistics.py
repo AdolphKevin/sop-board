@@ -3,6 +3,26 @@
 import json
 
 from .time_format import local_time
+from .merge_state import read_holds, held_scenarios
+
+ORIGIN_LABELS = dict(board='看板', session='会话', unknown='历史记录未注明')
+INDEPENDENCE_LABELS = {'independent': '独立验收', 'self-check': '实现者自检', 'undeclared': '未声明', 'mixed': '混合记录'}
+
+
+def independence_counts(rows):
+    result = {key: 0 for key in ('independent', 'self-check', 'undeclared')}
+    for row in rows:
+        key = row.get('independence', 'undeclared')
+        result[key if key in result else 'undeclared'] += 1
+    return result
+
+
+def round_identity(rows):
+    counts = independence_counts(rows)
+    used = [key for key, count in counts.items() if count]
+    return dict(executors=list(dict.fromkeys(row['executor'] for row in rows)),
+                independence=used[0] if len(used) == 1 else 'mixed' if used else 'undeclared',
+                independence_counts=counts)
 
 
 def ratio(numerator, denominator):
@@ -14,6 +34,8 @@ def pending_scope(db, batch, summary, product_digest):
     """按钮计数与手动入队共用；失败也须重跑，不改变展示队列的口径。"""
     scope = []
     for scene in summary['scenarios']:
+        if scene.get('held'):
+            continue
         agent = scene['latest_agent']
         latest = max((r for r in (agent, scene['latest_manual']) if r),
                      key=lambda r: r['number'], default=None)
@@ -31,11 +53,45 @@ def pending_scope(db, batch, summary, product_digest):
     return scope
 
 
+def reused(row):
+    return (row["note"] or "").startswith("沿用：")
+
+
+def rerun(row):
+    # 重跑指实际执行并得出通过或失败的场景；受阻、跳过既不是沿用也不是重跑。
+    return not reused(row) and row["status"] in ("pass", "fail")
+
+
+def round_counts(db, batch_id, numbers):
+    """按任务登记的轮次从正式结果计算沿用数与重跑数；看板、会话与旧任务用同一来源。"""
+    numbers = [int(n) for n in numbers]
+    rows = db.execute("SELECT r.status,r.note FROM results r JOIN rounds t ON t.id=r.round_id WHERE t.batch=? AND t.kind='agent' "
+                      "AND t.number IN (" + ",".join("?" * len(numbers)) + ")", (batch_id, *numbers)).fetchall() if numbers else []
+    return dict(reused_count=sum(reused(r) for r in rows), rerun_count=sum(rerun(r) for r in rows))
+
+
+def task_counts(db, workspace, batch, rounds):
+    """执行任务的轮次是整数（本批次）或 {batch, round}（会话修复复验跨批次）；按批次分组后汇总。"""
+    grouped = {}
+    for item in rounds:
+        name, number = (item["batch"], item["round"]) if isinstance(item, dict) else (batch, item)
+        grouped.setdefault(name, []).append(number)
+    counts = dict(reused_count=0, rerun_count=0)
+    for name, numbers in grouped.items():
+        row = db.execute("SELECT id FROM batches WHERE workspace=? AND name=?", (workspace, name)).fetchone()
+        if row:
+            for key, value in round_counts(db, row["id"], numbers).items():
+                counts[key] += value
+    return counts
+
+
 def calculate(db, batch):
+    held = held_scenarios(read_holds(db, batch))
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]
     rows = [dict(row) for row in db.execute(
-        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at FROM results r JOIN rounds t ON t.id=r.round_id "
+        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at,t.implementer,t.submitted_by,COALESCE(o.origin,'unknown') AS execution_origin "
+        "FROM results r JOIN rounds t ON t.id=r.round_id LEFT JOIN round_origins o ON o.round_id=t.id "
         "WHERE t.batch=? ORDER BY t.number,r.id", (batch["id"],))]
     by_scenario = {}
     evidence = {}
@@ -44,7 +100,8 @@ def calculate(db, batch):
         evidence.setdefault(item["result_id"], []).append(dict(name=item["name"], sha256=item["sha256"]))
     for row in rows:
         row["round"] = row["number"]
-        row["reused"] = row["kind"] == "agent" and (row.get("note") or "").startswith("沿用：")
+        row["reused"] = row["kind"] == "agent" and reused(row)
+        row["rerun"] = row["kind"] == "agent" and rerun(row)
         row["executed_at_display"] = local_time(row["executed_at"])
         row["submitted_at_display"] = local_time(row["submitted_at"])
         row["evidence"] = evidence.get(row["id"], [])
@@ -63,14 +120,15 @@ def calculate(db, batch):
         filters["agent-pass"] += bool(a and a["status"] == "pass")
         if latest and latest["status"] in ("fail", "blocked"):
             filters[latest["status"]] += 1
-        executed += bool(history)
-        if agents:
+        eligible = scenario['scenario'] not in held
+        executed += bool(history) and eligible
+        if agents and eligible:
             agent_counts[a["status"]] += 1
             agent_pass += a["status"] == "pass"
             agent_fail += a["status"] == "fail"
             first_pass += agents[0]["status"] == "pass"
             first_fail += agents[0]["status"] == "fail"
-        if a and a["status"] == "pass" and m and m["number"] > a["number"]:
+        if eligible and a and a["status"] == "pass" and m and m["number"] > a["number"]:
             reviewed += 1
             manual_pass += m["status"] == "pass"
             manual_fail += m["status"] == "fail"
@@ -83,6 +141,8 @@ def calculate(db, batch):
             queue = "retest"
         else:
             queue = "reviewed"
+        if not eligible:
+            queue = 'held'
         if queue in queues:
             queues[queue].append(scenario["scenario"])
         preceding_agent = None
@@ -95,24 +155,30 @@ def calculate(db, batch):
         details.append(dict(scenario=scenario["scenario"], node=scenario["node"], title=scenario["title"],
                             polarity=scenario["polarity"], priority=scenario["priority"], verify=scenario["verify"],
                             fingerprint=scenario["fingerprint"], status=latest["status"] if latest else None,
-                            queue=queue, latest_agent=a, latest_manual=m,
+                            queue=queue, held=not eligible, latest_agent=a, latest_manual=m,
                             body=json.loads(scenario["body"])))
+    execution_count = sum(s['scenario'] not in held for s in scenarios)
     statistics = dict(agent_pass_rate=ratio(agent_pass, agent_pass + agent_fail),
                       manual_pass_rate=ratio(manual_pass, manual_pass + manual_fail),
                       retest_coverage=ratio(reviewed, agent_pass), first_pass_rate=ratio(first_pass, first_pass + first_fail),
-                      executed_progress=ratio(executed, len(scenarios)), reviewed_progress=ratio(reviewed, agent_pass))
+                      executed_progress=ratio(executed, execution_count), reviewed_progress=ratio(reviewed, agent_pass))
+    statistics['independence_counts'] = independence_counts([s['latest_agent'] for s in details if not s['held'] and s['latest_agent']])
     rounds = []
-    for row in db.execute("SELECT t.*,v.version AS scenario_version FROM rounds t JOIN versions v ON v.id=t.version "
+    for row in db.execute("SELECT t.*,v.version AS scenario_version,COALESCE(o.origin,'unknown') AS execution_origin FROM rounds t JOIN versions v ON v.id=t.version "
+                          "LEFT JOIN round_origins o ON o.round_id=t.id "
                           "WHERE t.batch=? ORDER BY number", (batch["id"],)):
         item = dict(row)
         item["version"] = item.pop("scenario_version")
         results = [r for r in rows if r["round_id"] == item["id"]]
+        item.update(round_identity(results))
         item["pass_rate"] = ratio(sum(r["status"] == "pass" for r in results), len(results))
         item["reused_count"] = sum(r["reused"] for r in results)
+        item["rerun_count"] = sum(r["rerun"] for r in results)
         item["reused_scenarios"] = [dict(scenario=r["scenario"], reason=r["note"][3:].strip()) for r in results if r["reused"]]
         rounds.append(item)
     latest_agent = next((r for r in reversed(rounds) if r["kind"] == "agent"), None)
-    return dict(reused_count=sum(bool(s["latest_agent"] and s["latest_agent"]["reused"]) for s in details), statistics=statistics, queues=queues, queue_counts={k: len(v) for k, v in queues.items()},
+    return dict(reused_count=sum(bool(s["latest_agent"] and s["latest_agent"]["reused"]) for s in details),
+                rerun_count=sum(bool(s["latest_agent"] and s["latest_agent"]["rerun"]) for s in details), statistics=statistics, queues=queues, queue_counts={k: len(v) for k, v in queues.items()},
                 agent_execution=dict(counts=agent_counts, submitted_at=latest_agent["submitted_at"] if latest_agent else None),
                 progress=dict(executed=statistics["executed_progress"], reviewed=statistics["reviewed_progress"]),
-                scenario_count=len(scenarios), scenarios=details, rounds=rounds, misjudgments=misjudgments, filters=filters)
+                scenario_count=len(scenarios), execution_count=execution_count, scenarios=details, rounds=rounds, misjudgments=misjudgments, filters=filters)

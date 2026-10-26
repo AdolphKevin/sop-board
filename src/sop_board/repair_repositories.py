@@ -30,16 +30,13 @@ class RepairRepositories:
         self.workspace = tasks.service.workspace
 
     def rows(self, task_id):
-        with self.store.connection() as db:
-            rows = [dict(r) for r in db.execute('SELECT * FROM fix_repositories WHERE task=? ORDER BY alias', (task_id,))]
+        rows = self.tasks.kernel.repositories.rows(task_id, 'fix')
         for row in rows:
             row['changed_files'] = json.loads(row.pop('changed_files_json'))
         return rows
 
     def update(self, task_id, alias, **values):
-        with self.store.transaction() as db:
-            db.execute('UPDATE fix_repositories SET ' + ','.join(k + '=?' for k in values) + ' WHERE task=? AND alias=?',
-                       (*values.values(), task_id, alias))
+        self.tasks.kernel.repositories.update('fix', task_id, alias, **values)
 
     def ensure(self, task_id, aliases):
         existing = {r['alias']: r for r in self.rows(task_id)}
@@ -58,7 +55,9 @@ class RepairRepositories:
                 raise ValueError(alias + ' 已存在同名修复分支，不能接管')
             planned.append((task_id, alias, str(root), self.workspace.identities[alias], baseline, head(root), branch, ''))
         with self.store.transaction() as db:
-            db.executemany('INSERT INTO fix_repositories(task,alias,root,identity,baseline_branch,baseline_commit,fix_branch,worktree) VALUES (?,?,?,?,?,?,?,?)', planned)
+            for values in planned:
+                self.tasks.kernel.repositories.insert('fix', dict(zip(
+                    ('task','alias','root','identity','baseline_branch','baseline_commit','fix_branch','worktree'), values)), connection=db)
         directory = self.tasks.directory(task_id)
         known = {r['alias']: Path(r['worktree']) for r in self.rows(task_id) if r['worktree']}
         if 'worktree' not in self.workspace.adapter:
@@ -72,11 +71,26 @@ class RepairRepositories:
             raise
         with self.store.transaction() as db:
             for alias, path in paths.items():
-                db.execute('UPDATE fix_repositories SET worktree=? WHERE task=? AND alias=?', (str(path), task_id, alias))
+                self.tasks.kernel.repositories.update('fix', task_id, alias, worktree=str(path), connection=db)
         return extra
 
     def repair_directories(self, task_id):
         return {r['alias']: Path(r['worktree']) for r in self.rows(task_id) if r['worktree']}
+
+    def use_workspace(self, task_id, aliases):
+        """会话入口只登记当前目录，不建立、切换或清理 Git 工作树。"""
+        existing = {r['alias']: r for r in self.rows(task_id)}
+        with self.store.transaction() as db:
+            for alias in aliases:
+                root = self.workspace.repos[alias]
+                if alias in existing:
+                    if existing[alias]['root'] != str(root) or existing[alias]['identity'] != self.workspace.identities[alias]:
+                        raise ValueError(alias + ' 的仓库路径或身份已变化')
+                    continue
+                branch = git(root, 'branch', '--show-current').decode().strip()
+                self.tasks.kernel.repositories.insert('fix', dict(task=task_id, alias=alias, root=str(root),
+                    identity=self.workspace.identities[alias], baseline_branch=branch, baseline_commit=head(root),
+                    fix_branch=branch, worktree=str(root)), connection=db)
 
     def directories(self, task_id):
         return dict(self.workspace.repos, **self.repair_directories(task_id))
@@ -93,9 +107,13 @@ class RepairRepositories:
             result[repo['alias']] = sorted({os.fsdecode(p) for p in raw.split(b'\0') if p})
         return result
 
-    def protected_files(self, task_id):
+    def protected_files(self, task_id, *, workspace=False):
         manifests = {}
-        for repo in self.rows(task_id):
+        rows = self.rows(task_id)
+        if workspace:
+            included = {row['alias'] for row in rows}
+            rows += [dict(alias=alias,root=str(root),worktree=str(root)) for alias,root in self.workspace.repos.items() if alias not in included]
+        for repo in rows:
             root, worktree = Path(repo['root']), Path(repo['worktree'])
             directories = [worktree / 'docs/sop']
             if self.workspace.scenarios.is_relative_to(root):

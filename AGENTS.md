@@ -6,7 +6,9 @@
 
 Web 验收技能、模板、转换器和测试统一维护在 src/sop_board/skills/playwright-acceptance/，由 sop-board 包发行；不要依赖另一个 playwright-acceptance 检出目录。命令入口为 sop-board guide 与 sop-board playwright。
 
-回归沉淀技能维护在 src/sop_board/skills/regression-distill/，随包发行；sop-board skills install 安装两个客户端的技能链接，sop-board distill submit 在本机登记关联。产品侧另行授权的测试建设按该技能执行，场景执行与修复会话仍不写测试；本仓开发继续遵守下文“不新增测试”。关联不改变验收结论，数据库格式保持 5。入口凭据只通过 credential_env 声明名称并从启动进程传入会话，内网不显示名称，任何材料不写取值。
+开发会话入口技能在 src/sop_board/skills/sop-board/，与 Web、回归沉淀技能一起安装到两个客户端。看板调度与会话认领共用任务内核、提示词及业务登记；认领任务不被看板接管。编写 SOP、草稿、合并只要求配置合格，执行与修复还须当前自检通过。入口与状态约定以 docs/reference.md 为准。
+
+回归沉淀技能维护在 src/sop_board/skills/regression-distill/，随包发行；sop-board skills install 安装两个客户端的技能链接，sop-board distill submit 在本机登记关联。产品侧另行授权的测试建设按该技能执行，场景执行与修复会话仍不写测试；本仓开发继续遵守下文“不新增测试”。关联不改变验收结论，数据库格式保持 5。入口凭据只通过 credential_env 声明名称；看板任务取自看板启动环境，会话任务取自该会话自身环境，内网不显示名称，任何材料不写取值。
 
 ## 完成标准
 
@@ -16,10 +18,13 @@ Web 验收技能、模板、转换器和测试统一维护在 src/sop_board/skil
 - 如实区分通过、失败、受阻、跳过、未执行和回归未建设。
 - 结果返回原项目与批次，保持场景编号、内容指纹与产品快照；不把子集通过写成整批完成。
 - 按改动运行相应测试，知识更新与代码属于同一逻辑改动。过程报告与浏览器证据放在仓库外。
+- 交验收前经真实 HTTP 入口及 --lan 的实际非回环地址冒烟；HTML/JSON 自检与浏览器操作分开留证。独立性字段须对应真实参与关系，不能用替代标签或重放回执冒充独立执行。
 
 ## 本机验证
 
 遵守 main 的 v9 决策：验收以 docs/sop/ 场景经真实入口执行为准，不新增单元、接口或集成测试，不恢复上游已删除的根 tests/。现有内置技能资源保持兼容。工作区 config.yaml 是入口唯一配置，sop-board guide 保留完整搭建指引；具体 Web 驱动指引用 sop-board playwright guide。普通写入无需令牌，开发者操作仅限本机连接，不能恢复旧项目 API 和令牌逻辑。
+
+docs/sop/*.yaml 在实现与返工会话只读；与方案不一致时写入仓库外报告，由审核方修改。Codex 沙箱内不运行涉及 Git 工作树写入的 check，只读取最近自检结果；原生 Codex、浏览器及真实工作树链路不能运行时，保留未执行范围，按 docs/verification.md 明示模拟材料，不能宣称独立验收通过。
 
 ## 安全边界
 

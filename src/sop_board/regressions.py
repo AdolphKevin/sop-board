@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+from contextlib import nullcontext
 
 from .repositories import git
 from .scenario_file import load_scenarios
@@ -246,14 +247,19 @@ def validate_scene(service, db, scene, field):
     return batch['id'], tests
 
 
-def submit(service, report):
+def submit(service, report, *, connection=None, task=None):
     from .service import canonical, now
     object_fields(report, 'report', ('schema_version', 'registered_by', 'session', 'scenarios'))
     if type(report['schema_version']) is not int or report['schema_version'] != 1:
         invalid('schema_version', '仅接受报告格式 1')
     for key in ('registered_by', 'session'):
         text(report[key], key)
-    with service.workspace_lock, service.store.transaction() as db:
+    with service.workspace_lock, (nullcontext(connection) if connection is not None else service.store.transaction()) as db:
+        if task is not None:
+            previous = db.execute('SELECT result_json FROM distill_registrations WHERE task=? AND attempt=?',
+                                  (task['id'], task['attempt'])).fetchone()
+            if previous:
+                return json.loads(previous['result_json'])
         prepared, seen = [], set()
         for index, scene in enumerate(array(report['scenarios'], 'scenarios', True)):
             batch, tests = validate_scene(service, db, scene, f'scenarios[{index}]')
@@ -269,18 +275,27 @@ def submit(service, report):
                     scenario_file=scene['scenario_file'], session=report['session'], repo=test['repo'],
                     identity=test['identity'], root=test['root'], path=test['path'], sha256=test['sha256'],
                     test_id=test['id'], test_name=test['name'], layer=test['layer'], command=test['command'],
-                    commit_id=test['commit'], status='已提交' if test['commit'] else '待提交',
+                    commit_id=None if task is not None else test['commit'], status='待提交' if task is not None else '已提交' if test['commit'] else '待提交',
                     coverage_json=canonical(scene['coverage']), pass_evidence_json=canonical(scene['pass_evidence']),
                     local_run_json=canonical(scene['local_run']), ci_json=canonical(scene['ci']),
-                    details_json=canonical({k: scene[k] for k in ('confirmed_by', 'independent_acceptance', 'detection', 'findings') if k in scene} | {'tag': test.get('tag', '')}),
+                    details_json=canonical({k: scene[k] for k in ('confirmed_by', 'independent_acceptance', 'detection', 'findings') if k in scene} | {'tag': test.get('tag', '')} |
+                        (dict(task=task['id'], attempt=task['attempt'], branch=f"sop-board/distill/{task['id']}") if task is not None else {})),
                     registered_at=registered_at, registered_by=report['registered_by'])
                 # 历史指纹保留；同一测试重新登记及待提交→已提交更新同一条记录。
                 keys = ','.join(values)
                 updates = ','.join(f'{key}=excluded.{key}' for key in values if key not in ('batch', 'scenario', 'fingerprint', 'identity', 'path', 'test_name'))
                 db.execute(f'INSERT INTO regression_links({keys}) VALUES ({",".join("?" for _ in values)}) '
                     f'ON CONFLICT(batch,scenario,fingerprint,identity,path,test_name) DO UPDATE SET {updates}', tuple(values.values()))
-                links.append(dict(batch=scene['batch'], scenario=scene['scenario'], test=test['id'], status=values['status']))
-        return dict(ok=True, links=links, registered_at=registered_at)
+                link_id = db.execute('SELECT id FROM regression_links WHERE batch=? AND scenario=? AND fingerprint=? AND identity=? AND path=? AND test_name=?',
+                    (batch, scene['scenario'], scene['fingerprint'], test['identity'], test['path'], test['name'])).fetchone()[0]
+                links.append(dict(id=link_id, batch=scene['batch'], scenario=scene['scenario'], test=test['id'], status=values['status']))
+        result = dict(ok=True, links=links, registered_at=registered_at)
+        if task is not None:
+            result['changes'] = task['changes']
+            encoded = canonical(report)
+            db.execute('INSERT INTO distill_registrations VALUES (?,?,?,?,?,?)',
+                (task['id'], task['attempt'], hashlib.sha256(encoded.encode()).hexdigest(), encoded, canonical(result), registered_at))
+        return result
 
 
 def read_links(db, batch, scenario=None, *, local=False):

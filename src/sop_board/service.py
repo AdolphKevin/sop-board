@@ -1,5 +1,6 @@
 """所有 HTTP 与后续页面共用的业务操作。"""
 
+
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,11 +12,16 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import yaml
 
+from .kernel import (EXECUTION_ACTIVE, FIX_ATTENTION, FIX_TERMINAL, OUTPUT_ACTIVE, S, activity_stamp,
+                     TaskRepositories, claim_message, queue_positions, queue_view, session_claim, sql_states)
+
+from .task_visibility import project as project_task
 from .errors import APIError, reject
 from .cases import load_cases
 from .entries import public_problems
 from .evidence_types import content_type, is_text
 from .jira import identify
+from .merge_state import read_holds
 from .scenario_file import load_scenarios
 from .reports import markdown
 from .result_files import export_results, load_results
@@ -41,13 +47,15 @@ def fingerprint(scenario):
 class Service:
     def __init__(self, store, workspace, environment):
         self.store = store
+        self.task_repositories = TaskRepositories(store)
         self.workspace, self.environment = workspace, environment
         self.workspace_problems = {}
         self.merge_callback = None
         self.sop_callback = None
         self.execution_callback = None
         # 发现与合并落地共享锁，防止看板写入在登记版本前被自己的扫描发现。
-        self.workspace_lock = threading.RLock()
+        from .storage import WorkspaceLock
+        self.workspace_lock = WorkspaceLock(store.data)
         from .credentials import declared_in
         with self.store.connection() as db:
             for row in db.execute('SELECT input_json,snapshot_json FROM tasks'):
@@ -65,6 +73,18 @@ class Service:
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ('true' if paused else 'false',))
         return dict(ok=True, paused=paused)
 
+    def auto_execute_enabled(self, db):
+        row = db.execute("SELECT value FROM settings WHERE key='auto_execute'").fetchone()
+        return row is None or row['value'] != 'false'
+
+    def set_auto_execute(self, body):
+        if not isinstance(body, dict) or body.keys() != {'enabled'} or type(body['enabled']) is not bool:
+            reject(422, 'invalid-auto-execute', 'enabled', '只接受 enabled 字段，值应为 true 或 false')
+        with self.workspace_lock, self.store.transaction() as db:
+            db.execute("INSERT INTO settings(key,value) VALUES ('auto_execute',?) "
+                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ('true' if body['enabled'] else 'false',))
+        return dict(ok=True, enabled=body['enabled'])
+
     def pending_fixes(self, db, key, name=None):
         """只取当前未进入修复的问题；人工结果以登记时间判定复核是否完成。"""
         problems = []
@@ -79,7 +99,8 @@ class Service:
                     continue
                 # 已放弃、已分类为非产品问题及已纳入任务的同一结果均不重复建任务。
                 if db.execute('SELECT 1 FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.workspace=? '
-                    'AND p.batch=? AND p.scenario=? AND p.fingerprint=? AND p.result_id=? LIMIT 1',
+                    f'AND p.batch=? AND p.scenario=? AND p.fingerprint=? AND (p.result_id=? OR (t.status NOT IN ({sql_states(FIX_TERMINAL)}) '
+                    'AND EXISTS (SELECT 1 FROM session_tasks s WHERE s.task=t.id))) LIMIT 1',
                     (key, batch['name'], scene['scenario'], scene['fingerprint'], latest['id'])).fetchone():
                     continue
                 manual = latest['kind'] == 'manual'
@@ -88,6 +109,8 @@ class Service:
                     (batch['id'], latest['submitted_at'])).fetchone())
                 problems.append(dict(batch=batch['name'], scenario=scene['scenario'], fingerprint=scene['fingerprint'],
                     result_id=latest['id'], source=latest['kind'], review_ready=reviewed,
+                    execution_origin=latest.get('execution_origin','unknown'),
+                    board_requested=bool(db.execute('SELECT 1 FROM fix_handoffs WHERE result_id=?',(latest['id'],)).fetchone()),
                     scene=scene['body'], latest_result=latest, previous_agent=scene['latest_agent'],
                     defect_url=latest['finding'] if manual else '',
                     evidence=[dict(e, path=str(self.store.data.resolve() / 'evidence' / e['sha256'][:2] / e['sha256']))
@@ -98,10 +121,10 @@ class Service:
         if self.automation_paused(db):
             return '自动任务已暂停'
         if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='fix' "
-                      "AND status NOT IN ('已合入','已放弃') LIMIT 1", (key,)).fetchone():
+                      f'AND status NOT IN ({sql_states(FIX_TERMINAL)}) LIMIT 1', (key,)).fetchone():
             return '等待当前修复结束'
         if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='execute' "
-                      "AND status IN ('排队中','待提交','等待浏览器','等待合并','运行中') LIMIT 1", (key,)).fetchone():
+                      f'AND status IN ({sql_states(EXECUTION_ACTIVE)}) LIMIT 1', (key,)).fetchone():
             return '等待验证运行完'
         return ''
 
@@ -206,6 +229,9 @@ class Service:
                               (batch["id"],)).fetchone()[0]
                    for table, column in [("versions", "version"), ("rounds", "number"), ("case_uploads", "number")]]
         etag = 'v%d-r%d-u%d' % tuple(numbers)
+        conversation = [dict(r) for r in db.execute('SELECT id,status,task FROM merge_messages WHERE batch=? ORDER BY id', (batch['id'],))]
+        if conversation:
+            etag += '-clarify' + hashlib.sha256(canonical(conversation).encode()).hexdigest()[:12]
         if self.workspace.configured:
             etag += '-p' + batch['product_digest'][:12]
         sop_version = db.execute('SELECT COALESCE(MAX(id),0) FROM sop_versions WHERE batch=?', (batch['id'],)).fetchone()[0]
@@ -217,9 +243,21 @@ class Service:
         if self.workspace.configured:
             etag += '-e' + hashlib.sha256(canonical(self.entries(batch['workspace'])).encode()).hexdigest()[:12]
         tasks = [dict(r) for r in db.execute("SELECT id,status,scope_json,started_at,finished_at,error,void_reason,rounds_json FROM tasks "
-            "WHERE workspace=? AND batch=? AND kind IN ('execute','generate') ORDER BY id", (batch['workspace'], batch['name']))]
+            "WHERE workspace=? AND batch=? AND kind IN ('execute','generate','merge','distill') ORDER BY id", (batch['workspace'], batch['name']))]
+        for task in tasks:
+            task['session_task'] = session_claim(db, task['id'])
         if tasks:
             etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
+        merges = [dict(r) for r in db.execute("SELECT id,status FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
+            f'AND status IN ({sql_states(OUTPUT_ACTIVE)}) ORDER BY id', (batch['workspace'], batch['name']))]
+        positions = queue_positions(db) if any(task['status'] == S.QUEUED for task in merges) else {}
+        for task in merges:
+            if task['status'] == S.QUEUED:
+                task['ahead'] = positions.get(task['id'])
+            else:
+                task['activity'] = activity_stamp(self.store.data / 'tasks' / str(task['id']) / 'events.jsonl')
+        if merges:
+            etag += '-merge' + hashlib.sha256(canonical(merges).encode()).hexdigest()[:12]
         drafts = [dict(r) for r in db.execute('SELECT id,status,current_task FROM drafts WHERE batch=? ORDER BY id', (batch['id'],))]
         annotations = [dict(r) for r in db.execute('SELECT * FROM draft_annotations WHERE batch=? ORDER BY number', (batch['id'],))]
         if drafts:
@@ -236,6 +274,8 @@ class Service:
         etag += '-env' + hashlib.sha256(canonical(self.environment.public()).encode()).hexdigest()[:12]
         if self.automation_paused(db):
             etag += '-a1'
+        if not self.auto_execute_enabled(db):
+            etag += '-auto0'
         review = self.fix_review_state(db, batch['workspace'], batch['name'])
         completion = db.execute('SELECT COALESCE(MAX(id),0) FROM review_completions WHERE batch=?', (batch['id'],)).fetchone()[0]
         etag += '-review' + hashlib.sha256(canonical([review, completion]).encode()).hexdigest()[:12]
@@ -251,14 +291,16 @@ class Service:
         summary = calculate(db, batch)
         cases = self.case_union(db, batch)
         pairings = self.case_pairings(db, batch, cases)
-        merge = db.execute("SELECT id,result_json FROM tasks WHERE workspace=? AND batch=? AND kind='merge' AND status='已完成' ORDER BY id DESC LIMIT 1",
+        merge = db.execute(f"SELECT id,result_json FROM tasks WHERE workspace=? AND batch=? AND kind='merge' AND status='{S.COMPLETED}' ORDER BY id DESC LIMIT 1",
                            (batch['workspace'], batch['name'])).fetchone()
         fixes, fix_statistics = self.batch_fixes(db, batch)
         return dict(batch=dict(batch), workspace=dict(db.execute("SELECT key,root,name FROM workspaces WHERE key=?", (batch["workspace"],)).fetchone(), repositories=self.workspace.public()["repositories"]),
                     fixes=fixes, fix_statistics=fix_statistics, regression_links=read_links(db, batch, local=local),
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
-                    pairings=pairings, coverage=ratio(len(pairings), len(cases)),
+                    pairings=pairings, holds=read_holds(db, batch), exclusions={r['case_id']: dict(r) for r in db.execute(
+                        'SELECT e.case_id,m.author,m.created_at,m.text FROM merge_exclusions e JOIN merge_messages m ON m.id=e.message WHERE e.batch=?', (batch['id'],))},
+                    coverage=ratio(len(pairings), len(cases)),
                     latest_upload=db.execute("SELECT COALESCE(MAX(number),0) FROM case_uploads WHERE batch=?", (batch["id"],)).fetchone()[0])
 
     def report(self, key, name, *, local=False):
@@ -354,7 +396,7 @@ class Service:
                          'WHERE v.batch=? ORDER BY v.id DESC LIMIT 1', (batch['id'],)).fetchone()
         return dict(row, ref=row['path'].partition(':')[2]) if row else None
 
-    def upload_sop(self, key, name, body):
+    def upload_sop(self, key, name, body, *, on_registered=None):
         validate_batch(name)
         validate_sop_upload(body)
         with self.workspace_lock, self.store.transaction() as db:
@@ -378,6 +420,8 @@ class Service:
             if current_content == content and previous and previous['content'] == body['content']:
                 db.execute('INSERT OR IGNORE INTO sop_uploads(version,filename,uploaded_by) VALUES (?,?,?)',
                            (previous['id'], body['filename'], body['uploaded_by'].strip()))
+                if on_registered:
+                    on_registered(db, previous)
                 return dict(ok=True, version=previous['version'], sha256=current, unchanged=True)
             from .repositories import git
             repository = self.workspace.repos[self.workspace.scenario_repo]
@@ -390,6 +434,8 @@ class Service:
             # 恢复磁盘原文可能沿用已有版本；只补登记，不覆写该版本已有的上传记录。
             db.execute('INSERT OR IGNORE INTO sop_uploads(version,filename,uploaded_by) VALUES (?,?,?)',
                        (version['id'], body['filename'], body['uploaded_by'].strip()))
+            if on_registered:
+                on_registered(db, version)
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix('.md.tmp')
             try:
@@ -421,9 +467,10 @@ class Service:
         if not version:
             return []
         current = {r[0] for r in db.execute('SELECT scenario FROM scenarios WHERE batch=? AND current=1', (batch['id'],))}
+        retained = {(h['case'], sid) for h in read_holds(db, batch)['held'] for sid in h.get('scenarios', [])}
         return [dict(case=r['case_id'], scenarios=[r['scenario']], kind=r['kind'], kind_reason=r['kind_reason'], note=r['kind_reason'])
                 for r in db.execute('SELECT * FROM case_pairings WHERE version=? ORDER BY case_id', (version['id'],))
-                if r['scenario'] in current and hashes.get(r['case_id']) == r['case_sha256']]
+                if r['scenario'] in current and (hashes.get(r['case_id']) == r['case_sha256'] or (r['case_id'], r['scenario']) in retained)]
 
     def save_case_pairings(self, db, version, pairs):
         db.execute('DELETE FROM case_pairings WHERE version=?', (version,))
@@ -439,7 +486,15 @@ class Service:
                        for row in db.execute("SELECT * FROM case_uploads WHERE batch=? ORDER BY number", (batch["id"],))]
             cases = self.case_union(db, batch)
             pairings = self.case_pairings(db, batch, cases)
-            return dict(uploads=uploads, cases=cases, pairings=pairings, flow_choices=self.flow_choices(db, batch), coverage=ratio(len(pairings), len(cases)),
+            exclusions = {r['case_id']: dict(r) for r in db.execute('SELECT e.case_id,m.id,m.author,m.created_at,m.text FROM merge_exclusions e JOIN merge_messages m ON m.id=e.message WHERE e.batch=?', (batch['id'],))}
+            updates = []
+            for row in db.execute('SELECT * FROM merge_case_updates WHERE batch=? ORDER BY task,case_id', (batch['id'],)):
+                item = dict(row)
+                for key in ('messages', 'before', 'after'):
+                    item[key] = json.loads(item.pop(key + '_json'))
+                updates.append(item)
+            return dict(uploads=uploads, cases=cases, pairings=pairings, holds=read_holds(db, batch), exclusions=exclusions, clarification_updates=updates,
+                        flow_choices=self.flow_choices(db, batch), coverage=ratio(len(pairings), len(cases)),
                         **(dict(etag=self.batch_etag(db, batch)) if include_state else {}))
 
     def cases_yaml(self, key, name):
@@ -466,7 +521,11 @@ class Service:
             batch = self.batch(db, key, name)
             sources = {}
             for row in db.execute('SELECT * FROM sop_versions WHERE batch=? ORDER BY path,version DESC', (batch['id'],)):
-                sources.setdefault(row['path'], []).append(dict(row))
+                version = dict(row)
+                version['authorship'] = [dict(sources=json.loads(r['sources_json']),answers=json.loads(r['answers_json']),
+                    confirmed_by=r['confirmed_by'],registered_at=r['registered_at']) for r in db.execute(
+                        'SELECT * FROM author_sop_registrations WHERE version=? ORDER BY task',(row['id'],))]
+                sources.setdefault(row['path'], []).append(version)
             return sources
 
     def save_sop_sources(self, db, batch_id, sources):
@@ -479,7 +538,7 @@ class Service:
                            (batch_id, source['path'], last['version'] + 1 if last else 1, source['ref'], source['commit'],
                             source['sha256'], source['confirmed_by'], source['content'], now()))
 
-    def insert_round(self, db, batch, version, body, kind="agent", skill_digest=None):
+    def insert_round(self, db, batch, version, body, kind="agent", skill_digest=None, *, execution_origin='board'):
         number = db.execute("SELECT COALESCE(MAX(number),0)+1 FROM rounds WHERE batch=?", (batch["id"],)).fetchone()[0]
         product = body["product"]
         cursor = db.execute("INSERT INTO rounds(batch,number,kind,version,product_commit,product_digest,product_dirty,"
@@ -488,6 +547,7 @@ class Service:
                              body.get("implementer"), body["submitted_by"], now(), body.get("idempotency_key"),
                              hashlib.sha256(canonical(body).encode()).hexdigest(), skill_digest))
         round_id = cursor.lastrowid
+        db.execute('INSERT INTO round_origins(round_id,origin) VALUES (?,?)', (round_id, execution_origin))
         for row in body["results"]:
             implementer = body.get("implementer")
             fold = lambda name: " ".join(name.casefold().split())
@@ -501,25 +561,27 @@ class Service:
                 db.execute("INSERT INTO result_evidence VALUES (?,?,?,?)", (cursor.lastrowid, ordinal, evidence["name"], evidence["sha256"]))
         return number
 
+    def register_round(self, db, batch, version, body, *, skill_digest=None):
+        """看板、会话与手工 Web 结果共用的轮次核对和登记入口。"""
+        if isinstance(body, dict) and isinstance(body.get('idempotency_key'), str):
+            existing = db.execute('SELECT * FROM rounds WHERE batch=? AND idempotency_key=?', (batch['id'], body['idempotency_key'])).fetchone()
+            if existing:
+                if hashlib.sha256(canonical(body).encode()).hexdigest() != existing['body_sha256']:
+                    reject(409, 'idempotency-conflict', 'idempotency_key', '同一幂等键的正文不同')
+                return existing['number']
+        validate_round(db, body)
+        if not version or body['scenario_file_sha256'] != version['sha256']:
+            reject(409, 'scenario-file-stale', 'scenario_file_sha256', '场景文件不是当前版本')
+        self.check_scenarios(db, batch, body['results'])
+        return self.insert_round(db, batch, version, body, skill_digest=skill_digest,
+                                 execution_origin=body.get('execution_origin', 'board'))
+
     def round(self, key, name, body):
         with self.store.transaction() as db:
             batch = self.batch(db, key, name)
-            if isinstance(body, dict) and isinstance(body.get("idempotency_key"), str):
-                existing = db.execute("SELECT * FROM rounds WHERE batch=? AND idempotency_key=?",
-                                      (batch["id"], body["idempotency_key"])).fetchone()
-                if existing:
-                    if hashlib.sha256(canonical(body).encode()).hexdigest() != existing["body_sha256"]:
-                        reject(409, "idempotency-conflict", "idempotency_key", "同一幂等键的正文不同")
-                    summary = calculate(db, batch)
-                    return dict(ok=True, round=existing["number"], statistics=summary["statistics"], queues=summary["queues"])
-            validate_round(db, body)
-            version = self.latest_version(db, batch)
-            if body["scenario_file_sha256"] != version["sha256"]:
-                reject(409, "scenario-file-stale", "scenario_file_sha256", "场景文件不是当前版本")
-            self.check_scenarios(db, batch, body["results"])
-            number = self.insert_round(db, batch, version, body)
+            number = self.register_round(db, batch, self.latest_version(db, batch), body)
             summary = calculate(db, batch)
-            return dict(ok=True, round=number, statistics=summary["statistics"], queues=summary["queues"])
+            return dict(ok=True, round=number, statistics=summary['statistics'], queues=summary['queues'])
 
     def check_scenarios(self, db, batch, results):
         current = {row["scenario"]: row["fingerprint"] for row in db.execute(
@@ -536,10 +598,21 @@ class Service:
         count = len(pending_scope(db, batch, summary, batch['product_digest']))
         if not reason and not self.environment.approved():
             reason = '自检未通过'
-        if not reason and not summary['scenario_count']:
-            reason = '尚无场景'
-        return dict(pending_count=count, total_count=summary['scenario_count'],
+        if not reason and not summary['execution_count']:
+            reason = '没有可执行场景（用例待补充）' if summary['scenario_count'] else '尚无场景'
+        return dict(pending_count=count, total_count=summary['execution_count'],
                     pending_reason=reason or ('没有待执行场景' if not count else ''), all_reason=reason)
+
+    def task_links(self, db, batch, scenario=None):
+        from .distill_inputs import pending_validation
+        result = []
+        for row in db.execute("SELECT id,kind,status,CASE WHEN status=? THEN input_json ELSE '{}' END AS input_json,scope_json "
+                "FROM tasks WHERE workspace=? AND batch=? AND kind='distill' ORDER BY id", (S.WAIT_VALIDATION, batch['workspace'], batch['name'])):
+            if scenario is not None and scenario not in {s['scenario'] for s in json.loads(row['scope_json'])}:
+                continue
+            result.append(dict(id=row['id'], kind=row['kind'], status=row['status'],
+                validation_scenarios=pending_validation(row['status'], json.loads(row['input_json']))))
+        return result
 
     def summary(self, db, batch, *, local=True):
         result = calculate(db, batch)
@@ -548,16 +621,22 @@ class Service:
         version = self.latest_version(db, batch)
         _, fix_statistics = self.batch_fixes(db, batch)
         tasks = []
-        for row in db.execute("SELECT id,kind,trigger,status,scope_json,started_at,finished_at,error,void_reason,rounds_json,result_json "
+        by_number = {r['number']: r for r in result['rounds']}
+        for row in db.execute("SELECT id,kind,trigger,status,scope_json,started_at,finished_at,error,void_reason,rounds_json "
                               "FROM tasks WHERE workspace=? AND batch=? AND kind='execute' ORDER BY id", (batch['workspace'], batch['name'])):
             task = dict(row)
+            task['session_task'] = session_claim(db, task['id'])
+            task['ownership'] = claim_message(task['session_task'])
             task['scope'] = json.loads(task.pop('scope_json'))
-            task['reused_count'] = json.loads(task.pop('result_json')).get('reused_count', 0)
             task['rounds'] = json.loads(task.pop('rounds_json'))
-            tasks.append(task)
+            # 沿用与重跑按任务登记的轮次计算，看板、会话与旧任务一致。
+            for key in ('reused_count', 'rerun_count'):
+                task[key] = sum(by_number[n][key] for n in task['rounds'] if not isinstance(n, dict) and n in by_number)
+            tasks.append(project_task(task, local=local))
         return dict(ok=True, etag=self.batch_etag(db, batch), name=batch["name"], version=version["version"] if version else None,
                     review=self.fix_review_state(db, batch['workspace'], batch['name']),
-                    execution=execution, execution_tasks=tasks, fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
+                    execution=execution, execution_tasks=tasks, task_links=self.task_links(db, batch), fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
+                    auto_execute=self.auto_execute_enabled(db), holds=read_holds(db, batch),
                     regression_links=read_links(db, batch, local=local),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
@@ -575,33 +654,53 @@ class Service:
             batch = self.batch(db, key, name)
             if scenarios:
                 summary = calculate(db, batch)
+                version = self.latest_version(db, batch)
+                document = yaml.safe_load(version['content']) if version else {'sops': []}
+                choices = {}
+                if local and version:
+                    from .distill_inputs import eligibility
+                    product = self.workspace.product(self.workspace.aliases(document)) if self.workspace.configured else dict(
+                        product_digest=batch['product_digest'], dirty=False)
+                    choices = eligibility(self, db, batch, document,
+                        [s for n in document['sops'] for s in n['scenarios']], product['product_digest'], allow_stale_product=product['dirty'])
                 for scene in summary['scenarios']:
                     scene['fix_tasks'] = self.scenario_fixes(db, batch, scene['scenario'], scene['fingerprint'])
                     scene['regression_links'] = read_links(db, batch, scene['scenario'], local=local)
-                version = self.latest_version(db, batch)
+                    if local:
+                        option = choices.get(scene['scenario'], dict(eligible=False, reasons=['场景尚未同步']))
+                        scene['distill'] = {k: option[k] for k in ('eligible', 'reasons')}
+                        problems = self.workspace_problems.get((key, name), [])
+                        if problems:
+                            scene['distill'] = dict(eligible=False, reasons=['当前场景文件不合格：' + p['problem'] for p in problems])
                 nodes = yaml.safe_load(version["content"])["sops"] if version else []
-                return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes,
+                return dict(ok=True, scenarios=summary["scenarios"], filters=summary["filters"], nodes=nodes, task_links=self.task_links(db, batch),
+                            holds=read_holds(db, batch), auto_execute=self.auto_execute_enabled(db),
                             review=self.fix_review_state(db, key, name),
                             execution=self.execution_options(db, batch, summary, local=local),
                             has_version=version is not None, etag=self.batch_etag(db, batch))
             return self.summary(db, batch, local=local)
 
     def workspaces(self, *, local=True):
-        with self.store.connection() as db:
+        with queue_view(), self.store.connection() as db:
             db.execute("BEGIN")
             workspace = dict(key=self.workspace.name, name=self.workspace.name, **{
                 'sop_hashes': self.sop_hashes(),
                 'repositories': self.workspace.public()['repositories'], 'configured': self.workspace.configured,
-                'enabled': self.environment.approved(),
+                'enabled': self.environment.approved(), 'auto_execute': self.auto_execute_enabled(db),
                 'batches': [self.summary(db, batch, local=local) for batch in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY name', (self.workspace.name,))],
-                'fix_tasks': [dict(r) for r in db.execute("SELECT id,status,error FROM tasks WHERE workspace=? AND kind='fix' AND status NOT IN ('已合入','已放弃') ORDER BY id", (self.workspace.name,))]})
+                'fix_tasks': [dict(r) for r in db.execute(f"SELECT id,status,error FROM tasks WHERE workspace=? AND kind='fix' AND status NOT IN ({sql_states(FIX_TERMINAL)}) ORDER BY id", (self.workspace.name,))]})
+            for task in workspace['fix_tasks']:
+                task['session_task'] = session_claim(db, task['id'])
+                task['ownership'] = claim_message(task['session_task'])
+                task['kind'] = 'fix'
+            workspace['fix_tasks'] = [project_task(task, local=local) for task in workspace['fix_tasks']]
             return dict(ok=True, workspaces=[workspace], automation_paused=self.automation_paused(db))
 
-    def read_round(self, key, name, number):
+    def read_round(self, key, name, number, *, local=True):
         with self.store.connection() as db:
             db.execute("BEGIN")
             batch = self.batch(db, key, name)
-            row = db.execute("SELECT * FROM rounds WHERE batch=? AND number=?", (batch["id"], number)).fetchone()
+            row = db.execute("SELECT r.*,COALESCE(o.origin,'unknown') AS execution_origin FROM rounds r LEFT JOIN round_origins o ON o.round_id=r.id WHERE r.batch=? AND r.number=?", (batch["id"], number)).fetchone()
             if not row:
                 reject(404, "round-not-found", "round", "轮次不存在")
             results = []
@@ -614,9 +713,12 @@ class Service:
                 for key_ in ("session", "finding", "note"):
                     if item[key_] is None:
                         item.pop(key_)
+                if not local:
+                    item.pop('session', None)
                 results.append(item)
+            from .statistics import round_identity
             version = db.execute("SELECT version FROM versions WHERE id=?", (row["version"],)).fetchone()[0]
-            return dict(ok=True, round=row["number"], kind=row["kind"], version=version,
+            return dict(ok=True, round=row["number"], kind=row["kind"], version=version, execution_origin=row["execution_origin"], **round_identity(results),
                         product=dict(commit=row["product_commit"], digest=row["product_digest"], dirty=bool(row["product_dirty"])),
                         implementer=row["implementer"], submitted_by=row["submitted_by"], submitted_at=row["submitted_at"],
                         results=results)
@@ -632,9 +734,11 @@ class Service:
             if not records:
                 reject(404, "scenario-not-found", "scenario", "场景不存在")
             results = [dict(row) for row in db.execute(
-                "SELECT r.*,t.number,t.kind,t.submitted_by,t.submitted_at FROM results r JOIN rounds t ON t.id=r.round_id "
+                "SELECT r.*,t.number,t.kind,t.submitted_by,t.submitted_at,t.implementer,COALESCE(o.origin,'unknown') AS execution_origin FROM results r JOIN rounds t ON t.id=r.round_id LEFT JOIN round_origins o ON o.round_id=t.id "
                 "WHERE t.batch=? AND r.scenario=? ORDER BY t.number,r.id", (batch["id"], scenario))]
             for row in results:
+                if not local:
+                    row.pop("session", None)
                 row["evidence"] = [dict(item) for item in db.execute(
                     "SELECT r.name,r.sha256,e.name AS stored_name FROM result_evidence r JOIN evidence e ON e.sha256=r.sha256 "
                     "WHERE r.result_id=? ORDER BY r.ordinal", (row["id"],))]
@@ -657,6 +761,8 @@ class Service:
                 '(SELECT 1 FROM sop_versions newer WHERE newer.batch=v.batch AND newer.path=v.path AND newer.version>v.version) ORDER BY path',
                 (batch['id'],))]
             return dict(workspace=key, batch=name, etag=self.batch_etag(db, batch), scenario=scenario, node=latest["node"], title=latest["title"],
+                        holds=read_holds(db, batch),
+                        task_links=self.task_links(db, batch, scenario),
                         regression_links=read_links(db, batch, scenario, local=local),
                         review=self.fix_review_state(db, key, name),
                         polarity=latest["polarity"], priority=latest["priority"], verify=latest["verify"],
@@ -665,9 +771,17 @@ class Service:
                         summary=next((item for item in calculate(db, batch)["scenarios"] if item["scenario"] == scenario), None))
 
     def scenario_fixes(self, db, batch, scenario, fingerprint):
-        return [dict(r) for r in db.execute('SELECT t.id,t.status,p.category FROM tasks t JOIN fix_problems p ON p.task=t.id '
+        records = []
+        for row in db.execute('SELECT t.id,t.status,t.result_json,t.rounds_json,p.category FROM tasks t JOIN fix_problems p ON p.task=t.id '
             'WHERE t.workspace=? AND p.batch=? AND p.scenario=? AND p.fingerprint=? ORDER BY t.id',
-            (batch['workspace'], batch['name'], scenario, fingerprint))]
+            (batch['workspace'], batch['name'], scenario, fingerprint)):
+            item = dict(id=row['id'],status=row['status'],category=row['category'])
+            if session_claim(db,row['id']):
+                item.update(repair_origin='session',root_cause=json.loads(row['result_json']).get('root_cause',''),rounds=json.loads(row['rounds_json']),
+                    changed_files=[r['alias']+'/'+path for r in self.task_repositories.rows(row['id'],'fix',connection=db)
+                        for path in json.loads(r['changed_files_json'])])
+            records.append(item)
+        return records
 
     def batch_fixes(self, db, batch):
         records = []
@@ -679,16 +793,18 @@ class Service:
             record['scenarios'] = [p[0] for p in db.execute('SELECT scenario FROM fix_problems WHERE task=? AND batch=? ORDER BY id', (row['id'], batch['name']))]
             record['problems'] = len(record['scenarios'])
             record['root_repositories'] = [dict(r) for r in db.execute('SELECT batch,scenario,root_repo FROM fix_problems WHERE task=? ORDER BY id', (row['id'],))]
-            record['repositories'] = [dict(r) for r in db.execute('SELECT alias,identity,baseline_branch,repair_commit,merged_commit,changed_files_json,merge_status,merge_reason FROM fix_repositories WHERE task=? ORDER BY alias', (row['id'],))]
+            record['repositories'] = [{key: repo[key] for key in ('alias','identity','baseline_branch','repair_commit','merged_commit',
+                'changed_files_json','merge_status','merge_reason')} for repo in self.task_repositories.rows(row['id'], 'fix', connection=db)]
             for repo in record['repositories']:
                 repo['changed_files'] = json.loads(repo.pop('changed_files_json'))
 
             record['jira'] = [dict(r) for r in db.execute('SELECT issue,comment,transition,reason FROM fix_jira WHERE task=? ORDER BY issue', (row['id'],))]
             records.append(record)
         stats = dict(tasks=len(records), problems=sum(t['problems'] for t in records),
-            merged=sum(t['status'] == '已合入' for t in records),
-            developer=sum(t['status'] in ('待开发者处理', '待开发者合入') for t in records),
-            first_pass=sum(t['status'] == '已合入' and t['attempt'] == 1 for t in records),
+            merged=sum(t['status'] == S.MERGED for t in records),
+            session_closed=sum(t['status'] == S.HANDLED for t in records),
+            developer=sum(t['status'] in FIX_ATTENTION for t in records),
+            first_pass=sum(t['status'] in (S.MERGED,S.HANDLED) and t['attempt'] == 1 for t in records),
             attempts=sum(t['attempt'] for t in records))
         return records, stats
 
@@ -740,7 +856,7 @@ class Service:
                           actual="人工复核通过", executor=body["marker"], executed_at=timestamp,
                           evidence=[dict(name=filename, sha256=saved["sha256"])])
             if body["status"] in ("fail", "blocked"):
-                label = "失败" if body["status"] == "fail" else "受阻"
+                label = S.FAILED if body["status"] == "fail" else "受阻"
                 result["finding"] = body["defect_url"]
                 result["actual"] = f"人工复核不通过（{label}），缺陷 {body['defect_url']}"
             if "note" in body:
@@ -754,7 +870,7 @@ class Service:
             return dict(ok=True, round=number, scenario=scenario, filters=summary["filters"],
                         review=self.fix_review_state(db, key, name))
 
-    def push(self, key, batch, body, *, pairings=None, auto_execute=True):
+    def push(self, key, batch, body, *, pairings=None, auto_execute=True, on_registered=None):
         validate_push(body)
         document = load_scenarios(body["content"])
         if document["metadata"]["batch"] != batch:
@@ -785,6 +901,8 @@ class Service:
             if previous and previous["content"] == body["content"]:
                 if pairings is not None:
                     self.save_case_pairings(db, previous["id"], pairings)
+                if on_registered:
+                    on_registered(db, batch_id)
                 return dict(ok=True, version=previous["version"], added=[], changed=[], removed=[], unchanged=True)
             version = previous["version"] + 1 if previous else 1
             old = {row["scenario"]: row["fingerprint"] for row in db.execute(
@@ -808,9 +926,12 @@ class Service:
                            (batch_id, scenario["id"], fingerprint(scenario), node,
                            scenario["title"], scenario["polarity"], scenario["priority"], scenario["verify"],
                            canonical(scenario)))
+            if on_registered:
+                on_registered(db, batch_id)
         landed = pairings is not None
         with self.store.connection() as db:
             has_cases = bool(self.case_union(db, self.batch(db, key, batch)))
+            auto_execute = auto_execute and self.auto_execute_enabled(db)
         if auto_execute and self.execution_callback and self.workspace.configured and (landed or not has_cases):
             self.execution_callback(key, batch, scope=[dict(scenario=s, reason='new' if s in added else 'changed')
                 for s in computed if s in added or s in changed], trigger='合并写入' if landed else '场景版本')

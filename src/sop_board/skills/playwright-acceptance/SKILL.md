@@ -77,4 +77,6 @@ npx --no-install playwright show-report <目录>/html
 
 看板自动任务的 scope 只列本轮 Web 场景；混合入口最终 results.jsonl 还须合并其他驱动的结果，覆盖总 pending。修复复测按 playwright-scopes.json 分批转换，保留原 batch，避免同编号跨批次混用。
 
+若任务来自 `sop-board execute prepare`，也只在返回的任务目录写结果和证据，再由 `execute submit --task <编号> --implementer <实际实现者>` 统一登记，不另跑 playwright submit。独立的手工试跑仍可用上述提交命令，并可加 `--implementer`；当前实现会话执行须如实登记自检，未给实现者则为未声明。
+
 当前工作区版本使用 config.yaml 声明入口，sop-board guide 是工作区搭建指引；playwright guide 为 Web 驱动指引。手工 scope 用 --workspace，既有 project 字段存工作区键，提交走 /api/v1/workspaces/。工作区的 source-changed 沿用和跨仓修复范围以任务提示为准，修复复测不得沿用。

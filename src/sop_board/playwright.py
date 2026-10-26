@@ -44,7 +44,7 @@ def guide():
 当前执行驱动：{driver_skill() / 'SKILL.md'}
 模板：{bundled_skill() / 'templates'}
 
-启动看板：sop-board <工作区目录> --data <仓库外数据目录> --port 8787
+启动看板：sop-board <工作区名称> --data <仓库外数据目录> --port 8787
 Web 任务由看板提供 scenarios.yaml、pending.json、scope.json 和 entries.json。
 读取内置技能，复用已打开的 Chrome；同一 worker 共用 CDP，每条用例单独录屏和 trace。
 Playwright 依赖在验收工作目录安装：@playwright/test >=1.64 和 ffmpeg。
@@ -52,6 +52,9 @@ Playwright 依赖在验收工作目录安装：@playwright/test >=1.64 和 ffmpe
 转换结果：sop-board playwright convert --report <报告.json> --out <任务目录> \\
   --scope <scope.json> --scenario-file <scenarios.yaml> --pending <pending.json> --executor <执行者>
 自动任务只在任务目录写结果，看板负责登记；不要另建批次或自行提交第二个轮次。
+会话任务 execute prepare 同样只写任务目录，再用 execute submit --task <编号> --implementer <实际实现者> 登记。
+看板入口使用已准备的环境；会话入口按项目技能和手册准备入口与隔离数据，结束后清理。
+修复复验的实现者由原修复记录绑定，不能改填；已有 prepare 任务不要另用 playwright submit 登记。
 手工试跑：sop-board playwright scope --workspace <工作区键> --scenario-file <原文> --out <scope.json>
 手工登记：sop-board playwright submit --help（使用当前工作区 API，无需令牌）
 配对标签：sop-board playwright tags --pairs <pairs.json> --out <cases.json>
@@ -145,7 +148,9 @@ def _submit(args):
             refs.append(dict(name=name, sha256=result['sha256']))
         row.update(evidence=refs, fingerprint=expected[row['scenario']])
     body = dict(idempotency_key=args.idempotency_key, scenario_file_sha256=scope['scenario_file_sha256'],
-        product=product, submitted_by=args.submitted_by, results=rows)
+        product=product, submitted_by=args.submitted_by, execution_origin='session', results=rows)
+    if args.implementer is not None:
+        body['implementer'] = args.implementer
     result = json.loads(request(base + '/rounds', json.dumps(body, ensure_ascii=False).encode(), {'Content-Type': 'application/json'}))
     print(json.dumps(result, ensure_ascii=False))
 
@@ -167,6 +172,7 @@ def command(arguments):
     for name in ('results', 'scope', 'scenario-file', 'product', 'idempotency-key', 'submitted-by'):
         submit.add_argument('--' + name, required=True)
     submit.add_argument('--url')
+    submit.add_argument('--implementer', help='实际实现者；省略则独立性未声明')
     submit.add_argument('--allow-partial', action='store_true')
     args = parser.parse_args(arguments)
     try:

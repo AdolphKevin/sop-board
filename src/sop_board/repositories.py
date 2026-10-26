@@ -115,13 +115,14 @@ class Discovery:
         self.first_scan = True
         self.thread = threading.Thread(target=self.run, name='workspace-discovery', daemon=True)
 
-    def scan(self):
+    def scan(self, *, reconcile=True):
         from .errors import APIError
         from .scenario_file import load_scenarios
         from .service import fingerprint
         workspace = self.service.workspace
         changed = workspace.reload()
-        self.service.environment.reconcile()
+        if reconcile:
+            self.service.environment.reconcile()
         errors = {}
         if not workspace.configured:
             self.service.workspace_problems = errors

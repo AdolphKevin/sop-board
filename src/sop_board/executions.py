@@ -1,4 +1,5 @@
 """固定工作区快照，在已就绪的适配环境中执行并登记结果。"""
+
 import hashlib
 from contextlib import nullcontext
 from importlib.resources import files
@@ -7,15 +8,18 @@ from pathlib import Path
 from string import Template
 import sqlite3
 import subprocess
-import time
 
 import yaml
+
+from .kernel import (InputChanged, EXECUTION_QUEUE, OUTPUT_ACTIVE, S, codex_failure, session_id, sql_states,
+                     terminate_group, wait_codex)
 
 from .errors import APIError, reject
 from .repositories import git
 from .service import canonical, fingerprint, now
 from .statistics import calculate, pending_scope
-from .tasks import terminate_group, judgment_object, invalid_judgment_constant, codex_failure
+from .merge_state import read_holds, held_scenarios
+from .tasks import judgment_object, invalid_judgment_constant
 from .validation import validate_round
 from .playwright import driver_skill, write_scope
 from .credentials import append_blocked, blocked_results, names as credential_names
@@ -24,21 +28,22 @@ from .credentials import append_blocked, blocked_results, names as credential_na
 class Executions:
     def __init__(self, tasks):
         self.tasks, self.service, self.store = tasks, tasks.service, tasks.store
-        self.next_review = {}
 
     def waiting_merge(self, db, key, name):
         row = db.execute("SELECT id FROM tasks WHERE kind='merge' AND workspace=? AND batch=? "
-                         "AND status IN ('排队中','运行中') ORDER BY id LIMIT 1", (key, name)).fetchone()
+                         f'AND status IN ({sql_states(OUTPUT_ACTIVE)}) ORDER BY id LIMIT 1', (key, name)).fetchone()
         return row['id'] if row else None
 
-    def enqueue(self, key, name, scope=None, trigger='开发者发起', selection='pending'):
+    def enqueue(self, key, name, scope=None, trigger='开发者发起', selection='pending', *, selected=None, session=False):
         with self.tasks.lock:
             manual = scope is None
             if manual:
                 self.service.require_ready(key)
             with self.store.transaction() as db:
+                if not manual and not self.service.auto_execute_enabled(db):
+                    return None
                 batch = self.service.batch(db, key, name)
-                merge = self.waiting_merge(db, key, name)
+                merge = None if session else self.waiting_merge(db, key, name)
                 version = self.service.latest_version(db, batch)
                 document = yaml.safe_load(version['content']) if version else {'sops': []}
                 if manual:
@@ -46,18 +51,29 @@ class Executions:
                     db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product['product_digest'], batch['id']))
                     batch = self.service.batch(db, key, name)
                     summary = calculate(db, batch)
-                    scope = ([dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios']]
-                             if selection == 'all' else pending_scope(db, batch, summary, product['product_digest']))
+                    if selected is not None:
+                        available = {s['scenario'] for s in summary['scenarios'] if not s.get('held')}
+                        if set(selected) - available:
+                            reject(409, 'scenario-unavailable', 'scope', '场景不存在或待补充：' + '、'.join(sorted(set(selected) - available)))
+                        pending = {s['scenario']: s for s in pending_scope(db, batch, summary, product['product_digest'])}
+                        scope = [pending.get(sid, dict(scenario=sid, reason='rerun')) for sid in selected]
+                        selection = 'explicit'
+                    else:
+                        scope = ([dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios'] if not s.get('held')]
+                                 if selection == 'all' else pending_scope(db, batch, summary, product['product_digest']))
                 if not scope and not (manual and merge):
                     if manual:
                         reject(409, 'nothing-to-execute', 'scenarios', '尚无场景' if selection == 'all' else '没有待执行场景')
                     return None
                 previous = db.execute("SELECT id,scope_json,input_json FROM tasks WHERE kind='execute' AND workspace=? AND batch=? "
-                    "AND status IN ('排队中','待提交','等待浏览器','等待合并') ORDER BY id LIMIT 1", (key, name)).fetchone()
+                    f'AND status IN ({sql_states(EXECUTION_QUEUE)}) ORDER BY id LIMIT 1', (key, name)).fetchone()
                 request = dict(selection=selection if manual else 'explicit', refresh_after_merge=bool(merge))
-                status, error = ('等待合并', f'等待合并 #{merge}') if merge else ('排队中', '')
+                status, error = (S.WAIT_MERGE, f'等待合并 #{merge}') if merge else (S.QUEUED, '')
                 if previous:
                     prior = json.loads(previous['input_json'])
+                    if selected is not None and (prior.get('selection') != 'explicit' or
+                            {s['scenario'] for s in json.loads(previous['scope_json'])} - set(selected)):
+                        reject(409, 'execution-queued', 'scope', f"执行任务 #{previous['id']} 已有其他范围，请先处理该任务后再执行所列场景")
                     request['selection'] = ('all' if 'all' in (prior.get('selection'), request['selection']) else
                                             'pending' if 'pending' in (prior.get('selection'), request['selection']) else 'explicit')
                     request['refresh_after_merge'] |= prior.get('refresh_after_merge', False)
@@ -88,6 +104,7 @@ class Executions:
             document = yaml.safe_load(version['content'])
             details = {s['scenario']: s for s in calculate(db, batch)['scenarios']}
             cases = self.service.case_union(db, batch)
+            held = {h['case'] for h in read_holds(db, batch)['held']}
         scope = {s['scenario']: s['reason'] for s in json.loads(task['scope_json'])}
         scenes = [s for n in document['sops'] for s in n['scenarios'] if s['id'] in scope]
         if set(scope) != {s['id'] for s in scenes}:
@@ -100,37 +117,69 @@ class Executions:
                         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest() if source.is_file() else '', **product)
         previous = {sid: details[sid]['latest_agent'] for sid in scope if details[sid]['latest_agent']}
         request = json.loads(task['input_json'])
-        inputs = dict(document=document, scenes=scenes, entries=workspace.execution_entries(), aliases=aliases, previous=previous, cases=cases,
+        inputs = dict(document=document, scenes=scenes, entries=workspace.execution_entries(), aliases=aliases, previous=previous,
+                      cases=[c for c in cases if c['id'] not in held],
+                      execution_origin='session' if self.tasks.kernel.claim(task) else 'board',
                       selection=request.get('selection', 'explicit'), refresh_after_merge=False)
         return snapshot, inputs
+
+    @staticmethod
+    def counts(rows):
+        """沿用与重跑分开计数：重跑是实际执行并得出通过或失败的场景，受阻、跳过不计入两者。"""
+        reused = [isinstance(r.get('note'), str) and r['note'].startswith('沿用：') for r in rows]
+        return dict(reused_count=sum(reused),
+                    rerun_count=sum(not used and r.get('status') in ('pass', 'fail') for used, r in zip(reused, rows)))
+
+    def committed(self, task):
+        """被阻挡期间只核对产品是否已无未提交改动；开始前仍按 freeze 完整冻结并核对输入。"""
+        workspace = self.service.workspace
+        try:
+            with self.store.connection() as db:
+                version = self.service.latest_version(db, self.service.batch(db, task['workspace'], task['batch']))
+            if not version:
+                return False
+            return not workspace.product(workspace.aliases(yaml.safe_load(version['content'])))['dirty']
+        except (OSError, ValueError, KeyError, yaml.YAMLError, APIError, subprocess.SubprocessError):
+            return False
 
     def prepare(self, task):
         with self.store.connection() as db:
             merge = self.waiting_merge(db, task['workspace'], task['batch'])
         if merge:
             request = json.loads(task['input_json'])
-            if (task['status'] != '等待合并' or task['error'] != f'等待合并 #{merge}'
+            if (task['status'] != S.WAIT_MERGE or task['error'] != f'等待合并 #{merge}'
                     or task['snapshot_json'] != '{}' or not request.get('refresh_after_merge')):
                 request['refresh_after_merge'] = True
-                self.tasks.update(task['id'], status='等待合并', error=f'等待合并 #{merge}',
+                self.tasks.update(task['id'], status=S.WAIT_MERGE, error=f'等待合并 #{merge}',
                                   input_json=canonical(request), snapshot_json='{}')
             (self.tasks.directory(task['id']) / 'snapshot.json').unlink(missing_ok=True)
             if self.tasks.browser_owner == task['id']:
                 self.tasks.browser_owner = None
-            self.next_review.pop(task['id'], None)
+            self.tasks.kernel.wake(task['id'])
             return False
-        if time.monotonic() < self.next_review.get(task['id'], 0):
+        if not self.tasks.kernel.check_due(task, self.tasks.types['execute'].waiting):
             return False
-        self.next_review[task['id']] = time.monotonic() + 5
+        # 已排队任务可能尚未观察到一次很快结束的合并，准备前仍须排除最新暂缓项。
+        with self.store.transaction() as db:
+            batch = self.service.batch(db, task['workspace'], task['batch'])
+            held = held_scenarios(read_holds(db, batch))
+            original_scope = json.loads(task['scope_json'])
+            available = [s for s in original_scope if s['scenario'] not in held]
+            if available != original_scope:
+                task['scope_json'] = canonical(available)
+                db.execute('UPDATE tasks SET scope_json=? WHERE id=?', (task['scope_json'], task['id']))
+        if original_scope and not available and not json.loads(task['input_json']).get('refresh_after_merge'):
+            self.tasks.update(task['id'], status=S.COMPLETED, finished_at=now(), error='执行范围的用例全部暂缓，等待补充')
+            return False
         if not self.service.environment.approved():
-            self.tasks.update(task['id'], status='排队中', error='尚未搭建或自检未通过，等待工作区就绪')
+            self.tasks.update(task['id'], status=S.QUEUED, error='尚未搭建或自检未通过，等待工作区就绪')
             return False
         declarations = self.service.entries(task['workspace'])
         if not declarations['ok']:
-            self.tasks.update(task['id'], status='排队中', error='入口声明不合格')
+            self.tasks.update(task['id'], status=S.QUEUED, error='入口声明不合格')
             return False
         if self.service.environment.state.get('waiting_port'):
-            self.tasks.update(task['id'], status='排队中', error=self.service.environment.state['status'])
+            self.tasks.update(task['id'], status=S.QUEUED, error=self.service.environment.state['status'])
             return False
         request = json.loads(task['input_json'])
         if request.get('refresh_after_merge'):
@@ -143,24 +192,25 @@ class Executions:
                 batch = self.service.batch(db, task['workspace'], task['batch'])
                 summary = calculate(db, batch)
                 if request.get('selection') == 'all':
-                    scope = [dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios']]
+                    scope = [dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios'] if not s.get('held')]
                 else:
-                    current = {s['scenario'] for s in summary['scenarios']}
-                    scope = {s['scenario']: s for s in pending_scope(db, batch, summary, product['product_digest'])}
+                    current = {s['scenario'] for s in summary['scenarios'] if not s.get('held')}
+                    scope = ({s['scenario']: s for s in pending_scope(db, batch, summary, product['product_digest'])}
+                             if request.get('selection') == 'pending' else {})
                     for scene in json.loads(task['scope_json']):
                         if scene['scenario'] in current and (scene['reason'] == 'rerun' or scene['scenario'] not in scope):
                             scope[scene['scenario']] = scene
                     scope = list(scope.values())
                 request['refresh_after_merge'] = False
                 task['scope_json'], task['input_json'] = canonical(scope), canonical(request)
-                db.execute("UPDATE tasks SET scope_json=?,input_json=?,status='排队中',error='' WHERE id=?",
+                db.execute(f"UPDATE tasks SET scope_json=?,input_json=?,status='{S.QUEUED}',error='' WHERE id=?",
                            (task['scope_json'], task['input_json'], task['id']))
             if not scope:
-                self.tasks.update(task['id'], status='已完成', finished_at=now(), error='合并结束，当前版本没有待执行场景')
+                self.tasks.update(task['id'], status=S.COMPLETED, finished_at=now(), error='合并结束，当前版本没有待执行场景')
                 return False
         snapshot, inputs = self.freeze(task)
         if snapshot['dirty']:
-            self.tasks.update(task['id'], status='待提交', error='工作区有未提交的产品改动：' + '、'.join(snapshot['changed'][:10]))
+            self.tasks.update(task['id'], status=S.WAIT_COMMIT, error='工作区有未提交的产品改动：' + '、'.join(snapshot['changed'][:10]))
             return False
         directory = self.tasks.directory(task['id'])
         directory.mkdir(parents=True, exist_ok=True)
@@ -176,12 +226,10 @@ class Executions:
         if not self.service.environment.approved() or snapshot['config_digest'] != self.service.workspace.config_digest:
             return '工作区配置或自检状态变化'
         current, _ = self.freeze(task)
-        names = dict(scenario_file_sha256='场景版本', scenarios='场景内容', config_digest='工作区配置',
-                     cases_digest='用例并集', source_sha256='工作区场景文件', repos='仓库提交或产品内容', product_digest='产品内容')
-        changed = [label for key, label in names.items() if current[key] != snapshot[key]]
+        changed = self.tasks.types['execute'].inputs(task).changed(current)
         return '、'.join(changed) + '变化' if changed else ''
 
-    def inputs(self, task, inputs, environment):
+    def materialize(self, task, inputs, environment):
         directory = self.tasks.directory(task['id'])
         selected = {s['id'] for s in inputs['scenes']}
         document = dict(inputs['document'], sops=[dict(n, scenarios=[s for s in n['scenarios'] if s['id'] in selected])
@@ -220,14 +268,29 @@ class Executions:
                     if separator and name == alias:
                         prior[sha] = True
             changes[alias] = dict(current=snapshot['repos'][alias]['commit'], directory=str(root), previous=[])
+            if snapshot.get('dirty'):
+                changes[alias]['uncommitted'] = [p[len(alias) + 1:] for p in snapshot['changed'] if p.startswith(alias + '/')]
             for sha in prior:
                 try:
-                    diff = git(root, 'diff', '--name-status', sha, snapshot['repos'][alias]['commit']).decode()
+                    target = [] if snapshot.get('dirty') else [snapshot['repos'][alias]['commit']]
+                    diff = git(root, 'diff', '--name-status', sha, *target, '--').decode()
                 except subprocess.SubprocessError:
                     diff = '旧提交不可读取，不能仅据此沿用结果'
                 changes[alias]['previous'].append(dict(commit=sha, files=diff))
         (directory / 'changes.json').write_text(canonical(changes), encoding='utf-8')
+        origin = inputs.get('execution_origin','session' if self.tasks.kernel.claim(task) else 'board')
+        (directory/'origin.json').write_text(canonical(dict(execution_origin=origin)),encoding='utf-8')
+        (directory/'repos.json').write_text(canonical({alias:str(path) for alias,path in self.service.workspace.repos.items()}),encoding='utf-8')
+        external = origin == 'session'
         prompt = Template(files('sop_board').joinpath('prompts/execute.md').read_text(encoding='utf-8')).substitute(task_directory=directory, skill_path=self.service.workspace.skill,
+            environment_preparation=('由执行会话按项目验证技能与手册准备入口与隔离数据；按 entries.json 的 operate、observe 和 evidence 操作。'
+                '结束前按手册停止本轮由自己启动的服务进程并核对已退出，只清理本轮获授权的资源，不停止使用者已有的服务或浏览器。'
+                '在结果 note 中列出已停止的服务名称、PID 或进程组及停止结果；没有启动服务时写“本轮未启动服务”，停止失败时如实列出仍运行的进程与原因。' if external else
+                '看板已经用工作区配置启动了实际环境；按 entries.json 的 operate、observe 和 evidence 操作。'),
+            repository_instruction=('地址从 entries.json 的 addresses 取得；各仓库目录从任务目录的 repos.json 按仓库别名读取。' if external else
+                '地址从 entries.json 的 addresses 取得；各仓库目录由 SOP_REPO_<别名> 环境变量提供。'),
+            environment_origin='执行会话自身' if external else '启动看板',
+            environment_restriction='' if external else '不启动或替换环境，',
             playwright_skill=driver_skill() / 'SKILL.md')
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
@@ -299,7 +362,7 @@ class Executions:
                 if not p.is_file():
                     raise ValueError(sid + ' 证据文件不存在')
                 prepared.append(p)
-            if scope.get(sid) == 'rerun' and not prepared:
+            if scope.get(sid) == 'rerun' and row.get('status') in ('pass','fail') and not prepared:
                 raise ValueError(sid + ' 须实际执行并保存新证据')
             if isinstance(note, str) and note.startswith('沿用：'):
                 previous = inputs.get('previous', {}).get(sid)
@@ -336,6 +399,53 @@ class Executions:
         elif not path.exists():
             path.write_text('[]', encoding='utf-8')
 
+    def consume(self, task, session, *, runnable=None, blocked=None, scoped=None, implementer=None, execution_origin='board'):
+        snapshot = json.loads(task['snapshot_json'])
+        inputs = json.loads(task['input_json'])
+        blocked = blocked or []
+        runnable = inputs['scenes'] if runnable is None else runnable
+        scoped = task if scoped is None else scoped
+        with self.tasks.lock:
+            receipt = self.tasks.kernel.receipt(task, phase='execute')
+            if receipt is not None:
+                return dict(rounds=receipt['rounds'], rows=receipt['rows'])
+            reason = self.changes(task, snapshot)
+            if reason:
+                raise InputChanged(reason)
+            rows = self.read_results(scoped, runnable, session) if runnable else []
+            self.blocked_impact(task, blocked)
+            append_blocked(self.tasks.directory(task['id']), blocked)
+            rows.extend(dict(row, fingerprint=snapshot['scenarios'][row['scenario']], session=str(task['id'])) for row in blocked)
+            if execution_origin == 'session':
+                for row in rows:
+                    row.update(executor=session, session=session)
+            with self.store.transaction() as db:
+                if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] not in (S.RUNNING, S.SESSION):
+                    return dict(rounds=[], rows=[])
+                reason = self.changes(task, snapshot)
+                if reason:
+                    raise InputChanged(reason)
+                batch = self.service.batch(db, task['workspace'], task['batch'])
+                version = self.service.latest_version(db, batch)
+                key = f"execute-{task['id']}-{task['attempt']}"
+                existing = db.execute('SELECT number FROM rounds WHERE batch=? AND idempotency_key=?', (batch['id'], key)).fetchone()
+                for row in rows:
+                    row['evidence'] = [p if isinstance(p, dict) else dict(name=p.name,
+                        sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
+                body = dict(idempotency_key=key, scenario_file_sha256=snapshot['scenario_file_sha256'],
+                    submitted_by=session, execution_origin=execution_origin,
+                    product=dict(commit=snapshot['commit'], digest=snapshot['product_digest'],
+                                 dirty=snapshot['dirty'] if execution_origin == 'session' else False), results=rows)
+                if implementer is not None:
+                    body['implementer'] = implementer
+                if existing:
+                    rounds = [existing['number']]
+                else:
+                    rounds = [self.service.register_round(db, batch, version, body, skill_digest=snapshot['skill_digest'])]
+                result = dict(rounds=rounds, rows=rows, session=session)
+                self.tasks.kernel.register(task, result, connection=db, phase='execute')
+                return result
+
     def execute(self, task):
         directory = self.tasks.directory(task['id'])
         error = void_reason = session = ''
@@ -354,58 +464,29 @@ class Executions:
             scoped = dict(task, scope_json=canonical([row for row in json.loads(task['scope_json']) if row['scenario'] not in blocked_ids]))
             context = self.service.environment.use_baseline() if runnable else nullcontext(preflight)
             with context as environment:
-                if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '运行中':
+                if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != S.RUNNING:
                     return
                 void_reason = self.changes(task, snapshot)
                 if void_reason:
                     return
                 (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
                 if runnable:
-                    prompt = self.inputs(scoped, dict(inputs, scenes=runnable), environment)
+                    prompt = self.tasks.types['execute'].prepare(scoped, inputs=dict(inputs, scenes=runnable), environment=environment)
                     with self.tasks.lock:
-                        process = self.tasks.launcher(directory, prompt, sandbox='workspace-write', environment=environment)
+                        process = self.tasks.kernel.launch(task, directory, prompt, self.tasks.types['execute'].launch(task, environment=environment))
                         self.tasks.processes[task['id']] = process
-                    try:
-                        code = process.wait(timeout=self.tasks.timeout)
-                    except subprocess.TimeoutExpired:
-                        terminate_group(process)
-                        raise ValueError(f'Codex 运行超时（{self.tasks.timeout:g} 秒）')
+                    code = wait_codex(process, self.tasks.timeout)
                     if code:
                         raise ValueError(codex_failure(directory, code))
-                    for line in (directory / 'events.jsonl').read_text(encoding='utf-8').splitlines():
-                        try:
-                            event = json.loads(line)
-                            if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
-                                session = event['thread_id']
-                                break
-                        except ValueError:
-                            continue
+                    session = session_id(directory, '')
                     if not session:
                         raise ValueError('Codex 没有返回会话编号')
-                    rows = self.read_results(scoped, runnable, session)
                 else:
                     session = 'Flow Board 入口检查'
-                void_reason = self.changes(task, snapshot)
-                if void_reason:
-                    return
-                self.blocked_impact(task, blocked)
-                append_blocked(directory, blocked)
-                rows.extend(dict(row, fingerprint=snapshot['scenarios'][row['scenario']], session=str(task['id'])) for row in blocked)
-                with self.tasks.lock, self.store.transaction() as db:
-                    if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != '运行中':
-                        return
-                    void_reason = self.changes(task, snapshot)
-                    if void_reason:
-                        return
-                    batch = self.service.batch(db, task['workspace'], task['batch'])
-                    version = self.service.latest_version(db, batch)
-                    for row in rows:
-                        row['evidence'] = [p if isinstance(p, dict) else dict(name=p.name,
-                            sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
-                    body = dict(idempotency_key=f"execute-{task['id']}-{task['attempt']}", scenario_file_sha256=snapshot['scenario_file_sha256'],
-                        submitted_by=session, product=dict(commit=snapshot['commit'], digest=snapshot['product_digest'], dirty=False), results=rows)
-                    validate_round(db, body)
-                    rounds = [self.service.insert_round(db, batch, version, body, skill_digest=snapshot['skill_digest'])]
+                consumed = self.tasks.types['execute'].consume(task, session, runnable=runnable, blocked=blocked, scoped=scoped)
+                rounds, rows = consumed['rounds'], consumed['rows']
+        except InputChanged as problem:
+            void_reason = str(problem)
         except APIError as problem:
             error = '；'.join(p['problem'] for p in problem.problems)
         except (OSError, ValueError, KeyError, TypeError, RecursionError, sqlite3.Error, subprocess.SubprocessError) as problem:
@@ -416,26 +497,16 @@ class Executions:
                 self.service.workspace.reload()
                 if not rounds and self.service.workspace.skill_changed(snapshot):
                     void_reason = '验证技能变化'
-                events = directory / 'events.jsonl'
-                if events.is_file():
-                    for line in events.read_text(encoding='utf-8', errors='replace').splitlines():
-                        try:
-                            event = json.loads(line)
-                            if isinstance(event, dict) and event.get('type') == 'thread.started' and isinstance(event.get('thread_id'), str):
-                                session = event['thread_id']
-                                break
-                        except ValueError:
-                            continue
+                session = session_id(directory, session)
             with self.tasks.lock:
                 self.tasks.processes.pop(task['id'], None)
                 if self.tasks.starting == task['id']:
                     self.tasks.starting = None
                 if self.tasks.browser_owner == task['id']:
                     self.tasks.browser_owner = None
-                if not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == '运行中':
-                    result = dict(ok=not error and not void_reason, problems=[error] if error else [],
-                                  reused_count=sum(isinstance(r.get('note'), str) and r['note'].startswith('沿用：') for r in rows))
+                if not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == S.RUNNING:
+                    result = dict(ok=not error and not void_reason, problems=[error] if error else [], **self.counts(rows))
                     (directory / 'result.json').write_text(canonical(result), encoding='utf-8')
-                    self.tasks.update(task['id'], status='已作废' if void_reason else '失败' if error else '已完成',
+                    self.tasks.update(task['id'], status=S.VOID if void_reason else S.FAILED if error else S.COMPLETED,
                         finished_at=now(), error=error, session_id=session or None, void_reason=void_reason,
                         rounds_json=canonical(rounds), result_json=canonical(result))

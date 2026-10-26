@@ -8,7 +8,7 @@ import subprocess
 from .repositories import git
 
 
-INPUT_NAMES = {'SOP_TASK_DIR', 'SOP_FIX_BRANCH', 'SOP_REPOS', 'SOP_WORKTREES', 'SOP_ENV_LOG_DIR'}
+INPUT_NAMES = {'SOP_TASK_DIR', 'SOP_FIX_BRANCH', 'SOP_REPOS', 'SOP_WORKTREES', 'SOP_ENV_LOG_DIR', 'SOP_BASE_COMMITS'}
 ARTIFACT_DIRECTORIES = {'evidence', 'sop', 'attempts', 'interruptions', 'validations'}
 
 
@@ -27,7 +27,8 @@ def unique_object(pairs):
 
 class WorktreeError(ValueError):
     def __init__(self, message, log, paths=None):
-        super().__init__(message + '；日志：' + str(log))
+        suffix = '；日志：' + str(log)
+        super().__init__(message if suffix in message else message + suffix)
         self.log = str(log)
         self.paths = paths or {}
 
@@ -91,22 +92,25 @@ class Worktrees:
                 raise ValueError(alias + ' 的已有工作树路径变化，不能替换修复现场')
         return result
 
-    def inputs(self, task_dir, branch, aliases, paths=None):
+    def inputs(self, task_dir, branch, aliases, paths=None, commits=None):
         env = self.runtime.environment({})
         env.update(SOP_TASK_DIR=str(task_dir), SOP_FIX_BRANCH=branch, SOP_REPOS=','.join(aliases))
         for alias in aliases:
             env['SOP_BASE_' + alias.upper().replace('-', '_')] = str(self.workspace.repos[alias])
         if paths is not None:
             env['SOP_WORKTREES'] = json.dumps({a: str(p) for a, p in paths.items()}, ensure_ascii=False)
+        if commits is not None:
+            env['SOP_BASE_COMMITS'] = json.dumps(commits, ensure_ascii=False)
         return env
 
-    def build(self, task_dir, branch, aliases, log, known=None):
+    def build(self, task_dir, branch, aliases, log, known=None, commits=None):
         task_dir, log = Path(task_dir).resolve(), Path(log)
         aliases = sorted(aliases)
         known = {a: Path(p).resolve() for a, p in (known or {}).items()}
         key = (str(task_dir), branch)
         cached = self.cache.get(key)
-        if cached and cached['config_digest'] == self.workspace.config_digest and set(cached['repos']) == set(aliases):
+        if (cached and cached['config_digest'] == self.workspace.config_digest and set(cached['repos']) == set(aliases)
+                and cached.get('commits') == commits):
             paths = self.validate(cached['repos'], aliases, branch, task_dir, known)
             return paths, dict(cached['env'])
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +119,7 @@ class Worktrees:
         self.active.add(task_dir)
         try:
             if 'worktree' in self.workspace.adapter:
-                raw = self.runtime.run_command('worktree', self.inputs(task_dir, branch, aliases), log, json_output=True)
+                raw = self.runtime.run_command('worktree', self.inputs(task_dir, branch, aliases, commits=commits), log, json_output=True)
                 try:
                     output = json.loads(raw, object_pairs_hook=unique_object)
                     if not isinstance(output, dict) or set(output) != {'repos', 'env'} or not isinstance(output['env'], dict):
@@ -141,13 +145,13 @@ class Worktrees:
                             if git(root, 'branch', '--list', branch).strip():
                                 if alias not in known:
                                     raise ValueError(alias + ' 已存在同名分支，不能接管')
-                                git(root, 'worktree', 'add', str(path), branch)
+                                git(root, 'worktree', 'add', str(path), branch, capture_stderr=True)
                             else:
-                                git(root, 'worktree', 'add', '-b', branch, str(path), 'HEAD')
+                                git(root, 'worktree', 'add', '-b', branch, str(path), (commits or {}).get(alias, 'HEAD'), capture_stderr=True)
                             stream.write(alias + '：git worktree add ' + str(path) + '\n')
                         paths[alias] = path
                 paths = self.validate(paths, aliases, branch, task_dir, known)
-            self.cache[key] = dict(repos=paths, env=extra, config_digest=self.workspace.config_digest)
+            self.cache[key] = dict(repos=paths, env=extra, config_digest=self.workspace.config_digest, commits=commits)
             return paths, dict(extra)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             # 只交出本次新建且三项身份核对通过的路径，绝不把错误返回的目录交给删除命令。

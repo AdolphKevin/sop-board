@@ -21,6 +21,9 @@ from .repositories import Discovery
 
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] in ('status', 'task', 'draft', 'cases', 'merge', 'execute', 'fix', 'sop'):
+        from .session import command
+        return command(argv)
     if argv and argv[0] == 'playwright':
         from .playwright import command
         return command(argv[1:])
@@ -64,13 +67,21 @@ def main():
         environment = Environment(workspace)
         if action == 'check':
             result = environment.check()
+            if result.get('message'):
+                print(result['message'],flush=True)
             for credential in result['credentials']:
                 print(f"入口 {credential['entry']} · {credential['name']}：{credential['status']}", flush=True)
             for number, step in enumerate(result['steps'], 1):
                 print(f"{number}. {step['name']}：{step['status']} · {step['message']}", flush=True)
                 if step['log']:
                     print('   日志：' + step['log'], flush=True)
-            print('自检报告：' + result['path'], flush=True)
+            if result.get('path'):
+                print('自检报告：' + result['path'], flush=True)
+            else:
+                print('自检报告未能保存；已记录的自检结果保持不变',flush=True)
+                if not environment.process and not environment.port_locks:
+                    # check 已释放资源；目录不可写时不在 finally 再写一次环境状态。
+                    environment = None
             return 0 if result['ok'] else 1
         server = ThreadingHTTPServer(('0.0.0.0' if args.lan else '127.0.0.1', args.port), Handler)
         server.daemon_threads = False
@@ -79,6 +90,8 @@ def main():
             db.execute('INSERT INTO workspaces(key,root,name) VALUES (?,?,?) '
                        'ON CONFLICT(key) DO UPDATE SET root=excluded.root,name=excluded.name',
                        (workspace.name, str(workspace.data), workspace.name))
+            db.execute("INSERT INTO settings(key,value) VALUES ('board_url',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (f'http://127.0.0.1:{server.server_port}',))
         service = server.service = Service(store, workspace, environment)
         server.jira = service.jira = Jira(os.environ.get('JIRA_EMAIL', ''),
                                         os.environ.get('JIRA_API_TOKEN', ''), timeout=os.environ.get('JIRA_TIMEOUT_SECONDS', '10'))

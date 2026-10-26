@@ -1,6 +1,7 @@
 # SOP-BOARD-3：Codex 任务、可写授权与以用例为准的合并的验收场景
 # 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v8）的 D15、D16、D17、D20、D21、S7 与 docs/designs/SOP-BOARD-3.md 的 I1–I5、D1、D2，不依据当前实现的输出。
 # 版本 1（2026-10-19）：Claude 依据上述两份原文编写，经 AdolphKevin 授权由 Claude 代批。
+# 版本 3（2026-10-23）：统一验收中按 AdolphKevin 同意改写——SOP-33-P05、P08 去掉 v9 已删除的 regression 声明相关断言；SOP-33-N06 按 SOP-BOARD-13 D67（部分落地，已确认）改为有缺口时其余用例照常落地。
 # 版本 2（2026-10-20，同日按实现中发现的格式冲突改写 SOP-33-P09、SOP-33-N01 的初始状态）：按测试代理 sop-board-3-tester 的 78 条用例与方案修订 2 核对覆盖，补充 30 条场景、修改 25 条，经 AdolphKevin 授权由 Claude 代批。
 #
 # 下文"测试看板"同 SOP-BOARD-1、2 的约定；"开发者令牌"指 SOP_BOARD_ADMIN_TOKEN（与写入令牌不同）。
@@ -17,7 +18,7 @@
 metadata:
   requirement: "sop-board Codex 任务、可写授权与以用例为准的合并：授权与开发者令牌、Codex 运行器、合并规则、草稿与写入、SOP 原文与版本"
   batch: "sop-board-3"
-  version: 2
+  version: 3
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-19-standalone-sop-verification.md 的 D15、D16、D17、D20、D21 与第 4 节 S7"
@@ -462,14 +463,14 @@ sops:
 
       - id: SOP-33-P05
         polarity: positive
-        title: 重新合并时编号不变，回归声明保留，相同输入不重复建任务
+        title: 重新合并时编号不变，相同输入不重复建任务
         actor: 开发者
         priority: P1
         refs: ["I4"]
         verify: api
-        initial_state: ["假 codex 在 PATH 最前，返回固定的判断字段，其中原有场景 N1-P02 为 kept", "演示仓库的 docs/sop/demo.yaml 含节点 N1 的正向场景 N1-P02（带 regression 声明 R2）并已提交", "授权看板已对批次 demo 上传演示用例文件，合并已完成并写入 demo.yaml（节点 S01 登录、S02 订单）"]
-        steps: ["等待 10 秒，查看批次版本与任务列表", "开发者在 demo.yaml 中给 TC_DEMO_LOGIN_001 加 regression 声明 R1（不改场景内容），等待 10 秒并等新触发的合并结束", "再次上传原文相同的演示用例文件，请求任务列表", "上传一份新增 TC_DEMO_ORDER_002（section:订单）并修改 TC_DEMO_LOGIN_001 的 expected_results 的用例文件，等待合并结束，读取 demo.yaml"]
-        expected: ["看板写入 demo.yaml 后没有登记推送人为工作区的同内容版本，也没有因此触发合并", "开发者的修改被登记为推送人为工作区的新版本，由此触发的合并结束后 TC_DEMO_LOGIN_001 的 regression 仍为 R1", "相同原文的上传返回 unchanged_upload 为 true，没有新建合并任务", "最后的合并结果中节点编号 S01、S02 不变，TC_DEMO_LOGIN_001 的 expected 为修改后的预期且 regression 仍为 R1，N1-P02 的 regression 仍为 R2，新增场景 TC_DEMO_ORDER_002 在 S02"]
+        initial_state: ["假 codex 在 PATH 最前，返回固定的判断字段，其中原有场景 N1-P02 为 kept", "演示仓库的 docs/sop/demo.yaml 含节点 N1 的正向场景 N1-P02 并已提交", "授权看板已对批次 demo 上传演示用例文件，合并已完成并写入 demo.yaml（节点 S01 登录、S02 订单）"]
+        steps: ["等待 10 秒，查看批次版本与任务列表", "开发者在 demo.yaml 中修改 TC_DEMO_LOGIN_001 的 evidence_hints（不改场景内容四要素），等待 10 秒并等新触发的合并结束", "再次上传原文相同的演示用例文件，请求任务列表", "上传一份新增 TC_DEMO_ORDER_002（section:订单）并修改 TC_DEMO_LOGIN_001 的 expected_results 的用例文件，等待合并结束，读取 demo.yaml"]
+        expected: ["看板写入 demo.yaml 后没有登记推送人为工作区的同内容版本，也没有因此触发合并", "开发者的修改被登记为推送人为工作区的新版本，并触发一次合并", "相同原文的上传返回 unchanged_upload 为 true，没有新建合并任务", "最后的合并结果中节点编号 S01、S02 不变，TC_DEMO_LOGIN_001 的 expected 为修改后的预期，N1-P02 的编号与内容不变，新增场景 TC_DEMO_ORDER_002 在 S02"]
         forbidden_effects: ["产生输入相同的重复任务"]
         evidence_hints: ["任务列表", "批次版本信息", "各次合并结果"]
 
@@ -529,15 +530,15 @@ sops:
 
       - id: SOP-33-P08
         polarity: positive
-        title: 判为重复或冲突的原有场景被移除，禁止副作用与回归声明并入目标用例场景
+        title: 判为重复或冲突的原有场景被移除，禁止副作用并入目标用例场景
         actor: 测试岗
         priority: P0
         refs: ["I4"]
         verify: api
-        initial_state: ["演示仓库已提交 docs/sop/pay.yaml（批次 pay）：节点 SOP-02 含 SOP-02-P01（forbidden_effects 为 [不重复扣款]，带 regression 声明 R）、SOP-02-P02 与 SOP-02-P03", "授权看板已登记批次 pay", "用例文件含 TC_DEMO_PAY_001（section:支付，正向，没有 regression）与 TC_DEMO_PAY_002（section:支付、negative）", "假 codex 在 PATH 最前，除下述去向外返回合规判断字段：SOP-02-P01 为 duplicate，target 为 TC_DEMO_PAY_001，理由为 同一扣款流程，并入 forbidden_effects [不重复扣款]，转移回归声明；SOP-02-P02 为 conflict，target 为 TC_DEMO_PAY_002，理由为 余额不足时用例要求拒绝"]
+        initial_state: ["演示仓库已提交 docs/sop/pay.yaml（批次 pay）：节点 SOP-02 含 SOP-02-P01（forbidden_effects 为 [不重复扣款]）、SOP-02-P02 与 SOP-02-P03", "授权看板已登记批次 pay", "用例文件含 TC_DEMO_PAY_001（section:支付，正向）与 TC_DEMO_PAY_002（section:支付、negative）", "假 codex 在 PATH 最前，除下述去向外返回合规判断字段：SOP-02-P01 为 duplicate，target 为 TC_DEMO_PAY_001，理由为 同一扣款流程，并入 forbidden_effects [不重复扣款]；SOP-02-P02 为 conflict，target 为 TC_DEMO_PAY_002，理由为 余额不足时用例要求拒绝"]
         steps: ["向批次 pay 上传用例文件，等待合并结束", "读取写入的 docs/sop/pay.yaml，打开合并页选中该任务", "下载批次 pay 的 Markdown 报告"]
-        expected: ["任务为已完成，合并结果中没有 SOP-02-P01 与 SOP-02-P02，SOP-02-P03 的编号与内容不变", "TC_DEMO_PAY_001 的 forbidden_effects 恰为 [不重复扣款]，并带有 regression 声明 R", "TC_DEMO_PAY_002 的 expected 与用例的 expected_results 相同", "合并页显示 SOP-02-P01 的去向为与 TC_DEMO_PAY_001 重复、SOP-02-P02 的去向为与 TC_DEMO_PAY_002 冲突，并各自显示理由", "报告的合并记录区块列出这两条移除的场景、目标与理由"]
-        forbidden_effects: ["SOP-02-P01 的禁止副作用或回归声明丢失"]
+        expected: ["任务为已完成，合并结果中没有 SOP-02-P01 与 SOP-02-P02，SOP-02-P03 的编号与内容不变", "TC_DEMO_PAY_001 的 forbidden_effects 恰为 [不重复扣款]", "TC_DEMO_PAY_002 的 expected 与用例的 expected_results 相同", "合并页显示 SOP-02-P01 的去向为与 TC_DEMO_PAY_001 重复、SOP-02-P02 的去向为与 TC_DEMO_PAY_002 冲突，并各自显示理由", "报告的合并记录区块列出这两条移除的场景、目标与理由"]
+        forbidden_effects: ["SOP-02-P01 的禁止副作用丢失"]
         evidence_hints: ["合并结果原文", "合并页截图", "报告原文"]
 
       - id: SOP-33-P09
@@ -637,14 +638,14 @@ sops:
       - id: SOP-33-N06
         polarity: negative
         negative_type: incomplete-input
-        title: 存在缺口时任务为待补充并列出缺口，不生成草稿也不写入
+        title: 存在缺口时缺口用例暂缓，其余用例照常落地
         actor: 测试岗
         priority: P0
         refs: ["I4"]
         verify: api
         initial_state: ["假 codex 在 PATH 最前，返回合规判断字段，另在 gaps 中写出 退款 没有正向依据", "演示仓库已提交 docs/sop/demo.yaml（批次 demo），授权看板已登记该批次", "用例文件为演示用例文件加一条 TC_DEMO_REFUND_001（section:退款、negative）"]
         steps: ["记录 docs/sop/demo.yaml 的 sha256", "向批次 demo 上传该用例文件，等待任务结束", "请求任务接口，打开合并页选中该任务", "请求 …/merges/<任务编号>/scenario-file 与 …/merges/<任务编号>/pairs.json，查看 docs/sop/demo.yaml 与批次版本", "上传一份含 TC_DEMO_REFUND_002（section:退款，正向）的用例文件，请求任务列表"]
-        expected: ["任务为待补充，任务接口与合并页列出缺口 退款", "scenario-file 与 pairs.json 都返回 404，error_code 为 merge-result-not-found", "docs/sop/demo.yaml 的 sha256 与上传前相同，批次没有推送人为看板合并的新版本", "补充用例上传后新增一个合并任务"]
+        expected: ["任务为已完成，任务接口与合并页列出缺口 退款，TC_DEMO_REFUND_001 为暂缓用例", "scenario-file 与 pairs.json 返回 200；docs/sop/demo.yaml 只为演示用例写入场景，不含退款场景", "补充用例上传后新增一个合并任务"]
         forbidden_effects: ["为满足格式编造正向场景"]
         evidence_hints: ["任务接口响应", "合并页截图", "demo.yaml 前后的 sha256"]
 

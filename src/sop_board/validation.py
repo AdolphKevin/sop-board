@@ -140,6 +140,8 @@ def validate_round(db, body):
         p.text(body.get(key), key)
     if "implementer" in body:
         p.text(body["implementer"], "implementer")
+    if body.get('execution_origin', 'board') not in ('board', 'session'):
+        p.add('execution_origin', '执行入口应为 board 或 session')
     product = body.get("product")
     if not isinstance(product, dict):
         p.add("product", "应为对象")

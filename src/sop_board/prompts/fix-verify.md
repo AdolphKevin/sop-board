@@ -1,10 +1,10 @@
-你是新会话，独立复测已提交的产品修复，不参与修复。
+$validation_instruction
 任务目录：$task_directory
-看板已经停止基线环境，并通过 adapter.env 启动包含各仓修复工作树的同一套环境；不要自行启停环境。
+$environment_instruction
 只在任务目录写结果与 evidence/，不改仓库，不写测试，不提交或推送。
 
 读取 retest.json（batch、scenario、scene）、entries.json（入口与地址）、snapshot.json、cases.json。
-入口 credential_env 声明的变量已从启动看板的环境传入，按项目手册和本任务授权记录使用。只在进程环境和获授权请求中使用取值，关闭命令跟踪，日志、脚本、截图与结果先脱敏；材料只记变量名。缺变量的场景由看板记为受阻，不在 retest.json 中，不更换账号或扩大权限。
+入口 credential_env 声明的变量已从${environment_origin}的环境传入，按项目手册和本任务授权记录使用。只在进程环境和获授权请求中使用取值，关闭命令跟踪，日志、脚本、截图与结果先脱敏；材料只记变量名。缺变量的场景由看板记为受阻，不在 retest.json 中，不更换账号或扩大权限。
 操作前仅按名称核对执行命令能取得声明变量；客户端额外过滤导致未取得时，相关场景写 blocked，finding 仅列变量名与原因，不绕过客户端规则。
 retest.json 包含问题场景，以及所有声明涉及改动仓库的场景（保守覆盖可能受影响范围）。通过各入口 operate 逐条执行并核对预期，不遗漏跨批次场景。先读取并遵循项目验证技能：$skill_path
 入口在 entries.json 中有 driver_path 时（声明了 driver，或 Web 入口缺省使用随包的 playwright-acceptance），再读取并使用该绝对路径的辅助技能；没有 driver_path 的入口只按项目验证技能操作。

@@ -76,7 +76,10 @@ def scenario_id(title):
     if not parts:
         return None
     head = parts[0]
-    return head if re.match(r'^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+$', head) else None
+    # 场景编号来自 SOP（沿用原连字符规则，如 SOP-12-P01）或用例合并（与用例编号规则相同，如 TC_ORD_005）。
+    if re.match(r'^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+$', head) or re.fullmatch(r'TC_[A-Z0-9_]{3,}_[0-9]{3}', head):
+        return head
+    return None
 
 
 def walk_specs(suite):

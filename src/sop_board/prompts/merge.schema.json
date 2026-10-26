@@ -186,7 +186,66 @@
     "gaps": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "business",
+              "entry"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "scenario": {
+            "type": "string"
+          },
+          "current": {
+            "type": "string"
+          },
+          "missing": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "known": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "scenario",
+          "current",
+          "missing",
+          "question",
+          "known",
+          "options",
+          "cases"
+        ],
+        "additionalProperties": false
       }
     },
     "notes": {
@@ -213,6 +272,119 @@
         ],
         "additionalProperties": false
       }
+    },
+    "reply": {
+      "type": "string"
+    },
+    "responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "integer"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "adopted",
+              "question",
+              "not_applicable"
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "action",
+          "note"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "case_updates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "case": {
+            "type": "string"
+          },
+          "changes": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "preconditions": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "steps": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "expected_results": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tags": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "title",
+              "preconditions",
+              "steps",
+              "expected_results",
+              "tags"
+            ],
+            "additionalProperties": false
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "case",
+          "changes",
+          "messages",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
@@ -222,7 +394,10 @@
     "negative_exempt",
     "gaps",
     "notes",
-    "relocate"
+    "relocate",
+    "reply",
+    "responses",
+    "case_updates"
   ],
   "additionalProperties": false
 }

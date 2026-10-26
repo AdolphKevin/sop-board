@@ -1,0 +1,135 @@
+{
+  "type": "object",
+  "properties": {
+    "sop_markdown": {
+      "type": "string"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source",
+                "quote"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "sources"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "scenario": {
+            "type": "string"
+          },
+          "current": {
+            "type": "string"
+          },
+          "missing": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "affected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source",
+                "quote"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "scenario",
+          "current",
+          "missing",
+          "question",
+          "affected",
+          "sources"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "answers_sha256": {
+      "type": "string"
+    },
+    "applied_answers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "excerpt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "excerpt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "sop_markdown",
+    "rules",
+    "questions",
+    "answers_sha256",
+    "applied_answers"
+  ],
+  "additionalProperties": false
+}
