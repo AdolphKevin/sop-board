@@ -503,7 +503,11 @@ def parser_for(group):
         if action in ('annotate','confirm'):
             child.add_argument('--version', type=int, required=True)
         if action == 'annotate':
-            for name in ('target','kind','text','author'):
+            child.add_argument('--target', required=True,
+                               help='draft，或所选版本中的 case:<用例编号>、rule:<规则编号>、question:<问题编号>')
+            child.add_argument('--kind', required=True,
+                               help='comment、remove、add 或 answer；answer 只能指向 question:，remove 只能指向 case:')
+            for name in ('text','author'):
                 child.add_argument('--' + name, required=True)
         if action == 'confirm':
             child.add_argument('--confirmed-by', required=True)

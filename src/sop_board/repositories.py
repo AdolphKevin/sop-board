@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 import threading
+import time
 
 import yaml
 
@@ -43,12 +44,75 @@ def git_identities(repositories):
     return identities
 
 
+def _head_blob_hashes(root, object_ids):
+    """每仓只开一个进程，按对象长度分块读取，不在内存中保留文件内容。"""
+    if not object_ids:
+        return []
+    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+    env['GIT_OPTIONAL_LOCKS'] = '0'
+    command = ['git', '-C', str(root), 'cat-file', '--batch']
+    hashes = []
+    with subprocess.Popen(command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL) as process:
+        expired, finished = threading.Event(), threading.Event()
+        progress = [time.monotonic()]
+
+        def watch():
+            while not finished.wait(1):
+                if time.monotonic() - progress[0] > 30:
+                    expired.set()
+                    process.kill()
+                    return
+
+        # 与逐个读取时相同：单个对象 30 秒无进展才终止；阻塞的管道读取也受保护。
+        timer = threading.Thread(target=watch, daemon=True)
+        try:
+            timer.start()
+            for object_id in object_ids:
+                progress[0] = time.monotonic()
+                # 读完一个对象再发送下一个，避免输入、输出管道同时写满。
+                process.stdin.write(object_id + b'\n')
+                process.stdin.flush()
+                header = process.stdout.readline(1024)
+                fields = header.split()
+                if (not header.endswith(b'\n') or len(fields) != 3 or fields[0] != object_id
+                        or fields[1] != b'blob' or not fields[2].isdigit()):
+                    raise ValueError(f'Git 对象缺失或批量响应不合格：{root} {object_id.decode()}')
+                remaining = int(fields[2])
+                sha256 = hashlib.sha256()
+                while remaining:
+                    chunk = process.stdout.read(min(remaining, 64 * 1024))
+                    if not chunk:
+                        raise ValueError(f'Git 对象内容不完整：{root} {object_id.decode()}')
+                    sha256.update(chunk)
+                    remaining -= len(chunk)
+                if process.stdout.read(1) != b'\n':
+                    raise ValueError(f'Git 对象结束符不完整：{root} {object_id.decode()}')
+                hashes.append(sha256.hexdigest())
+            process.stdin.close()
+            if process.stdout.read(1):
+                raise ValueError(f'Git 批量响应有多余内容：{root}')
+            returncode = process.wait()
+            if returncode:
+                raise subprocess.CalledProcessError(returncode, command)
+        finally:
+            finished.set()
+            if timer.ident is not None:
+                timer.join()
+            process.kill()
+            process.wait()
+            if expired.is_set():
+                raise subprocess.TimeoutExpired(command, 30)
+    return hashes
+
+
 def product_files(root, excluded=None, head=False, revision='HEAD'):
     """场景目录之外的已跟踪/未忽略内容；未跟踪文件和删除同样影响产品。"""
     def is_excluded(name):
         return excluded is not None and Path(name).is_relative_to(excluded)
     result = []
     if head:
+        entries = []
         for record in git(root, 'ls-tree', '-rz', '--full-tree', revision).split(b'\0'):
             if not record:
                 continue
@@ -56,8 +120,11 @@ def product_files(root, excluded=None, head=False, revision='HEAD'):
             name = os.fsdecode(raw)
             if not is_excluded(name):
                 mode, kind, object_id = info.split()
-                value = object_id if mode == b'160000' else git(root, 'cat-file', 'blob', object_id.decode())
-                result.append(dict(path=name, mode=mode.decode(), sha256=hashlib.sha256(value).hexdigest()))
+                entries.append((name, mode, object_id))
+        hashes = iter(_head_blob_hashes(root, [oid for _, mode, oid in entries if mode != b'160000']))
+        for name, mode, object_id in entries:
+            sha256 = hashlib.sha256(object_id).hexdigest() if mode == b'160000' else next(hashes)
+            result.append(dict(path=name, mode=mode.decode(), sha256=sha256))
     else:
         for raw in sorted(set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').split(b'\0'))):
             if not raw:
