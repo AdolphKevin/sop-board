@@ -4,22 +4,25 @@ import {createRequire} from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
 import {cdpEndpoint, connectTimeout, checkPort} from './scenarios/connection.mjs';
-import {readScope} from './scenarios/scope.mjs';
+import {readScope, webEvidence} from './scenarios/scope.mjs';
 
 export default async function globalSetup() {
   const problems = [];
+  let scope;
+  try { scope = readScope(); } catch (error) { problems.push('执行范围不合格：' + error.message); }
   try {
     const require = createRequire(import.meta.url);
     const packageFile = require.resolve('@playwright/test/package.json');
     const pkg = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
     const [major, minor] = pkg.version.split('.').map(Number);
-    if (major < 1 || major === 1 && minor < 64) throw new Error('录屏需要 @playwright/test >=1.64');
-    const cli = path.resolve(path.dirname(packageFile), typeof pkg.bin === 'string' ? pkg.bin : pkg.bin.playwright);
-    const output = execFileSync(process.execPath, [cli, 'install', '--dry-run', 'ffmpeg'], {encoding: 'utf8', timeout: 15000});
-    const location = output.match(/Install location:\s*(.+)/)?.[1]?.trim();
-    if (!location || !fs.existsSync(location) || !fs.readdirSync(location).length) throw new Error('缺少录屏 ffmpeg；请用当前项目的 Playwright CLI 执行 install ffmpeg');
+    if (major < 1 || major === 1 && minor < 64) throw new Error('模板需要 @playwright/test >=1.64');
+    if (!problems.length && (!scope || Object.keys(scope.scenarios).some(id => webEvidence(scope, id).video))) {
+      const cli = path.resolve(path.dirname(packageFile), typeof pkg.bin === 'string' ? pkg.bin : pkg.bin.playwright);
+      const output = execFileSync(process.execPath, [cli, 'install', '--dry-run', 'ffmpeg'], {encoding: 'utf8', timeout: 15000});
+      const location = output.match(/Install location:\s*(.+)/)?.[1]?.trim();
+      if (!location || !fs.existsSync(location) || !fs.readdirSync(location).length) throw new Error('缺少录屏 ffmpeg；请用当前项目的 Playwright CLI 执行 install ffmpeg');
+    }
   } catch (error) { problems.push('依赖检查失败：' + error.message); }
-  try { readScope(); } catch (error) { problems.push('执行范围不合格：' + error.message); }
   if (!problems.length) {
     try {
       if (!process.env.PW_TAB?.trim()) throw new Error('未设置 PW_TAB');

@@ -236,7 +236,7 @@ class Executions:
                          for n in inputs['document']['sops'] if any(s['id'] in selected for s in n['scenarios'])])
         (directory / 'scenarios.yaml').write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding='utf-8')
         web_scenes = [s for s in inputs['scenes'] if inputs['entries'][s['verify']]['surface'] == 'web' and inputs['entries'][s['verify']].get('driver') in (None, 'playwright-acceptance')]
-        write_scope(directory, task['workspace'], task['batch'], directory / 'scenarios.yaml', web_scenes)
+        write_scope(directory, task['workspace'], task['batch'], directory / 'scenarios.yaml', web_scenes, entries=inputs['entries'])
         (directory / 'web-pending.json').write_text(canonical([dict(scenario=s['id']) for s in web_scenes]), encoding='utf-8')
         addresses = {}
         for name, entry in inputs['entries'].items():

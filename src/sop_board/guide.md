@@ -65,12 +65,28 @@ adapter:
 
 - `repos`：别名到 Git 工作树根目录的绝对路径，也可用 `~/` 开头。init 根据目录名生成别名：转小写、非法字符变连字符并合并，首字符不是字母则加 `r-`，重名依次加 `-2`、`-3`。不能重复指向同一目录。仓库须有可规范化的 origin，看板据此显示身份。
 - `scenarios`：仅含 repo、path。repo 是已声明别名；path 是该仓内不含 `..` 的相对目录，不能等于仓库根目录。文件为 `<批次>.yaml`，metadata.batch 与文件名一致；metadata.repos 指定涉及仓库，省略时为全部。来源 metadata.sources[].ref 中的路径相对场景所在仓库；`<别名>:<仓内路径>` 可引用其他已声明仓库。批次、版本及问题记录的路径显示为 `<别名>:<仓内路径>`。
+- `snapshot_exclude`：可选的仓库别名到仓内相对路径数组，例如 `{app: [docs/test-cases/]}`。默认 `{}`，只额外排除明确声明的文件或目录；目录包含全部后代，按完整路径匹配，不支持通配符。路径不能为空、为绝对路径、含 `..`、指向仓外或等于仓库根目录，仓库别名必须已登记。与场景目录一样，同时从已提交内容和工作区内容（含未跟踪、修改、删除）中排除；相似前缀路径及其他仓库不受影响。只声明不参与产品运行的材料，运行配置、代码及影响业务行为的文档应继续计入快照。
 - `skill`：必填技能目录名，指向数据目录 `skills/<skill>/SKILL.md`；写法见下一步。
-- `entries`：surface、operate、isolation 必填非空文字，observe、evidence 必填非空文字数组，可选 address_env、credential_env 和 driver。说明字段引用手册也须填齐；账号和授权记录的位置写在手册及技能中。address_env 指明地址环境变量；看板入口从启动环境或工作树适配返回的 env 取得，会话入口从会话自身环境取得。配置只写变量名。
+- `entries`：surface、operate、isolation 必填非空文字，observe、evidence 必填非空文字数组，可选 address_env、credential_env、driver 和 web_evidence。说明字段引用手册也须填齐；账号和授权记录的位置写在手册及技能中。address_env 指明地址环境变量；看板入口从启动环境或工作树适配返回的 env 取得，会话入口从会话自身环境取得。配置只写变量名。
+- `entries.<入口>.web_evidence`：仅用于 `surface: web`，可选对象，内含 `video`（录屏）与 `trace`（操作轨迹）布尔开关；每项省略时为 `true`，`false` 时模板不启动该录制，也不要求该附件。`evidence` 继续是非空文字数组，用来声明截图、只读查询等业务证据。任务的 `entries.json` 保留声明，`scope.json.web_evidence` 按场景编号固定补齐默认值后的开关；执行、会话执行及修复复验共用。转换和提交仍要求实际 pass/fail 至少一份真实证据，不按扩展名强制录屏或 trace；声明中的具体业务证据由执行者和复核者逐项核对。
 - `credential_env`：可选、不重复的环境变量名数组，如 `[DEMO_BUYER_PASSWORD]`。名称以字母或下划线开头，后续只含字母、数字、下划线。看板调度的执行、修复和复测会话只从看板启动环境取得这些取值；开发会话入口从会话自身环境取得，工作树适配不能替换它们。使用按本任务授权记录；配置、脚本、任务材料、提示词、日志与报告只记变量名，内网页面与接口不显示变量名。缺变量时只把涉及该入口的场景记为受阻，finding 写缺失名称；地址变量同时被列为凭据时也只经环境传递。
 - `driver`：可选辅助技能目录名。Web 入口未声明 driver 或声明 `playwright-acceptance` 时，使用随 sop-board 包发行的 Web 技能（`sop-board playwright guide` 查看），SOP_BOARD_SKILLS_DIR 中存在同名技能时可覆盖。其他声明的 driver 先找数据目录 `skills/<driver>/SKILL.md`，再找 SOP_BOARD_SKILLS_DIR（缺省 `~/.agents/skills/`）；都没有则配置不合格。除 Web 外不按 surface 自动选择技能，未声明的入口只遵循项目验证技能。skill 与 driver 名只含字母、数字、下划线、点、连字符，不能为 `.` 或 `..`。
 - `adapter`：仅含 worktree、cleanup、env、ports、ready_timeout。worktree 和 cleanup 各自可省略，env 必填；声明的命令均为非空数组，不经 shell。命令的工作目录及参数中的相对路径相对数据目录；管道等逻辑写入适配脚本。
 - `ports`：不重复的 TCP 端口数组，写入环境中所有服务监听的端口，包括服务之间互相调用的端口；没有监听服务时可为空。共享的外部基础设施端口（如开发库、缓存）不写入，在搭建报告“外部工具与外部依赖”一节说明。ready_timeout 是正整数秒数，缺省 180；建立和清理命令也须在此时限内结束。
+
+例如某工作区仅保存截图和一条关键只读查询，并把用例原文排除出产品快照，可在现有配置中合并以下片段（`app` 和 `web` 替换为现有仓库别名、入口名，保留其他字段）：
+
+```yaml
+snapshot_exclude:
+  app: [docs/test-cases/]
+entries:
+  web:
+    surface: web
+    evidence: ["每条场景保存截图", "每条场景保存一条关键只读查询及其结果"]
+    web_evidence: {video: false, trace: false}
+```
+
+配置变更后须重新自检并重新准备任务；已准备任务保留原配置摘要，不能用新规则提交旧任务。产品快照中的提交号仍原样记录；会话执行按内容摘要判定有效性，看板运行中的提交号保护沿用原规则。场景原文、用例并集和配置仍单独核对，排除产品摘要不绕过这些校验。
 
 配置拒绝重复字段、锚点、显式标签及格式外字段。配置或数据目录中的命令脚本变化后须重新自检。
 

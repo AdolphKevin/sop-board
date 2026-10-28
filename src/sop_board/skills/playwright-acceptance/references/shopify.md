@@ -20,7 +20,7 @@ Shopify 项目与普通前端的流程相同，差别都在入口层。一个项
 
 ## 新标签页
 
-"查看店铺"、主题编辑器、`activateAppId` 深链会在新标签页打开。点击前先 `const opened = page.context().waitForEvent('page')`，再在新页面上断言。夹具会为新标签页单独录屏。
+"查看店铺"、主题编辑器、`activateAppId` 深链会在新标签页打开。点击前先 `const opened = page.context().waitForEvent('page')`，再在新页面上断言。入口启用录屏时，夹具会为新标签页单独录屏。
 
 ## 人机验证与登录
 

@@ -27,7 +27,7 @@ blocked/skip 必须有 finding；实际执行的 pass/fail 至少一份真实证
 不要填写 fingerprint；executor 与 session 最终由看板绑定到本次会话与任务。
 
 入口 driver 缺省或为 playwright-acceptance 的 Web 场景先读取内置技能 $playwright_skill，设置 PW_SCOPE=$task_directory/scope.json、PW_SCENARIO_FILE=$task_directory/scenarios.yaml，
-在任务目录配置 workers: 1、retries: 0；同一 worker 复用 CDP，每条用例独立保存截图、录屏和 trace。
+在任务目录配置 workers: 1、retries: 0；同一 worker 复用 CDP。按场景 verify 对应入口的 evidence 声明逐条保存证据；web_evidence 的 video、trace 开关各自缺省 true，显式 false 时关闭对应录制，不要求该附件。scope.json 已按入口固定每条场景的开关，使用本轮模板读取，不自行覆盖。截图与只读查询等证据按入口声明附到报告。
 需要补定位时只读探测，不修改业务预期或新建批次。使用 sop-board playwright convert 转换报告，
 --out 必须为任务目录，--scope 使用 Web 快照、--scenario-file 使用输入场景，--pending 使用 任务目录的 web-pending.json。
 混合入口任务将其他驱动的结果与 Web 结果合并回同一个 results.jsonl，最终覆盖总 pending.json；不要用包含非 Web 场景的总清单要求 Playwright 执行。

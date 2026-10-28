@@ -1,6 +1,6 @@
 ---
 name: playwright-acceptance
-description: 用 Playwright 连接用户已打开的 Chrome，按已确认的 SOP 步骤执行 Web 场景验收（含 Shopify 内嵌应用），保存录屏、截图与 trace，并将结果交回 sop-board。适用于浏览器黑盒验收和按上游用例编号查看报告；把场景沉淀为产品回归测试时使用 regression-distill。
+description: 用 Playwright 连接用户已打开的 Chrome，按已确认的 SOP 步骤执行 Web 场景验收（含 Shopify 内嵌应用），按工作区入口声明保存证据，并将结果交回 sop-board。适用于浏览器黑盒验收和按上游用例编号查看报告；把场景沉淀为产品回归测试时使用 regression-distill。
 disable-model-invocation: true
 ---
 
@@ -14,13 +14,13 @@ disable-model-invocation: true
 - 浏览器：复用用户已打开的 Chrome（CDP），不新开浏览器。建议用测试专用的 Chrome profile，详见[通用 Web 参考](references/web.md#浏览器与连接)。
 - 账号与数据：只在测试店铺、测试环境操作。真实账号的登录、人机验证、二次验证都由人完成，代理遇到即停止。
 - 独立性：首次验收的执行者不能是实现该功能的人或代理。实现者自己跑脚本只算自检，不能作为验收证据。
-- 证据：结果与证据放在业务仓库之外的本轮任务目录，放进仓库会改变产品指纹，使已通过场景失效。
+- 证据：按场景 `verify` 所引用入口的 `evidence` 逐项留证。Web 的 `web_evidence.video`、`web_evidence.trace` 各自缺省 true；显式 false 时关闭该录制、不要求该附件。任务 `scope.json.web_evidence` 已按场景固定开关，运行时设置 `PW_SCOPE`。截图、只读查询及其结果用 `testInfo.attach` 附到报告。结果与证据放在业务仓库之外的本轮任务目录。
 
 ## 工作流程
 
-1. **读输入。** 场景文件（`docs/sop/*.yaml`）、看板任务的 `pending.json` 与 Web 专用的 `web-pending.json`、项目的界面地图（`surface-map.md`）。先固定原工作区、批次、场景编号和指纹，使用[执行范围快照](references/run-scope.md)防止串批次或漏测。只有业务目标、前置分支或预期不明确时退回对应场景；缺少按钮名称、iframe 或定位器可在下一步只读探测补全，不改变业务含义。
+1. **读输入。** 场景文件（`docs/sop/*.yaml`）、看板任务的 `entries.json`、`pending.json` 与 Web 专用的 `web-pending.json`、项目的界面地图（`surface-map.md`）。先固定原工作区、批次、场景编号和指纹，使用[执行范围快照](references/run-scope.md)防止串批次或漏测。只有业务目标、前置分支或预期不明确时退回对应场景；缺少按钮名称、iframe 或定位器可在下一步只读探测补全，不改变业务含义。
 2. **弄清界面结构并复用状态。** 有产品源码时先读源码（路由、多语言文案、打开弹窗的调用），再在真实页面做只读探测并补充操作映射；没有源码时只做只读探测，做法见[只读探测](references/web.md#只读探测)。目标是确认每一步的目标在哪一层：页面本身、应用 iframe、App Bridge modal、新标签页。先用当前可见内容确认目标是否已就绪；满足导航前提时直接复用当前视图及所在容器，只有不满足时才走项目映射中的必要导航。场景明确要求重新打开、刷新或重置时仍按原步骤执行。结论写进界面地图；没有源码核对的条目在"依据"列写"未核对源码，探测于 <日期>"，产品改版后要重新探测。
-3. **写脚本。** 把 `templates/playwright.config.mjs` 与 `global-setup.mjs` 复制到仓库外的本轮任务目录，`fixtures.mjs`、`connection.mjs`、`recording.mjs`、`scope.mjs`、浏览器执行脚本与 `surface-map.md` 放进其下的 `scenarios/`。`global-setup.mjs` 在开跑前用当前项目的 Playwright 检查版本、ffmpeg、scope 和调试端口；共享 worker 首次连接时核对 CDP、唯一目标页及可选 `PW_FRAME`，失败不执行业务步骤。预检不额外建立 CDP 会话，worker 内各用例共用一次连接、分别录屏和保存 trace。交互式 Chrome 使用模板的 `maxFailures: 1`；`workers: 1`、`retries: 0` 本身不能阻止失败后 worker 重启和重新授权。首个意外失败或受阻后停止本轮；连接异常时不让后续用例继续重连。多休眠标签页可选 `PW_CDP_MODE=target`（Node >=22）；不把超时直接解释为用户未同意。一条步骤对应一个 `step()`，标题照抄场景步骤；用例标题以场景编号开头；tag 由 `scripts/case_tags.py` 从配对文件生成，不手写。定位优先用角色和可见文字，其次稳定属性；没有可用属性时建议产品方补 `data-testid`。
+3. **写脚本。** 把 `templates/playwright.config.mjs` 与 `global-setup.mjs` 复制到仓库外的本轮任务目录，`fixtures.mjs`、`connection.mjs`、`recording.mjs`、`scope.mjs`、浏览器执行脚本与 `surface-map.md` 放进其下的 `scenarios/`。`global-setup.mjs` 在开跑前用当前项目的 Playwright 检查版本、scope 和调试端口，仅本轮需要录屏时检查 ffmpeg；共享 worker 首次连接时核对 CDP、唯一目标页及可选 `PW_FRAME`，失败不执行业务步骤。预检不额外建立 CDP 会话，worker 内各用例共用一次连接，按各自入口开关录屏和保存 trace。交互式 Chrome 使用模板的 `maxFailures: 1`；`workers: 1`、`retries: 0` 本身不能阻止失败后 worker 重启和重新授权。首个意外失败或受阻后停止本轮；连接异常时不让后续用例继续重连。多休眠标签页可选 `PW_CDP_MODE=target`（Node >=22）；不把超时直接解释为用户未同意。一条步骤对应一个 `step()`，标题照抄场景步骤；用例标题以场景编号开头；tag 由 `scripts/case_tags.py` 从配对文件生成，不手写。定位优先用角色和可见文字，其次稳定属性；没有可用属性时建议产品方补 `data-testid`。
 4. **核对前置条件。** 开跑前先核对已知的账号、对象和数据可用性，避免明知缺失仍连接浏览器。执行前按 `initial_state` 逐项核对；复用视图不等于复用上一条的数据或授权状态。不满足时抛出以 `受阻：` 开头的错误并停止本轮，不把剩余未执行场景批量写成受阻，不自己造数据。
 5. **执行。** `npx --no-install playwright test`，保留 `workers: 1`、`retries: 0`、`maxFailures: 1`。定位失败先停止当前动作并只读核对当前页面、容器和定位依据，不循环点击旧入口。发送、保存、接管、支付等动作只提交一次；预先注册需要等待的请求或页面事件，按项目映射等待完成信号并核对可见结果，再刷新、导航或结束页面。失败或完成状态不明时不自动重试，由人决定恢复数据还是判失败。
 6. **核对结果。** 只断言用户看得见的结果，不用 URL 或内部状态代替；逐项核对 `forbidden_effects`。预期不符即失败；人机验证、登录过期、未知遮挡、前置条件不满足为受阻。

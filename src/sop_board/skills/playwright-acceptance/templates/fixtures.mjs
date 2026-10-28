@@ -17,7 +17,7 @@
 import { test as base, chromium } from '@playwright/test';
 import fs from 'node:fs';
 import {connectTarget, cdpEndpoint} from './connection.mjs';
-import {readScope, scopeAnnotation} from './scope.mjs';
+import {readScope, scopeAnnotation, webEvidence} from './scope.mjs';
 import {recording} from './recording.mjs';
 export {cdpEndpoint};
 
@@ -39,7 +39,7 @@ export function tags(scenarioId) {
 }
 
 export const test = base.extend({
-  // 一个 worker 仅建立一次 CDP 连接；case 的录屏/trace 仍独立。
+  // 一个 worker 仅建立一次 CDP 连接；每条场景按入口声明独立留证。
   // worker 重启仍会重连；须保留配置模板的 maxFailures: 1，不能仅依赖 workers/retries。
   _acceptanceTarget: [async ({}, use) => {
     let target;
@@ -64,7 +64,7 @@ export const test = base.extend({
     try {
       const target = _acceptanceTarget;
       if (!target.browser.isConnected() || target.page.isClosed()) throw new Error('共享 CDP 连接已断开或目标页已关闭；不在用例中静默重连，请核对 Chrome 后重新开始本轮');
-      capture = recording(target.page, target.context, testInfo);
+      capture = recording(target.page, target.context, testInfo, webEvidence(readScope(), testInfo.title.split(/\s+/)[0]));
       await capture.start();
       enteredTest = true;
       await use(target.page);
@@ -88,7 +88,9 @@ export const test = base.extend({
 // 一条场景步骤对应一个 step：录屏中显示章节标题，report 中显示同名步骤。
 export async function step(page, title, body) {
   return test.step(title, async () => {
-    await page.screencast.showChapter(title, { duration: 1200 }).catch(() => {});
+    if (webEvidence(readScope(), test.info().title.split(/\s+/)[0]).video) {
+      await page.screencast.showChapter(title, { duration: 1200 }).catch(() => {});
+    }
     return body();
   });
 }

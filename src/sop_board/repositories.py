@@ -107,9 +107,10 @@ def _head_blob_hashes(root, object_ids):
 
 
 def product_files(root, excluded=None, head=False, revision='HEAD'):
-    """场景目录之外的已跟踪/未忽略内容；未跟踪文件和删除同样影响产品。"""
+    """排除声明路径后的已跟踪/未忽略内容；保留旧的单路径调用。"""
+    exclusions = [] if excluded is None else [excluded] if isinstance(excluded, (str, Path)) else excluded
     def is_excluded(name):
-        return excluded is not None and Path(name).is_relative_to(excluded)
+        return any(Path(name).is_relative_to(path) for path in exclusions)
     result = []
     if head:
         entries = []

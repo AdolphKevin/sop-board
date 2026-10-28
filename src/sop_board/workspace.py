@@ -171,6 +171,7 @@ class Workspace:
 
     def reload(self):
         repos, identities, entries, adapter, problems = {}, {}, {}, {}, []
+        snapshot_exclude = {}
         scenarios, scenario_repo, skill = None, None, None
         def problem(field, text):
             problems.append(dict(field=field, problem=text))
@@ -182,7 +183,7 @@ class Workspace:
             config = yaml.load(raw, Loader=ConfigLoader)
             if not isinstance(config, dict):
                 raise ValueError('配置应为对象')
-            for field in config.keys() - {'repos', 'scenarios', 'skill', 'entries', 'adapter'}:
+            for field in config.keys() - {'repos', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude'}:
                 problem(field, '格式外字段')
             values = config.get('repos')
             if not isinstance(values, dict) or not values:
@@ -222,6 +223,33 @@ class Workspace:
                         problem('scenarios.path', '场景路径不是目录')
                     else:
                         scenarios, scenario_repo = path, alias
+            exclusions = config.get('snapshot_exclude', {})
+            if not isinstance(exclusions, dict):
+                problem('snapshot_exclude', '须为仓库别名到仓内相对路径数组的对象')
+            else:
+                for alias, paths in exclusions.items():
+                    field = 'snapshot_exclude.' + alias
+                    if alias not in repos:
+                        problem(field, '须为已声明的仓库别名')
+                        continue
+                    if not isinstance(paths, list):
+                        problem(field, '须为仓内相对路径数组')
+                        continue
+                    selected = []
+                    for value in paths:
+                        if (not isinstance(value, str) or not value.strip() or '\0' in value
+                                or Path(value).is_absolute() or '..' in Path(value).parts or not Path(value).parts):
+                            problem(field, '须为非空仓内相对路径，不能含 .. 或等于仓库根目录')
+                            continue
+                        relative = Path(value)
+                        resolved = (repos[alias] / relative).resolve()
+                        if resolved == repos[alias] or not resolved.is_relative_to(repos[alias]):
+                            problem(field, '排除路径须位于声明仓库内，不能等于仓库根目录')
+                        elif relative in selected:
+                            problem(field, '排除路径不能重复')
+                        else:
+                            selected.append(relative)
+                    snapshot_exclude[alias] = selected
             skill = config.get('skill')
             entries = config.get('entries', {})
             problems.extend(validate_entries(entries))
@@ -267,6 +295,7 @@ class Workspace:
         problems.extend(skill_problems)
         changed = fingerprint != self.config_digest
         self.repos, self.identities, self.entries, self.adapter = repos, identities, entries if isinstance(entries, dict) else {}, adapter
+        self.snapshot_exclude = snapshot_exclude
         from .credentials import names
         self.credential_names.update(names(self.entries))
         self.scenarios, self.scenario_repo, self.problems, self.config_digest = scenarios, scenario_repo, problems, fingerprint
@@ -312,9 +341,11 @@ class Workspace:
         dirty = []
         for alias in aliases:
             root = directories[alias]
-            exclusion = self.scenarios.relative_to(self.repos[alias]) if self.scenarios.is_relative_to(self.repos[alias]) else None
-            current = product_files(root, exclusion)
-            committed = product_files(root, exclusion, head=True)
+            exclusions = list(self.snapshot_exclude.get(alias, []))
+            if self.scenarios.is_relative_to(self.repos[alias]):
+                exclusions.append(self.scenarios.relative_to(self.repos[alias]))
+            current = product_files(root, exclusions)
+            committed = product_files(root, exclusions, head=True)
             commit = git(root, 'rev-parse', '--verify', 'HEAD').decode().strip()
             before = {v['path']: v for v in committed}
             after = {v['path']: v for v in current}

@@ -15,7 +15,8 @@ retest.json 包含问题场景，以及所有声明涉及改动仓库的场景�
 blocked/skip 必须说明 finding；pass/fail 必须有实际证据文件。指纹与执行者由看板绑定。
 
 入口 driver 缺省或为 playwright-acceptance 的 Web 场景使用内置技能：$playwright_skill。无需安装或调用 team-workflow。
-playwright-scopes.json 为每个 Web 复测批次提供独立 scenarios.yaml 和 scope.json；
+按场景 verify 对应入口的 evidence 保存证据；web_evidence 的 video、trace 各自缺省 true，显式 false 时关闭对应录制，不要求该附件。
+playwright-scopes.json 为每个 Web 复测批次提供独立 scenarios.yaml 和 scope.json，scope 已按入口固定各场景的录制开关；
 按批次分开报告和转换，避免不同批次同编号场景相互合并。各批次的证据输出到任务目录 evidence/ 下，
 汇总时为每条结果补回原 batch，并把证据路径改为相对任务目录的 evidence/ 路径。
 仅交回 results.jsonl，由看板记录候选结果或正式轮次，不调用手工 submit。
