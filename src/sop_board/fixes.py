@@ -776,8 +776,8 @@ class Fixes:
                     f"{r['issue']}：{r['comment']} · {r['transition']} · {r.get('reason', '请开发者在本机查看回写详情')}" for r in manual)))
         return dict(ok=True, items=items)
 
-    def unresolved(self, db, key, *, automatic=False):
-        return [p for p in self.service.pending_fixes(db, key) if p['review_ready'] and
+    def unresolved(self, db, key, *, automatic=False, reclaim=False):
+        return [p for p in self.service.pending_fixes(db, key, reclaim=reclaim) if p['review_ready'] and
             (not automatic or p['source'] != 'agent' or p['execution_origin'] != 'session' or p['board_requested'])]
 
     def session_failures(self, db, key):

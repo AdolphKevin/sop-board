@@ -30,6 +30,11 @@ def ratio(numerator, denominator):
                 rate=numerator / denominator if denominator else None)
 
 
+def stale(agent, product_digest):
+    """通过记录不能直接代表该产品：内容摘要不同，或执行期间产品有变化（执行时的中间状态无法还原，须判定影响）。"""
+    return agent['product_digest'] != product_digest or bool(agent['product_changed'])
+
+
 def pending_scope(db, batch, summary, product_digest):
     """按钮计数与手动入队共用；失败也须重跑，不改变展示队列的口径。"""
     scope = []
@@ -46,7 +51,7 @@ def pending_scope(db, batch, summary, product_digest):
             reason = 'changed' if prior else 'new'
         elif latest['status'] == 'fail':
             reason = 'failed'
-        elif agent and agent['status'] == 'pass' and latest['status'] == 'pass' and agent['product_digest'] != product_digest:
+        elif agent and agent['status'] == 'pass' and latest['status'] == 'pass' and stale(agent, product_digest):
             reason = 'source-changed'
         if reason:
             scope.append(dict(scenario=scene['scenario'], reason=reason))
@@ -90,8 +95,10 @@ def calculate(db, batch):
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]
     rows = [dict(row) for row in db.execute(
-        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at,t.implementer,t.submitted_by,COALESCE(o.origin,'unknown') AS execution_origin "
+        "SELECT r.*,t.number,t.kind,t.product_digest,t.submitted_at,t.implementer,t.submitted_by,COALESCE(o.origin,'unknown') AS execution_origin,"
+        "COALESCE(c.changed_json,'[]') AS product_changed "
         "FROM results r JOIN rounds t ON t.id=r.round_id LEFT JOIN round_origins o ON o.round_id=t.id "
+        "LEFT JOIN round_product_changes c ON c.round_id=t.id "
         "WHERE t.batch=? ORDER BY t.number,r.id", (batch["id"],))]
     by_scenario = {}
     evidence = {}
@@ -100,6 +107,7 @@ def calculate(db, batch):
         evidence.setdefault(item["result_id"], []).append(dict(name=item["name"], sha256=item["sha256"]))
     for row in rows:
         row["round"] = row["number"]
+        row["product_changed"] = json.loads(row["product_changed"])
         row["reused"] = row["kind"] == "agent" and reused(row)
         row["rerun"] = row["kind"] == "agent" and rerun(row)
         row["executed_at_display"] = local_time(row["executed_at"])
@@ -133,7 +141,7 @@ def calculate(db, batch):
             manual_pass += m["status"] == "pass"
             manual_fail += m["status"] == "fail"
         if not latest or (a and latest["status"] == "pass" and a["status"] == "pass" and
-                          a["product_digest"] != batch["product_digest"]):
+                          stale(a, batch["product_digest"])):
             queue = "pending"
         elif latest["status"] in ("fail", "blocked", "skip"):
             queue = "issues"
@@ -164,11 +172,13 @@ def calculate(db, batch):
                       executed_progress=ratio(executed, execution_count), reviewed_progress=ratio(reviewed, agent_pass))
     statistics['independence_counts'] = independence_counts([s['latest_agent'] for s in details if not s['held'] and s['latest_agent']])
     rounds = []
-    for row in db.execute("SELECT t.*,v.version AS scenario_version,COALESCE(o.origin,'unknown') AS execution_origin FROM rounds t JOIN versions v ON v.id=t.version "
-                          "LEFT JOIN round_origins o ON o.round_id=t.id "
+    for row in db.execute("SELECT t.*,v.version AS scenario_version,COALESCE(o.origin,'unknown') AS execution_origin,"
+                          "COALESCE(c.changed_json,'[]') AS product_changed FROM rounds t JOIN versions v ON v.id=t.version "
+                          "LEFT JOIN round_origins o ON o.round_id=t.id LEFT JOIN round_product_changes c ON c.round_id=t.id "
                           "WHERE t.batch=? ORDER BY number", (batch["id"],)):
         item = dict(row)
         item["version"] = item.pop("scenario_version")
+        item["product_changed"] = json.loads(item["product_changed"])
         results = [r for r in rows if r["round_id"] == item["id"]]
         item.update(round_identity(results))
         item["pass_rate"] = ratio(sum(r["status"] == "pass" for r in results), len(results))

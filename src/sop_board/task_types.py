@@ -233,12 +233,14 @@ class DistillType(TaskType):
 class ExecuteType(TaskType):
     visibility = task_visibility.EXECUTE
     waiting = WaitCondition("合并完成与执行条件", 5)
-    def inputs(self, task):
+    def inputs(self, task, *, product=True):
+        """product=False 用于开始执行之后：产品内容与提交号的变化不再使本轮作废。"""
         names = dict(scenario_file_sha256='场景版本',
-            scenarios='场景内容', config_digest='工作区配置', cases_digest='用例并集',
-            source_sha256='工作区场景文件', repos='仓库提交或产品内容', product_digest='产品内容')
-        if self.tasks.kernel.claim(task):
-            names.pop('repos')  # 会话可在未提交内容上执行；提交本身不使结果失效。
+            scenarios='场景内容', config_digest='工作区配置', cases_digest='用例并集', source_sha256='工作区场景文件')
+        if product:
+            if not self.tasks.kernel.claim(task):
+                names['repos'] = '仓库提交或产品内容'  # 会话可在未提交内容上执行；提交本身不使结果失效。
+            names['product_digest'] = '产品内容'
         return Inputs(json.loads(task['snapshot_json']), names)
 
     def recover(self):
@@ -248,7 +250,8 @@ class ExecuteType(TaskType):
                 "AND NOT EXISTS (SELECT 1 FROM session_tasks s WHERE s.task=t.id)", (S.INTERRUPTED,)).fetchall()
             for row in rows:
                 receipt = json.loads(row['result_json'])
-                result = dict(ok=True, problems=[], **self.tasks.executions.counts(receipt['rows']))
+                result = dict(ok=True, problems=[], **self.tasks.executions.counts(receipt['rows']),
+                              **self.tasks.executions.moved(receipt))
                 db.execute("UPDATE tasks SET status=?,finished_at=?,rounds_json=?,result_json=?,session_id=?,error='' WHERE id=?",
                     (S.COMPLETED, row['registered_at'], canonical(receipt['rounds']), canonical(result), receipt.get('session'), row['id']))
 

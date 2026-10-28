@@ -6,18 +6,9 @@ import yaml
 from .errors import reject
 from .fix_validation import FixValidation
 from .kernel import FIX_TERMINAL, InputChanged, S, session_scheduling_tasks, sql_states
-from .repositories import product_files
+from .repositories import changed_files, product_files
 from .service import canonical, now
 from .workspace import digest
-
-
-def changed_files(before, after):
-    result = {}
-    for alias in before.keys() | after.keys():
-        old = {r['path']: r for r in before.get(alias, [])}
-        new = {r['path']: r for r in after.get(alias, [])}
-        result[alias] = [p for p in sorted(old.keys() | new.keys()) if old.get(p) != new.get(p)]
-    return result
 
 
 def same_session(left, right):
@@ -84,10 +75,10 @@ class SessionFixes:
                 if requested and not requested.issubset(covered):
                     reject(409, 'fix-scope-active', 'scenario', f'请先处理已有会话修复 #{owned["id"]}，本次不能扩大问题范围')
             rows = [r for r in session_scheduling_tasks(db) if not owned or r['id'] != owned['id']]
-            blocker = self.tasks.kernel.session_blocker(dict(id=-1, kind='fix', workspace=self.workspace.name, batch=''), rows)
+            blocker = self.tasks.kernel.session_blocker(dict(id=-1, kind='fix', workspace=self.workspace.name, batch='', status=S.SESSION), rows)
             if blocker:
                 reject(409, 'task-blocked', 'task', f'等待任务 #{blocker["id"]}（{blocker["status"]}）结束')
-            problems = self.fixes.unresolved(db, self.workspace.name)
+            problems = self.fixes.unresolved(db, self.workspace.name, reclaim=True)
         if owned and owned['status'] == S.SESSION and (self.tasks.directory(owned['id']) / 'prompt.md').is_file():
             return owned['id']
         if owned:

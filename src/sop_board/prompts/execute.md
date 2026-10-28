@@ -13,7 +13,7 @@ $repository_instruction
 ${environment_restriction}不修改任何仓库中的产品文件，不写单元、接口或集成测试，不提交代码，不更改场景预期。
 根据真实入口观察结果，不能只看源码就判为通过。
 
-对于 pending.json 中 reason 为 source-changed 的场景，先依据 changes.json 的完整提交范围、实际 git diff、场景内容与依赖关系判定是否受影响。regression-links.json 中未过期关联测试的通过结果，须核对原始运行证据及其产品版本后，才可作为补充依据写进沿用理由，不能据此认定不受影响或把历史通过写成当前运行。受影响或无法证明不受影响时必须经真实入口重新执行；只有测试改动也须说明完整改动范围与依赖关系。
+对于 pending.json 中 reason 为 source-changed 的场景，先依据 changes.json 的完整提交范围、实际 git diff、场景内容与依赖关系判定是否受影响；各仓库的 previous_uncommitted 列出上次结果执行时有未提交改动、现在内容已与当时不同的文件，这些变化不在提交差异里，一并判定。regression-links.json 中未过期关联测试的通过结果，须核对原始运行证据及其产品版本后，才可作为补充依据写进沿用理由，不能据此认定不受影响或把历史通过写成当前运行。受影响或无法证明不受影响时必须经真实入口重新执行；只有测试改动也须说明完整改动范围与依赖关系。previous-results.json 中带 product_changed 的通过记录产生于执行期间产品有变化的轮次，所列路径（以 / 结尾表示整个仓库）在执行时可能处于提交差异里看不到的中间状态，即使这些改动后来被撤销；场景依赖所列任一路径时按无法证明不受影响处理，只有不依赖它们且 changes.json 的其余改动也不影响时才可沿用，理由中写明对所列路径的判断。
 同一内容已有通过结果、且判定不受影响的场景必须沿用，不再实际执行：status 仍为 pass，note 必须为“沿用：<说明具体改动范围、依赖关系和不受影响的理由>”；不得仅写“无影响”。沿用的 evidence 可以为空数组，看板会保留原通过记录的证据。
 在任务目录写 impact.json，内容为 JSON 数组，恰好覆盖全部 source-changed 场景，每项包含 scenario、affected（布尔值 true/false）、reason（具体判定理由）。
 affected 为 false 必须对应沿用结果；affected 为 true（包括无法证明不受影响）必须对应实际执行结果，不得沿用。没有 source-changed 场景时写空数组。

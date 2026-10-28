@@ -15,7 +15,7 @@ from .kernel import (InputChanged, EXECUTION_QUEUE, OUTPUT_ACTIVE, S, codex_fail
                      terminate_group, wait_codex)
 
 from .errors import APIError, reject
-from .repositories import git
+from .repositories import changed_files, git
 from .service import canonical, fingerprint, now
 from .statistics import calculate, pending_scope
 from .merge_state import read_holds, held_scenarios
@@ -110,7 +110,8 @@ class Executions:
         if set(scope) != {s['id'] for s in scenes}:
             raise ValueError('执行范围中的场景已移除')
         aliases = workspace.aliases(document)
-        product = workspace.product(aliases)
+        product = workspace.product(aliases, files=True)
+        files = product.pop('files')
         source = workspace.scenario_path(task['batch'])
         snapshot = dict(scenario_file_sha256=version['sha256'], scenarios={s['id']: fingerprint(s) for s in scenes},
                         config_digest=workspace.config_digest, skill_digest=workspace.skill_digest(), cases_digest=hashlib.sha256(canonical(cases).encode()).hexdigest(),
@@ -121,7 +122,27 @@ class Executions:
                       cases=[c for c in cases if c['id'] not in held],
                       execution_origin='session' if self.tasks.kernel.claim(task) else 'board',
                       selection=request.get('selection', 'explicit'), refresh_after_merge=False)
-        return snapshot, inputs
+        return snapshot, inputs, files
+
+    def save_files(self, task, files):
+        """准备时的产品文件清单单独存放在任务目录，登记时据此列出执行期间变化的文件。"""
+        (self.tasks.directory(task['id']) / 'product-files.json').write_text(canonical(files), encoding='utf-8')
+
+    def uncommitted(self, task, snapshot):
+        """开始时未提交的文件及当时的内容记录（别名/相对路径），之后据此判断这些文件是否又有变化。"""
+        path = self.tasks.directory(task['id']) / 'product-files.json'
+        files = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+        entries = {alias + '/' + item['path']: item for alias, items in files.items() for item in items}
+        return [dict(entries.get(name, {}), path=name) for name in snapshot['changed']]
+
+    def drift(self, task, snapshot, current, files):
+        """准备后到登记前内容有变化的产品路径（别名/相对路径）。更早版本准备的任务没有文件清单，按仓库列出“别名/”。"""
+        path = self.tasks.directory(task['id']) / 'product-files.json'
+        if path.is_file():
+            before = json.loads(path.read_text(encoding='utf-8'))
+            return [alias + '/' + name for alias, names in sorted(changed_files(before, files).items()) for name in names]
+        return [alias + '/' for alias, repo in sorted(snapshot['repos'].items())
+                if current['repos'].get(alias, {}).get('digest') != repo['digest']]
 
     @staticmethod
     def counts(rows):
@@ -208,26 +229,36 @@ class Executions:
             if not scope:
                 self.tasks.update(task['id'], status=S.COMPLETED, finished_at=now(), error='合并结束，当前版本没有待执行场景')
                 return False
-        snapshot, inputs = self.freeze(task)
+        snapshot, inputs, files = self.freeze(task)
         if snapshot['dirty']:
             self.tasks.update(task['id'], status=S.WAIT_COMMIT, error='工作区有未提交的产品改动：' + '、'.join(snapshot['changed'][:10]))
             return False
         directory = self.tasks.directory(task['id'])
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'snapshot.json').write_text(canonical(snapshot), encoding='utf-8')
+        self.save_files(task, files)
         task['snapshot_json'], task['input_json'] = canonical(snapshot), canonical(inputs)
         self.tasks.update(task['id'], snapshot_json=task['snapshot_json'], input_json=task['input_json'], error='')
         return True
 
-    def changes(self, task, snapshot):
+    def changes(self, task, snapshot, *, started=False):
+        """返回作废原因与执行期间变化的产品路径。开始执行后（started）产品内容与提交号的变化不作废：
+        结果按准备时的产品快照登记并列出变化的路径，这些通过记录此后都须判定影响（见 statistics.stale）。"""
         self.service.workspace.reload()
         if self.service.workspace.skill_changed(snapshot):
-            return '验证技能变化'
+            return '验证技能变化', []
         if not self.service.environment.approved() or snapshot['config_digest'] != self.service.workspace.config_digest:
-            return '工作区配置或自检状态变化'
-        current, _ = self.freeze(task)
-        changed = self.tasks.types['execute'].inputs(task).changed(current)
-        return '、'.join(changed) + '变化' if changed else ''
+            return '工作区配置或自检状态变化', []
+        current, _, files = self.freeze(task)
+        changed = self.tasks.types['execute'].inputs(task, product=not started).changed(current)
+        if changed:
+            return '、'.join(changed) + '变化', []
+        return '', self.drift(task, snapshot, current, files) if started else []
+
+    @staticmethod
+    def moved(result):
+        """执行期间产品内容有变化的仓库；没有变化时不写该字段。"""
+        return dict(product_changed=result['product_changed']) if result.get('product_changed') else {}
 
     def materialize(self, task, inputs, environment):
         directory = self.tasks.directory(task['id'])
@@ -257,17 +288,28 @@ class Executions:
         (directory / 'evidence').mkdir(exist_ok=True)
         snapshot = json.loads(task['snapshot_json'])
         changes = {}
+        rounds = {}
+        with self.store.connection() as db:
+            for row in inputs['previous'].values():
+                rounds[row['round_id']] = tuple(db.execute("SELECT r.product_commit,COALESCE(c.uncommitted_json,'[]') FROM rounds r "
+                    'LEFT JOIN round_product_changes c ON c.round_id=r.id WHERE r.id=?', (row['round_id'],)).fetchone())
+        current = {alias + '/' + item['path']: item for alias, items in
+                   json.loads((directory / 'product-files.json').read_text(encoding='utf-8')).items() for item in items}
+        content = lambda item: item and {k: v for k, v in item.items() if k != 'path'}
         for alias in inputs['aliases']:
             root = self.service.workspace.repos[alias]
-            prior = {}
-            for row in inputs['previous'].values():
-                with self.store.connection() as db:
-                    commit = db.execute('SELECT product_commit FROM rounds WHERE id=?', (row['round_id'],)).fetchone()[0]
+            prior, unseen = {}, set()
+            for commit, uncommitted in rounds.values():
                 for item in commit.split(', '):
                     name, separator, sha = item.partition(':')
                     if separator and name == alias:
                         prior[sha] = True
+                # 上次结果执行时未提交的文件不在提交差异里；内容与当时不同的列出，交给影响判定。
+                unseen |= {item['path'][len(alias) + 1:] for item in json.loads(uncommitted)
+                           if item['path'].startswith(alias + '/') and content(item) != content(current.get(item['path']))}
             changes[alias] = dict(current=snapshot['repos'][alias]['commit'], directory=str(root), previous=[])
+            if unseen:
+                changes[alias]['previous_uncommitted'] = sorted(unseen)
             if snapshot.get('dirty'):
                 changes[alias]['uncommitted'] = [p[len(alias) + 1:] for p in snapshot['changed'] if p.startswith(alias + '/')]
             for sha in prior:
@@ -408,8 +450,8 @@ class Executions:
         with self.tasks.lock:
             receipt = self.tasks.kernel.receipt(task, phase='execute')
             if receipt is not None:
-                return dict(rounds=receipt['rounds'], rows=receipt['rows'])
-            reason = self.changes(task, snapshot)
+                return dict(rounds=receipt['rounds'], rows=receipt['rows'], **self.moved(receipt))
+            reason, _ = self.changes(task, snapshot, started=True)
             if reason:
                 raise InputChanged(reason)
             rows = self.read_results(scoped, runnable, session) if runnable else []
@@ -422,7 +464,7 @@ class Executions:
             with self.store.transaction() as db:
                 if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] not in (S.RUNNING, S.SESSION):
                     return dict(rounds=[], rows=[])
-                reason = self.changes(task, snapshot)
+                reason, moved = self.changes(task, snapshot, started=True)
                 if reason:
                     raise InputChanged(reason)
                 batch = self.service.batch(db, task['workspace'], task['batch'])
@@ -432,10 +474,14 @@ class Executions:
                 for row in rows:
                     row['evidence'] = [p if isinstance(p, dict) else dict(name=p.name,
                         sha256=self.store.save_evidence(db, p.read_bytes(), p.name)['sha256']) for p in row['evidence']]
+                product = dict(commit=snapshot['commit'], digest=snapshot['product_digest'],
+                               dirty=snapshot['dirty'] if execution_origin == 'session' else False)
+                if moved:
+                    product['changed'] = moved
+                if product['dirty']:
+                    product['uncommitted'] = self.uncommitted(task, snapshot)
                 body = dict(idempotency_key=key, scenario_file_sha256=snapshot['scenario_file_sha256'],
-                    submitted_by=session, execution_origin=execution_origin,
-                    product=dict(commit=snapshot['commit'], digest=snapshot['product_digest'],
-                                 dirty=snapshot['dirty'] if execution_origin == 'session' else False), results=rows)
+                    submitted_by=session, execution_origin=execution_origin, product=product, results=rows)
                 if implementer is not None:
                     body['implementer'] = implementer
                 if existing:
@@ -443,6 +489,8 @@ class Executions:
                 else:
                     rounds = [self.service.register_round(db, batch, version, body, skill_digest=snapshot['skill_digest'])]
                 result = dict(rounds=rounds, rows=rows, session=session)
+                if moved:
+                    result['product_changed'] = moved
                 self.tasks.kernel.register(task, result, connection=db, phase='execute')
                 return result
 
@@ -451,6 +499,7 @@ class Executions:
         error = void_reason = session = ''
         rounds = []
         rows = []
+        moved = {}
         process = None
         snapshot = json.loads(task['snapshot_json'])
         inputs = json.loads(task['input_json'])
@@ -466,7 +515,8 @@ class Executions:
             with context as environment:
                 if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] != S.RUNNING:
                     return
-                void_reason = self.changes(task, snapshot)
+                # 开始前快照须与刚启动的环境一致；开始之后的产品变化不再作废。
+                void_reason, _ = self.changes(task, snapshot)
                 if void_reason:
                     return
                 (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
@@ -484,7 +534,7 @@ class Executions:
                 else:
                     session = 'Flow Board 入口检查'
                 consumed = self.tasks.types['execute'].consume(task, session, runnable=runnable, blocked=blocked, scoped=scoped)
-                rounds, rows = consumed['rounds'], consumed['rows']
+                rounds, rows, moved = consumed['rounds'], consumed['rows'], self.moved(consumed)
         except InputChanged as problem:
             void_reason = str(problem)
         except APIError as problem:
@@ -505,7 +555,7 @@ class Executions:
                 if self.tasks.browser_owner == task['id']:
                     self.tasks.browser_owner = None
                 if not self.tasks.stopping.is_set() and self.tasks.read(task['id'])['status'] == S.RUNNING:
-                    result = dict(ok=not error and not void_reason, problems=[error] if error else [], **self.counts(rows))
+                    result = dict(ok=not error and not void_reason, problems=[error] if error else [], **self.counts(rows), **moved)
                     (directory / 'result.json').write_text(canonical(result), encoding='utf-8')
                     self.tasks.update(task['id'], status=S.VOID if void_reason else S.FAILED if error else S.COMPLETED,
                         finished_at=now(), error=error, session_id=session or None, void_reason=void_reason,

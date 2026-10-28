@@ -191,6 +191,10 @@ CREATE TABLE IF NOT EXISTS round_origins (
     round_id INTEGER PRIMARY KEY REFERENCES rounds(id),
     origin TEXT NOT NULL CHECK(origin IN ('board','session'))
 );
+CREATE TABLE IF NOT EXISTS round_product_changes (
+    round_id INTEGER PRIMARY KEY REFERENCES rounds(id),
+    changed_json TEXT NOT NULL DEFAULT '[]', uncommitted_json TEXT NOT NULL DEFAULT '[]'
+);
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY, round_id INTEGER NOT NULL REFERENCES rounds(id),
     scenario TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL,

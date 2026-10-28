@@ -335,10 +335,12 @@ class Workspace:
             raise ValueError('场景路径越出配置目录')
         return path
 
-    def product(self, aliases, directories=None):
+    def product(self, aliases, directories=None, *, files=False):
+        """files=True 时另返回各仓的产品文件清单，供执行期间的逐文件比较；不放入快照。"""
         directories = directories or self.repos
         repos = {}
         dirty = []
+        manifests = {}
         for alias in aliases:
             root = directories[alias]
             exclusions = list(self.snapshot_exclude.get(alias, []))
@@ -352,8 +354,12 @@ class Workspace:
             changed = [p for p in sorted(before.keys() | after.keys()) if before.get(p) != after.get(p)]
             repos[alias] = dict(commit=commit, digest=digest(current))
             dirty += [alias + '/' + p for p in changed]
-        return dict(repos=repos, product_digest=digest({a: r['digest'] for a, r in repos.items()}),
-                    commit=', '.join(a + ':' + r['commit'] for a, r in repos.items()), dirty=bool(dirty), changed=dirty)
+            manifests[alias] = current
+        result = dict(repos=repos, product_digest=digest({a: r['digest'] for a, r in repos.items()}),
+                      commit=', '.join(a + ':' + r['commit'] for a, r in repos.items()), dirty=bool(dirty), changed=dirty)
+        if files:
+            result['files'] = manifests
+        return result
 
     def public(self):
         return dict(name=self.name, configured=self.configured,
