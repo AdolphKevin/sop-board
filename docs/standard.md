@@ -76,7 +76,7 @@ entries:
     isolation: "按同手册第 4 节准备隔离数据、留证后清理"
 ```
 
-字段类型以[入口校验器](../src/sop_board/entries.py)为准：`surface`、`operate`、`isolation` 为非空文字，`observe`、`evidence` 为非空文字数组；可选 `address_env` 为环境变量名，`credential_env` 为不重复的环境变量名数组，`driver` 为技能目录名。引用手册也须填齐这些字段；账号与授权记录的位置由手册和技能说明。
+字段类型以[入口校验器](../src/sop_board/entries.py)为准：`surface`、`operate`、`isolation` 为非空文字，`observe`、`evidence` 为非空文字数组；可选 `address_env` 为环境变量名，`credential_env` 为不重复的环境变量名数组，`driver` 为技能目录名；Web 可选录制开关 `web_evidence` 与产品快照排除项见[参考手册的配置说明](reference.md#配置与环境)。引用手册也须填齐这些字段；账号与授权记录的位置由手册和技能说明。
 
 ## 4. 按真实入口选择核对方式
 

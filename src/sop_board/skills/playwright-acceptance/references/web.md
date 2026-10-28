@@ -7,7 +7,7 @@
 1. 环境变量 `PW_CDP_ENDPOINT`（`ws://…` 或 `http://127.0.0.1:9222`）。
 2. Chrome 用户目录下的 `DevToolsActivePort` 文件（macOS `~/Library/Application Support/Google/Chrome`，Windows `%LOCALAPPDATA%\Google\Chrome\User Data`，Linux `~/.config/google-chrome`；用 `PW_CHROME_USER_DATA` 指定其他目录）。该文件在 Chrome 打开远程调试后才存在：地址栏打开 `chrome://inspect/#remote-debugging`，启用 "Allow remote debugging for this browser instance"。
 
-连上之后，脚本能看到这个 Chrome 里的全部标签页，trace 也会录到其他标签页的网络请求。因此：
+连上之后，脚本能看到这个 Chrome 里的全部标签页，启用 trace 时也会录到其他标签页的网络请求。因此：
 
 - 用测试专用的 Chrome profile（Chrome 的"添加个人资料"），只在其中登录测试账号，并在该 profile 打开远程调试。
 - `PW_TAB` 填目标标签页 URL 的子串，夹具只操作匹配的那一个标签页；匹配到零个或多个都报错。
@@ -26,7 +26,7 @@
 | 页面内固定 iframe | `iframe[name=…]` 或 `iframe[src*=…]` | `page.frameLocator(选择器)`，每次操作自动等待 iframe 出现 |
 | 操作后出现的 iframe 弹窗 | 名称或 `src` 带稳定前缀；可能有隐藏的预加载副本 | 弹出后换用新的 `frameLocator`；按名称前缀加 `src` 路径识别，不按出现顺序 |
 | 同一文档内的对话框 | `getByRole('dialog')` | 普通元素 |
-| 新标签页 | 点击前 `context.waitForEvent('page')` | 单独操作与录屏；夹具会自动为新标签页录制 |
+| 新标签页 | 点击前 `context.waitForEvent('page')` | 单独操作；启用录屏时夹具为新标签页录制 |
 | 浏览器原生对话框 | `page.on('dialog')` | 事先注册处理 |
 | 已知且与业务无关的遮挡（引导、Cookie 提示） | 项目在界面地图中声明 | `page.addLocatorHandler(定位器, 关闭动作)`，由 Playwright 在需要时触发 |
 | 人机验证、登录过期、未知遮挡 | 页面文字 | 抛出 `受阻：` 错误，等人处理 |
@@ -65,7 +65,7 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 ## 步骤与断言
 
 - 一条场景步骤对应一个 `step(page, 标题, 动作)`；标题照抄场景，录屏里显示为章节，report 里显示为同名步骤。
-- 每步结束留一张截图（`testInfo.attach`），`pass` 至少需要一份证据。
+- 按入口 `evidence` 声明保存截图及只读查询等证据（`testInfo.attach`），实际执行的 `pass`/`fail` 至少需要一份证据。
 - 只断言用户看得见的结果：文字、状态、列表项、提示。URL 变化不能代替页面内容，也不要读 Redux、localStorage 代替界面。
 - `forbidden_effects` 逐项核对：没发生的事也要有断言或截图说明。
 - 等待可观察的条件（元素出现、文字变化、请求完成），`waitForTimeout` 只用于录屏停留。
@@ -79,7 +79,7 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 ## 证据与隐私
 
 - `PW_OUT` 指向仓库外目录：`results/`（原始产物）、`html/`（report）、`report.json`、`junit.xml`。
-- 录屏用 `page.screencast`，只录指定标签页；trace 录整个 context。证据里会有 cookie、令牌与客户数据，不要贴进 PR 或聊天，只在验收记录中引用。
+- 录制开关取本轮 scope 中按入口固定的 `web_evidence`，缺省均开启，关闭项不启动、不保存。开启时，录屏用 `page.screencast`，只录指定标签页；trace 录整个 context。证据里会有 cookie、令牌与客户数据，不要贴进 PR 或聊天，只在验收记录中引用。
 - 单个文件超过 64 MiB 时看板拒绝接收，`to_scenarios.py` 会列出并停止；trace 过大时关闭 `snapshots` 或缩短场景。
 
 ## 禁止副作用的观察
@@ -91,7 +91,7 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 
 ## 同一轮复用 CDP 授权
 
-连接是 worker 级资源：`workers: 1`、`retries: 0` 时，正常执行的一轮共用一个 CDP 连接，最后释放。global setup 只做依赖、scope 和 TCP 端口检查，不为预检另开 CDP 会话；唯一目标页和 iframe 的实际检查在 worker 首次连接时完成。每条用例仍独立启动、停止和保存录屏与 trace，且逐项核对自己的前置条件，共享连接不等于重置业务状态。
+连接是 worker 级资源：`workers: 1`、`retries: 0` 时，正常执行的一轮共用一个 CDP 连接，最后释放。global setup 只做依赖、scope 和 TCP 端口检查，不为预检另开 CDP 会话；唯一目标页和 iframe 的实际检查在 worker 首次连接时完成。每条用例按入口开关独立启动、停止和保存录屏与 trace，且逐项核对自己的前置条件，共享连接不等于重置业务状态。
 
 不要在每条用例后 `browser.close()`，也不要在连接断开时静默重连。Playwright 在失败后可能重启 worker；即使 `workers: 1`、`retries: 0`，新的 worker 仍可能重新建立 CDP 连接并触发授权。模板用 `maxFailures: 1` 在首个意外失败后停止本轮，避免后续场景连续重连。连接或授权问题也按此边界停止，不能不断重启 worker 或单独重跑每条用例。
 

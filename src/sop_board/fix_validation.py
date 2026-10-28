@@ -59,7 +59,7 @@ class FixValidation:
                 for node in document['sops'] if any(scene['id'] in ids for scene in node['scenarios'])]
             source = folder / 'scenarios.yaml'
             source.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding='utf-8')
-            scope_file = write_scope(folder, task['workspace'], batch, source, batch_scenes)
+            scope_file = write_scope(folder, task['workspace'], batch, source, batch_scenes, entries=workspace.entries)
             web_scopes.append(dict(batch=batch, scope=str(scope_file), scenarios=str(source)))
         (directory / 'playwright-scopes.json').write_text(canonical(web_scopes), encoding='utf-8')
         prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(task_directory=directory, skill_path=workspace.skill,

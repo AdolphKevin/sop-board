@@ -241,6 +241,8 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
     if missing and not allow_partial:
         raise ConvertError('执行范围缺少结果：' + ', '.join(missing) + '；完整执行不能遗漏，部分试跑须显式加 --allow-partial')
     if scope:
+        if 'web_evidence' in scope and (not isinstance(report_scope, dict) or report_scope.get('web_evidence') != scope['web_evidence']):
+            raise ConvertError('报告的 Web 录制开关与 scope 不一致，请使用本轮模板和范围快照')
         for sid, entries in grouped.items():
             if sid not in scope['scenarios']:
                 raise ConvertError('场景不在 scope 中：' + sid)
@@ -285,7 +287,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         elif status in ('blocked', 'skip'):
             problems.append('%s 为 %s，请用 --finding %s=<问题编号> 指定问题' % (sid, status, sid))
         if status in ('pass', 'fail') and not evidence:
-            problems.append('%s 为 %s 但没有任何证据附件，请在 spec 里截图或开启录屏' % (sid, status))
+            problems.append('%s 为 %s 但没有任何证据附件，请按入口 evidence 声明附上真实证据' % (sid, status))
         if pending_ids is not None and sid not in pending_ids:
             problems.append('%s 不在 pending 清单里，核对场景编号或任务身份' % sid)
         rows.append(row)
@@ -340,6 +342,12 @@ def load_scope(path, scenario_file):
             isinstance(k, str) and k.strip() and isinstance(v, str) and re.fullmatch(r'[a-f0-9]{64}', v)
             for k, v in scenarios.items()):
         raise ConvertError('scope.scenarios 须为场景编号到 SHA-256 内容指纹的非空对象')
+    if 'web_evidence' in scope:
+        policies = scope['web_evidence']
+        if (not isinstance(policies, dict) or policies.keys() != scenarios.keys()
+                or any(not isinstance(p, dict) or p.keys() != {'video', 'trace'}
+                       or any(type(v) is not bool for v in p.values()) for p in policies.values())):
+            raise ConvertError('scope.web_evidence 须为每条场景声明 video、trace 布尔开关')
     return scope
 
 

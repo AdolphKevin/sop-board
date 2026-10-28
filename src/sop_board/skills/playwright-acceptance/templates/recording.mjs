@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 // 控制器先创建再 start，初始化中途失败时仍可 stop；每一项清理相互独立。
-export function recording(page, context, testInfo) {
+export function recording(page, context, testInfo, {video: recordVideo = true, trace: recordTrace = true} = {}) {
   const video = testInfo.outputPath('video.webm');
   const trace = testInfo.outputPath('trace.zip');
   let videoAttempted = false, traceAttempted = false, listening = false;
@@ -27,14 +27,18 @@ export function recording(page, context, testInfo) {
   }
   return {
     async start() {
-      if (!page.screencast?.start) throw new Error('Playwright 缺少 screencast API，请安装 @playwright/test >=1.64');
-      const size = await page.evaluate(() => ({width: window.innerWidth, height: window.innerHeight}));
-      videoAttempted = true;
-      await page.screencast.start({path: video, size});
-      await page.screencast.showActions({position: 'top', duration: 800});
-      context.on('page', onPage); listening = true;
-      traceAttempted = true;
-      await context.tracing.start({screenshots: true, snapshots: true, title: testInfo.title});
+      if (recordVideo) {
+        if (!page.screencast?.start) throw new Error('Playwright 缺少 screencast API，请安装 @playwright/test >=1.64');
+        const size = await page.evaluate(() => ({width: window.innerWidth, height: window.innerHeight}));
+        videoAttempted = true;
+        await page.screencast.start({path: video, size});
+        await page.screencast.showActions({position: 'top', duration: 800});
+        context.on('page', onPage); listening = true;
+      }
+      if (recordTrace) {
+        traceAttempted = true;
+        await context.tracing.start({screenshots: true, snapshots: true, title: testInfo.title});
+      }
     },
     async stop() {
       if (listening) await safely('新标签页监听移除失败', () => context.off('page', onPage));

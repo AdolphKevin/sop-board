@@ -11,6 +11,7 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 
 from .scenario_file import load_scenarios
+from .entries import validate_entries, web_evidence
 from .service import fingerprint
 
 
@@ -28,10 +29,12 @@ def driver_skill():
     return custom if custom and (custom / 'SKILL.md').is_file() else bundled_skill()
 
 
-def write_scope(directory, project, batch, source, scenes, output=None):
+def write_scope(directory, project, batch, source, scenes, output=None, entries=None):
     scope = dict(project=project, batch=batch,
         scenario_file_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
         scenarios={scene['id']: fingerprint(scene) for scene in scenes})
+    if entries is not None:
+        scope['web_evidence'] = {scene['id']: web_evidence(entries[scene['verify']]) for scene in scenes}
     path = output if output is not None else directory / 'scope.json'
     path.write_text(json.dumps(scope, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return path
@@ -46,8 +49,10 @@ def guide():
 
 启动看板：sop-board <工作区名称> --data <仓库外数据目录> --port 8787
 Web 任务由看板提供 scenarios.yaml、pending.json、scope.json 和 entries.json。
-读取内置技能，复用已打开的 Chrome；同一 worker 共用 CDP，每条用例单独录屏和 trace。
-Playwright 依赖在验收工作目录安装：@playwright/test >=1.64 和 ffmpeg。
+读取内置技能，复用已打开的 Chrome；同一 worker 共用 CDP，按 entries.json 的 evidence 保存证据。
+Web 入口可声明 web_evidence: {{video: false, trace: false}}；各开关缺省为 true。
+任务 scope.json 按场景保存开关，模板按 PW_SCOPE 读取；关闭项不录制、不要求对应附件。
+Playwright 依赖在验收工作目录安装：@playwright/test >=1.64；需要录屏时才安装 ffmpeg。
 
 转换结果：sop-board playwright convert --report <报告.json> --out <任务目录> \\
   --scope <scope.json> --scenario-file <scenarios.yaml> --pending <pending.json> --executor <执行者>
@@ -55,7 +60,8 @@ Playwright 依赖在验收工作目录安装：@playwright/test >=1.64 和 ffmpe
 会话任务 execute prepare 同样只写任务目录，再用 execute submit --task <编号> --implementer <实际实现者> 登记。
 看板入口使用已准备的环境；会话入口按项目技能和手册准备入口与隔离数据，结束后清理。
 修复复验的实现者由原修复记录绑定，不能改填；已有 prepare 任务不要另用 playwright submit 登记。
-手工试跑：sop-board playwright scope --workspace <工作区键> --scenario-file <原文> --out <scope.json>
+手工试跑：sop-board playwright scope --workspace <工作区键> --scenario-file <原文> --entries <entries.json> --out <scope.json>
+--entries 接受入口对象或任务的 entries.json；省略时沿用录屏和 trace 均开启的默认行为。
 手工登记：sop-board playwright submit --help（使用当前工作区 API，无需令牌）
 配对标签：sop-board playwright tags --pairs <pairs.json> --out <cases.json>
 
@@ -167,6 +173,7 @@ def command(arguments):
     scope.add_argument('--workspace', '--project', dest='project', required=True, help='看板工作区键；--project 为旧参数别名')
     scope.add_argument('--scenario-file', required=True)
     scope.add_argument('--pending')
+    scope.add_argument('--entries', help='工作区入口 JSON 或任务 entries.json，用于固定各场景的 Web 录制开关')
     scope.add_argument('--out', required=True)
     submit = sub.add_parser('submit', help='手工试跑登记到原工作区/批次，自动任务不要调用')
     for name in ('results', 'scope', 'scenario-file', 'product', 'idempotency-key', 'submitted-by'):
@@ -195,11 +202,24 @@ def command(arguments):
                 scenes = [s for s in scenes if s['id'] in ids]
             if not scenes:
                 raise InputError('没有待执行场景')
+            entries = None
+            if args.entries:
+                entries = json.loads(Path(args.entries).read_text(encoding='utf-8'))
+                if isinstance(entries, dict) and isinstance(entries.get('entries'), dict):
+                    entries = entries['entries']
+                if isinstance(entries, dict):
+                    entries = {name: {k: v for k, v in entry.items() if k != 'driver_path'} if isinstance(entry, dict) else entry
+                               for name, entry in entries.items()}
+                problems = validate_entries(entries)
+                if problems:
+                    raise InputError('入口声明不合格：' + json.dumps(problems, ensure_ascii=False))
+                if any(scene['verify'] not in entries for scene in scenes):
+                    raise InputError('场景引用了未声明的入口')
             out = Path(args.out)
             if out.resolve() == source.resolve():
                 raise InputError('scope 输出不能覆盖场景原文')
             out.parent.mkdir(parents=True, exist_ok=True)
-            write_scope(out.parent, args.project, document['metadata']['batch'], source, scenes, output=out)
+            write_scope(out.parent, args.project, document['metadata']['batch'], source, scenes, output=out, entries=entries)
             print(out)
         else:
             _submit(args)

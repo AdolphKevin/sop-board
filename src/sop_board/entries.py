@@ -8,7 +8,12 @@ import stat
 import yaml
 
 
-FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env'}
+FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence'}
+
+
+def web_evidence(entry):
+    """未声明的 Web 录制项沿用原有行为。"""
+    return dict(video=True, trace=True) | entry.get('web_evidence', {})
 
 
 def public_problems(problems, *, local):
@@ -60,6 +65,11 @@ def validate_entries(entries):
                 problems.append(dict(field=field + '.credential_env', problem='应为不重复的环境变量名数组'))
         if 'driver' in entry and not skill_name(entry['driver']):
             problems.append(dict(field=field + '.driver', problem='应为技能目录名'))
+        if 'web_evidence' in entry:
+            policy = entry['web_evidence']
+            if (entry.get('surface') != 'web' or not isinstance(policy, dict)
+                    or policy.keys() - {'video', 'trace'} or any(type(v) is not bool for v in policy.values())):
+                problems.append(dict(field=field + '.web_evidence', problem='仅用于 Web 入口，须为只含 video、trace 布尔开关的对象'))
     return problems
 
 

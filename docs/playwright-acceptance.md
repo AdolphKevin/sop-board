@@ -15,7 +15,7 @@ sop-board playwright guide
 
 ## 看板执行与修复复测
 
-看板执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。看板已准备适配环境，执行者按入口操作，不自行启停服务。Web 连接在同一执行进程共用浏览器调试连接（CDP），每条实际执行场景独立录屏、截图及 trace。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1；首个意外失败或受阻后停止本轮，避免进程重启引发连续调试授权。剩余未执行范围单列，部分转换显式加 --allow-partial。
+看板执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。看板已准备适配环境，执行者按入口操作，不自行启停服务。Web 连接在同一执行进程共用浏览器调试连接（CDP），每条实际执行场景按入口 `evidence` 声明留证；`web_evidence.video`、`web_evidence.trace` 各自缺省开启，显式 false 时不启动对应录制、不要求对应附件。任务 scope 按场景保存开关，模板读取 `PW_SCOPE`；关闭本轮全部录屏时不检查 ffmpeg。配置例子见[参考手册](reference.md#配置与环境)。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1；首个意外失败或受阻后停止本轮，避免进程重启引发连续调试授权。剩余未执行范围单列，部分转换显式加 --allow-partial。
 
 ```sh
 sop-board playwright convert --report <报告.json> --out <任务目录> \
@@ -38,7 +38,7 @@ sop-board playwright convert --report <报告.json> --out <任务目录> \
 ## 手工登记
 
 ```sh
-sop-board playwright scope --workspace <工作区键> --scenario-file <原文.yaml> --out /work/scope.json
+sop-board playwright scope --workspace <工作区键> --scenario-file <原文.yaml> --entries /work/entries.json --out /work/scope.json
 sop-board playwright convert --report /work/report.json --out /work/round \
   --scope /work/scope.json --scenario-file <原文.yaml> --executor <执行者>
 sop-board playwright submit --results /work/round/results.jsonl --scope /work/scope.json \
@@ -46,6 +46,8 @@ sop-board playwright submit --results /work/round/results.jsonl --scope /work/sc
   --idempotency-key <本轮唯一编号> --submitted-by <执行者> --url http://127.0.0.1:8787 \
   --implementer <实际实现者>
 ```
+
+手工 scope 的 `--entries` 接受入口 JSON 对象或任务 entries.json；省略时沿用录屏、trace 均开启的默认行为。旧任务已复制的模板不会自动更新，重新准备任务后复制本版本模板。
 
 工作区键使用页面与 API 中的实际名称，不把仓库身份转换为旧项目键。scope 的既有 project 字段保存该工作区键，--project 仅为兼容参数别名。看板须先有同一场景原文；submit 使用 `/api/v1/workspaces/<键>/batches/<批次>/rounds`，无需令牌，不跟随重定向，上传证据前核对原文版本。地址也可通过 SOP_BOARD_URL 提供。product.json 包含 commit、digest（兼容 product_digest/product_fingerprint）、dirty；多仓版本取当前工作区快照，不把 HEAD 当成运行态证明。
 
