@@ -1,0 +1,281 @@
+# SOP-BOARD-15：场景执行期间可以继续修改和提交产品代码
+# 预期依据 AdolphKevin 2026-10-29 的要求（paseo agent 2d053e6f，cw2-live-chat 组织设置验收）：“运行场景验证时无法并行修改，如果发现代码修改就无法提交，导致进度推迟缓慢。把这个约束去掉。”
+# 以及据此修订的 docs/standard.md 第 5 节“首次执行与人工复核”和 docs/reference.md 的“开发会话入口”“用例合并与执行”“看板调度”相关段落；只写业务流程，验收只以本文件与 sop-board-14.yaml 中列出的重跑场景为准。
+# 版本 4（2026-10-29）：第 3 轮独立验收指出，按场景编号准备会保留 source-changed，与步骤中“经真实入口执行”可能冲突；文件头补充待判定场景的处理与前置要求，场景本身不变。
+# 版本 3（2026-10-29）：按 AdolphKevin 同日“一起改了”的决定补三项——开始时未提交的文件随轮次登记、下一轮把内容已不同的列入 changes.json（SOP-151-P05）；会话按场景编号准备时与看板相同保留待执行原因（SOP-153-P01、N01）；放弃的会话修复中的失败可再次认领（SOP-153-P02）。
+# 版本 2（2026-10-29）：审查与首轮独立验收后修订——执行期间变化改为逐文件列出路径，这类通过即使产品回到开始时的内容也一直待判定且不可沉淀（新增 SOP-151-P04）；SOP-151-P02 第 2 步补上同在 pending 范围内的 REFUND-N01；SOP-151-P03 改为等执行会话启动后再提交改动，并在会话修复处理中发起，覆盖看板侧互不阻挡。
+# 版本 1（2026-10-29）：Claude 依据上述要求编写。
+#
+# 本文件取代以下旧约定中“执行期间产品改动使本轮作废”的部分：sop-board-4.yaml SOP-42 的 must 第 2 条（产品快照部分）、SOP-42-N07、SOP-42-N11、SOP-42-P15 第 3 步与 SOP-43-N01 第 2 步
+# （这两步只借产品改动制造作废任务，改用场景内容变化制造）。场景、用例、配置与验证技能在执行期间变化仍使本轮作废（sop-board-14.yaml SOP-144-N01、sop-board-8.yaml 执行期间技能变化）；
+# 看板执行仍只在没有未提交产品改动时开始；修复复验仍须在固定产品上完成，复验期间产品变化作废、fix land 核对内容不变。
+#
+# “演示工作区”：按 docs/verification.md 用 sop-board init 以 --data 指定的独立数据目录登记的两仓 app/lib（app 经真实 HTTP 调用 lib，lib 植入缺陷：签收后天数 3 天及以上一律拒绝退款），
+# 入口声明 api（surface http，address_env APP_URL），自检通过；批次 refund 有 REFUND-P01（签收后 2 天允许，应通过）、REFUND-P02（签收后第 7 天允许，因 lib 缺陷失败）、REFUND-N01（签收后 8 天拒绝，应通过）。
+# “会话 A、B、C”：验收执行者在演示中扮演的三个开发会话，各用一个明确说明的稳定替代标签作为 --session；它们只用于检验看板对并行会话的处理，不据此宣称演示业务的独立性。
+# 场景执行步骤中的“经真实入口执行”指对运行中的演示 app 发 HTTP 请求并把请求、状态码与响应写入任务目录 evidence/。
+# 按场景编号准备时，列出的场景若为 source-changed，先按标准判定影响：受影响的经真实入口执行，能证明不受影响的沿用。场景要求取得实际执行结果时，前置须让该场景不处于待判定（例如先以一轮实际执行登记），执行者在记录中写明。
+
+metadata:
+  requirement: "sop-board：场景执行期间可以继续修改和提交产品代码，结果按开始时的产品快照登记而不作废；会话修复与批次执行可以同时进行"
+  batch: "sop-board-15"
+  version: 4
+  owner: "AdolphKevin"
+  sources:
+    - ref: "AdolphKevin 2026-10-29 的要求（paseo agent 2d053e6f-a68e-471d-a714-41d3f05dff41）"
+      version: "2026-10-29"
+      confirmed_by: "AdolphKevin"
+    - ref: "AdolphKevin 2026-10-29 对第 2 轮验收后三项后续的决定（“一起改了”）"
+      version: "2026-10-29"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/standard.md 第 5 节“首次执行与人工复核”，docs/reference.md 的“开发会话入口”“用例合并与执行”“看板调度”（本次修订）"
+      version: "2026-10-29 工作区修订"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "execution", "session-entry", "kernel"]
+
+sops:
+  - id: SOP-151
+    title: 场景执行期间可以继续修改和提交产品代码
+    actor: 开发者
+    entry: "命令行 sop-board execute prepare/submit；看板任务页与任务接口"
+    must:
+      - "执行开始后产品代码被修改或提交，本轮不作废，结果照常登记"
+      - "轮次的产品提交号与指纹是执行开始时的快照，不改写为提交时的产品"
+      - "任务结果与轮次列出执行期间变化的产品路径；这些通过此后一直待判定影响（即使产品回到开始时的内容），依赖所列路径的场景须重跑，也不能作为回归沉淀依据"
+    scenarios:
+      - id: SOP-151-P01
+        polarity: positive
+        title: 会话执行期间提交产品改动，本轮按开始时的快照登记
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，两仓没有未提交改动，REFUND-P01 此前没有通过记录", "演示服务已按手册启动"]
+        steps:
+          - "会话 A 运行 sop-board execute prepare <工作区> refund --scope REFUND-P01 --session <A>，记下任务编号与任务目录 snapshot.json 中的 commit 与 product_digest"
+          - "会话 A 经真实入口执行 REFUND-P01，写出通过结果与证据"
+          - "提交结果之前，在 app 修改一处与退款资格无关的文件（如 README.md 加一行）并 git commit"
+          - "会话 A 运行 sop-board execute submit <工作区> --task <编号> --session <A>"
+          - "查看任务详情（sop-board task show 与本机任务页）、批次轮次与 REFUND-P01 的场景详情"
+          - "会话 A 运行 sop-board execute prepare <工作区> refund --scope pending --session <A>，读取 pending.json 后 sop-board task cancel 该任务"
+        expected:
+          - "submit 返回 ok 为 true，任务为已完成，登记一个 Agent 轮次，没有作废原因"
+          - "该轮的产品提交号与指纹等于第 1 步 snapshot.json 的 commit 与 product_digest，不是第 3 步提交后的值"
+          - "任务结果的 product_changed 为 [\"app/README.md\"]，轮次接口 product.changed 相同；本机任务页显示执行期间产品有变化：app/README.md，结果按开始时的产品快照登记"
+          - "REFUND-P01 的最新 Agent 结果为通过"
+          - "第 6 步的 pending.json 含 REFUND-P01，reason 为 source-changed"
+        forbidden_effects: ["任务作废或要求重新执行本轮", "轮次按第 3 步提交后的产品登记"]
+        evidence_hints: ["命令输出", "snapshot.json", "任务接口与任务页", "轮次接口", "pending.json"]
+      - id: SOP-151-P02
+        polarity: positive
+        title: 执行期间只有未提交改动时同样登记，下一轮可按影响判定沿用
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-151-P01 完成：REFUND-P01 在旧产品上通过，当前为 source-changed", "两仓没有未提交改动"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope pending --session <A>，记下 snapshot.json"
+          - "会话 A 读取 changes.json 与 previous-results.json，确认产品改动与 REFUND-P01 上次通过时执行期间的变化都只有 app/README.md；为 REFUND-P01 写 impact.json（affected 为 false，理由写明对 app/README.md 的判断）与沿用结果；REFUND-P02、REFUND-N01 经真实入口执行，按实际结果写出"
+          - "提交结果之前，在 lib 的 README.md 加一行，不提交"
+          - "会话 A 运行 execute submit；查看任务详情、轮次与场景详情"
+          - "撤销 lib 的未提交改动"
+        expected:
+          - "submit 返回 ok 为 true，任务为已完成；轮次的产品指纹等于第 1 步 snapshot.json 的 product_digest，dirty 为 false"
+          - "任务结果的 product_changed 为 [\"lib/README.md\"]"
+          - "REFUND-P01 本轮为通过，备注以“沿用：”开头，计为沿用；REFUND-P02、REFUND-N01 为实际执行的结果并计为重跑"
+        forbidden_effects: ["任务作废", "以 dirty 为 true 登记该轮"]
+        evidence_hints: ["命令输出", "snapshot.json", "impact.json", "任务接口", "轮次接口"]
+      - id: SOP-151-P03
+        polarity: positive
+        title: 看板执行运行中提交产品改动，本轮登记而不作废
+        actor: 开发者
+        priority: P1
+        verify: api
+        initial_state: ["演示工作区，看板以 --lan 启动，自动执行关闭，两仓没有未提交改动", "看板执行由真实 Codex 运行", "会话 B 已用 fix prepare 认领 REFUND-P02 的失败，修复任务处于会话处理中，尚未改动产品"]
+        steps:
+          - "本机请求 POST /api/v1/workspaces/<工作区>/batches/refund/executions，正文 {\"scope\": [\"REFUND-N01\"]}，等到任务页显示最近活动（执行会话已启动），读取任务目录 snapshot.json"
+          - "任务运行期间在 app 修改 README.md 并 git commit"
+          - "等待任务结束；本机请求任务接口、打开任务页，查看批次轮次；再经启动输出中的非回环地址请求该任务接口"
+          - "用 sop-board task cancel 取消会话 B 的修复任务"
+        expected:
+          - "执行任务开始运行，没有显示等待修复任务；完成后登记一个 Agent 轮次，没有作废原因"
+          - "该轮的产品提交号等于 snapshot.json 的 commit（改动前的 HEAD）"
+          - "本机任务结果的 product_changed 为 [\"app/README.md\"]，任务页显示执行期间产品有变化：app/README.md"
+          - "内网任务接口的 result 含 product_changed，不含本机路径、会话编号或续接命令"
+        forbidden_effects: ["任务作废", "轮次按改动后的提交登记"]
+        evidence_hints: ["任务接口响应（本机与内网）", "任务页截图", "轮次接口", "git log"]
+      - id: SOP-151-P04
+        polarity: positive
+        title: 执行期间的改动之后被撤销，通过的场景仍待判定且不能沉淀
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，两仓没有未提交改动，REFUND-N01 已有通过记录"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-N01 --session <A>，记下 snapshot.json 的 product_digest；经真实入口执行并写出通过结果"
+          - "提交结果之前，修改 lib/server.py（不影响签收后 8 天的判断，例如加一行注释），不提交"
+          - "会话 A 运行 execute submit"
+          - "用 git checkout 撤销 lib/server.py 的改动，确认两仓没有未提交改动"
+          - "会话 A 运行 execute prepare <工作区> refund --scope pending --session <A>，读取 pending.json 与 previous-results.json 后 task cancel"
+          - "打开本机 REFUND-N01 的场景详情与批次 SOP 场景页"
+        expected:
+          - "第 3 步返回 ok 为 true，任务结果的 product_changed 为 [\"lib/server.py\"]，轮次的产品指纹等于第 1 步的 product_digest"
+          - "第 5 步时产品内容与第 1 步相同，pending.json 仍含 REFUND-N01，reason 为 source-changed"
+          - "previous-results.json 中 REFUND-N01 的上次通过带 product_changed [\"lib/server.py\"]"
+          - "场景详情的该轮结果显示执行期间产品有变化：lib/server.py；SOP 场景页显示 REFUND-N01 不可沉淀，原因写明通过记录产生时产品在执行期间有变化"
+        forbidden_effects: ["REFUND-N01 因产品内容回到开始时的摘要而不再待判定", "该通过被当作可沉淀的依据"]
+        evidence_hints: ["命令输出", "snapshot.json", "pending.json", "previous-results.json", "场景详情与 SOP 场景页截图"]
+      - id: SOP-151-P05
+        polarity: positive
+        title: 开始时有未提交改动、之后被撤销，下一轮的改动范围列出该文件
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，两仓没有未提交改动，REFUND-N01 已有通过记录"]
+        steps:
+          - "在 lib/server.py 加一行注释（不影响签收后 8 天的判断），不提交"
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-N01 --session <A>，经真实入口执行并写出通过结果，执行期间不再改动产品，运行 execute submit"
+          - "用 git checkout 撤销 lib/server.py 的改动，确认两仓没有未提交改动"
+          - "会话 A 运行 execute prepare <工作区> refund --scope pending --session <A>，读取 pending.json 与 changes.json 后 task cancel"
+        expected:
+          - "第 2 步返回 ok 为 true；轮次接口 product.dirty 为 true，product.uncommitted 为 [\"lib/server.py\"]，product.changed 为空数组"
+          - "第 4 步 pending.json 含 REFUND-N01，reason 为 source-changed"
+          - "changes.json 中 lib 的 previous_uncommitted 为 [\"server.py\"]"
+        forbidden_effects: ["changes.json 没有任何地方列出 server.py，使该场景只凭提交差异为空就能沿用"]
+        evidence_hints: ["命令输出", "轮次接口", "pending.json", "changes.json"]
+      - id: SOP-151-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 执行期间产品与场景内容同时变化，本轮仍按场景变化作废
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，两仓没有未提交改动"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-N01 --session <A>，经真实入口执行并写出结果"
+          - "提交结果之前，在 app 修改 README.md 并 git commit；再修改 docs/sop/refund.yaml 中 REFUND-N01 的 expected 并提交"
+          - "会话 A 运行 execute submit；查看任务详情与批次轮次"
+          - "把 refund.yaml 改回原内容并提交"
+        expected:
+          - "submit 返回 ok 为 false，任务为已作废，作废原因写明场景变化（场景版本、场景内容或工作区场景文件），不含产品内容"
+          - "批次没有为该任务新增轮次"
+        forbidden_effects: ["按旧场景内容登记 REFUND-N01 的结果"]
+        evidence_hints: ["命令输出", "任务接口", "轮次接口"]
+
+  - id: SOP-152
+    title: 会话修复与批次执行可以同时进行
+    actor: 开发者
+    entry: "命令行 sop-board execute prepare/submit、fix prepare/submit"
+    must:
+      - "会话执行处理中时可以准备并提交会话修复"
+      - "会话修复处理中时可以准备下一轮批次执行"
+      - "修复复验仍须在固定产品上完成，与批次执行互斥"
+    scenarios:
+      - id: SOP-152-P01
+        polarity: positive
+        title: 会话执行处理中时准备并提交会话修复
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，REFUND-P02 有一条由会话登记的失败结果且不在任何未结束的修复任务中", "没有未结束的会话修复", "两仓没有未提交改动"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-N01 --session <A>，任务处于会话处理中"
+          - "会话 B 运行 sop-board fix prepare <工作区> --scenario refund#REFUND-P02 --session <B>"
+          - "会话 B 在 lib 中把退款资格改为签收后 7 天内（含第 7 天）允许，不提交，写出修复输出后运行 fix submit"
+          - "会话 A 经真实入口执行 REFUND-N01，写出结果后运行 execute submit"
+        expected:
+          - "第 2 步返回会话处理中的修复任务与任务目录，不返回 task-blocked"
+          - "第 3 步修复任务进入待验证"
+          - "第 4 步返回 ok 为 true，任务为已完成，任务结果的 product_changed 为 [\"lib/server.py\"]，轮次的产品指纹等于第 1 步 snapshot.json 的 product_digest"
+        forbidden_effects: ["任一会话因对方任务被拒绝", "会话 A 的任务作废"]
+        evidence_hints: ["命令输出", "snapshot.json", "任务接口"]
+      - id: SOP-152-P02
+        polarity: positive
+        title: 会话修复处理中时准备下一轮批次执行
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，会话 B 已 fix prepare 一个会话修复，任务处于会话处理中", "批次 refund 没有会话处理中的执行任务"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-P01 --session <A>"
+          - "会话 A 经真实入口执行并 submit"
+        expected:
+          - "第 1 步返回会话处理中的执行任务与任务目录，不返回 task-blocked"
+          - "第 2 步返回 ok 为 true，登记一个 Agent 轮次；会话 B 的修复任务仍为会话处理中"
+        forbidden_effects: ["会话 B 的修复任务被取消、作废或改变状态"]
+        evidence_hints: ["命令输出", "任务接口"]
+      - id: SOP-152-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 修复复验与批次执行仍互斥
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，会话 B 的会话修复已提交，处于待验证", "会话 A 已 execute prepare 批次 refund 的 REFUND-N01，处于会话处理中"]
+        steps:
+          - "会话 C 运行 execute prepare <工作区> --fix <修复编号> --session <C>"
+          - "会话 A 执行并 submit 后，会话 C 再次运行同一命令"
+        expected:
+          - "第 1 步退出非 0，error_code 为 task-blocked，写明等待会话 A 的任务编号；没有新建复验任务"
+          - "第 2 步返回会话处理中的复验任务与任务目录"
+        forbidden_effects: ["复验与批次执行同时处于会话处理中"]
+        evidence_hints: ["命令输出", "任务列表"]
+
+  - id: SOP-153
+    title: 会话按场景编号执行与再次认领放弃的修复
+    actor: 开发者
+    entry: "命令行 sop-board execute prepare --scope 场景编号、fix prepare、task cancel"
+    must:
+      - "会话按场景编号准备时与看板相同：待执行的场景保留原因，产品变化待判定的可按影响判定沿用，其余须实际执行"
+      - "放弃的会话修复中的失败可由会话再次认领"
+    scenarios:
+      - id: SOP-153-P01
+        polarity: positive
+        title: 按场景编号准备时，产品变化待判定的场景可按影响判定沿用
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示工作区，两仓没有未提交改动", "REFUND-P01 的最新通过产生于此前的产品、执行期间没有产品变化，当前为 source-changed（例如通过后在 app 提交一处 README 改动）", "REFUND-N01 已在当前产品上通过"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-P01 REFUND-N01 --session <A>，读取 pending.json"
+          - "依据 changes.json 为 REFUND-P01 写 impact.json（affected 为 false，写明理由）与沿用结果；REFUND-N01 经真实入口执行"
+          - "运行 execute submit，查看轮次"
+        expected:
+          - "pending.json 中 REFUND-P01 的 reason 为 source-changed，REFUND-N01 为 rerun"
+          - "submit 返回 ok 为 true；REFUND-P01 为通过且备注以“沿用：”开头，计为沿用；REFUND-N01 为实际执行的结果，计为重跑"
+        forbidden_effects: ["REFUND-P01 被要求必须重跑"]
+        evidence_hints: ["命令输出", "pending.json", "impact.json", "轮次接口"]
+      - id: SOP-153-P02
+        polarity: positive
+        title: 放弃会话修复后，原失败可再次认领
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示工作区，REFUND-P02 有一条由会话登记的失败结果且不在任何未结束的修复任务中", "两仓没有未提交改动"]
+        steps:
+          - "会话 B 运行 fix prepare <工作区> --scenario refund#REFUND-P02 --session <B>，记下修复任务编号 F1"
+          - "运行 sop-board task cancel <工作区> --task F1"
+          - "会话 B 再次运行 fix prepare <工作区> --scenario refund#REFUND-P02 --session <B>"
+          - "查看两个修复任务"
+        expected:
+          - "第 3 步返回新的修复任务 F2，处于会话处理中，问题为 REFUND-P02 的同一条失败结果"
+          - "F1 仍为已放弃，没有回到会话处理中"
+        forbidden_effects: ["第 3 步返回 nothing-to-fix", "F1 被复活或改写"]
+        evidence_hints: ["命令输出", "任务接口"]
+      - id: SOP-153-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 按场景编号准备时，已在当前产品上通过的场景须实际执行
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示工作区，两仓没有未提交改动，REFUND-N01 已在当前产品上通过"]
+        steps:
+          - "会话 A 运行 execute prepare <工作区> refund --scope REFUND-N01 --session <A>，读取 pending.json"
+          - "为 REFUND-N01 写沿用结果（status 为 pass，note 以“沿用：”开头，evidence 为空数组），运行 execute submit"
+          - "改为经真实入口执行并写出结果，再次 submit"
+        expected:
+          - "pending.json 中 REFUND-N01 的 reason 为 rerun"
+          - "第 2 步返回 ok 为 false，问题写明 REFUND-N01 须实际执行并保存新证据、不得沿用；没有登记轮次，任务仍为会话处理中"
+          - "第 3 步返回 ok 为 true，登记一个轮次"
+        forbidden_effects: ["沿用结果被登记"]
+        evidence_hints: ["命令输出", "pending.json", "轮次接口"]

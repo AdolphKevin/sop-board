@@ -85,8 +85,9 @@ class Service:
                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", ('true' if body['enabled'] else 'false',))
         return dict(ok=True, enabled=body['enabled'])
 
-    def pending_fixes(self, db, key, name=None):
-        """只取当前未进入修复的问题；人工结果以登记时间判定复核是否完成。"""
+    def pending_fixes(self, db, key, name=None, *, reclaim=False):
+        """只取当前未进入修复的问题；人工结果以登记时间判定复核是否完成。
+        reclaim 用于会话明确认领：只进过已放弃修复任务的结果可再次认领；看板自动建任务仍不重复纳入。"""
         problems = []
         for batch in db.execute('SELECT * FROM batches WHERE workspace=? AND (? IS NULL OR name=?) ORDER BY id', (key, name, name)):
             for scene in calculate(db, batch)['scenarios']:
@@ -97,11 +98,11 @@ class Service:
                     or latest['kind'] == 'agent' and latest['status'] == 'fail'
                 ):
                     continue
-                # 已放弃、已分类为非产品问题及已纳入任务的同一结果均不重复建任务。
+                # 已放弃、已分类为非产品问题及已纳入任务的同一结果均不重复建任务（会话明确认领时已放弃的除外）。
                 if db.execute('SELECT 1 FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.workspace=? '
                     f'AND p.batch=? AND p.scenario=? AND p.fingerprint=? AND (p.result_id=? OR (t.status NOT IN ({sql_states(FIX_TERMINAL)}) '
-                    'AND EXISTS (SELECT 1 FROM session_tasks s WHERE s.task=t.id))) LIMIT 1',
-                    (key, batch['name'], scene['scenario'], scene['fingerprint'], latest['id'])).fetchone():
+                    'AND EXISTS (SELECT 1 FROM session_tasks s WHERE s.task=t.id))) AND (? = 0 OR t.status != ?) LIMIT 1',
+                    (key, batch['name'], scene['scenario'], scene['fingerprint'], latest['id'], int(reclaim), S.ABANDONED)).fetchone():
                     continue
                 manual = latest['kind'] == 'manual'
                 reviewed = not manual or bool(db.execute(
@@ -548,6 +549,11 @@ class Service:
                              hashlib.sha256(canonical(body).encode()).hexdigest(), skill_digest))
         round_id = cursor.lastrowid
         db.execute('INSERT INTO round_origins(round_id,origin) VALUES (?,?)', (round_id, execution_origin))
+        if product.get("changed") or product.get("uncommitted"):
+            # changed：执行期间变化的路径，这些通过此后一直须判定影响；uncommitted：开始时未提交的文件及当时的内容摘要，
+            # 提交差异看不到它们，下一轮准备时与当时内容比较后交给影响判定。
+            db.execute('INSERT INTO round_product_changes(round_id,changed_json,uncommitted_json) VALUES (?,?,?)',
+                       (round_id, canonical(product.get("changed", [])), canonical(product.get("uncommitted", []))))
         for row in body["results"]:
             implementer = body.get("implementer")
             fold = lambda name: " ".join(name.casefold().split())
@@ -700,7 +706,10 @@ class Service:
         with self.store.connection() as db:
             db.execute("BEGIN")
             batch = self.batch(db, key, name)
-            row = db.execute("SELECT r.*,COALESCE(o.origin,'unknown') AS execution_origin FROM rounds r LEFT JOIN round_origins o ON o.round_id=r.id WHERE r.batch=? AND r.number=?", (batch["id"], number)).fetchone()
+            row = db.execute("SELECT r.*,COALESCE(o.origin,'unknown') AS execution_origin,COALESCE(c.changed_json,'[]') AS product_changed,"
+                             "COALESCE(c.uncommitted_json,'[]') AS product_uncommitted "
+                             "FROM rounds r LEFT JOIN round_origins o ON o.round_id=r.id LEFT JOIN round_product_changes c ON c.round_id=r.id "
+                             "WHERE r.batch=? AND r.number=?", (batch["id"], number)).fetchone()
             if not row:
                 reject(404, "round-not-found", "round", "轮次不存在")
             results = []
@@ -719,7 +728,9 @@ class Service:
             from .statistics import round_identity
             version = db.execute("SELECT version FROM versions WHERE id=?", (row["version"],)).fetchone()[0]
             return dict(ok=True, round=row["number"], kind=row["kind"], version=version, execution_origin=row["execution_origin"], **round_identity(results),
-                        product=dict(commit=row["product_commit"], digest=row["product_digest"], dirty=bool(row["product_dirty"])),
+                        product=dict(commit=row["product_commit"], digest=row["product_digest"], dirty=bool(row["product_dirty"]),
+                                     changed=json.loads(row["product_changed"]),
+                                     uncommitted=[item["path"] for item in json.loads(row["product_uncommitted"])]),
                         implementer=row["implementer"], submitted_by=row["submitted_by"], submitted_at=row["submitted_at"],
                         results=results)
 
@@ -734,9 +745,12 @@ class Service:
             if not records:
                 reject(404, "scenario-not-found", "scenario", "场景不存在")
             results = [dict(row) for row in db.execute(
-                "SELECT r.*,t.number,t.kind,t.submitted_by,t.submitted_at,t.implementer,COALESCE(o.origin,'unknown') AS execution_origin FROM results r JOIN rounds t ON t.id=r.round_id LEFT JOIN round_origins o ON o.round_id=t.id "
+                "SELECT r.*,t.number,t.kind,t.submitted_by,t.submitted_at,t.implementer,COALESCE(o.origin,'unknown') AS execution_origin,"
+                "COALESCE(c.changed_json,'[]') AS product_changed FROM results r JOIN rounds t ON t.id=r.round_id LEFT JOIN round_origins o ON o.round_id=t.id "
+                "LEFT JOIN round_product_changes c ON c.round_id=t.id "
                 "WHERE t.batch=? AND r.scenario=? ORDER BY t.number,r.id", (batch["id"], scenario))]
             for row in results:
+                row["product_changed"] = json.loads(row["product_changed"])
                 if not local:
                     row.pop("session", None)
                 row["evidence"] = [dict(item) for item in db.execute(

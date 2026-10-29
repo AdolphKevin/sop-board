@@ -196,6 +196,14 @@ def excluded(task, other):
                for scope, kinds, others in EXCLUSIONS)
 
 
+def concurrent(task, other):
+    """会话修复只改当前工作区的产品代码、不占用产品环境，批次执行开始后的产品变化也不使结果作废，两者互不阻挡。
+    看板修复会切换环境，修复复验（批次为空的执行）须在固定产品上完成，仍与执行互斥。"""
+    fix, execute = (task, other) if task['kind'] == 'fix' else (other, task)
+    return (fix['kind'] == 'fix' and fix.get('status') == S.SESSION
+            and execute['kind'] == 'execute' and bool(execute['batch']))
+
+
 def depends(task, other):
     return any(other['kind'] in kinds and same_scope(task, other, scope)
                for scope, kinds in DEPENDENCIES.get(task['kind'], ()))
@@ -206,7 +214,7 @@ def find_blocker(task, rows, running):
     for other in rows:
         if other['id'] == task['id'] or other['kind'] not in POLICIES:
             continue
-        if running(other) and excluded(task, other):
+        if running(other) and excluded(task, other) and not concurrent(task, other):
             return other
         if other['status'] in POLICIES[other['kind']].queued and depends(task, other):
             return other
@@ -263,13 +271,18 @@ def start_order(rows, claimed=frozenset()):
     运行、其他任务也不能开始时才排进去。会话认领的任务占用环境但不占看板名额。
     """
     pending = queue(None, rows=rows, claimed=claimed)
-    running, queued = _ScopeCounts(), _ScopeCounts()
+    running, queued, fixes = _ScopeCounts(), _ScopeCounts(), _ScopeCounts()
     active = []
+
+    def counts(row):
+        # 会话修复与批次执行互不阻挡（见 concurrent），单独计数；核对其他任务时仍计入。
+        return fixes if row['kind'] == 'fix' and row['status'] == S.SESSION else running
+
     # 已运行的任务按实际开始时间排列（先开始先结束）；没有开始时间的视为最早开始，同时刻按编号。
     for row in sorted((row for row in rows if row_running(row) and row['kind'] in POLICIES),
                       key=lambda row: (row.get('started_at') or '', row['id'])):
         active.append((row, row['status'] != S.SESSION))
-        running.add(row, 1)
+        counts(row).add(row, 1)
     for task in pending:
         queued.add(task, 1)
     used = sum(1 for _, slot in active if slot)
@@ -277,7 +290,9 @@ def start_order(rows, claimed=frozenset()):
     def blocked(task):
         queued.add(task, -1)
         try:
-            return (any(running.any(task, scope, others) for scope, kinds, others in EXCLUSIONS if task['kind'] in kinds) or
+            occupied = (running,) if task['kind'] == 'execute' and task['batch'] else (running, fixes)
+            return (any(c.any(task, scope, others) for c in occupied
+                        for scope, kinds, others in EXCLUSIONS if task['kind'] in kinds) or
                     any(queued.any(task, scope, kinds) for scope, kinds in DEPENDENCIES.get(task['kind'], ())))
         finally:
             queued.add(task, 1)
@@ -311,7 +326,7 @@ def start_order(rows, claimed=frozenset()):
         if active:
             # 名额已满或其余任务被运行中的任务挡住：最早开始的任务先结束后再挑选。
             row, slot = active.pop(0)
-            running.add(row, -1)
+            counts(row).add(row, -1)
             if slot:
                 used -= 1
             continue
@@ -659,7 +674,7 @@ class Kernel:
         for other in sorted(rows, key=task_order):
             if other['id'] == task['id'] or other['workspace'] != task['workspace'] or other['kind'] not in POLICIES:
                 continue
-            if not self.running(other):
+            if not self.running(other) or concurrent(task, other):
                 continue
             if other['kind'] in _ENVIRONMENT or excluded(task, other):
                 return other

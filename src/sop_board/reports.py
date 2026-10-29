@@ -75,6 +75,10 @@ def markdown(data, generated_at):
           INDEPENDENCE_LABELS[r['independence']]] for r in summary['rounds']]))
     sections.append("## 沿用明细\n\n按执行轮次列出沿用场景及理由。\n\n" + table(["轮次", "场景", "沿用理由"],
         [[r["number"], item["scenario"], item["reason"]] for r in summary["rounds"] for item in r["reused_scenarios"]]))
+    changed = [r for r in summary["rounds"] if r["product_changed"]]
+    if changed:
+        sections.append("## 执行期间产品变化\n\n这些轮次的结果按开始时的产品快照登记，执行期间所列路径有变化；其中的通过须判定影响后才能沿用。\n\n" +
+            table(["轮次", "开始时产品提交", "变化路径"], [[r["number"], r["product_commit"], "、".join(r["product_changed"])] for r in changed]))
     sections.append("## 人工复测\n\n人工复测通过率：" + fraction(stats["manual_pass_rate"]) +
                     "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
                     table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]

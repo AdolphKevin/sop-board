@@ -482,6 +482,8 @@ def scenario(data, *, local=False):
                     if field == "finding" and result["kind"] == "manual":
                         value = defect_link(result[field])
                     extras.append(f"<p>{name}：{value}</p>")
+            if result.get("product_changed"):
+                extras.append(product_changed_notice(result["product_changed"]))
             result_label = (MANUAL_STATUS if result["kind"] == "manual" else STATUS)[result["status"]]
             results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {result_label}</h3>"
                            f"<p>执行者：{text(result['executor'])} · 执行时间：{time_tag(result['executed_at'])}</p>"
@@ -1281,6 +1283,12 @@ def task_progress(task):
     return content + '</section>'
 
 
+def product_changed_notice(paths, limit=20):
+    shown = '、'.join(paths[:limit]) + (f' 等 {len(paths)} 项' if len(paths) > limit else '')
+    return ('<p>执行期间产品有变化：' + text(shown) +
+            '。结果按开始时的产品快照登记；通过的场景须判定这些变化的影响，再沿用或重跑。</p>')
+
+
 def task_page(workspace, task, *, actions, case_data=None, local=False):
     if task['kind'] == 'merge':
         return merges(workspace, task['batch'], [task], case_data, str(task['id']), local=local, progress_html=task_progress(task))
@@ -1299,6 +1307,8 @@ def task_page(workspace, task, *, actions, case_data=None, local=False):
             content += '<h3>场景</h3><ul>' + ''.join('<li>' + text(s['scenario']) + '</li>' for s in task['scope']) + '</ul>'
         if task.get('rounds'):
             content += '<p>已登记轮次：' + text('、'.join(str(r) for r in task['rounds'])) + '</p>'
+        if task['kind'] == 'execute' and task.get('result', {}).get('product_changed'):
+            content += product_changed_notice(task['result']['product_changed'])
         content += '<h3>结果</h3><pre>' + text(json.dumps(task.get('result', {}), ensure_ascii=False, indent=2)) + '</pre>'
         for action in sorted(actions):
             label = {'retry':'重试','cancel':'放弃'}.get(action, action)

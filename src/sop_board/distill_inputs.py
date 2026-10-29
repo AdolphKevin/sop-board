@@ -83,6 +83,8 @@ def eligibility(service, db, batch, document, scenes, product_digest, *, allow_s
         agent = detail['latest_agent'] if detail and detail['fingerprint'] == fingerprint(scene) else None
         if not agent or agent['status'] != 'pass':
             reasons.append('当前场景没有最新的 Agent 通过记录，须先经真实入口执行通过')
+        elif agent['product_changed']:
+            reasons.append('通过记录产生时产品在执行期间有变化，须在固定产品上重新经真实入口执行')
         elif agent['product_digest'] != product_digest and not allow_stale_product:
             reasons.append('通过记录与当前产品内容不一致，须重新经真实入口执行')
         elif not agent['evidence']:

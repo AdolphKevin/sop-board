@@ -1,4 +1,5 @@
 # SOP-BOARD-4：看板发起的执行与回归检查的验收场景
+# 2026-10-29：“执行期间产品改动使本轮作废”已由 sop-board-15.yaml SOP-151 取代（SOP-42 must 第 2 条的产品快照部分、SOP-42-N07、SOP-42-N11、SOP-42-P15 第 3 步、SOP-43-N01 第 2 步），这些部分不再执行；场景、用例、配置与技能变化作废的约定不变。
 # 预期只依据本仓 docs/proposals/2026-10-19-standalone-sop-verification.md（v8）的 D2、D4、D9、D21、D22、D23、D29 与第 4 节 S2，以及 docs/designs/SOP-BOARD-4.md（修订 2）的 I1–I5、D1；
 # 沿用的约定（令牌与错误代码、运行器、轮次规则、产品指纹、执行状态）取自 docs/designs/SOP-BOARD-1.md 至 SOP-BOARD-3.md 的现行修订，不依据当前实现的输出。
 # 版本 1（2026-10-20）：Claude 依据上述原文与测试代理 sop-board-4-tester 的 71 条用例编写，经 AdolphKevin 授权由 Claude 代批；用例与方案不一致处以方案为准。

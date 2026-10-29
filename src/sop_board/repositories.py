@@ -144,10 +144,25 @@ def product_files(root, excluded=None, head=False, revision='HEAD'):
                 result.append(dict(path=name, deleted=True))
                 continue
             else:
-                mode = '100755' if path.stat().st_mode & 0o111 else '100644'
-                value = path.read_bytes()
+                try:
+                    mode = '100755' if path.stat().st_mode & 0o111 else '100644'
+                    value = path.read_bytes()
+                except FileNotFoundError:
+                    # 执行期间允许并行修改：读取前刚被删除的文件按已删除记录，不使登记失败。
+                    result.append(dict(path=name, deleted=True))
+                    continue
             result.append(dict(path=name, mode=mode, sha256=hashlib.sha256(value).hexdigest()))
     return sorted(result, key=lambda r: os.fsencode(r['path']))
+
+
+def changed_files(before, after):
+    """按仓库别名比较两份 product_files 清单，返回内容、模式或存在性不同的相对路径。"""
+    result = {}
+    for alias in before.keys() | after.keys():
+        old = {r['path']: r for r in before.get(alias, [])}
+        new = {r['path']: r for r in after.get(alias, [])}
+        result[alias] = [p for p in sorted(old.keys() | new.keys()) if old.get(p) != new.get(p)]
+    return result
 
 
 def read_sop_sources(workspace, raw, uploaded_sop=None):
@@ -248,3 +263,4 @@ class Discovery:
     def close(self):
         self.stopping.set()
         self.thread.join()
+

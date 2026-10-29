@@ -150,6 +150,15 @@ def validate_round(db, body):
             p.text(product.get(key), "product." + key)
         if type(product.get("dirty")) is not bool:
             p.add("product.dirty", "应为布尔值")
+        changed = product.get("changed", [])
+        if (not isinstance(changed, list) or len(set(map(str, changed))) != len(changed)
+                or not all(isinstance(path, str) and path.strip() for path in changed)):
+            p.add("product.changed", "应为不重复的非空路径数组")
+        uncommitted = product.get("uncommitted", [])
+        paths = [item.get("path") for item in uncommitted if isinstance(item, dict)] if isinstance(uncommitted, list) else []
+        if (not isinstance(uncommitted, list) or len(paths) != len(uncommitted) or len(set(map(str, paths))) != len(paths)
+                or not all(isinstance(path, str) and path.strip() for path in paths) or uncommitted and product.get("dirty") is not True):
+            p.add("product.uncommitted", "应为路径不重复的文件记录数组，且只在 dirty 为 true 时出现")
     results = body.get("results")
     if not isinstance(results, list) or not results:
         p.add("results", "应为非空结果数组")

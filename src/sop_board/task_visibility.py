@@ -120,7 +120,8 @@ GENERATE = Visibility(COMMON | {'result': fields('ok', 'version'), 'gaps': GAPS,
                'all-annotations.json', 'cases.yaml', 'cases-generated.yaml', 'scenarios.yaml')))
 AUTHOR_SOP = Visibility(COMMON | {'result': fields('ok', 'version', 'sha256', 'confirmed_by')})
 EXECUTE = Visibility(COMMON | {'scope': SCOPE, 'rounds': [True], 'reused_count': True, 'rerun_count': True,
-                               'result': fields('ok', 'reused_count', 'rerun_count')}, frozenset(('scenarios.yaml', 'cases.json')))
+                               'result': fields('ok', 'reused_count', 'rerun_count') | {'product_changed': [True]}},
+                    frozenset(('scenarios.yaml', 'cases.json')))
 DISTILL = Visibility(COMMON | {'scope': SCOPE, 'validation_scenarios': [True]})
 FIX = Visibility(COMMON | fields('repair_origin') | {'scope': SCOPE, 'result': FIX_RESULT, 'problems': [FIX_PROBLEM],
     'repositories': [FIX_REPO], 'attempts': [FIX_ATTEMPT], 'attention': [FIX_PROBLEM],

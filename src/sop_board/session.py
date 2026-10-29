@@ -301,10 +301,10 @@ class Session:
                         available = {s['scenario'] for s in calculate(db, group)['scenarios'] if not s['held']}
                     if set(selected) - available:
                         raise ValueError('场景不存在或待补充：' + '、'.join(sorted(set(selected) - available)))
-                result = self.tasks.executions.enqueue(self.key, batch, selection='all' if explicit else selected[0], session=True)
+                # 明确编号与看板相同：待执行的场景保留原因（产品变化待判定项可按影响判定沿用），其余记为 rerun。
+                result = (self.tasks.executions.enqueue(self.key, batch, selected=selected, session=True) if explicit else
+                          self.tasks.executions.enqueue(self.key, batch, selection=selected[0], session=True))
                 tid = result['task']['id']
-                if explicit:
-                    self.tasks.update(tid, scope_json=canonical([dict(scenario=s, reason='rerun') for s in selected]))
                 self.claim(tid)
                 task = self.raw(tid)
             directory = self.tasks.directory(task['id'])
@@ -325,7 +325,7 @@ class Session:
 
     def prepare_execution(self, task):
         from .credentials import blocked_results
-        snapshot, inputs = self.tasks.executions.freeze(task)
+        snapshot, inputs, files = self.tasks.executions.freeze(task)
         task.update(snapshot_json=canonical(snapshot), input_json=canonical(inputs))
         self.tasks.update(task['id'], snapshot_json=task['snapshot_json'], input_json=task['input_json'],
             scenario_file_sha256=snapshot['scenario_file_sha256'], input_digest=hashlib.sha256(canonical(snapshot).encode()).hexdigest())
@@ -334,6 +334,7 @@ class Session:
         blocked = blocked_results(inputs['scenes'], inputs['entries'], environment)
         (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
         (directory / 'snapshot.json').write_text(task['snapshot_json'], encoding='utf-8')
+        self.tasks.executions.save_files(task, files)
         (directory / 'input.json').write_text(task['input_json'], encoding='utf-8')
         ids = {row['scenario'] for row in blocked}
         scoped = dict(task, scope_json=canonical([r for r in json.loads(task['scope_json']) if r['scenario'] not in ids]))
@@ -371,7 +372,8 @@ class Session:
                             execution_origin='session', blocked=blocked, runnable=[s for s in inputs['scenes'] if s['id'] not in ids], scoped=scoped)
                     counts = self.tasks.executions.counts(result['rows']) if 'rows' in result else {}
                     self.tasks.kernel.finish(task, dict(status=S.COMPLETED, finished_at=now(), error='',
-                        rounds_json=canonical(result['rounds']), result_json=canonical(dict(ok=True, problems=[], **counts)), session_id=claim['session_id']))
+                        rounds_json=canonical(result['rounds']), result_json=canonical(dict(ok=True, problems=[], **counts, **self.tasks.executions.moved(result))),
+                        session_id=claim['session_id']))
                 else:
                     result = self.tasks.types[kind].consume(task) if kind=='fix' else self.tasks.types[kind].consume(task, claim['session_id'])
                 current = self.tasks.read(task_id)
