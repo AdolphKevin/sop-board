@@ -1,0 +1,264 @@
+# SOP-BOARD-17：执行代理、执行计划、连续运行、待人处理与身份池
+# 预期依据：AdolphKevin 2026-10-30 的要求与“三期连续做完”的决定（方案 docs/proposals/2026-10-30-acceptance-throughput.md 第二期 D91～D95）。
+# 版本 1（2026-10-30）：Claude 依据方案编写。
+# 版本 2（2026-10-30）：按独立验收报告修正 SOP-174-P01 的命令引号。
+#
+# “演示 Web 工作区”同 sop-board-16.yaml 文件头，另加：
+#   - config.yaml 的 agents：atlas 用 claude（模型 claude-haiku-5-5，effort low）；
+#   - run 运行配置：round_size 2、stop_when_blocking 2、min_free_memory 0.01；
+#   - 入口 app 的 identities：owner（label Owner，account_env DEMO_OWNER_ACCOUNT，cdp http://127.0.0.1:9331，code backend，limits logins_per_day 2）。
+# 执行步骤中的“看板”指以 --lan 启动的演示看板；需要真实 Claude 的场景使用本机已登录的 claude 命令，不可用时记受阻。
+
+metadata:
+  requirement: "sop-board：可选 Claude 执行代理、按身份与页面分组的执行计划、连续运行、待人处理队列与身份池"
+  batch: "sop-board-17"
+  version: 2
+  owner: "AdolphKevin"
+  sources:
+    - ref: "AdolphKevin 2026-10-30 的要求与三项决定（本会话）"
+      version: "2026-10-30"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/proposals/2026-10-30-acceptance-throughput.md 第二期 D91～D95"
+      version: "方案 1"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "agents", "plan", "run", "attention", "identities"]
+
+sops:
+  - id: SOP-171
+    title: 按任务类型选择执行代理
+    actor: 开发者
+    entry: "工作区 config.yaml 的 agents；看板梳理交互；任务页"
+    must:
+      - "agents 按任务类型选择 codex 或 claude；claude 可设模型、推理强度与权限参数，codex 不接受这些字段"
+      - "claude 运行的看板任务记录会话编号、显示最近活动，结构化结果由看板照常校验与登记"
+      - "改动 agents 不作废在途轮次，不要求重跑全量自检"
+    scenarios:
+      - id: SOP-171-P01
+        polarity: positive
+        title: 看板用 Claude 完成梳理交互
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["演示 Web 工作区声明 agents.atlas 为 claude，看板以 --lan 启动且自动调度已开启"]
+        steps:
+          - "在本机「交互地图」页点击“梳理交互（全量）”，等待任务结束"
+          - "打开任务页，查看状态、会话编号与最近活动；运行 sop-board atlas show"
+        expected:
+          - "任务完成，登记新的地图版本；任务记录的会话编号为 Claude 会话编号"
+          - "最近活动出现读取文件或执行命令的条目"
+        forbidden_effects: ["调用 codex 命令", "结构化结果绕过看板校验直接登记"]
+        evidence_hints: ["任务页截图", "events.jsonl 摘录", "atlas show 输出"]
+      - id: SOP-171-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 不合格的 agents 声明被报告
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "把 agents.merge 写成 {runner: codex, model: x}，运行 sop-board check；再写成 {runner: gemini}，再运行 check；最后恢复"
+        expected:
+          - "两次都报告配置问题，分别说明 codex 不接受 model 与 runner 应为 codex 或 claude"
+        forbidden_effects: ["接受不合格声明"]
+        evidence_hints: ["check 输出"]
+      - id: SOP-171-P02
+        polarity: positive
+        title: 执行期间改动 agents 不作废本轮
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "会话执行 execute prepare 一个场景；在 config.yaml 中把 agents.execute 改为 claude；会话写出结果后 execute submit；查看 status --json"
+        expected:
+          - "submit 成功、任务没有作废；自检仍有效"
+        forbidden_effects: ["任务作废", "要求重跑全量自检"]
+        evidence_hints: ["命令输出", "status 输出"]
+
+  - id: SOP-172
+    title: 按身份与页面分组的执行计划
+    actor: 开发者
+    entry: "命令行 sop-board plan、execute prepare --plan；批次页“执行计划”"
+    must:
+      - "待执行场景按身份 → 首个页面 → 前置状态分组，失败与新增在前，组内只读核对在前"
+      - "模式 failed 只取最近为失败或受阻的场景；--plan 与 --scope 二选一"
+    scenarios:
+      - id: SOP-172-P01
+        polarity: positive
+        title: 查看计划并按计划取第一轮
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["web-demo 已对照界面（有绑定），WEB-N01 最近为失败，其余场景未执行"]
+        steps:
+          - "运行 sop-board plan demo-web web-demo 与 sop-board plan demo-web web-demo --plan failed --json"
+          - "运行 execute prepare demo-web web-demo --plan failed --session <执行者>，读取 pending.json 后取消"
+          - "打开本机批次页“执行计划”，点击“按计划执行下一轮”（模式只跑失败与受阻）后取消生成的任务"
+        expected:
+          - "pending 计划中 WEB-N01 排在第一轮最前，每项显示身份与页面，改数据的场景在同组只读场景之后"
+          - "failed 计划与 pending.json 都只有 WEB-N01"
+          - "批次页显示下一轮预览，按钮生成的执行任务范围为 WEB-N01，触发原因为“按计划执行”"
+        forbidden_effects: ["计划包含暂缓或等待修改的场景"]
+        evidence_hints: ["plan 输出", "pending.json", "批次页截图"]
+      - id: SOP-172-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: --plan 与 --scope 同时给出时拒绝
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["web-demo 有待执行场景"]
+        steps:
+          - "运行 execute prepare demo-web web-demo --plan pending --scope WEB-P01 --session <执行者>"
+        expected:
+          - "以非零退出码拒绝，说明 --plan 与 --scope 二选一，没有创建任务"
+        forbidden_effects: ["创建执行任务"]
+        evidence_hints: ["命令输出"]
+
+  - id: SOP-173
+    title: 连续运行
+    actor: 开发者
+    entry: "命令行 sop-board run；批次页“开始连续执行”；看板主循环"
+    must:
+      - "连续运行由看板推进：批次没有进行中的执行时按计划排下一轮，跳过有未处理事项的场景"
+      - "任务失败重试一次仍未完成、或同一问题挡住达到阈值的场景时暂停，并登记待人处理"
+      - "开始、暂停、继续、停止须填操作人姓名，仅限本机"
+    scenarios:
+      - id: SOP-173-P01
+        polarity: positive
+        title: 看板按计划连续排轮次并跳过待处理场景
+        actor: 开发者
+        priority: P0
+        verify: api
+        initial_state: ["看板以 --lan 启动、自动调度开启，agents.execute 声明可用的执行代理", "为 WEB-P04 登记一条未处理的人机验证事项"]
+        steps:
+          - "在本机批次页填操作人 AdolphKevin 点击“开始连续执行”"
+          - "观察任务列表与批次页的连续运行状态，直到排出第一轮执行任务"
+        expected:
+          - "看板排出一个触发原因为“连续运行”的执行任务，范围是计划第一轮且不含 WEB-P04"
+          - "批次页显示连续运行“运行中”、已排轮数与发起人"
+        forbidden_effects: ["同时排出两个执行任务", "执行有未处理事项的场景"]
+        evidence_hints: ["任务接口", "批次页截图"]
+      - id: SOP-173-P02
+        polarity: positive
+        title: 同一问题挡住多个场景时暂停
+        actor: 开发者
+        priority: P0
+        verify: api
+        initial_state: ["连续运行中，上一轮执行结果中有 2 个受阻场景的 finding 相同（stop_when_blocking 为 2）"]
+        steps:
+          - "等待看板下一次检查（约 10 秒），查看批次页连续运行状态与待人处理"
+        expected:
+          - "连续运行变为“已暂停”，原因写明同一问题挡住 2 个场景及问题摘要"
+          - "待人处理出现一条“连续运行暂停”事项"
+        forbidden_effects: ["继续排下一轮"]
+        evidence_hints: ["批次页截图", "attention list 输出"]
+      - id: SOP-173-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网与无姓名的连续运行操作被拒
+        actor: 测试同事
+        priority: P1
+        verify: api
+        initial_state: ["看板以 --lan 启动"]
+        steps:
+          - "经非回环地址请求 POST /api/v1/workspaces/demo-web/batches/web-demo/run（action resume，by 测试同事）"
+          - "运行 sop-board run demo-web web-demo start（不加 --by）"
+        expected:
+          - "内网请求返回 403，说明只能在本机操作；命令行以非零退出码说明需要操作人姓名"
+          - "运行状态没有变化"
+        forbidden_effects: ["内网改变连续运行状态"]
+        evidence_hints: ["接口响应", "命令输出"]
+
+  - id: SOP-174
+    title: 待人处理队列
+    actor: 执行者与开发者
+    entry: "命令行 sop-board attention；批次页「待人处理」"
+    must:
+      - "执行者、连续运行、身份池可以登记需要人做的事，写明类型、说明与影响的场景"
+      - "标记已处理须填姓名，仅限本机；已处理的事项不再出现在列表与计划跳过中"
+    scenarios:
+      - id: SOP-174-P01
+        polarity: positive
+        title: 登记并处理一条人机验证事项
+        actor: 执行者
+        priority: P0
+        verify: web
+        initial_state: ["看板以 --lan 启动"]
+        steps:
+          - "运行 sop-board attention add demo-web --kind captcha --text '安装店铺 S5 需要人机验证' --batch web-demo --scenario WEB-P03 --session <执行者>"
+          - "打开本机与内网的批次页；在本机填处理人 AdolphKevin 点击“标记已处理”"
+          - "运行 sop-board attention list demo-web 与 sop-board plan demo-web web-demo"
+        expected:
+          - "本机与内网批次页都显示该事项与影响的场景；内网没有“标记已处理”按钮"
+          - "处理后列表不再有该事项"
+        forbidden_effects: ["内网标记已处理"]
+        evidence_hints: ["命令输出", "本机与内网截图"]
+      - id: SOP-174-N01
+        polarity: negative
+        negative_type: empty-input
+        title: 没有处理人姓名时拒绝
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["有一条未处理事项"]
+        steps:
+          - "运行 sop-board attention resolve demo-web --item <编号>（不加 --by）"
+        expected:
+          - "以非零退出码说明需要处理人姓名，事项仍未处理"
+        forbidden_effects: ["事项被标为已处理"]
+        evidence_hints: ["命令输出"]
+
+  - id: SOP-175
+    title: 身份池与登录、验证码计数
+    actor: 执行者
+    entry: "工作区 config.yaml 的 entries.<入口>.identities；sop-board identity；任务目录 identities.json"
+    must:
+      - "身份按最近 24 小时与 1 小时计数，接近上限提醒，超出上限拒绝并登记待人处理"
+      - "执行任务目录提供 identities.json（只含变量名与当前计数），速查卡写明身份用法"
+      - "identities 只用于 Web 入口；改动不作废在途轮次"
+    scenarios:
+      - id: SOP-175-P01
+        polarity: positive
+        title: 登录计数、提醒与超限拒绝
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["owner 的 logins_per_day 上限为 2，最近 24 小时没有登录记录"]
+        steps:
+          - "连续三次运行 sop-board identity record demo-web --entry app --identity owner --event login"
+          - "运行 sop-board identity status demo-web 与 sop-board attention list demo-web"
+        expected:
+          - "前两次成功，第二次提醒已用 2/2；第三次以非零退出码拒绝并说明已达上限"
+          - "status 显示 logins_per_day 为 2；待人处理有一条该身份达到上限的事项"
+        forbidden_effects: ["第三次登录被计数"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-175-P02
+        polarity: positive
+        title: 执行任务目录提供身份材料
+        actor: 执行者
+        priority: P1
+        verify: cli
+        initial_state: ["owner 已声明"]
+        steps:
+          - "运行 execute prepare demo-web web-demo --scope WEB-N01 --session <执行者>，查看 identities.json 与 brief.md 后取消"
+        expected:
+          - "identities.json 含 owner 的 label、cdp、code、limits 与当前计数，不含任何凭据取值"
+          - "brief.md 有“身份”一节，写明 as(身份)、identity record 与 attention add 的用法"
+        forbidden_effects: ["凭据取值出现在任务目录"]
+        evidence_hints: ["identities.json", "brief.md"]
+      - id: SOP-175-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 非 Web 入口声明 identities 被拒
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "在 http 入口 api 下加 identities，运行 sop-board check 后恢复"
+        expected:
+          - "check 报告 identities 只用于 Web 入口"
+        forbidden_effects: ["接受该声明"]
+        evidence_hints: ["check 输出"]

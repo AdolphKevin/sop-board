@@ -94,7 +94,11 @@ def environment_panel(data, local):
                "<p id='environment-check-state'>" + ('最近自检通过' if data['check_passed'] else '尚未通过自检') +
                (' · ' + text(data['checked_at']) if data['checked_at'] else '') + '</p>' +
                "<p id='environment-check-notice'>" + text(data.get('check_notice','')) + '</p>' +
-               "<p id='environment-ports'>环境端口：" + text('、'.join(map(str, data['ports'])) or '未声明') + '</p>')
+               ("<p id='environment-ports'>环境端口：" + text('、'.join(map(str, data['ports'])) or '未声明') + '</p>'
+                if 'external' not in data else
+                "<p id='environment-probes'>外部环境（使用者维护，看板只探测）：" + text('；'.join(
+                    f"{p['name']} {'通过' if p['ok'] else '未通过'}" + (f"（{p['message']}）" if p.get('message') else '')
+                    for p in data['external']['probes']) or '尚未探测') + '</p>'))
     instructions = data['setup_instructions']
     hidden = '' if instructions else ' hidden'
     content += (f"<div id='environment-setup'{hidden}>" +
@@ -104,7 +108,8 @@ def environment_panel(data, local):
                     ('已配置' if data.get('jira_configured') else '未配置') + "</p>")
         content += ''.join('<p>' + text(p['field'] + '：' + p['problem']) + '</p>' for p in data.get('problems', []))
         content += ("<button type='button' data-environment-action='/api/v1/environment/check'>自检</button> "
-                    "<button type='button' data-environment-action='/api/v1/environment/restart'>重启环境</button>"
+                    "<button type='button' data-environment-action='/api/v1/environment/restart'>" +
+                    ('重新探测' if 'external' in data else '重启环境') + "</button>"
                     "<p id='environment-message' role='status'></p><h3>最近 50 行环境日志</h3><pre id='environment-log'>" +
                     text('\n'.join(data.get('log_lines', []))) + '</pre>')
         record = data.get('latest_check_attempt') or data.get('latest_check')
@@ -140,6 +145,10 @@ def home(data, *, environment=None, local=False):
             execution_controls(workspace['key'], batch['name'], batch, local=local) + '</li>'
             for batch in workspace['batches'])
         repositories = ''.join(f"<p>{text(repo['alias'])}：{text(repo['identity'])}</p>" for repo in workspace['repositories'])
+        if local and workspace.get('fixtures'):
+            repositories += f"<p><a href='/w/{text(quote(workspace['key'], safe=''))}/fixtures'>数据配方</a></p>"
+        if workspace.get('atlas'):
+            repositories += f"<p><a href='/w/{text(quote(workspace['key'], safe=''))}/atlas'>交互地图</a></p>"
         cards.append(f"<section><h2>{text(workspace['name'])}</h2>{repositories}" + auto_execute_control(workspace, local=local) + f"<ul class='batch-entry-list'>{batches}</ul>" +
             ''.join(f"<p><a href='/w/{text(workspace['key'])}/tasks/{t['id']}'>修复任务 #{t['id']}</a> · {task_status(t)}</p>" for t in workspace['fix_tasks']) +
             f"<form id='cases-upload' data-workspace-key='{text(workspace['key'])}'>"
@@ -314,6 +323,15 @@ def batch(workspace, data, *, environment=None, local=False, merge=None):
     report_link += execution_controls(workspace, data['name'], data, local=local)
     report_link += automation_controls(data, local=local) + identity_bar()
     report_link += auto_execute_control(data) + holds_notice(workspace, data['name'], data)
+    if local and data.get('atlas_bindable'):
+        bind_api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(data['name'], safe='')}/atlas-bind"
+        report_link += (f"<section><h2>对照界面</h2><p>把场景步骤和加引号的界面文案对应到交互地图，列出不一致的地方由人决定。</p>"
+                        f"<form data-atlas-bind action='{text(bind_api)}'><input type='hidden' name='stale' value='false'><button type='submit'>对照全部场景</button>"
+                        "<p data-atlas-message role='status'></p></form>"
+                        f"<form data-atlas-bind action='{text(bind_api)}'><input type='hidden' name='stale' value='true'><button type='submit'>只对照有变化的场景</button>"
+                        "<p data-atlas-message role='status'></p></form></section>")
+    report_link += atlas_checks_panel(workspace, data['name'], data.get('atlas_checks'), local=local)
+    report_link += run_panel(workspace, data['name'], data, local=local)
     report_link += sop_upload(workspace, {data['name']: data['sop_sha256']}, data['name'])
     report_link += review_completion(workspace, data['name'], data)
     if data.get('fix_statistics', {}).get('tasks'):
@@ -335,10 +353,14 @@ def batch(workspace, data, *, environment=None, local=False, merge=None):
     more_metrics = metrics_for([("manual_pass_rate", "人工复测通过率"), ("retest_coverage", "复测覆盖率"),
                                 ("first_pass_rate", "一次通过率")])
     scenario_names = data.get('scenario_titles', {})
-    descriptions = {'pending': '尚未完成执行的场景', 'issues': '失败或受阻，需要跟进', 'retest': 'Agent 已通过，等待人工复核'}
+    descriptions = {'pending': '尚未完成执行的场景', 'issues': '失败或受阻，需要跟进', 'retest': 'Agent 已通过，等待人工复核',
+                    'waiting-change': '界面对照决定改 SOP，场景修改后自动回到待执行'}
     active_queue = next((key for key in ('issues', 'pending', 'retest') if data['queue_counts'][key]), 'retest')
     queues = []
-    for key, label in [("pending", "待执行"), ("issues", "问题"), ("retest", "复测")]:
+    shown = [("pending", "待执行"), ("issues", "问题"), ("retest", "复测")]
+    if data['queue_counts'].get('waiting-change'):
+        shown.append(("waiting-change", "等待修改场景"))
+    for key, label in shown:
         links = "".join(f"<li><a data-scenario='{text(s)}' href='{text(base + '/s/' + quote(s, safe=''))}'>"
                         f"<strong class='queue-title'>{text(scenario_names.get(s, s))}</strong>"
                         f"<small class='queue-id'>{text(s)}</small></a></li>"
@@ -484,6 +506,8 @@ def scenario(data, *, local=False):
                     extras.append(f"<p>{name}：{value}</p>")
             if result.get("product_changed"):
                 extras.append(product_changed_notice(result["product_changed"]))
+            if result.get('fixtures'):
+                extras.append('<h4>前置数据准备</h4>' + fixture_records(result['fixtures'], local=local))
             result_label = (MANUAL_STATUS if result["kind"] == "manual" else STATUS)[result["status"]]
             results.append(f"<article class='result'><h3>第 {result['number']} 轮 · {kind} · {result_label}</h3>"
                            f"<p>执行者：{text(result['executor'])} · 执行时间：{time_tag(result['executed_at'])}</p>"
@@ -531,7 +555,8 @@ def review_controls(workspace, name, item):
             "<noscript>请启用 JavaScript 后复核。</noscript></form>")
 
 
-QUEUE = {"pending": "待执行", "issues": "问题", "retest": "复测", "reviewed": "已复核通过", "held": "待补充（沿用原场景，暂不计入执行）"}
+QUEUE = {"pending": "待执行", "issues": "问题", "retest": "复测", "reviewed": "已复核通过", "held": "待补充（沿用原场景，暂不计入执行）",
+         "waiting-change": "等待修改场景（界面对照决定改 SOP，暂不执行）"}
 FILTERS = [("all", "全部"), ("unreviewed", "未人工复核"), ("agent-pass", "Agent 已通过"),
            ("fail", "不通过"), ("blocked", "受阻")]
 
@@ -577,10 +602,11 @@ def sop(workspace, name, sources, query=None):
         content += f'<section data-sop-path="{text(path)}"><h2>{text(path)}</h2>'
         content += f'<p>来源：{text(versions[0]["ref"])}</p><article class="sop-content">{rendered}</article>'
         content += ('<h3>版本记录</h3><div class="table-scroll"><table class="sop-versions"><thead><tr>' +
-                    '<th>版本</th><th>提交号</th><th>SHA-256 前 12 位</th><th>确认人</th><th>登记时间</th></tr></thead><tbody>')
+                    '<th>版本</th><th>提交号</th><th>SHA-256 前 12 位</th><th>上传人</th><th>确认人</th><th>登记时间</th></tr></thead><tbody>')
         for version in versions:
             content += (f'<tr data-version="{version["version"]}"><th scope="row">{version["version"]}</th>' +
                         f'<td>{text(version["commit_id"])}</td><td>{text(version["sha256"][:12])}</td>' +
+                        f'<td>{text(version.get("uploaded_by") or "—")}</td>' +
                         f'<td>{text(version["confirmed_by"])}</td><td>{time_tag(version["recorded_at"])}</td></tr>')
         content += '</tbody></table></div>'
         for version in versions:
@@ -793,7 +819,7 @@ def draft(workspace, name, data, selected=None, *, local=False):
     content += f"<form method='get'><label>草稿版本<select name='version'>{options}</select></label><button type='submit'>查看版本</button></form>"
     content += f"<p>当前查看 v{current['number']} · {time_tag(current['created_at'])} · {text(current['revision_note'])}</p>"
     if local and current.get('thread_id'):
-        label, value = ('生成会话标识', current['thread_id']) if current.get('session_owned') else ('查阅生成会话', resume_command(current['thread_id']))
+        label, value = ('生成会话标识', current['thread_id']) if current.get('session_owned') else ('查阅生成会话', current.get('resume') or resume_command(current['thread_id']))
         content += '<p>' + label + '：<code>' + text(value) + '</code></p>'
     confirmation = row['confirmation']
     if confirmation:
@@ -1317,3 +1343,232 @@ def task_page(workspace, task, *, actions, case_data=None, local=False):
             content += f"<p><a href='{text(url)}' download>{text(name)}</a></p>"
         content += "<p id='developer-message' role='status'></p>"
     return layout('任务 #' + str(task['id']), content)
+
+
+def fixture_records(records, *, local=False):
+    items = []
+    for record in records:
+        label = record['name'] if record['kind'] == 'recipe' else '临时写入：' + record['reason']
+        detail = (f"<p>{text(label)} · 参数：{text(json.dumps(record['params'], ensure_ascii=False))}</p>"
+                  f"<p>开始：{time_tag(record['started_at'])} · 结束：{time_tag(record['finished_at'])}</p>")
+        if local:
+            detail += f"<p>状态：{text({'pass': '成功', 'fail': '失败', 'running': '运行中'}[record['status']])}</p>"
+            resolution = record.get('resolution')
+            if resolution:
+                label = '已整理为配方 ' + resolution['recipe'] if resolution['status'] == 'promoted' else '无需整理'
+                detail += f"<p>{text(label)} · {text(resolution['by'])} · {time_tag(resolution['at'])}</p>"
+            detail += '<details><summary>完整准备记录</summary><pre>' + text(json.dumps(record, ensure_ascii=False, indent=2)) + '</pre></details>'
+        items.append('<article>' + detail + '</article>')
+    return ''.join(items) or '<p>暂无记录</p>'
+
+
+def fixtures(workspace, data):
+    body = f"<nav><a href='/'>全部工作区</a></nav><h1>{text(workspace)} · 数据配方</h1>"
+    declaration = data['declaration']
+    if data['problems']:
+        body += '<section><h2>配置问题</h2><ul>' + ''.join(
+            f"<li>{text(p['field'])}：{text(p['problem'])}</li>" for p in data['problems']) + '</ul></section>'
+    if declaration:
+        body += (f"<section><h2>环境与范围</h2><p>{text(declaration['environment'])}</p><ul>" +
+            ''.join(f'<li>{text(value)}</li>' for value in declaration['scope']) + '</ul><p>' +
+            ('允许临时写入' if declaration['adhoc'] else '不允许临时写入') + '</p><h3>只能经真实入口产生</h3><ul>' +
+            ''.join(f'<li>{text(value)}</li>' for value in declaration['real_only']) + '</ul></section><section><h2>配方</h2>')
+        for recipe in declaration['recipes']:
+            body += (f"<article><h3>{text(recipe['name'])} · {text(recipe['title'])}</h3>"
+                f"<p>参数：{text(json.dumps(recipe['params'], ensure_ascii=False))}</p>"
+                f"<p>产生的对象：{text('、'.join(recipe['creates']))}</p></article>")
+        body += '</section>'
+    else:
+        body += '<p>尚未声明前置数据，按 sop-board guide 配置。</p>'
+    body += '<section><h2>待整理的临时写入</h2>'
+    for record in data['pending']:
+        action = f"/api/v1/workspaces/{quote(workspace, safe='')}/fixtures/{record['id']}/mark"
+        body += (fixture_records([record], local=True) + f"<form data-fixture-mark action='{text(action)}'>"
+            "<label>整理结果<select name='resolution'><option value='promoted'>已整理为配方</option><option value='dismissed'>无需整理</option></select></label>"
+            "<label>配方名称<input name='recipe' pattern='[a-z0-9][a-z0-9-]*'></label>"
+            "<label>标记人姓名<input name='by' required></label><button type='submit'>保存整理结果</button>"
+            "<p data-fixture-message role='status'></p></form>")
+    if not data['pending']:
+        body += '<p>暂无待整理记录</p>'
+    body += '</section><section><h2>最近运行</h2>' + fixture_records(data['runs'], local=True) + '</section>'
+    return layout('数据配方', body)
+
+
+def atlas_texts(value):
+    return ' / '.join(f"{text(t['text'])}（{text(t['lang'])}）" for t in value) or '—'
+
+
+def atlas(workspace, summary, documents, *, local=False):
+    """交互地图总览：版本、过期页面与待处理反馈；本机可发起梳理，内网只读。"""
+    key = quote(workspace, safe='')
+    body = (f"<nav><a href='/'>全部工作区</a></nav><h1>{text(workspace)} · 交互地图</h1>"
+            "<p>地图只记录页面、导航、控件、各语言文案与定位方式，不提供业务预期；执行以实际页面为准。</p>")
+    if not summary:
+        body += '<p>没有声明 atlas 的 Web 入口，按 sop-board guide 配置后再梳理交互。</p>'
+    for item in summary:
+        entry = item['entry']
+        body += f"<section><h2>入口 {text(entry)}</h2><p>前端仓库：{text('、'.join(item['repos']))}</p>"
+        if item['version'] is None:
+            body += '<p>尚无交互地图。</p>'
+        else:
+            body += (f"<p>版本 {item['version']} · 生成于 {time_tag(item['created_at'])} · 页面 {item['pages']} · 控件 {item['controls']}"
+                     f" · 过期页面 {len(item['stale'])} · 待处理反馈 {len(item['feedback'])}</p>")
+        if local:
+            action = f"/api/v1/workspaces/{key}/atlas/{quote(entry, safe='')}/tasks"
+            body += (f"<form data-atlas-survey action='{text(action)}'><input type='hidden' name='mode' value='full'>"
+                     "<button type='submit'>梳理交互（全量）</button><p data-atlas-message role='status'></p></form>")
+            if item['version'] is not None:
+                body += (f"<form data-atlas-survey action='{text(action)}'><input type='hidden' name='mode' value='stale'>"
+                         f"<button type='submit'{' disabled' if not item['stale'] else ''}>只更新过期页面</button>"
+                         "<p data-atlas-message role='status'></p></form>")
+        if item['stale']:
+            body += '<h3>过期页面</h3><ul>' + ''.join(
+                f"<li>{text(s['page'])}：{text('、'.join(s['files']))}</li>" for s in item['stale']) + '</ul>'
+        document = documents.get(entry)
+        if document:
+            stale = {s['page'] for s in item['stale']}
+            body += '<h3>页面</h3><ul>' + ''.join(
+                f"<li><a href='/w/{key}/atlas/{quote(entry, safe='')}/{quote(page['id'], safe='')}'>{text(page['id'])}</a> · "
+                f"{atlas_texts(page['title'])} · {text(page['route'] or '弹出层')}" + (' · <strong>过期</strong>' if page['id'] in stale else '') + '</li>'
+                for page in document['pages']) + '</ul>'
+        if item['feedback']:
+            body += '<h3>待处理反馈</h3><ul>' + ''.join(
+                f"<li>#{f['id']} · {text(f['page'])}" + (f" / {text(f['control'])}" if f.get('control') else '') +
+                f" · {text(f['kind'])} · {text(f['detail'])}" + (f" · 场景 {text(f['scenario'])}" if f.get('scenario') else '') +
+                (f" · 执行任务 #{f['task']}" if f.get('task') else '') + '</li>' for f in item['feedback']) + '</ul>'
+        body += '</section>'
+    return layout('交互地图', body)
+
+
+def atlas_control_rows(controls, prefix=''):
+    return ''.join(
+        f"<tr><td>{text(prefix + c['id'])}</td><td>{text(c['role'])}</td><td>{atlas_texts(c['name'])}</td><td>{text(c['i18n'] or '—')}</td>"
+        f"<td><code>{text(c['locator'])}</code></td><td>{text(c['testid'] or '—')}</td><td>{text(c['opens'] or '—')}</td>"
+        f"<td>{text('；'.join(r['method'] + ' ' + r['path'] for r in c['requests']) or '—')}</td><td>{text('、'.join(c['sources']) or '—')}</td></tr>"
+        for c in controls)
+
+
+def atlas_page(workspace, entry, document, page, stale, *, local=False):
+    key = quote(workspace, safe='')
+    head = ("<tr><th>编号</th><th>角色</th><th>名称</th><th>多语言键</th><th>定位器</th><th>testid</th><th>打开</th>"
+            "<th>请求</th><th>源码</th></tr>")
+    body = (f"<nav><a href='/'>全部工作区</a> · <a href='/w/{key}/atlas'>交互地图</a></nav>"
+            f"<h1>{text(page['id'])} · {atlas_texts(page['title'])}</h1>"
+            f"<p>入口 {text(entry)} · 地图版本 {document['version']} · 路由 {text(page['route'] or '弹出层')} · 容器 {text(page['container'])}</p>")
+    if stale:
+        body += f"<p><strong>页面已过期</strong>：{text('、'.join(stale))} 在登记后有变化，执行以实际页面为准。</p>"
+    body += ('<h2>到达路径</h2><ul>' + ''.join(
+        f"<li>{text(s['from'])} → {text(s['via'] or '直接打开')}" + (f"（{text(s['note'])}）" if s['note'] else '') + '</li>'
+        for s in page['reach']) + '</ul>') if page['reach'] else ''
+    body += '<h2>就绪信号</h2><ul>' + ''.join(f'<li>{text(r)}</li>' for r in page['ready']) + '</ul>' if page['ready'] else ''
+    if page['controls']:
+        body += f"<h2>控件</h2><table>{head}{atlas_control_rows(page['controls'])}</table>"
+    for dialog in page['dialogs']:
+        body += (f"<h2>弹窗 {text(dialog['id'])} · {atlas_texts(dialog['title'])}</h2><p>定位：<code>{text(dialog['locator'])}</code></p>"
+                 '<h3>字段</h3><ul>' + ''.join(
+                     f"<li>{text(f['id'])}（{text(f['role'])}）：{atlas_texts(f['label'])} · {text(f['i18n'] or '—')} · <code>{text(f['locator'])}</code></li>"
+                     for f in dialog['fields']) + '</ul>')
+        if dialog['actions']:
+            body += f"<h3>操作</h3><table>{head}{atlas_control_rows(dialog['actions'], dialog['id'] + '/')}</table>"
+    for table in page['tables']:
+        body += (f"<h2>表格 {text(table['id'])}</h2><p>定位：<code>{text(table['locator'])}</code>；列："
+                 + text('、'.join(' / '.join(t['text'] for t in c['title']) for c in table['columns']) or '—') + '</p>')
+        if table['empty']:
+            body += f"<p>空状态：{atlas_texts(table['empty'])}</p>"
+        if table['row_actions']:
+            body += f"<h3>行操作</h3><table>{head}{atlas_control_rows(table['row_actions'], table['id'] + '/')}</table>"
+    body += f"<p>源码：{text('、'.join(page['sources']) or '—')} · 浏览器核对：{text(page['verified_browser'] or '未核对')}</p>"
+    return layout(page['id'] + ' · 交互地图', body)
+
+
+CHECK_STATUS = {'mismatch': '文案与界面不一致', 'absent': '找不到对应的界面元素'}
+
+
+def atlas_checks_panel(workspace, name, checks, *, local=False):
+    """界面对照清单：逐条由人决定按 SOP 判或改 SOP（D85）；本机与内网都可决定，须填姓名。"""
+    if not checks or not checks['items']:
+        return ''
+    counts = checks['counts']
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}/atlas-checks"
+    body = (f"<section id='atlas-checks'><h2>界面对照</h2><p>未定 {counts['undecided']} · 按 SOP {counts['sop']} · 改 SOP {counts['change']}"
+            f" · 已关闭 {counts['closed']}</p><p>场景写明的界面文案与前端不一致，或找不到对应的界面元素。未定的条目执行时按 SOP 判；"
+            "决定改 SOP 的场景暂不执行，场景修改后条目自动关闭。</p><ul>")
+    for item in [i for i in checks['items'] if i['open']]:
+        ui = ' / '.join(f"{t['text']}（{t['lang']}）" for t in item['ui']) or '—'
+        decided = (f"已决定：{text({'sop': '按 SOP 判', 'change': '改 SOP'}[item['decision']])} · {text(item['decided_by'])} · {time_tag(item['decided_at'])}"
+                   if item['decision'] else '未定')
+        body += (f"<li><strong>{text(item['scenario'])}#{text(item['item'])}</strong> {text(item['title'] or '')} · "
+                 f"{text(CHECK_STATUS.get(item['status'], item['status']))}：场景写「{text(item['text'])}」（{text(item['location'])}），"
+                 f"前端为 {text(ui)}" + (f"（{text(item['ref'])}）" if item['ref'] else '') +
+                 (f"<br><small>{text(item['note'])}</small>" if item['note'] else '') + f"<br>{decided}"
+                 f"<form data-atlas-decision action='{text(api)}/{item['id']}/decision'>"
+                 "<label>决定<select name='decision'><option value='sop'>按 SOP 判（记缺陷）</option><option value='change'>改 SOP</option></select></label>"
+                 "<label>决定人姓名<input name='by' required></label><label>说明<input name='note'></label>"
+                 "<button type='submit'>保存决定</button><p data-atlas-message role='status'></p></form></li>")
+    closed = [i for i in checks['items'] if not i['open']]
+    body += '</ul>'
+    if closed:
+        body += '<details><summary>已关闭 ' + str(len(closed)) + ' 条</summary><ul>' + ''.join(
+            f"<li>{text(i['scenario'])}#{text(i['item'])}「{text(i['text'])}」· {text(i['closed_reason'])}</li>" for i in closed) + '</ul></details>'
+    return body + '</section>'
+
+
+RUN_STATUS = dict(running='运行中', paused='已暂停', stopped='已停止', completed='已完成')
+
+
+def run_panel(workspace, name, data, *, local=False):
+    """执行计划预览、连续运行与本批次的待人处理事项（D91、D93、D94）。"""
+    api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
+    plan, run = data.get('plan_preview') or {}, data.get('batch_run')
+    body = (f"<section id='run-plan'><h2>执行计划</h2><p>待执行 {plan.get('total', 0)} 个场景，{plan.get('groups', 0)} 组，"
+            f"按每轮至多 {plan.get('round_size', 15)} 个分为 {plan.get('rounds', 0)} 轮（身份 → 页面 → 前置状态分组，只读在前）。</p>")
+    if plan.get('next'):
+        body += '<p>下一轮：' + '、'.join(f"{text(i['scenario'])}（{text(i['identity'] or '—')} · {text(i['page'] or '—')}{' · 改数据' if i['mutates'] else ''}）" for i in plan['next']) + '</p>'
+    environment = data.get('environment') or {}
+    if environment:
+        probes = (environment.get('external') or {}).get('probes', [])
+        body += (f"<p>环境：{text(environment['status'])}" + ('（' + '、'.join(f"{text(p['name'])} {'通过' if p['ok'] else '未通过'}" for p in probes) + '）' if probes else '')
+                 + '</p>')
+    if run:
+        body += (f"<p>连续运行：{text(RUN_STATUS.get(run['status'], run['status']))} · 模式 {text(run['mode'])} · 已排 {run['rounds_done']} 轮"
+                 + (f" · {text(run['reason'])}" if run['reason'] else '') + f" · 发起人 {text(run['started_by'])}</p>")
+    if local:
+        body += (f"<form data-plan-run action='{text(api)}/plan-executions'><label>模式<select name='mode'><option value='pending'>待执行</option>"
+                 "<option value='failed'>只跑失败与受阻</option><option value='regression'>受改动影响</option></select></label>"
+                 "<button type='submit'>按计划执行下一轮</button><p data-run-message role='status'></p></form>"
+                 f"<form data-run-control action='{text(api)}/run'><label>模式<select name='mode'><option value='pending'>待执行</option>"
+                 "<option value='failed'>只跑失败与受阻</option><option value='regression'>受改动影响</option></select></label>"
+                 "<label>操作人姓名<input name='by' required></label>"
+                 "<button type='submit' name='control' value='start'>开始连续执行</button><button type='submit' name='control' value='pause'>暂停</button>"
+                 "<button type='submit' name='control' value='resume'>继续</button><button type='submit' name='control' value='stop'>停止</button>"
+                 "<p data-run-message role='status'></p></form>")
+    body += '</section>'
+    items = data.get('attention') or []
+    if items:
+        body += "<section id='attention'><h2>待人处理</h2><ul>" + ''.join(
+            f"<li>#{i['id']} {text(i['label'])}：{text(i['text'])}" + (f"（场景 {text('、'.join(i['scenarios']))}）" if i['scenarios'] else '') +
+            f" · {text(i['created_by'])} · {time_tag(i['created_at'])}" +
+            (f"<form data-attention-resolve action='/api/v1/workspaces/{quote(workspace, safe='')}/attention/{i['id']}/resolve'>"
+             "<label>处理人姓名<input name='by' required></label><button type='submit'>标记已处理</button><p data-run-message role='status'></p></form>"
+             if local else '') + '</li>' for i in items) + '</ul></section>'
+    issues = data.get('issues') or []
+    if issues:
+        state = {key: sum(i['status'] == key for i in issues) for key in ('open', 'fixing', 'verifying', 'closed', 'deferred')}
+        body += ("<section id='issues'><h2>问题台账</h2><p>" + ' · '.join(f"{label} {state[key]}" for key, label in
+                 (('open', '待处理'), ('fixing', '修复中'), ('verifying', '待验证'), ('closed', '已关闭'), ('deferred', '暂缓'))) +
+                 "</p><table><thead><tr><th>编号</th><th>问题</th><th>类型</th><th>状态</th><th>影响场景</th><th>修复</th></tr></thead><tbody>" + ''.join(
+            f"<tr><td>{i['number']}</td><td>{text(i['title'])}" + (f"<br><small>根因：{text(i['root_cause'])}</small>" if i['root_cause'] else '') +
+            f"</td><td>{text(i['kind_label'])}</td><td>{text(i['status_label'])}" + (f"（仍有 {i['failing']} 个失败或受阻）" if i['status'] == 'closed' and i['failing'] else '') +
+            "</td><td>" + '、'.join(f"{text(s['scenario'])}{'' if s['batch'] == name else '（' + text(s['batch']) + '）'}"
+                                    f"{'：' + text(STATUS.get(s['latest'], s['latest'])) if s['latest'] else ''}" for s in i['scenarios']) +
+            "</td><td>" + '、'.join(f"#{f['id']} {text(f['status'])}" for f in i['fixes']) +
+            (f"<form data-issue-fix action='/api/v1/workspaces/{quote(workspace, safe='')}/issues/{i['number']}/board-fix'>"
+             "<button type='submit'>交给看板修复</button><span data-run-message role='status'></span></form>"
+             if local and i['status'] == 'open' and i['failing'] else '') + '</td></tr>' for i in issues) +
+            "</tbody></table>" + ("<p>修改状态、根因或影响场景用 <code>sop-board issue update</code>，须写决定人姓名和原话。</p>" if local else '') + "</section>")
+    decisions = data.get('decisions') or []
+    if decisions:
+        body += "<section id='decisions'><h2>决定记录</h2><ul>" + ''.join(
+            f"<li>{time_tag(d['at'])} · {text(d['source'])}" + (f" · 问题 {d['issue']}" if d['issue'] else '') +
+            f" · {text(d['author'])}：{text(d['text'])}</li>" for d in decisions) + '</ul></section>'
+    return body

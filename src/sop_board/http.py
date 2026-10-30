@@ -62,6 +62,68 @@ class Handler(BaseHTTPRequestHandler):
     def respond_json(self, status, result):
         self.respond(status, json.dumps(result, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
+    def handle_atlas(self, service, atlas_page, atlas_api, method, local, body):
+        """交互地图：本机与内网只读查看；发起梳理仅限本机。"""
+        import json as _json
+        from .kernel import S
+        match = atlas_page or atlas_api
+        key = unquote(match[1])
+        if key != service.workspace.name:
+            reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+        tasks = self.server.tasks
+        if method == 'POST':
+            if not (atlas_api and atlas_api[2] and atlas_api[3]):
+                reject(404, 'not-found', 'path', '接口不存在')
+            if not local:
+                reject(403, 'local-only', 'client', '梳理交互只能在本机发起')
+            entry = unquote(atlas_api[2])
+            if not isinstance(body, dict) or body.keys() - {'mode'} or body.get('mode', 'full') not in ('full', 'stale'):
+                reject(422, 'atlas-invalid', 'mode', '只接受 mode：full 或 stale')
+            with tasks.lock:
+                with tasks.store.connection() as db:
+                    active = [row['id'] for row in db.execute(
+                        "SELECT id,input_json FROM tasks WHERE kind='atlas' AND workspace=? AND status IN (?,?,?)",
+                        (key, S.QUEUED, S.RUNNING, S.SESSION)) if _json.loads(row['input_json']).get('entry') == entry
+                        and _json.loads(row['input_json']).get('mode') != 'bind']
+                if active:
+                    reject(409, 'task-running', 'task', f'该入口已有进行中的梳理任务 #{active[0]}')
+                try:
+                    inputs = tasks.atlas.inputs(entry, body.get('mode', 'full'), [], False)
+                except ValueError as error:
+                    reject(409, 'atlas-invalid', 'atlas', str(error))
+                task_id = tasks.atlas.enqueue(inputs, '看板梳理交互')
+            tasks.kernel.wake(task_id)
+            self.respond_json(200, dict(ok=True, task=tasks.read(task_id, local=local)))
+            return
+        if method != 'GET':
+            reject(405, 'method-not-allowed', 'method', '只支持 GET')
+        service.workspace.reload()
+        summary = tasks.atlas.summary(local=local)
+        if atlas_api and not atlas_api[2]:
+            self.respond_json(200, dict(ok=True, entries=summary))
+            return
+        if atlas_api:
+            entry = unquote(atlas_api[2])
+            item = next((s for s in summary if s['entry'] == entry), None)
+            if item is None or item['version'] is None:
+                reject(404, 'atlas-not-found', 'entry', f'入口 {entry} 尚无交互地图')
+            self.respond_json(200, dict(ok=True, entry=item, atlas=tasks.atlas.load(entry, item['version'])))
+            return
+        if atlas_page[2] is None:
+            documents = {s['entry']: tasks.atlas.load(s['entry'], s['version']) for s in summary if s['version']}
+            self.respond(200, pages.atlas(key, summary, documents, local=local).encode(), 'text/html; charset=utf-8')
+            return
+        entry, page_id = unquote(atlas_page[2]), unquote(atlas_page[3])
+        item = next((s for s in summary if s['entry'] == entry), None)
+        if item is None or item['version'] is None:
+            reject(404, 'atlas-not-found', 'entry', f'入口 {entry} 尚无交互地图')
+        document = tasks.atlas.load(entry, item['version'])
+        page = next((p for p in document['pages'] if p['id'] == page_id), None)
+        if page is None:
+            reject(404, 'atlas-page-not-found', 'page', f'地图中没有页面 {page_id}')
+        stale = next((s['files'] for s in item['stale'] if s['page'] == page_id), [])
+        self.respond(200, pages.atlas_page(key, entry, document, page, stale, local=local).encode(), 'text/html; charset=utf-8')
+
     def handle_api(self):
         # 只读请求的页面、变化标记和任务列表共享一次排队计算。
         # 写入请求不沿用操作前的队列，返回值仍反映操作后的状态。
@@ -74,6 +136,10 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             method = self.command
             local = is_loopback(self.client_address[0])
+            fixtures_page = re.fullmatch(r'/w/([^/]+)/fixtures', path)
+            fixtures_api = re.fullmatch(r'/api/v1/workspaces/([^/]+)/fixtures(?:/([0-9]+)/mark)?', path)
+            if (fixtures_page or fixtures_api) and not local:
+                reject(403, 'local-only', 'client', '数据配方仅限本机')
             assets = {"/assets/board.css": ("board.css", "text/css; charset=utf-8"),
                       "/assets/board.js": ("board.js", "text/javascript; charset=utf-8"),
                       "/assets/sop.js": ("sop.js", "text/javascript; charset=utf-8"),
@@ -87,6 +153,7 @@ class Handler(BaseHTTPRequestHandler):
                                  re.fullmatch(r"/api/v1/automation/(pause|resume|auto-execute)", path) or
                                  re.fullmatch(r"/api/v1/environment/(check|restart)", path) or
                                  re.fullmatch(r"/api/v1/workspaces/[^/]+/fixes/handoff", path) or
+                                 re.fullmatch(r"/api/v1/workspaces/[^/]+/issues/[0-9]+/board-fix", path) or
                                  re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/(merges|executions|distill)", path) or
                                  re.fullmatch(r"/api/v1/workspaces/[^/]+/batches/[^/]+/cases/[^/]+/flow", path))
                 if developer and not local:
@@ -124,6 +191,116 @@ class Handler(BaseHTTPRequestHandler):
                     reject(400, "invalid-request", "body", "应为 UTF-8 JSON")
             if method == "GET" and path == "/":
                 self.respond(200, pages.home(service.workspaces(local=local), environment=service.environment_status(local=local), local=local).encode(), "text/html; charset=utf-8")
+                return
+            if fixtures_page or fixtures_api:
+                from .fixtures import Fixtures
+                key = unquote((fixtures_page or fixtures_api)[1])
+                if key != service.workspace.name:
+                    reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+                fixtures = Fixtures(service, self.server.tasks)
+                try:
+                    with self.server.tasks.lock:
+                        if method == 'GET' and (fixtures_page or not fixtures_api[2]):
+                            result = fixtures.read()
+                        elif method == 'POST' and fixtures_api and fixtures_api[2]:
+                            if not isinstance(body, dict) or body.keys() - {'promoted', 'dismiss', 'by'} or type(body.get('dismiss', False)) is not bool:
+                                raise ValueError('只接受 promoted、dismiss 和标记人 by')
+                            result = fixtures.mark(int(fixtures_api[2]), **body)
+                        else:
+                            reject(404, 'not-found', 'path', '接口不存在')
+                except ValueError as error:
+                    reject(422, 'fixtures-invalid', 'fixtures', str(error))
+                if fixtures_page:
+                    self.respond(200, pages.fixtures(key, result).encode(), 'text/html; charset=utf-8')
+                else:
+                    self.respond_json(200, result)
+                return
+            if method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/atlas-checks/([0-9]+)/decision', path)):
+                key, name = unquote(match[1]), unquote(match[2])
+                if key != service.workspace.name:
+                    reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+                if not isinstance(body, dict) or body.keys() - {'decision', 'by', 'note'} or not isinstance(body.get('note', ''), str):
+                    reject(422, 'atlas-decision-invalid', 'body', '只接受 decision、by 与 note')
+                tasks = self.server.tasks
+                with tasks.lock:
+                    with tasks.store.connection() as db:
+                        batch = service.batch(db, key, name)
+                        row = db.execute('SELECT scenario,item FROM atlas_checks WHERE id=? AND batch=?', (int(match[3]), batch['id'])).fetchone()
+                    if row is None:
+                        reject(404, 'atlas-check-not-found', 'item', '对照条目不存在')
+                    try:
+                        checks = tasks.atlas.decide(name, f"{row['scenario']}#{row['item']}", body.get('decision'), body.get('by'), body.get('note', ''))
+                    except ValueError as error:
+                        reject(422, 'atlas-decision-invalid', 'decision', str(error))
+                self.respond_json(200, dict(ok=True, atlas_checks=checks))
+                return
+            if method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/atlas-bind', path)):
+                if not local:
+                    reject(403, 'local-only', 'client', '对照界面只能在本机发起')
+                key, name = unquote(match[1]), unquote(match[2])
+                if key != service.workspace.name:
+                    reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+                if not isinstance(body, dict) or body.keys() - {'stale'} or type(body.get('stale', False)) is not bool:
+                    reject(422, 'atlas-bind-invalid', 'body', '只接受布尔值 stale')
+                tasks = self.server.tasks
+                from .kernel import S
+                with tasks.lock:
+                    with tasks.store.connection() as db:
+                        active = db.execute("SELECT id FROM tasks WHERE kind='atlas' AND workspace=? AND batch=? AND status IN (?,?,?)",
+                                            (key, name, S.QUEUED, S.RUNNING, S.SESSION)).fetchone()
+                    if active:
+                        reject(409, 'task-running', 'task', f"该批次已有进行中的对照任务 #{active['id']}")
+                    try:
+                        task_id = tasks.atlas.enqueue_bind(tasks.atlas.bind_inputs(name, None, body.get('stale', False)), '看板对照界面')
+                    except ValueError as error:
+                        reject(409, 'atlas-bind-invalid', 'atlas', str(error))
+                tasks.kernel.wake(task_id)
+                self.respond_json(200, dict(ok=True, task=tasks.read(task_id, local=local)))
+                return
+            run_route = re.fullmatch(r'/api/v1/workspaces/([^/]+)/batches/([^/]+)/(run|plan-executions)', path)
+            resolve_route = re.fullmatch(r'/api/v1/workspaces/([^/]+)/attention/([0-9]+)/resolve', path)
+            if method == 'POST' and (run_route or resolve_route):
+                if not local:
+                    reject(403, 'local-only', 'client', '连续运行、按计划执行与处理事项只能在本机操作')
+                key = unquote((run_route or resolve_route)[1])
+                if key != service.workspace.name:
+                    reject(404, 'workspace-not-found', 'workspace', '工作区不存在')
+                tasks = self.server.tasks
+                if not isinstance(body, dict):
+                    reject(422, 'invalid-request', 'body', '应为 JSON 对象')
+                try:
+                    with tasks.lock:
+                        if resolve_route:
+                            from .attention import resolve
+                            from .atlas import person
+                            with tasks.store.connection() as db:
+                                by = person(body.get('by', ''), db, key)
+                            resolve(tasks.store, key, int(resolve_route[2]), by, body.get('note', ''))
+                            result = dict(ok=True)
+                        elif run_route[3] == 'run':
+                            from .atlas import person
+                            with tasks.store.connection() as db:
+                                by = person(body.get('by', ''), db, key)
+                            result = dict(ok=True, run=tasks.runs.control(unquote(run_route[2]), body.get('action', ''), mode=body.get('mode', 'pending'),
+                                                                          round_size=body.get('round_size'), by=by))
+                        else:
+                            from .plans import build, DEFAULTS
+                            name = unquote(run_route[2])
+                            size = body.get('round_size') or (service.workspace.run or {}).get('round_size', DEFAULTS['round_size'])
+                            with tasks.store.connection() as db:
+                                from .attention import open_scenarios
+                                plan = build(db, service.batch(db, key, name), body.get('mode', 'pending'), size, skip=open_scenarios(db, key, name))
+                            if not plan['rounds']:
+                                reject(409, 'nothing-to-execute', 'scenarios', '计划中没有待执行的场景')
+                            result = tasks.executions.enqueue(key, name, trigger='按计划执行', selected=[i['scenario'] for i in plan['rounds'][0]])
+                except ValueError as error:
+                    reject(422, 'run-invalid', 'run', str(error))
+                self.respond_json(200, result)
+                return
+            atlas_page = re.fullmatch(r'/w/([^/]+)/atlas(?:/([^/]+)/([^/]+))?', path)
+            atlas_api = re.fullmatch(r'/api/v1/workspaces/([^/]+)/atlas(?:/([^/]+)(/tasks)?)?', path)
+            if atlas_page or atlas_api:
+                self.handle_atlas(service, atlas_page, atlas_api, method, local, body if method == 'POST' else None)
                 return
             if method == 'GET' and (match := re.fullmatch(r'/w/([^/]+)/tasks/([0-9]+)', path)):
                 key, task_id = unquote(match[1]), int(match[2])
@@ -272,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.tasks.fixes.list(unquote(match[1]), local=local)
             elif method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/fixes/handoff', path)):
                 result = self.server.tasks.fixes.handoff(unquote(match[1]),body)
+            elif method == 'POST' and (match := re.fullmatch(r'/api/v1/workspaces/([^/]+)/issues/([0-9]+)/board-fix', path)):
+                result = self.server.tasks.fixes.handoff_issue(unquote(match[1]), int(match[2]))
             elif method == "GET" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/attention", path)):
                 result = self.server.tasks.fixes.attention(unquote(match[1]), 'http://' + self.headers.get('Host', 'localhost'), local=local)
             elif method == "GET" and path == "/api/v1/jira/summary":

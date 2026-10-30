@@ -39,7 +39,7 @@ def pending_scope(db, batch, summary, product_digest):
     """按钮计数与手动入队共用；失败也须重跑，不改变展示队列的口径。"""
     scope = []
     for scene in summary['scenarios']:
-        if scene.get('held'):
+        if scene.get('held') or scene.get('waiting_change'):
             continue
         agent = scene['latest_agent']
         latest = max((r for r in (agent, scene['latest_manual']) if r),
@@ -90,8 +90,16 @@ def task_counts(db, workspace, batch, rounds):
     return counts
 
 
+def waiting_change(db, batch):
+    """界面对照中决定“改 SOP”、且条目对应场景当前内容的场景；场景改后条目自然失效（D85）。"""
+    return {row[0] for row in db.execute(
+        "SELECT DISTINCT c.scenario FROM atlas_checks c JOIN scenarios s ON s.batch=c.batch AND s.scenario=c.scenario "
+        "AND s.current=1 AND s.fingerprint=c.fingerprint WHERE c.batch=? AND c.decision='change'", (batch['id'],))}
+
+
 def calculate(db, batch):
     held = held_scenarios(read_holds(db, batch))
+    waiting = waiting_change(db, batch)
     scenarios = [dict(row) for row in db.execute(
         "SELECT * FROM scenarios WHERE batch=? AND current=1 ORDER BY id", (batch["id"],))]
     rows = [dict(row) for row in db.execute(
@@ -114,7 +122,7 @@ def calculate(db, batch):
         row["submitted_at_display"] = local_time(row["submitted_at"])
         row["evidence"] = evidence.get(row["id"], [])
         by_scenario.setdefault((row["scenario"], row["fingerprint"]), []).append(row)
-    queues = dict(pending=[], issues=[], retest=[])
+    queues = {'pending': [], 'issues': [], 'retest': [], 'waiting-change': []}
     agent_pass = agent_fail = first_pass = first_fail = reviewed = manual_pass = manual_fail = executed = 0
     details, misjudgments = [], []
     agent_counts = {"pass": 0, "fail": 0, "blocked": 0, "skip": 0}
@@ -128,7 +136,7 @@ def calculate(db, batch):
         filters["agent-pass"] += bool(a and a["status"] == "pass")
         if latest and latest["status"] in ("fail", "blocked"):
             filters[latest["status"]] += 1
-        eligible = scenario['scenario'] not in held
+        eligible = scenario['scenario'] not in held and scenario['scenario'] not in waiting
         executed += bool(history) and eligible
         if agents and eligible:
             agent_counts[a["status"]] += 1
@@ -149,8 +157,10 @@ def calculate(db, batch):
             queue = "retest"
         else:
             queue = "reviewed"
-        if not eligible:
+        if scenario['scenario'] in held:
             queue = 'held'
+        elif scenario['scenario'] in waiting:
+            queue = 'waiting-change'
         if queue in queues:
             queues[queue].append(scenario["scenario"])
         preceding_agent = None
@@ -163,14 +173,16 @@ def calculate(db, batch):
         details.append(dict(scenario=scenario["scenario"], node=scenario["node"], title=scenario["title"],
                             polarity=scenario["polarity"], priority=scenario["priority"], verify=scenario["verify"],
                             fingerprint=scenario["fingerprint"], status=latest["status"] if latest else None,
-                            queue=queue, held=not eligible, latest_agent=a, latest_manual=m,
+                            queue=queue, held=scenario['scenario'] in held, waiting_change=scenario['scenario'] in waiting,
+                            latest_agent=a, latest_manual=m,
                             body=json.loads(scenario["body"])))
-    execution_count = sum(s['scenario'] not in held for s in scenarios)
+    execution_count = sum(s['scenario'] not in held and s['scenario'] not in waiting for s in scenarios)
     statistics = dict(agent_pass_rate=ratio(agent_pass, agent_pass + agent_fail),
                       manual_pass_rate=ratio(manual_pass, manual_pass + manual_fail),
                       retest_coverage=ratio(reviewed, agent_pass), first_pass_rate=ratio(first_pass, first_pass + first_fail),
                       executed_progress=ratio(executed, execution_count), reviewed_progress=ratio(reviewed, agent_pass))
-    statistics['independence_counts'] = independence_counts([s['latest_agent'] for s in details if not s['held'] and s['latest_agent']])
+    statistics['independence_counts'] = independence_counts([s['latest_agent'] for s in details
+                                                             if not s['held'] and not s['waiting_change'] and s['latest_agent']])
     rounds = []
     for row in db.execute("SELECT t.*,v.version AS scenario_version,COALESCE(o.origin,'unknown') AS execution_origin,"
                           "COALESCE(c.changed_json,'[]') AS product_changed FROM rounds t JOIN versions v ON v.id=t.version "

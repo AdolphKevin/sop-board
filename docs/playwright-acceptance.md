@@ -15,7 +15,7 @@ sop-board playwright guide
 
 ## 看板执行与修复复测
 
-看板执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。看板已准备适配环境，执行者按入口操作，不自行启停服务。Web 连接在同一执行进程共用浏览器调试连接（CDP），每条实际执行场景按入口 `evidence` 声明留证；`web_evidence.video`、`web_evidence.trace` 各自缺省开启，显式 false 时不启动对应录制、不要求对应附件。任务 scope 按场景保存开关，模板读取 `PW_SCOPE`；关闭本轮全部录屏时不检查 ffmpeg。配置例子见[参考手册](reference.md#配置与环境)。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1；首个意外失败或受阻后停止本轮，避免进程重启引发连续调试授权。剩余未执行范围单列，部分转换显式加 --allow-partial。
+看板执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。看板已准备适配环境，执行者按入口操作，不自行启停服务。Web 连接在同一执行进程共用浏览器调试连接（CDP），每条实际执行场景按入口 `evidence` 声明留证；`web_evidence.video`、`web_evidence.trace` 各自缺省开启，显式 false 时不启动对应录制、不要求对应附件。任务 scope 按场景保存开关，模板读取 `PW_SCOPE`；关闭本轮全部录屏时不检查 ffmpeg。配置例子见[参考手册](reference.md#配置与环境)。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1：业务断言失败标为预期失败，只记该场景失败并留截图与页面结构快照，worker 不重启、本轮继续；受阻、连接断开等意外失败在首个出现时停止本轮，避免进程重启引发连续调试授权。缺省时间上限为单场景 4 分钟、定位或操作 15 秒、导航 30 秒（`PW_SCENARIO_TIMEOUT_MS`、`PW_ACTION_TIMEOUT_MS`、`PW_NAVIGATION_TIMEOUT_MS` 可覆盖）。模板每结束一个场景就写 `report.partial.json`，执行中途退出时据此加 --allow-partial 转换；剩余未执行范围单列。有交互地图时，任务目录另有 atlas.json、bindings.json，模板的 atlas.mjs 按地图打开页面、取控件，地图缺口写进 atlas-feedback.jsonl。
 
 ```sh
 sop-board playwright convert --report <报告.json> --out <任务目录> \

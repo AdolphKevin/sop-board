@@ -127,6 +127,13 @@ def product_files(root, excluded=None, head=False, revision='HEAD'):
             sha256 = hashlib.sha256(object_id).hexdigest() if mode == b'160000' else next(hashes)
             result.append(dict(path=name, mode=mode.decode(), sha256=sha256))
     else:
+        submodules = {}
+        for record in git(root, 'ls-files', '-sz').split(b'\0'):
+            if record:
+                info, raw = record.split(b'\t', 1)
+                mode, object_id, stage = info.split()
+                if mode == b'160000' and stage == b'0':
+                    submodules[os.fsdecode(raw)] = object_id
         for raw in sorted(set(git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard').split(b'\0'))):
             if not raw:
                 continue
@@ -139,7 +146,11 @@ def product_files(root, excluded=None, head=False, revision='HEAD'):
                 value = os.fsencode(os.readlink(path))
             elif path.is_dir():
                 mode = '160000'
-                value = git(path, 'rev-parse', '--verify', 'HEAD').strip()
+                # 未检出的目录会向上找到外层 Git 仓库，不能从中读取 HEAD。
+                value = (submodules[name] if name in submodules and not (path / '.git').exists()
+                         else git(path, 'rev-parse', '--verify', 'HEAD').strip())
+            elif name in submodules and not path.exists():
+                mode, value = '160000', submodules[name]
             elif not path.exists():
                 result.append(dict(path=name, deleted=True))
                 continue

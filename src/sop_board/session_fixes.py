@@ -1,6 +1,7 @@
 """会话修复：复用根因与复验契约，当前工作区不执行 Git 写入。"""
 import hashlib
 import json
+import re
 import yaml
 
 from .errors import reject
@@ -45,7 +46,8 @@ class SessionFixes:
         if protected:
             raise ValueError('修复改动涉及受保护的 SOP 或场景文件：' + '、'.join(protected))
 
-    def prepare(self, owner, selected):
+    def prepare(self, owner, selected, issues=()):
+        """issues：按问题台账编号认领这些问题当前可认领的失败场景（D98），可与 --scenario 同用。"""
         self.service.require_ready(self.workspace.name)
         requested = set()
         for item in selected or []:
@@ -60,7 +62,7 @@ class SessionFixes:
                 if row['owner'] == owner:
                     owned = dict(row)
                     break
-                reject(409, 'task-owned', 'task', f'会话修复 #{row["id"]} 尚未结束，请先处理该任务')
+                # 其他会话的未结束修复只阻止认领重叠的场景（D98），重叠由下方 fix-already-owned 判断。
             occupied = {(row['batch'],row['scenario']) for row in db.execute(
                 'SELECT p.batch,p.scenario FROM fix_problems p JOIN tasks t ON t.id=p.task WHERE t.workspace=? '
                 f'AND t.status NOT IN ({sql_states(FIX_TERMINAL)})', (self.workspace.name,))}
@@ -70,15 +72,27 @@ class SessionFixes:
                     (self.workspace.name, batch, scene)).fetchone()
                 if busy and (not owned or busy['id'] != owned['id']):
                     reject(409, 'fix-already-owned', 'scenario', f'{batch}#{scene} 已在修复任务 #{busy["id"]} 中，不能重复认领')
+            covered = set()
             if owned:
                 covered = {(r['batch'], r['scenario']) for r in db.execute('SELECT batch,scenario FROM fix_problems WHERE task=?', (owned['id'],))}
                 if requested and not requested.issubset(covered):
                     reject(409, 'fix-scope-active', 'scenario', f'请先处理已有会话修复 #{owned["id"]}，本次不能扩大问题范围')
             rows = [r for r in session_scheduling_tasks(db) if not owned or r['id'] != owned['id']]
             blocker = self.tasks.kernel.session_blocker(dict(id=-1, kind='fix', workspace=self.workspace.name, batch='', status=S.SESSION), rows)
+            if blocker and blocker['kind'] == 'fix' and blocker['status'] == S.SESSION:
+                # 会话修复共用当前工作区，同时改代码会让各自的改动混在一起；等对方提交修复输出（进入待验证）后即可准备。
+                reject(409, 'task-blocked', 'task', f'会话修复 #{blocker["id"]} 正在修改产品代码，等它提交修复输出后再准备')
             if blocker:
                 reject(409, 'task-blocked', 'task', f'等待任务 #{blocker["id"]}（{blocker["status"]}）结束')
             problems = self.fixes.unresolved(db, self.workspace.name, reclaim=True)
+            from .issues import scenarios_of
+            listed = scenarios_of(db, self.workspace.name, issues) if issues else set()
+            claimable = {(p['batch'], p['scenario']) for p in problems} - occupied
+            from_issues = listed & claimable
+            if issues and not from_issues and not (owned and listed & covered):
+                reject(409, 'nothing-to-fix', 'issue', '问题 ' + '、'.join(map(str, issues)) + ' 关联的场景都没有可认领的失败')
+            if owned and from_issues - covered:
+                reject(409, 'fix-scope-active', 'issue', f'请先处理已有会话修复 #{owned["id"]}，本次不能扩大问题范围')
         if owned and owned['status'] == S.SESSION and (self.tasks.directory(owned['id']) / 'prompt.md').is_file():
             return owned['id']
         if owned:
@@ -89,8 +103,9 @@ class SessionFixes:
             with self.store.transaction() as db:
                 db.execute("UPDATE fix_problems SET category='',root_repo=NULL WHERE task=?", (task_id,))
         else:
+            wanted = requested | from_issues
             chosen = [p for p in problems if (p['batch'],p['scenario']) not in occupied and
-                (not requested or (p['batch'], p['scenario']) in requested)]
+                (not wanted or (p['batch'], p['scenario']) in wanted)]
             missing = requested - {(p['batch'], p['scenario']) for p in chosen}
             if not chosen or missing:
                 reject(409, 'nothing-to-fix', 'scenario', '没有可认领的已放行失败场景' + ('：' + '、'.join(b+'#'+s for b,s in sorted(missing)) if missing else ''))
@@ -102,6 +117,8 @@ class SessionFixes:
                 db.executemany('INSERT INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) VALUES (?,?,?,?,?,0,?)',
                     [(task_id,p['batch'],p['scenario'],p['fingerprint'],p['result_id'],canonical(p)) for p in chosen])
                 self.tasks.kernel.assign(task_id, owner, connection=db)
+                from .issues import link_fix
+                link_fix(db, self.workspace.name, task_id, {(p['batch'], p['scenario']) for p in chosen}, issues)
         with self.store.connection() as db:
             task = dict(db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone())
         self.tasks.directory(task_id).mkdir(parents=True, exist_ok=True)
@@ -157,6 +174,9 @@ class SessionFixes:
         if info['status'] not in (S.WAIT_VALIDATION, S.WAIT_COMMIT):
             reject(409, 'fix-not-ready', 'fix', '修复须先提交产品修复输出，处于待验证或等待开发者提交状态')
         self.check_current(info)
+        environment = self.service.environment
+        if environment.external() and not environment.check_external(record=False):
+            raise ValueError(environment.state['error'] + '；已登记待人处理，环境恢复后重新准备复验')
         with self.store.connection() as db:
             active = db.execute('SELECT t.*,s.session_id AS owner FROM session_fix_executions v JOIN tasks t ON t.id=v.execution '
                 'JOIN session_tasks s ON s.task=t.id WHERE v.fix=? AND t.status=?', (fix_id,S.SESSION)).fetchone()
@@ -183,6 +203,8 @@ class SessionFixes:
         manifests = self.files(aliases)
         snapshot = dict(info['snapshot'], aliases=aliases, skill_digest=self.workspace.skill_digest(), session_files=manifests,
                         session_files_stage='复验准备时的产品文件清单（修复输出已登记）')
+        from .fixtures import definition
+        snapshot.update(execution_entries=self.workspace.execution_entries(), fixtures=definition(self.workspace))
         with self.store.transaction() as db:
             sequence = db.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM session_fix_executions WHERE fix=? AND attempt=?',(fix_id,info['attempt'])).fetchone()[0]
             execution = db.execute("INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,snapshot_json,scope_json,created_at) "
@@ -280,6 +302,12 @@ class SessionFixes:
                         dirty=any(path.split('/',1)[0] in aliases for path in runtime['info']['changed'])),
                     results=[r for r in runtime['rows'] if r['batch']==batch_name])
                 number=self.service.register_round(db,batch,version,body,skill_digest=runtime['snapshot']['skill_digest'])
+                from .fixtures import link_results
+                link_results(db, task['id'], batch, number, runtime['directory'])
+                from .atlas import record_round
+                record_round(db, batch['id'], number, runtime['directory'])
+                if not rounds:  # 同一复验目录的反馈只收一次
+                    self.tasks.atlas.collect_feedback(db, task['id'], runtime['directory'])
                 db.execute('UPDATE batches SET product_digest=? WHERE id=?',(product_digest,batch['id']))
                 db.execute('UPDATE fix_validations SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
                     (number,fix['id'],runtime['number'],runtime['sequence'],batch_name))
@@ -295,6 +323,49 @@ class SessionFixes:
             self.tasks.kernel.register(task,dict(rounds=rounds,validation=validation),connection=db,phase='execute')
         return dict(rounds=rounds,validation=validation)
 
+    def verified_by_rounds(self, task_id, info):
+        """D98：没有专门复验时，产品问题的场景都在修复登记之后由修复会话以外的执行者通过，
+        且那一轮准备时修复改动的文件内容与现在相同，才视为独立复验通过；返回与复验快照同形的记录。
+        比较用执行轮次同样的产品文件清单（排除 snapshot_exclude 与场景目录）。"""
+        if info['status'] not in (S.WAIT_VALIDATION, S.WAIT_COMMIT):
+            return {}
+        with self.store.connection() as db:
+            running=db.execute('SELECT t.id FROM session_fix_executions v JOIN tasks t ON t.id=v.execution WHERE v.fix=? AND t.status=?',
+                (task_id,S.SESSION)).fetchone()
+            if running:
+                reject(409,'fix-validation-running','fix',f'复验任务 #{running["id"]} 尚未结束，请先提交或放弃该复验')
+            submitted=self.state(task_id,db)['submitted']
+            attempt=db.execute('SELECT finished_at FROM fix_attempts WHERE task=? AND number=?',(task_id,info['attempt'])).fetchone()
+            problems=[dict(r) for r in db.execute("SELECT DISTINCT batch,scenario FROM fix_problems WHERE task=? AND category='product'",(task_id,))]
+            if not submitted or not attempt or not attempt['finished_at'] or not problems:
+                return {}
+            changes=submitted.get('changes',{})
+            aliases=list(changes)
+            owner=self.tasks.kernel.claim(info,connection=db)['session_id']
+            current=self.workspace.product(aliases,files=True)['files']
+            index={a:{item['path']:item for item in items} for a,items in current.items()}
+            latest=None
+            for problem in problems:
+                row=db.execute("SELECT r.status,r.executor,r.independence,t.number,t.submitted_at,t.submitted_by,t.skill_digest,t.idempotency_key FROM results r JOIN rounds t ON t.id=r.round_id "
+                    "JOIN batches b ON b.id=t.batch WHERE b.workspace=? AND b.name=? AND r.scenario=? AND t.kind='agent' ORDER BY t.number DESC,r.id DESC LIMIT 1",
+                    (self.workspace.name,problem['batch'],problem['scenario'])).fetchone()
+                if row is None or row['status']!='pass' or row['submitted_at']<=attempt['finished_at'] or row['independence']=='self-check' \
+                        or same_session(row['executor'],owner) or same_session(row['submitted_by'],owner):
+                    return {}
+                match=re.fullmatch(r'execute-([0-9]+)-[0-9]+',row['idempotency_key'] or '')
+                manifest_path=self.tasks.directory(int(match[1]))/'product-files.json' if match else None
+                if manifest_path is None or not manifest_path.is_file() or row['skill_digest']!=self.workspace.skill_digest():
+                    return {}
+                manifest=json.loads(manifest_path.read_text(encoding='utf-8'))
+                for alias,paths in changes.items():
+                    tested={item['path']:item for item in manifest.get(alias,[])}
+                    if any(tested.get(path)!=index.get(alias,{}).get(path) for path in paths):
+                        return {}
+                if latest is None or row['submitted_at']>latest[0]:
+                    latest=(row['submitted_at'],{a:manifest.get(a,[]) for a in aliases},row['submitted_by'],f"{problem['batch']} 第 {row['number']} 轮")
+        return dict(product=dict(repos={a:{} for a in aliases}),files=latest[1],skill_digest=self.workspace.skill_digest(),session=latest[2],
+                    via='rounds',round=latest[3])
+
     def land(self, task_id):
         info=self.info(task_id)
         if info['status']==S.HANDLED:
@@ -303,23 +374,30 @@ class SessionFixes:
         self.check_current(info)
         with self.store.connection() as db:verified=self.state(task_id,db)['verified']
         if not verified:
-            reject(409,'fix-validation-required','fix','没有本次独立复验通过记录，不能关闭修复')
-        aliases=list(verified['product']['repos']);product=self.workspace.product(aliases)
-        differences=changed_files(verified['files'],self.files(aliases))
+            verified=self.verified_by_rounds(task_id,info)
+        if not verified:
+            reject(409,'fix-validation-required','fix','没有本次独立复验通过记录，也没有在包含修复改动的产品上由独立执行者通过的轮次，不能关闭修复')
+        aliases=list(verified['product']['repos']);product=self.workspace.product(aliases,files=True)
+        differences=changed_files(verified['files'],product['files'] if verified.get('via')=='rounds' else self.files(aliases))
         paths=[alias+'/'+p for alias,items in differences.items() for p in items]
-        if paths or product['product_digest']!=verified['product']['product_digest'] or self.workspace.skill_digest()!=verified['skill_digest']:
-            reject(409,'fix-content-changed','product','提交内容或验证技能与复验快照不同，须重新复验：'+'、'.join(paths or ['产品内容或验证技能摘要']))
+        if paths or product['product_digest']!=verified['product'].get('product_digest',product['product_digest']) or self.workspace.skill_digest()!=verified['skill_digest']:
+            reject(409,'fix-content-changed','product','提交内容或验证技能与独立通过时的快照不同，须重新独立验证：'+'、'.join(paths or ['产品内容或验证技能摘要']))
         if product['dirty']:
             reject(409,'fix-commit-required','product','请开发者审核并提交产品改动后再关闭：'+'、'.join(product['changed']))
+        basis='独立执行（'+verified['round']+'）' if verified.get('via')=='rounds' else '独立复验'
         with self.store.transaction() as db:
             for repo in info['repositories']:
                 commit=product['repos'][repo['alias']]['commit']
                 self.tasks.kernel.repositories.update('fix',task_id,repo['alias'],repair_commit=commit,merged_commit=commit,
-                    merge_status=S.HANDLED,merge_reason='开发者已提交，内容与独立复验一致',connection=db)
+                    merge_status=S.HANDLED,merge_reason='开发者已提交，内容与'+basis+'一致',connection=db)
             commits={a:r['commit'] for a,r in product['repos'].items()}
-            db.execute('UPDATE fix_attempts SET commits_json=?,merged_commits_json=? WHERE task=? AND number=?',
-                (canonical(commits),canonical(commits),task_id,info['attempt']))
+            db.execute('UPDATE fix_attempts SET commits_json=?,merged_commits_json=?,outcome=? WHERE task=? AND number=?',
+                (canonical(commits),canonical(commits),S.HANDLED,task_id,info['attempt']))
+            if verified.get('via') == 'rounds':
+                # 关闭依据是普通执行轮次时，把依据写入尝试记录，修复页与场景详情据此显示。
+                db.execute('UPDATE fix_attempts SET validation_json=? WHERE task=? AND number=?',
+                    (canonical(dict(status='passed',reason='独立执行（'+verified['round']+'）通过，内容一致',round=verified['round'])),task_id,info['attempt']))
             db.execute('UPDATE tasks SET status=?,finished_at=?,error=? WHERE id=?',
-                (S.HANDLED,now(),'会话修复已关闭；开发者提交与独立复验内容一致',task_id))
+                (S.HANDLED,now(),'会话修复已关闭；开发者提交与'+basis+'内容一致',task_id))
         self.fixes.complete(task_id)
         return dict(ok=True,task=self.tasks.read(task_id))

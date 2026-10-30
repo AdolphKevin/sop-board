@@ -110,7 +110,7 @@ class MergeType(TaskType):
         if not self.tasks.service.workspace.configured:
             self.tasks.update(task['id'], error='尚未搭建，等待配置工作区')
             return
-        error = codex_available()
+        error = self.tasks.kernel.agent_available(task['kind'])
         if error:
             self.unavailable(task, error)
             return
@@ -189,6 +189,68 @@ class AuthorSopType(TaskType):
     def schedule(self, task):
         # 本段只开放会话编写；预留类型约定，不让看板越过真人答复和确认。
         self.tasks.update(task['id'],error='编写 SOP 须由会话准备、答复并确认')
+
+
+class AtlasType(TaskType):
+    """梳理交互：看板与会话共用提示词、输出格式与登记；只读前端源码，不占用产品环境。"""
+    visibility = task_visibility.ATLAS
+    waiting = WaitCondition('工作区配置', .1)
+    invalid_input = '梳理任务输入不合格，请重新发起'
+
+    def inputs(self, task):
+        return Inputs(json.loads(task['input_json']), dict(entry='入口', mode='模式', base_version='地图版本'))
+
+    def refresh(self, task):
+        # 重试时拿到的是投影后的任务，原始输入从数据库读取。
+        with self.tasks.store.connection() as db:
+            inputs = json.loads(db.execute('SELECT input_json FROM tasks WHERE id=?', (task['id'],)).fetchone()['input_json'])
+        fresh = (self.tasks.atlas.bind_inputs(inputs['batch'], inputs['entry'], inputs['stale']) if inputs['mode'] == 'bind'
+                 else self.tasks.atlas.inputs(inputs['entry'], inputs['mode'], inputs['pages'], inputs['browser']))
+        body = canonical(fresh)
+        import hashlib
+        return dict(input_json=body, input_digest=hashlib.sha256(body.encode()).hexdigest())
+
+    def prepare(self, task):
+        return self.tasks.atlas.prepare(task)
+
+    def launch(self, task, *, fresh=False):
+        return Launch(schema=self.tasks.directory(task['id']) / 'schema.json')
+
+    def fallback(self, task, prompt, reason):
+        return prompt
+
+    def consume(self, task, session):
+        receipt = self.tasks.kernel.receipt(task)
+        if receipt is not None:
+            return json.loads(receipt['result_json'])
+        status, check = self.tasks.atlas.consume(task)
+        error = '; '.join(str(p) for p in check['problems']) if not check['ok'] else ''
+        self.finish(task, self.tasks.kernel.output_values(task, S.FAILED if error else status, check, session, error), check)
+        return check
+
+    def finish(self, task, values, check):
+        self.tasks.kernel.finish(task, values)
+        self.tasks.kernel.wake(0)
+
+    def actions(self, task):
+        return ({'retry'} if task['status'] in OUTPUT_RETRY else set()) | (
+            {'cancel'} if task['status'] in OUTPUT_CANCEL else set())
+
+    def unavailable(self, task, error):
+        self.tasks.update(task['id'], status=S.UNAVAILABLE, finished_at=now(), error=error)
+        self.tasks.kernel.wake(0)
+
+    def schedule(self, task):
+        if not self.tasks.kernel.check_due(task, self.waiting):
+            return
+        if not self.tasks.service.workspace.configured:
+            self.tasks.update(task['id'], error='尚未搭建，等待配置工作区')
+            return
+        error = self.tasks.kernel.agent_available(task['kind'])
+        if error:
+            self.unavailable(task, error)
+            return
+        self.tasks.kernel.start(task, self.tasks.execute, S.RUNNING)
 
 
 class DistillType(TaskType):
@@ -329,7 +391,7 @@ class ExecuteType(TaskType):
             needs_browser = any(inputs['entries'][scene['verify']]['surface'] == 'web' for scene in runnable)
             if not tasks.kernel.browser(task, needs_browser, waiting_status=S.WAIT_BROWSER):
                 return
-            error = codex_available() if runnable else ''
+            error = self.tasks.kernel.agent_available('execute') if runnable else ''
             if error:
                 tasks.update(task['id'], status=S.UNAVAILABLE, finished_at=now(), error=error)
                 if tasks.browser_owner == task['id']:

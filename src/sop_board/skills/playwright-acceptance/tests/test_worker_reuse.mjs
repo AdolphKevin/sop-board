@@ -18,7 +18,7 @@ test('four tests share one CDP connection but save four independent recordings',
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pw-worker-reuse-'));
   try {
     fs.mkdirSync(path.join(dir, 'scenarios'));
-    for (const name of ['playwright.config.mjs', 'global-setup.mjs']) fs.copyFileSync(path.join(templates, name), path.join(dir, name));
+    for (const name of ['playwright.config.mjs', 'global-setup.mjs', 'progress-reporter.mjs']) fs.copyFileSync(path.join(templates, name), path.join(dir, name));
     for (const name of ['fixtures.mjs', 'scope.mjs', 'recording.mjs']) fs.copyFileSync(path.join(templates, name), path.join(dir, 'scenarios', name));
     fs.mkdirSync(path.join(dir, 'node_modules', '@playwright'), {recursive: true});
     fs.symlinkSync(packageDir, path.join(dir, 'node_modules', '@playwright', 'test'), 'dir');
@@ -37,6 +37,7 @@ export async function connectTarget() {
  let video;
  const page = {isClosed:()=>false, evaluate:async()=>({width:800,height:600}), value:'test-page',
    screencast:{start:async({path})=>{video=path;log('video-start');},showActions:async()=>{},hideActions:async()=>{},stop:async()=>{log('video-stop');fs.writeFileSync(video,'video');}}};
+ context.setDefaultTimeout=()=>{}; context.setDefaultNavigationTimeout=()=>{}; context.pages=()=>[page];
  const browser = {isConnected:()=>true,close:async()=>log('disconnect')};
  return {browser,page,context};
 }

@@ -1,0 +1,475 @@
+# SOP-BOARD-18：场景级作废、使用者维护的环境、问题台账与修复波次、编写与协同
+# 预期依据：AdolphKevin 2026-10-30 的要求与“三期连续做完”的决定（方案 docs/proposals/2026-10-30-acceptance-throughput.md 第三期 D96～D99）。
+# 版本 1（2026-10-30）：Claude 依据方案编写；与方案不一致处以本文件为准，并已同步方案正文。
+# 版本 2（2026-10-30）：补充 SOP-183-P08（问题交给看板修复）与 SOP-183-P09（场景加入问题时关联正在进行的修复）；按独立验收报告澄清 SOP-181-P01、SOP-182-P02、SOP-184-P05 的写法。
+#
+# “演示 Web 工作区”同 sop-board-16.yaml、sop-board-17.yaml 文件头。另需：
+#   - “外部环境副本”：把演示数据目录复制为独立目录，config.yaml 的 adapter 改为
+#     {mode: external, health: [{name: web, url: <演示服务地址>/}, {name: api-port, port: <演示服务端口>},
+#      {name: tunnel, command: [sh, -c, 'test -f <标记文件>']}], heal: [[sh, -c, 'touch <标记文件>']]}，
+#     演示服务由使用者另行启动；
+#   - “用例批次”：经 sop-board cases upload 从仓库外文件上传过用例的批次；
+#   - “API 批次”：场景文件只含两条 verify 为 api 的场景。
+# 执行步骤中的“看板”指以 --lan 启动的演示看板；内网访问使用本机实际的非回环地址。
+
+metadata:
+  requirement: "sop-board：执行期间只作废变化的场景、使用者维护的环境、问题台账与修复波次、默认业务确认人与用例回写"
+  batch: "sop-board-18"
+  version: 2
+  owner: "AdolphKevin"
+  sources:
+    - ref: "AdolphKevin 2026-10-30 的要求与三项决定（本会话）"
+      version: "2026-10-30"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/proposals/2026-10-30-acceptance-throughput.md 第三期 D96～D99"
+      version: "方案 1"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "void", "external-environment", "issues", "fix", "collaboration"]
+
+sops:
+  - id: SOP-181
+    title: 执行期间只作废内容变化的场景
+    actor: 执行者
+    entry: "命令行 sop-board execute prepare/submit；任务页"
+    must:
+      - "执行期间部分场景的内容或用例变化时，只作废这些场景，本轮其他场景照常登记"
+      - "所选场景全部变化或验证技能变化时，整轮仍作废"
+      - "只改运行配置不作废在途轮次、不要求全量自检；改业务配置仍须重新自检"
+    scenarios:
+      - id: SOP-181-P01
+        polarity: positive
+        title: 变化的场景作废，其余照常登记
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，web-demo 批次的 WEB-N01、WEB-P03 都可执行"]
+        steps:
+          - "运行 execute prepare demo-web web-demo --scope WEB-N01 WEB-P03 --session <执行者>"
+          - "在场景文件中修改 WEB-P03 的一条预期并提交，等看板登记新版本"
+          - "为两个场景写出结果后运行 execute submit；查看批次页与 WEB-P03 场景详情"
+        expected:
+          - "submit 成功，输出（task.result）的 voided_scenarios 只含 WEB-P03；轮次只登记 WEB-N01"
+          - "WEB-P03 回到待执行，没有登记这次的结果"
+        forbidden_effects: ["整轮作废", "WEB-P03 以旧内容登记结果"]
+        evidence_hints: ["submit 输出", "批次页截图"]
+      - id: SOP-181-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 所选场景全部变化时整轮作废
+        actor: 执行者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "execute prepare 只选 WEB-P03；修改 WEB-P03 的预期并提交；写出结果后 execute submit"
+        expected:
+          - "任务作废，原因说明场景已变化；没有登记轮次"
+        forbidden_effects: ["登记空轮次", "以旧内容登记结果"]
+        evidence_hints: ["submit 输出", "task show 输出"]
+      - id: SOP-181-P02
+        polarity: positive
+        title: 只改运行配置不作废，改业务配置须重新自检
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，最近自检通过"]
+        steps:
+          - "execute prepare 一个场景；在 config.yaml 中改 run.round_size 与入口 app 的 identities 上限；写出结果后 execute submit；运行 status --json"
+          - "再把入口 app 的 operate 改一个字，运行 status --json，然后恢复"
+        expected:
+          - "第一次：submit 成功，setup_check.ok 仍为 true"
+          - "第二次：setup_check.ok 为 false，提示须重新自检"
+        forbidden_effects: ["只改运行配置就作废任务", "改业务配置后仍显示自检有效"]
+        evidence_hints: ["submit 输出", "status 输出"]
+
+  - id: SOP-182
+    title: 使用者维护的环境
+    actor: 开发者
+    entry: "工作区 config.yaml 的 adapter.mode: external、health、heal；sop-board check；看板环境栏；会话 execute prepare"
+    must:
+      - "external 模式下看板不启停服务，只探测；探测未通过先执行已授权的自愈命令再探测一次"
+      - "仍未通过时登记待人处理（同一说明不重复登记），本轮不开始；环境恢复后可继续同一任务"
+      - "看板修复与修复复测在此模式下不运行，改用会话修复"
+    scenarios:
+      - id: SOP-182-P01
+        polarity: positive
+        title: 自检只探测外部环境并在失败时自愈
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["外部环境副本，演示服务在运行，标记文件不存在"]
+        steps:
+          - "运行 sop-board check demo-web --data <副本目录>"
+        expected:
+          - "自检依次为“配置与仓库”“外部环境探测”“验证技能”，全部通过"
+          - "外部环境探测一步列出 web、api-port、tunnel 都通过，并说明首次探测未通过、已执行自愈命令；标记文件已创建"
+        forbidden_effects: ["启动或停止演示服务", "运行端口、基线环境或临时工作树步骤"]
+        evidence_hints: ["check 输出", "自检报告 JSON"]
+      - id: SOP-182-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 不合格的外部环境声明被报告
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["外部环境副本"]
+        steps:
+          - "依次把 adapter 改为：external 加 env；external 不写 health；一个探测项同时写 url 与 port；managed 模式写 health。每次运行 check，最后恢复"
+        expected:
+          - "四次都报告配置问题，分别说明外部环境不接受 env、须声明探测项、url/port/command 只能有一个、health 只用于 external"
+        forbidden_effects: ["接受不合格声明"]
+        evidence_hints: ["check 输出"]
+      - id: SOP-182-N02
+        polarity: negative
+        negative_type: disconnect
+        title: 自愈后仍不通过时登记待人处理，恢复后继续同一任务
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["外部环境副本自检通过；heal 改为一条退出码非零的命令；删除标记文件"]
+        steps:
+          - "两次运行 execute prepare demo-web web-demo --scope WEB-P02 --session <执行者> --data <副本目录>"
+          - "运行 sop-board attention list --data <副本目录>"
+          - "重新创建标记文件，再运行同一 execute prepare"
+        expected:
+          - "前两次都以非零退出码拒绝，说明 tunnel 探测未通过且已执行自愈命令"
+          - "待人处理只有一条该说明的环境问题"
+          - "第三次成功，返回的任务编号与此前认领的执行任务相同"
+        forbidden_effects: ["探测未通过仍开始执行", "重复登记同一环境问题", "另建新的执行任务"]
+        evidence_hints: ["命令输出", "attention list 输出"]
+      - id: SOP-182-P02
+        polarity: positive
+        title: 环境栏显示探测结果，内网只读
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["外部环境副本以 --lan 启动看板；heal 仍为 SOP-182-N02 中退出码非零的命令（否则重新探测会自愈成功）"]
+        steps:
+          - "本机打开工作区首页查看环境栏；删除标记文件后点击“重新探测”"
+          - "从内网地址打开同一页面与 /api/v1/environment；向内网地址的 /api/v1/environment/restart 发送 POST"
+        expected:
+          - "本机环境栏列出各探测项是否通过及说明，按钮名为“重新探测”；重新探测后显示 tunnel 未通过"
+          - "内网只显示探测项名称与是否通过，不显示地址或说明；内网 POST 返回仅限本机"
+        forbidden_effects: ["内网显示探测地址或命令", "内网触发探测或自愈"]
+        evidence_hints: ["本机与内网截图", "接口响应"]
+      - id: SOP-182-N03
+        polarity: negative
+        negative_type: permission
+        title: 外部环境下看板不做修复
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state: ["外部环境副本看板已开启自动调度，有一条会话执行的失败"]
+        steps:
+          - "在本机修复页把这条会话失败交给看板修复"
+        expected:
+          - "看板保存交接，但不启动修复，提示外部环境由使用者维护、请用会话修复"
+        forbidden_effects: ["看板建立修复工作树或另起环境"]
+        evidence_hints: ["修复页截图", "接口响应"]
+
+  - id: SOP-183
+    title: 问题台账与修复波次
+    actor: 开发者
+    entry: "命令行 sop-board issue、fix prepare/submit/land、execute submit；批次页「问题台账」"
+    must:
+      - "问题有编号、标题、类型、根因、影响场景、关联修复与决定记录；人可设为待处理、暂缓、已关闭，修复中、待验证、已关闭随关联修复显示"
+      - "执行结果可带 issue 归并到已有问题；界面对照“按 SOP 判”的不符条目自动登记为产品问题；受阻按问题计入连续运行的停止规则"
+      - "场景不重叠的会话修复可以并存：已提交、待验证的修复不挡住新修复；两个修复不能同时改代码"
+      - "没有专门复验时，修复会话以外的执行者在包含修复改动的产品上通过全部问题场景，且改动已提交，fix land 即可关闭"
+    scenarios:
+      - id: SOP-183-P01
+        polarity: positive
+        title: 登记、查看与修改问题
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["演示 Web 工作区，WEB-P03 最近结果为失败"]
+        steps:
+          - "运行 sop-board issue add demo-web --title 团队名称被截断 --kind product --scenario web-demo#WEB-P03 --by <姓名> --note <原话>"
+          - "运行 sop-board issue update demo-web --issue <编号> --root-cause <根因> --by <姓名> --note <原话>"
+          - "本机与内网打开 web-demo 批次页"
+        expected:
+          - "新建与修改都成功，show 中有两条决定记录，作者为所填姓名，文字含原话"
+          - "批次页「问题台账」显示编号、标题、类型“产品”、状态“待处理”、WEB-P03 及其最近结果“失败”；「决定记录」列出这两条；内网可见、无修改表单"
+        forbidden_effects: ["不填姓名或不写原话也能修改", "内网出现修改入口"]
+        evidence_hints: ["命令输出", "本机与内网截图"]
+      - id: SOP-183-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 不合格的台账操作被拒
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，未设置默认业务确认人"]
+        steps:
+          - "issue add 不带 --by；issue add 的 --by 写 codex；--scenario 写不存在的场景；issue update 不带 --note；issue update --status fixing"
+        expected:
+          - "五次都被拒，分别说明须填姓名、不能填 agent、场景不在当前版本、须写原话、人只能设为 open、deferred、closed"
+        forbidden_effects: ["登记任何问题或修改"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-183-P02
+        polarity: positive
+        title: 执行结果归并到问题
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["已有问题“登录验证码收不到”（类型 environment，没有关联场景）"]
+        steps:
+          - "execute prepare 一个场景；结果写为 blocked 并带 \"issue\": <该编号>；execute submit"
+          - "再准备一轮，结果带一个不存在的 issue 编号后 submit；再改为字符串后 submit"
+          - "运行 issue show"
+        expected:
+          - "第一次成功，问题关联该场景，最近结果为受阻"
+          - "不存在的编号被拒并提示先用 issue add 新建；字符串被拒并说明应为正整数；两次都不登记轮次"
+        forbidden_effects: ["不存在的编号被接受", "自动新建问题"]
+        evidence_hints: ["submit 输出", "issue show 输出"]
+      - id: SOP-183-P03
+        polarity: positive
+        title: 界面对照按 SOP 判的不符条目登记为产品问题
+        actor: 测试同事
+        priority: P1
+        verify: cli
+        initial_state: ["web-demo 有一条状态为不符的界面对照条目"]
+        steps:
+          - "两次运行 sop-board atlas decide demo-web web-demo --item <场景>#<条目> --decision sop --by <姓名> --note <原话>"
+          - "运行 issue list"
+        expected:
+          - "只新增一个类型为产品的问题，标题写明场景与界面文案，关联该场景，决定记录来源为界面对照"
+        forbidden_effects: ["重复登记问题", "“改 SOP”的决定也登记问题"]
+        evidence_hints: ["issue list 输出"]
+      - id: SOP-183-P04
+        polarity: positive
+        title: 按问题认领修复，状态随修复变化
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["问题关联 WEB-P03，WEB-P03 最近结果为失败且没有在修复中"]
+        steps:
+          - "运行 fix prepare demo-web --issues <编号> --session <修复会话>；issue show"
+          - "取消该修复任务后 issue show；再对一个只关联已通过场景的问题运行 fix prepare --issues"
+        expected:
+          - "修复认领 WEB-P03，问题关联该修复并显示“修复中”"
+          - "取消后问题回到“待处理”；没有可认领失败的问题返回 nothing-to-fix 并写明问题编号"
+        forbidden_effects: ["认领问题以外的场景"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-183-P05
+        polarity: positive
+        title: 已提交的修复不挡住其他场景的新修复
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["WEB-N01、WEB-P03 都是可认领的失败"]
+        steps:
+          - "会话 A 运行 fix prepare --scenario web-demo#WEB-N01，修改产品文件后写 final.json 并 fix submit"
+          - "会话 B 运行 fix prepare --scenario web-demo#WEB-P03"
+        expected:
+          - "A 进入待验证；B 准备成功，得到新的修复任务"
+        forbidden_effects: ["B 因 A 未结束被拒"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-183-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 重叠的场景与同时改代码被拒
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["会话 B 的修复处于会话处理中"]
+        steps:
+          - "会话 C 运行 fix prepare --scenario 认领 B 已认领的场景"
+          - "会话 C 运行 fix prepare --scenario 认领另一个可认领的失败"
+        expected:
+          - "第一次返回 fix-already-owned，写明 B 的任务编号"
+          - "第二次返回 task-blocked，说明 B 正在修改产品代码，等它提交修复输出后再准备"
+        forbidden_effects: ["两个修复同时处于会话处理中"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-183-P06
+        polarity: positive
+        title: 由独立执行轮次关闭修复
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["会话 A 的修复处于待验证，没有专门复验"]
+        steps:
+          - "fix land 该修复"
+          - "由会话 A 自己执行一轮通过 WEB-N01 并 submit，再 fix land"
+          - "由另一会话执行一轮通过 WEB-N01 并 submit，再 fix land"
+          - "开发者提交改动后 fix land；在场景详情与修复页查看"
+        expected:
+          - "前两次 land 返回 fix-validation-required；第三次返回 fix-commit-required 并列出未提交文件"
+          - "提交后 land 成功，修复显示已处理，关闭说明写“与独立执行（web-demo 第 N 轮）一致”；关联问题显示已关闭"
+        forbidden_effects: ["修复会话自己的轮次被当作独立依据", "未提交即关闭"]
+        evidence_hints: ["命令输出", "修复页截图"]
+      - id: SOP-183-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 通过轮次之后内容又变化不能关闭
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["修复已有独立执行轮次通过，改动已提交"]
+        steps:
+          - "在同一仓库另改一个文件（不提交），运行 fix land；撤销该改动后再 fix land"
+        expected:
+          - "第一次返回 fix-content-changed，列出另改的文件；撤销后关闭成功"
+        forbidden_effects: ["内容与通过轮次不同仍关闭"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-183-P07
+        polarity: positive
+        title: 连续运行按问题归并受阻
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["API 批次的两条场景都关联同一个问题；看板启动时未设置 ENTRY_DEMO_TOKEN；run.stop_when_blocking 为 2"]
+        steps:
+          - "运行 sop-board run demo-web <API 批次> start --by <姓名>，等看板推进两次"
+          - "运行 sop-board run demo-web <API 批次> status 与 attention list"
+        expected:
+          - "第一轮两条场景都因缺少凭据受阻；随后运行暂停，原因写“同一问题挡住 2 个场景：问题 <编号>：<标题>”"
+          - "待人处理有一条连续运行暂停的事项"
+        forbidden_effects: ["继续排下一轮"]
+        evidence_hints: ["run status 输出", "attention list 输出"]
+      - id: SOP-183-P08
+        polarity: positive
+        title: 把问题交给看板修复
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["看板以 --paused 启动；一个待处理的问题关联的场景有一条会话执行的失败，且没有进过任何修复"]
+        steps:
+          - "本机打开批次页，在「问题台账」中点该问题的“交给看板修复”"
+          - "从内网地址打开同一页面；向内网地址 POST 同一接口"
+          - "对一个关联场景都已通过的问题调用同一接口"
+        expected:
+          - "本机提示已交给看板修复，并说明自动任务已暂停、暂未开始；修复页中该会话失败显示为已交给看板"
+          - "内网页面没有该按钮，内网 POST 返回仅限本机"
+          - "没有可交接失败的问题返回 nothing-to-fix 并写明问题编号"
+        forbidden_effects: ["自动任务暂停时启动修复", "交接问题以外场景的失败"]
+        evidence_hints: ["本机与内网截图", "接口响应", "修复页截图"]
+      - id: SOP-183-P09
+        polarity: positive
+        title: 场景加入问题时关联正在进行的修复
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["WEB-P03 是可认领的失败；它此前进过一个已放弃的修复"]
+        steps:
+          - "会话运行 fix prepare --scenario web-demo#WEB-P03；再 issue add 一个关联 WEB-P03 的新问题；issue show"
+          - "取消该修复后再 issue show"
+        expected:
+          - "新问题显示“修复中”，修复列表只有这次的修复任务"
+          - "取消后新问题回到“待处理”"
+        forbidden_effects: ["关联此前已放弃的旧修复", "新问题直接显示已关闭"]
+        evidence_hints: ["命令输出"]
+
+  - id: SOP-184
+    title: 编写与协同
+    actor: 开发者
+    entry: "命令行 sop-board confirmer、sop upload、cases export、decision；会话 prepare/submit 输出；批次页；草稿与合并提示词"
+    must:
+      - "使用者可以设置一次默认业务确认人；省略姓名时同一命令中给出的姓名优先，再用默认值；命令不替人推断姓名"
+      - "用例可按原上传格式与顺序导出答复改写后的内容，并在安全时写回原文件"
+      - "人的决定登记为决定记录并在批次页汇总；多个会话同时在一个工作区时提示彼此的任务"
+      - "草稿与合并检查同一对象、角色、页面、条件下互相矛盾的预期，作为问题交人决定"
+    scenarios:
+      - id: SOP-184-P01
+        polarity: positive
+        title: 默认业务确认人
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，未设置默认业务确认人"]
+        steps:
+          - "运行 confirmer --set <姓名>；运行 status"
+          - "不带 --by 运行 decision add --text <原话>；运行 decision list"
+          - "运行 confirmer --clear，再不带 --by 运行 decision add"
+        expected:
+          - "status 显示默认业务确认人；决定记录作者为该姓名"
+          - "清除后不带姓名被拒，提示填写姓名或设置默认业务确认人"
+        forbidden_effects: ["用会话标识或 agent 名作为作者"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-184-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 默认确认人不能是会话标识或 agent
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "运行 confirmer --set codex；运行 confirmer --set ''"
+        expected:
+          - "两次都被拒，没有设置默认值"
+        forbidden_effects: ["保存不合格的姓名"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-184-P02
+        polarity: positive
+        title: 同一命令给出的一个姓名补齐其余署名
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["一个新批次，未设置默认业务确认人"]
+        steps:
+          - "运行 sop upload demo-web <新批次> <SOP 文件> --confirmed-by <姓名> --session <会话>，不写 --uploaded-by；打开 SOP 页"
+        expected:
+          - "登记成功，SOP 页的上传人与确认人都是该姓名"
+        forbidden_effects: ["上传人为空或为会话标识"]
+        evidence_hints: ["命令输出", "SOP 页截图"]
+      - id: SOP-184-P03
+        polarity: positive
+        title: 导出与写回答复改写后的用例
+        actor: 测试同事
+        priority: P0
+        verify: cli
+        initial_state: ["用例批次：原文件在仓库外，经会话上传；合并澄清改写过其中一条用例"]
+        steps:
+          - "运行 cases export demo-web <用例批次> --out <新文件>"
+          - "运行 cases export demo-web <用例批次> --write-back；再运行一次"
+        expected:
+          - "导出文件的 metadata 与用例顺序同原上传，改写的用例为新内容，changed 只列该用例；导出文件能再次上传通过校验"
+          - "写回后原文件为新内容，输出提醒注释不保留；第二次写回也成功"
+        forbidden_effects: ["覆盖已存在的 --out 文件", "导出其他上传的用例"]
+        evidence_hints: ["导出文件", "命令输出", "原文件前后对比"]
+      - id: SOP-184-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 不安全的写回被拒
+        actor: 测试同事
+        priority: P0
+        verify: cli
+        initial_state: ["用例批次"]
+        steps:
+          - "在原文件末尾加一行注释后运行 --write-back"
+          - "对一份从仓库内、计入产品快照的路径上传的用例运行 --write-back"
+          - "对一份经看板网页上传的用例运行 --write-back"
+        expected:
+          - "三次都被拒：分别说明原文件已改动、该路径计入产品快照并给出 snapshot_exclude 的写法、没有记录原文件路径"
+        forbidden_effects: ["写入任何文件", "改变产品快照"]
+        evidence_hints: ["命令输出", "git status"]
+      - id: SOP-184-P04
+        polarity: positive
+        title: 决定记录与多会话提示
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["会话 X 认领了一个处于会话处理中的任务"]
+        steps:
+          - "会话 Y 运行 execute prepare 与 execute submit"
+          - "运行 decision add --batch web-demo --text <原话> --by <姓名>；打开本机与内网批次页"
+        expected:
+          - "Y 的两次输出都有 other_sessions 与 concurrency_notice，列出 X 的任务编号、类型、状态与会话"
+          - "批次页「决定记录」显示该决定及来源“会话登记”；内网同样可见"
+        forbidden_effects: ["Y 被阻止或替 X 提交"]
+        evidence_hints: ["命令输出", "批次页截图"]
+      - id: SOP-184-P05
+        polarity: positive
+        title: 草稿检查互相矛盾的预期
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["agents.generate 为 claude；一份 SOP 同时写“空团队不能被选为默认团队”与“新建团队后立即设为默认团队”"]
+        steps:
+          - "在本机看板首页上传该 SOP（会话命令 sop upload 会把草稿交给该会话），由看板生成草稿后查看草稿的待确认问题"
+        expected:
+          - "待确认问题中有一条指出这两条预期互相矛盾，列出相关规则或用例，请人决定以哪条为准"
+        forbidden_effects: ["自行择一写成用例预期"]
+        evidence_hints: ["草稿页截图", "final.json 摘录"]

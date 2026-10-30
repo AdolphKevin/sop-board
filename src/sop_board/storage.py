@@ -207,6 +207,74 @@ CREATE TABLE IF NOT EXISTS result_evidence (
     name TEXT NOT NULL, sha256 TEXT NOT NULL REFERENCES evidence(sha256),
     PRIMARY KEY(result_id,ordinal)
 );
+CREATE TABLE IF NOT EXISTS fixture_runs (
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key),
+    batch INTEGER NOT NULL REFERENCES batches(id), task INTEGER REFERENCES tasks(id),
+    scenario TEXT, directory TEXT NOT NULL, record_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS fixture_runs_task ON fixture_runs(task,batch,scenario);
+CREATE TABLE IF NOT EXISTS fixture_run_results (
+    run INTEGER NOT NULL REFERENCES fixture_runs(id), result_id INTEGER NOT NULL REFERENCES results(id),
+    PRIMARY KEY(run,result_id)
+);
+CREATE TABLE IF NOT EXISTS atlas_versions (
+    workspace TEXT NOT NULL REFERENCES workspaces(key), entry TEXT NOT NULL, version INTEGER NOT NULL,
+    task INTEGER REFERENCES tasks(id), created_at TEXT NOT NULL, digests_json TEXT NOT NULL, summary_json TEXT NOT NULL,
+    PRIMARY KEY(workspace, entry, version)
+);
+CREATE TABLE IF NOT EXISTS atlas_feedback (
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key), entry TEXT NOT NULL,
+    task INTEGER REFERENCES tasks(id), scenario TEXT, page TEXT NOT NULL, control TEXT, kind TEXT NOT NULL,
+    detail TEXT NOT NULL, evidence TEXT, created_at TEXT NOT NULL, handled_version INTEGER, adopted INTEGER, note TEXT
+);
+CREATE TABLE IF NOT EXISTS atlas_bindings (
+    batch INTEGER NOT NULL REFERENCES batches(id), scenario TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    entry TEXT NOT NULL, atlas_version INTEGER NOT NULL, task INTEGER REFERENCES tasks(id), body_json TEXT NOT NULL,
+    created_at TEXT NOT NULL, PRIMARY KEY(batch, scenario, fingerprint)
+);
+CREATE TABLE IF NOT EXISTS atlas_checks (
+    id INTEGER PRIMARY KEY, batch INTEGER NOT NULL REFERENCES batches(id), scenario TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    item TEXT NOT NULL, text TEXT NOT NULL, location TEXT NOT NULL, status TEXT NOT NULL, ref TEXT, ui_json TEXT NOT NULL,
+    note TEXT NOT NULL, decision TEXT, decided_by TEXT, decided_at TEXT, decision_note TEXT, task INTEGER REFERENCES tasks(id),
+    created_at TEXT NOT NULL, UNIQUE(batch, scenario, fingerprint, item)
+);
+CREATE TABLE IF NOT EXISTS round_atlas (
+    round_id INTEGER PRIMARY KEY REFERENCES rounds(id), versions_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS batch_runs (
+    batch INTEGER PRIMARY KEY REFERENCES batches(id), mode TEXT NOT NULL, round_size INTEGER NOT NULL, status TEXT NOT NULL,
+    started_at TEXT NOT NULL, started_by TEXT NOT NULL, updated_at TEXT NOT NULL, reason TEXT NOT NULL, rounds_done INTEGER NOT NULL,
+    last_task INTEGER REFERENCES tasks(id)
+);
+CREATE TABLE IF NOT EXISTS attention_items (
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key), batch TEXT, kind TEXT NOT NULL,
+    scenarios_json TEXT NOT NULL, text TEXT NOT NULL, task INTEGER REFERENCES tasks(id), created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT, resolution_note TEXT
+);
+CREATE TABLE IF NOT EXISTS identity_events (
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key), entry TEXT NOT NULL, identity TEXT NOT NULL,
+    kind TEXT NOT NULL, at TEXT NOT NULL, task INTEGER REFERENCES tasks(id)
+);
+CREATE TABLE IF NOT EXISTS issues (
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key), number INTEGER NOT NULL, title TEXT NOT NULL,
+    kind TEXT NOT NULL, root_cause TEXT NOT NULL, status TEXT NOT NULL, jira TEXT NOT NULL, created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace, number)
+);
+CREATE TABLE IF NOT EXISTS issue_scenarios (
+    issue INTEGER NOT NULL REFERENCES issues(id), batch TEXT NOT NULL, scenario TEXT NOT NULL,
+    result_id INTEGER REFERENCES results(id), linked_at TEXT NOT NULL, PRIMARY KEY(issue, batch, scenario)
+);
+CREATE TABLE IF NOT EXISTS issue_fixes (
+    issue INTEGER NOT NULL REFERENCES issues(id), task INTEGER NOT NULL REFERENCES tasks(id), PRIMARY KEY(issue, task)
+);
+CREATE TABLE IF NOT EXISTS case_upload_sources (
+    batch INTEGER NOT NULL REFERENCES batches(id), upload INTEGER NOT NULL, path TEXT NOT NULL,
+    written_sha256 TEXT, PRIMARY KEY(batch, upload)
+);
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(key), batch TEXT, issue INTEGER REFERENCES issues(id),
+    text TEXT NOT NULL, author TEXT NOT NULL, at TEXT NOT NULL, source TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS node_numbers (
     batch INTEGER NOT NULL REFERENCES batches(id), section TEXT NOT NULL, node TEXT NOT NULL,
     PRIMARY KEY(batch, section), UNIQUE(batch, node)

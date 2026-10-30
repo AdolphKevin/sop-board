@@ -1,5 +1,6 @@
 """一个数据目录对应一个工作区；配置、仓库身份与多仓产品快照。"""
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,106 @@ class WorkspaceNotFound(ValueError):
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def business_config(config):
+    """运行辅助声明不影响业务输入；格式校验仍检查完整配置。"""
+    result = {key: value for key, value in config.items() if key not in ('fixtures', 'agents', 'run')}
+    if isinstance(result.get('adapter'), dict):
+        # 外部环境的探测与自愈命令只决定看板何时提醒人，不改变产品或环境内容（D97）。
+        result['adapter'] = {key: value for key, value in result['adapter'].items() if key not in ('health', 'heal')}
+    if isinstance(result.get('entries'), dict):
+        result['entries'] = {name: {key: value for key, value in entry.items() if key not in ('web_evidence', 'atlas', 'identities')}
+                             if isinstance(entry, dict) else entry for name, entry in result['entries'].items()}
+    return result
+
+
+def command_argv(value):
+    return isinstance(value, list) and bool(value) and all(isinstance(x, str) and x.strip() and '\0' not in x for x in value)
+
+
+def validate_health(health, heal, problem):
+    """外部环境（D97）：health 为探测项，每项有 name 和 url、port、command 之一；heal 为已授权的自愈命令数组。"""
+    if not isinstance(health, list) or not health:
+        problem('adapter.health', 'mode: external 须声明非空探测项数组')
+        health = []
+    names = set()
+    for index, item in enumerate(health):
+        field = f'adapter.health[{index}]'
+        if not isinstance(item, dict):
+            problem(field, '探测项须为对象')
+            continue
+        for extra in item.keys() - {'name', 'url', 'port', 'host', 'command', 'timeout'}:
+            problem(f'{field}.{extra}', '格式外字段')
+        if not isinstance(item.get('name'), str) or not item['name'].strip() or item['name'] in names:
+            problem(field + '.name', '须为不重复的非空名称')
+        names.add(item.get('name'))
+        kinds = [key for key in ('url', 'port', 'command') if key in item]
+        if len(kinds) != 1:
+            problem(field, 'url、port、command 须且只能有一个')
+        if 'url' in item and (not isinstance(item['url'], str) or not re.match(r'https?://[^\s]+\Z', item['url'])):
+            problem(field + '.url', '须为 http:// 或 https:// 地址')
+        if 'port' in item and (type(item['port']) is not int or not 1 <= item['port'] <= 65535):
+            problem(field + '.port', '端口范围 1–65535')
+        if 'host' in item and ('port' not in item or not isinstance(item['host'], str) or not item['host'].strip()):
+            problem(field + '.host', '只配合 port 使用，须为非空主机名')
+        if 'command' in item and not command_argv(item['command']):
+            problem(field + '.command', '须为非空命令数组，不经过 shell，只做只读检查')
+        if 'timeout' in item and (type(item['timeout']) is not int or not 1 <= item['timeout'] <= 120):
+            problem(field + '.timeout', '须为 1～120 的整数秒数')
+    if not isinstance(heal, list) or not all(command_argv(argv) for argv in heal):
+        problem('adapter.heal', '须为命令数组的数组，每条命令不经过 shell，且是使用者已授权的自愈操作')
+
+
+AGENT_KINDS = ('default', 'merge', 'generate', 'author-sop', 'atlas', 'execute', 'fix', 'distill')
+EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+
+
+def validate_agents(value, problem):
+    """按任务类型选择执行代理（D92）：codex 沿用本机配置；claude 可设模型、推理强度与权限参数。"""
+    if not isinstance(value, dict):
+        problem('agents', '须为任务类型到代理声明的对象')
+        return {}
+    result = {}
+    for kind, item in value.items():
+        field = f'agents.{kind}'
+        if kind not in AGENT_KINDS:
+            problem(field, '任务类型应为 ' + '、'.join(AGENT_KINDS))
+            continue
+        if not isinstance(item, dict) or item.get('runner') not in ('codex', 'claude'):
+            problem(field + '.runner', '应为 codex 或 claude')
+            continue
+        for extra in item.keys() - {'runner', 'model', 'effort', 'args'}:
+            problem(field + '.' + str(extra), '格式外字段')
+        if item['runner'] == 'codex' and item.keys() & {'model', 'effort', 'args'}:
+            problem(field, 'codex 沿用本机 Codex 配置，不接受 model、effort、args')
+            continue
+        if 'model' in item and (not isinstance(item['model'], str) or not item['model'].strip()):
+            problem(field + '.model', '须为非空文字')
+        if 'effort' in item and item['effort'] not in EFFORTS:
+            problem(field + '.effort', '应为 ' + '、'.join(EFFORTS))
+        if 'args' in item and (not isinstance(item['args'], list) or not all(isinstance(a, str) and a for a in item['args'])):
+            problem(field + '.args', '须为非空文字数组')
+        result[kind] = dict(item)
+    return result
+
+
+def configuration_digest(data, config, tracked):
+    # 同一业务配置第一次读取时沿用旧的原文摘要，使升级前、配置未动的自检与任务继续有效。
+    # 后续只改辅助字段或 YAML 排版仍返回同一摘要。只保存摘要，不保存配置或凭据。
+    semantic = digest(dict(tracked, config=business_config(config)))
+    directory = data / 'config-digests'
+    directory.mkdir(exist_ok=True)
+    with (directory / semantic).open('a+', encoding='ascii') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        stream.seek(0)
+        previous = stream.read().strip()
+        if previous:
+            return previous
+        value = digest(tracked)
+        stream.write(value + '\n')
+        stream.flush()
+        return value
 
 
 def origin_identity(raw):
@@ -173,6 +274,8 @@ class Workspace:
         repos, identities, entries, adapter, problems = {}, {}, {}, {}, []
         snapshot_exclude = {}
         scenarios, scenario_repo, skill = None, None, None
+        fixtures, fixture_recipes = None, dict(recipes=[], real_only=[])
+        agents, run = {}, {}
         def problem(field, text):
             problems.append(dict(field=field, problem=text))
         try:
@@ -183,7 +286,7 @@ class Workspace:
             config = yaml.load(raw, Loader=ConfigLoader)
             if not isinstance(config, dict):
                 raise ValueError('配置应为对象')
-            for field in config.keys() - {'repos', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude'}:
+            for field in config.keys() - {'repos', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents', 'run'}:
                 problem(field, '格式外字段')
             values = config.get('repos')
             if not isinstance(values, dict) or not values:
@@ -252,28 +355,53 @@ class Workspace:
                     snapshot_exclude[alias] = selected
             skill = config.get('skill')
             entries = config.get('entries', {})
-            problems.extend(validate_entries(entries))
+            problems.extend(validate_entries(entries, repos))
+            if 'agents' in config:
+                agents = validate_agents(config['agents'], problem)
+            if 'run' in config:
+                run = config['run']
+                if not isinstance(run, dict) or run.keys() - {'round_size', 'stop_when_blocking', 'min_free_memory'}:
+                    problem('run', '只接受 round_size、stop_when_blocking、min_free_memory')
+                    run = {}
+                elif ('round_size' in run and (type(run['round_size']) is not int or not 1 <= run['round_size'] <= 25)
+                      or 'stop_when_blocking' in run and (type(run['stop_when_blocking']) is not int or run['stop_when_blocking'] < 1)
+                      or 'min_free_memory' in run and (not isinstance(run['min_free_memory'], (int, float)) or not 0 <= run['min_free_memory'] < 1)):
+                    problem('run', 'round_size 为 1～25，stop_when_blocking 为正整数，min_free_memory 为 0～1 的小数')
+                    run = {}
+            if 'fixtures' in config:
+                from .fixtures import validate_config, load_recipes
+                fixtures = validate_config(config['fixtures'], problem)
+                fixture_recipes = load_recipes(self.data, problem)
             adapter = config.get('adapter', {})
             if not isinstance(adapter, dict):
                 problem('adapter', '适配声明应为对象')
                 adapter = {}
-            for extra in adapter.keys() - {'worktree', 'cleanup', 'env', 'ports', 'ready_timeout'}:
-                problem('adapter.' + extra, '格式外字段')
-            for field in ('worktree', 'cleanup', 'env'):
+            mode = adapter.get('mode', 'managed')
+            if mode not in ('managed', 'external'):
+                problem('adapter.mode', '应为 managed（看板启停环境，缺省）或 external（使用者维护环境，看板只探测）')
+            external = mode == 'external'
+            allowed = {'mode', 'health', 'heal', 'ready_timeout'} if external else {'mode', 'worktree', 'cleanup', 'env', 'ports', 'ready_timeout'}
+            for extra in adapter.keys() - allowed:
+                problem('adapter.' + extra, '外部环境由使用者启停，不接受此字段' if external and extra in ('worktree', 'cleanup', 'env', 'ports')
+                        else 'health、heal 只用于 mode: external' if extra in ('health', 'heal') else '格式外字段')
+            for field in () if external else ('worktree', 'cleanup', 'env'):
                 if field in ('worktree', 'cleanup') and field not in adapter:
                     continue
                 argv = adapter.get(field)
                 if not isinstance(argv, list) or not argv or not all(isinstance(x, str) and x.strip() and '\0' not in x for x in argv):
                     problem('adapter.' + field, '须为非空命令数组，不经过 shell')
+            if external:
+                validate_health(adapter.get('health'), adapter.get('heal', []), problem)
+                adapter = dict(adapter, ports=[])
             ports = adapter.get('ports')
             if not isinstance(ports, list) or not all(type(x) is int and 1 <= x <= 65535 for x in ports) or len(set(ports)) != len(ports):
                 problem('adapter.ports', '须为不重复的端口数组，端口范围 1–65535')
             timeout = adapter.get('ready_timeout', 180)
             if type(timeout) is not int or timeout <= 0:
                 problem('adapter.ready_timeout', '须为正整数秒数')
-            adapter = dict(adapter, ready_timeout=timeout)
+            adapter = dict(adapter, ready_timeout=timeout, mode=mode)
             tracked = {'config': raw}
-            for field in ('worktree', 'cleanup', 'env'):
+            for field in () if external else ('worktree', 'cleanup', 'env'):
                 argv = adapter.get(field, [])
                 if isinstance(argv, list):
                     for arg in argv:
@@ -281,7 +409,7 @@ class Workspace:
                             path = self.data / arg
                             if path.is_file() and path.resolve().is_relative_to(self.data):
                                 tracked[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
-            fingerprint = digest(tracked)
+            fingerprint = configuration_digest(self.data, config, tracked)
         except FileNotFoundError:
             problem('config.yaml', '尚未搭建：配置文件不存在')
             fingerprint = ''
@@ -296,10 +424,22 @@ class Workspace:
         changed = fingerprint != self.config_digest
         self.repos, self.identities, self.entries, self.adapter = repos, identities, entries if isinstance(entries, dict) else {}, adapter
         self.snapshot_exclude = snapshot_exclude
+        self.fixtures, self.fixture_recipes = fixtures, fixture_recipes
+        self.agents, self.run = agents, run
         from .credentials import names
         self.credential_names.update(names(self.entries))
+        self.credential_names.update(names({'fixtures': fixtures}))
         self.scenarios, self.scenario_repo, self.problems, self.config_digest = scenarios, scenario_repo, problems, fingerprint
         return changed
+
+    def credential_entries(self):
+        entries = dict(self.entries)
+        if self.fixtures is not None:
+            label = 'fixtures'
+            while label in entries:
+                label += '-data'
+            entries[label] = self.fixtures
+        return entries
 
     def skill_digest(self):
         if self.skill is None:

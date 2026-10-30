@@ -9,9 +9,10 @@
 约定：
 - 场景编号 = 测试标题的第一个空白分隔词，例如 "SOP-02-P01 人工接管…" → SOP-02-P01。无编号的测试跳过并提示。
 - passed → pass；skipped → skip；failed / timedOut / interrupted → fail，
-  但错误信息以“受阻：”开头时 → blocked。每个测试取最后一次结果（不建议 retries）。
+  但错误信息以“受阻：”开头，或模板注记了 blocked（调试连接中断、目标页关闭）时 → blocked。每个测试取最后一次结果（不建议 retries）。
 - 同一场景有多条测试时合并，状态取最差：fail > blocked > skip > pass；附件按测试隔离，避免覆盖。
-- pending/scope 默认要求结果完整；部分试跑须 --allow-partial。coverage.json 单独记录范围，不更改结果契约。
+- pending/scope 默认要求结果完整；部分试跑须 --allow-partial，范围内尚无结果的场景写成 status 为 not-executed 的标记行
+  （带 finding，无证据），sop-board 登记时不登记这些场景、保留在待执行范围。coverage.json 单独记录范围。
 - scope 对比报告注解与原始场景文件摘要，防止批次、编号或指纹串用。
 - blocked 与 skip 必须用 --finding 指定问题编号（sop-board 契约要求）；pass 与 fail 至少要有一份证据。
 - 证据复制到 <out>/evidence/<场景编号>/，结果文件里用相对路径引用；单个文件超过 64 MiB 会被 sop-board 拒绝，
@@ -30,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BLOCKED_PREFIX = '受阻：'
+NOT_EXECUTED = 'not-executed'
 EVIDENCE_LIMIT_BYTES = 64 * 1024 * 1024
 RANK = {'fail': 3, 'blocked': 2, 'skip': 1, 'pass': 0}
 ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
@@ -95,14 +97,22 @@ def last_result(test):
     return results[-1] if results else None
 
 
-def classify(result):
+def blocked_note(result, test):
+    """模板在调试连接中断、目标页关闭时写入的 blocked 注记（D87）；没有时返回空字符串。"""
+    for item in list((test or {}).get('annotations') or []) + list(result.get('annotations') or []):
+        if item.get('type') == 'blocked' and item.get('description'):
+            return item['description']
+    return ''
+
+
+def classify(result, test=None):
     status = result.get('status')
     if status == 'passed':
         return 'pass'
     if status == 'skipped':
         return 'skip'
     if status in ('failed', 'timedOut', 'interrupted'):
-        return 'blocked' if error_message(result).startswith(BLOCKED_PREFIX) else 'fail'
+        return 'blocked' if error_message(result).startswith(BLOCKED_PREFIX) or blocked_note(result, test) else 'fail'
     raise ConvertError('未知的测试状态：%r' % status)
 
 
@@ -128,7 +138,8 @@ def describe(result, status, test):
         reasons = [a.get('description') for a in (test.get('annotations') or []) if a.get('type') == 'skip' and a.get('description')]
         text = '跳过：' + (reasons[0] if reasons else '未说明原因')
     elif status == 'blocked':
-        text = first_line(message)
+        note = blocked_note(result, test)
+        text = (note + ('；' + first_line(message) if message else '')) if note else first_line(message)
     else:
         where = ('第 %d 步「%s」' % (len(done) + 1, failed_step)) if failed_step else ('第 %d 步后' % len(done) if done else '')
         detail = first_line(message) or ('超时' if result.get('status') == 'timedOut' else '失败')
@@ -259,7 +270,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
     problems = []
     for sid in sorted(grouped):
         entries = grouped[sid]
-        statuses = [(classify(result), title, test, result) for title, test, result in entries]
+        statuses = [(classify(result, test), title, test, result) for title, test, result in entries]
         worst = max(statuses, key=lambda item: RANK[item[0]])
         status = worst[0]
         evidence = []
@@ -293,6 +304,12 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         rows.append(row)
     if missing:
         warnings.append('部分试跑，执行范围中尚无结果的场景：%s' % ', '.join(missing))
+        # 明确写出未执行标记行（D87）：sop-board 登记时不登记这些场景，它们留在待执行范围；不能当作结果。
+        for sid in missing:
+            row = {'scenario': sid, 'status': NOT_EXECUTED, 'finding': findings.get(sid) or '本轮执行中途停止，未执行', 'evidence': []}
+            if session:
+                row['session'] = session
+            rows.append(row)
     if problems:
         raise ConvertError('\n'.join(problems))
     return rows, warnings
@@ -385,7 +402,7 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     target = out / 'results.jsonl'
     target.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in rows), encoding='utf-8')
-    executed = sorted(row['scenario'] for row in rows)
+    executed = sorted(row['scenario'] for row in rows if row['status'] != NOT_EXECUTED)
     expected = sorted(pending_ids if pending_ids is not None else (scope['scenarios'] if scope else executed))
     mode = 'unscoped' if pending_ids is None and scope is None else ('partial' if args.allow_partial else 'complete')
     coverage = dict(mode=mode, scope_verified=scope is not None,
@@ -400,7 +417,7 @@ def main(argv=None):
     counts = {}
     for row in rows:
         counts[row['status']] = counts.get(row['status'], 0) + 1
-    summary = '，'.join('%s %d' % (key, counts[key]) for key in ('pass', 'fail', 'blocked', 'skip') if key in counts)
+    summary = '，'.join('%s %d' % (key, counts[key]) for key in ('pass', 'fail', 'blocked', 'skip', NOT_EXECUTED) if key in counts)
     print('已写入 %s：%d 个场景（%s）。' % (target, len(rows), summary))
     return 0
 

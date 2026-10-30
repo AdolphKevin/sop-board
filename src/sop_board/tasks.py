@@ -70,10 +70,15 @@ class Tasks:
         self.fixes = Fixes(self)
         from .distill_tasks import DistillTasks
         self.distill = DistillTasks(self)
-        from .task_types import MergeType, GenerateType, DistillType, ExecuteType, FixType, FixValidationType, AuthorSopType
+        from .atlas import Atlas
+        self.atlas = Atlas(self)
+        from .plans import Runs
+        self.runs = Runs(self)
+        from .task_types import MergeType, GenerateType, DistillType, ExecuteType, FixType, FixValidationType, AuthorSopType, AtlasType
         self.types = dict(merge=MergeType(self), generate=GenerateType(self),
                           distill=DistillType(self), execute=ExecuteType(self), fix=FixType(self))
         self.types['author-sop'] = AuthorSopType(self)
+        self.types['atlas'] = AtlasType(self)
         self.validation_type = FixValidationType(self)
         from .merge_conversation import MergeConversation
         self.conversation = MergeConversation(self)
@@ -334,7 +339,7 @@ class Tasks:
         public = {'task.json', 'retest.json', 'web-pending.json', 'playwright-scopes.json', 'events.jsonl', 'stderr.txt', 'final.json', 'results.jsonl', 'prompt.md', 'schema.json', 'input.json',
                   'cases.yaml', 'cases.json', 'case_choices.json', 'case_confirmations.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
                   'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'impact.json', 'pending.json', 'previous-results.json',
-                  'regression-links.json', 'credential-blocked.json', 'regression.json', 'pass-evidence.json',
+                  'regression-links.json', 'credential-blocked.json', 'regression.json', 'pass-evidence.json', 'fixtures.json', 'fixtures-state.json',
                   'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json', 'clarifications.json', 'resume-fallback.json'}
         public |= {'sop.md', 'repos.json', 'draft.json', 'annotations.json', 'sop-before.md', 'sop.diff',
                    'original-sop.md', 'history.json', 'all-annotations.json', 'revision.json', 'cases-generated.yaml',

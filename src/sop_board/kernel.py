@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -114,6 +115,8 @@ POLICIES = {
     'merge': Policy(2, frozenset((S.QUEUED,)), frozenset((S.RUNNING,)), OUTPUT_ACTIVE),
     'generate': Policy(2, frozenset((S.QUEUED,)), frozenset((S.RUNNING,)), OUTPUT_ACTIVE),
     'author-sop': Policy(2, frozenset((S.QUEUED,)), frozenset((S.RUNNING,)), OUTPUT_ACTIVE),
+    # 梳理交互只读前端源码，不占用产品环境，不与执行、修复互斥（D84）。
+    'atlas': Policy(2, frozenset((S.QUEUED,)), frozenset((S.RUNNING,)), OUTPUT_ACTIVE),
     'distill': Policy(3, frozenset((S.QUEUED, S.WAIT_COMMIT, S.WAIT_VALIDATION)),
                       frozenset((S.DISTILLING,)), frozenset((S.DISTILLING,))),
 }
@@ -137,6 +140,7 @@ DEPENDENCIES = {
 }
 KIND_NAMES = dict(fix='修复', execute='执行', merge='合并', generate='草稿', distill='沉淀')
 KIND_NAMES['author-sop'] = '编写 SOP'
+KIND_NAMES['atlas'] = '梳理交互'
 SCHEDULING_STATES = frozenset((S.SESSION,)).union(*(p.queued | p.running for p in POLICIES.values()))
 TASK_COLUMNS = 'id,kind,workspace,batch,status,started_at'
 _queue_view = ContextVar('task_queue_view', default=None)
@@ -459,8 +463,16 @@ def session_id(directory, fallback=None):
     return next((value for event in events(Path(directory) / 'events.jsonl') if (value := event_session(event))), fallback)
 
 
-def resume_command(session):
-    return 'codex resume ' + session if isinstance(session, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', session) else ''
+def resume_command(session, directory=None):
+    """续接命令：任务由 Claude 执行代理运行时（事件里 thread.started 带 runner），给出在原工作目录 claude --resume 的写法。"""
+    if not isinstance(session, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', session):
+        return ''
+    started = next((event for event in events(Path(directory) / 'events.jsonl')
+                    if event.get('type') == 'thread.started' and event.get('runner')), None) if directory else None
+    if started and started.get('runner') == 'claude':
+        cwd = started.get('cwd')
+        return (f"cd {shlex.quote(cwd)} && " if isinstance(cwd, str) and cwd else '') + 'claude --resume ' + session
+    return 'codex resume ' + session
 
 
 def wait_codex(process, timeout, *, on_activity=None, timeout_message=None):
@@ -618,8 +630,19 @@ class Kernel:
             if values['status'] != S.SESSION:
                 self.register(task, values, connection=db)
 
+    def agent(self, kind):
+        """按任务类型取执行代理声明；缺省为 codex（D92）。"""
+        agents = getattr(self.tasks.service.workspace, 'agents', None) or {}
+        return agents.get(kind) or agents.get('default') or {'runner': 'codex'}
+
+    def agent_available(self, kind):
+        return claude_available() if self.agent(kind)['runner'] == 'claude' else codex_available()
+
     def launch(self, task, directory, prompt, options):
         self.activity_directories[task['id']] = Path(directory)
+        agent = self.agent(task['kind'])
+        if agent['runner'] == 'claude':
+            return self.watch_process(task, start_claude(directory, prompt, agent, options))
         if options.session:
             process = resume_codex(directory, options.session, prompt, sandbox=options.sandbox,
                 environment=options.environment, work_directory=options.work_directory,
@@ -745,6 +768,7 @@ class Kernel:
                     if tasks.service.automation_paused(db):
                         continue
                 self.handlers['merge'].continue_waiting()
+                tasks.runs.tick()
                 with tasks.store.connection() as db:
                     rows = {row['id']: row for row in scheduling_tasks(db)}
                     # 已取消或已写入结束状态的工作线程可能仍在恢复环境，释放前继续互斥。
@@ -819,7 +843,7 @@ class Kernel:
                     if self.tasks.is_task_file(task['id'], directory / 'events.jsonl') else task.get('session_id'))
             else:
                 result['session_id'] = result.get('session_id') or task.get('session_id')
-            result['resume'] = resume_command(result['session_id'])
+            result['resume'] = resume_command(result['session_id'], directory)
             if claim:
                 # 会话可能来自不同客户端或使用替代标签，不能猜成 Codex 的续接命令。
                 result['resume'] = ''
@@ -978,6 +1002,54 @@ def resume_codex(directory, thread_id, prompt, sandbox='read-only', work_directo
     return launch(['codex', '-s', sandbox, *options, 'exec', 'resume', thread_id, '--json',
         '--skip-git-repo-check', *schema_args, '-o', str(directory / output), prompt],
         directory, environment if environment is not None else codex_environment(), work_directory or directory)
+
+
+CLAUDE_READ_ONLY = ['--allowedTools', 'Read', 'Glob', 'Grep']
+CLAUDE_WRITE = ['--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']
+
+
+def claude_environment(environment):
+    base = dict(environment if environment is not None else codex_environment())
+    for key, value in os.environ.items():
+        if key == 'CLAUDE_CONFIG_DIR' or key.startswith('ANTHROPIC_'):
+            base.setdefault(key, value)
+    return base
+
+
+def start_claude(directory, prompt, agent, options):
+    """经 claude_runner 启动或续接 Claude Code；权限参数缺省按沙箱选只读或可写一组，配置的 args 优先。"""
+    import sys
+    from .credentials import launch
+    directory = Path(directory).resolve()
+    schema = Path(options.schema) if options.schema is not None else directory / 'schema.json'
+    argv = [sys.executable, '-m', 'sop_board.claude_runner', '--directory', str(directory), '-o', str(directory / options.output)]
+    if schema.is_file():
+        argv += ['--schema', str(schema)]
+    if agent.get('model'):
+        argv += ['--model', agent['model']]
+    if agent.get('effort'):
+        argv += ['--effort', agent['effort']]
+    if options.session:
+        argv += ['--session', options.session, '--resume']
+    work = Path(options.work_directory or directory).resolve()
+    for path in {str(directory), str(work), *(str(Path(p).resolve()) for p in options.writable_directories)}:
+        argv += ['--add-dir', path]
+    argv += ['--work-directory', str(work), prompt, '--']
+    argv += agent.get('args') or (CLAUDE_READ_ONLY if options.sandbox == 'read-only' else CLAUDE_WRITE)
+    return launch(argv, directory, claude_environment(options.environment), work)
+
+
+def claude_available():
+    try:
+        result = subprocess.run(['claude', '--version'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, timeout=10)
+        if result.returncode:
+            return f'claude --version 失败（退出码 {result.returncode}）'
+    except FileNotFoundError:
+        return '未找到 claude 命令'
+    except (OSError, subprocess.SubprocessError):
+        return 'claude --version 失败：无法启动或超时'
+    return ''
 
 
 def codex_available():

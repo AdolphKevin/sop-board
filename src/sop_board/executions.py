@@ -25,6 +25,66 @@ from .playwright import driver_skill, write_scope
 from .credentials import append_blocked, blocked_results, names as credential_names
 
 
+REASONS = dict(new='新增', changed='内容变化', failed='失败重跑', rerun='重跑')
+REASONS['source-changed'] = '产品变化待判定'
+
+
+def write_brief(directory, scope, entries, atlas_info, fixtures_declared, *, task_id, identities=False):
+    """执行速查卡（D86）：开场只读它和提示词、技能核心；细则按需读取。不超过 5KB。"""
+    counts = {}
+    for item in scope:
+        counts[item['reason']] = counts.get(item['reason'], 0) + 1
+    entry_lines = []
+    for name, entry in sorted(entries.items()):
+        extra = ''
+        if entry.get('surface') == 'web':
+            policy = dict(video=True, trace=True) | entry.get('web_evidence', {})
+            extra = f"，录屏 {'开' if policy['video'] else '关'}、trace {'开' if policy['trace'] else '关'}"
+            if name in atlas_info.get('versions', {}):
+                extra += f"，交互地图版本 {atlas_info['versions'][name]}"
+        entry_lines.append(f"- {name}（{entry.get('surface')}）：证据 {'、'.join(entry.get('evidence', []))}{extra}")
+    lines = [f'# 执行速查卡（任务 #{task_id}）', '',
+             '先读本卡，再按下面顺序取材料；参考文档只在遇到对应情况时再读。', '',
+             '## 本轮范围', '',
+             f"- 待执行 {len(scope)} 个场景：" + '，'.join(f"{REASONS.get(k, k)} {v}" for k, v in sorted(counts.items())) + '（明细见 pending.json）。',
+             *entry_lines[:8], *([f'- 另有 {len(entry_lines) - 8} 个入口，见 entries.json。'] if len(entry_lines) > 8 else []), '',
+             '## 阅读顺序', '',
+             '1. scenarios.yaml：场景原文，预期只来自这里；cases.json 是细节预期的来源用例。',
+             '2. pending.json；有 source-changed 时再读 changes.json、previous-results.json，按提示词判定影响。']
+    if atlas_info:
+        lines.append('3. atlas.json、bindings.json：页面、控件、各语言文案与定位器，每个场景步骤对应的页面和控件，以及界面对照决定。')
+    if fixtures_declared:
+        lines.append(('4' if atlas_info else '3') + '. fixtures.json：前置数据的范围与配方。')
+    if atlas_info:
+        unbound = atlas_info.get('unbound') or []
+        lines += ['', '## 用地图操作', '',
+                  '- 用模板 atlas.mjs 的 openPage、locate、act 按地图操作，找不到时才只读探测或查阅前端源码。',
+                  '- 地图缺失或有误时，在任务目录 atlas-feedback.jsonl 写一行：{"page", "kind": "missing|locator|name|reach|other", "detail", "scenario"}，不改地图。',
+                  '- 地图不提供预期；atlas.json 中 stale 列出的页面已过期，以实际页面为准。',
+                  '- 界面对照（bindings.json 的 checks）：“按 SOP”与“未定”的条目，实际文案不符即判失败，finding 写场景要求与实际文案。']
+        if unbound:
+            lines.append('- 未绑定的场景：' + '、'.join(unbound[:20]) + ('…' if len(unbound) > 20 else '') + '，按地图索引查找页面。')
+    if identities:
+        lines += ['', '## 身份', '',
+                  '- identities.json 列出各身份的浏览器、验证码方式、上限与当前计数。用 identity.mjs 的 as(身份) 取该身份已登录的页面（设置 PW_IDENTITIES），不退出，也不在同一浏览器里换账号。',
+                  f'- 真实登录或请求验证码前运行 sop-board identity record --entry <入口> --identity <身份> --event login|code --task {task_id}；被拒时把该身份的场景记受阻。',
+                  '- 需要人做的事（人机验证、OAuth、邮箱验证等）用 sop-board attention add 登记，写明影响的场景。']
+    lines += ['', '## 前置数据', '']
+    if fixtures_declared:
+        lines += [f'- 无关前置数据先用 sop-board fixtures run <配方> --task {task_id} --scenario <场景> [--param 名=值]；'
+                  '没有合适配方且 fixtures.json 中 adhoc 为 true 时，才用 fixtures exec --reason <说明> 在声明范围内临时写入。',
+                  '- real_only 对象与被验收流程应产生的对象不得写库代替；无法准备时记受阻，finding 写缺什么配方、范围或真实流程。']
+    else:
+        lines.append('- 本工作区未声明前置数据配方：前置不满足时记受阻，finding 写明缺什么，不自行写库。')
+    lines += ['', '## 时间上限与停止', '',
+              '- 模板缺省上限：单场景 4 分钟，定位或操作 15 秒，导航 30 秒；可用 PW_SCENARIO_TIMEOUT_MS、PW_ACTION_TIMEOUT_MS、PW_NAVIGATION_TIMEOUT_MS 覆盖。',
+              '- 只重跑没通过的场景；业务失败最多再确认一次。单个场景累计 15 分钟或 4 次仍无结论时，记下现象与证据转下一个：判断不了记受阻，证据表明产品不符记失败。',
+              '- 业务断言失败只记该场景失败并继续；连接异常、授权等待、未知遮挡或状态不明时停止本轮，剩余场景写成 not-executed 标记行（带 finding）。',
+              '', '## 结果', '',
+              '- 每执行完一个场景就往 results.jsonl 写一行，所选场景都要有；字段、证据与限制见提示词。']
+    (directory / 'brief.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
 class Executions:
     def __init__(self, tasks):
         self.tasks, self.service, self.store = tasks, tasks.service, tasks.store
@@ -52,14 +112,14 @@ class Executions:
                     batch = self.service.batch(db, key, name)
                     summary = calculate(db, batch)
                     if selected is not None:
-                        available = {s['scenario'] for s in summary['scenarios'] if not s.get('held')}
+                        available = {s['scenario'] for s in summary['scenarios'] if not s.get('held') and not s.get('waiting_change')}
                         if set(selected) - available:
-                            reject(409, 'scenario-unavailable', 'scope', '场景不存在或待补充：' + '、'.join(sorted(set(selected) - available)))
+                            reject(409, 'scenario-unavailable', 'scope', '场景不存在、待补充或等待修改场景：' + '、'.join(sorted(set(selected) - available)))
                         pending = {s['scenario']: s for s in pending_scope(db, batch, summary, product['product_digest'])}
                         scope = [pending.get(sid, dict(scenario=sid, reason='rerun')) for sid in selected]
                         selection = 'explicit'
                     else:
-                        scope = ([dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios'] if not s.get('held')]
+                        scope = ([dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios'] if not s.get('held') and not s.get('waiting_change')]
                                  if selection == 'all' else pending_scope(db, batch, summary, product['product_digest']))
                 if not scope and not (manual and merge):
                     if manual:
@@ -122,6 +182,9 @@ class Executions:
                       cases=[c for c in cases if c['id'] not in held],
                       execution_origin='session' if self.tasks.kernel.claim(task) else 'board',
                       selection=request.get('selection', 'explicit'), refresh_after_merge=False)
+        from .fixtures import definition
+        if workspace.fixtures is not None:
+            inputs['fixtures'] = definition(workspace)
         return snapshot, inputs, files
 
     def save_files(self, task, files):
@@ -213,9 +276,9 @@ class Executions:
                 batch = self.service.batch(db, task['workspace'], task['batch'])
                 summary = calculate(db, batch)
                 if request.get('selection') == 'all':
-                    scope = [dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios'] if not s.get('held')]
+                    scope = [dict(scenario=s['scenario'], reason='rerun') for s in summary['scenarios'] if not s.get('held') and not s.get('waiting_change')]
                 else:
-                    current = {s['scenario'] for s in summary['scenarios'] if not s.get('held')}
+                    current = {s['scenario'] for s in summary['scenarios'] if not s.get('held') and not s.get('waiting_change')}
                     scope = ({s['scenario']: s for s in pending_scope(db, batch, summary, product['product_digest'])}
                              if request.get('selection') == 'pending' else {})
                     for scene in json.loads(task['scope_json']):
@@ -255,13 +318,46 @@ class Executions:
             return '、'.join(changed) + '变化', []
         return '', self.drift(task, snapshot, current, files) if started else []
 
+    SCENARIO_LEVEL = {'场景版本', '场景内容', '用例并集', '工作区场景文件'}
+
+    def scenario_changes(self, task, snapshot):
+        """执行期间只有场景或用例变化时（D96），返回内容变了的场景（含引用变化用例的场景）与产品变化路径；
+        技能、配置、自检或其他输入变化返回 None，仍整轮作废。"""
+        self.service.workspace.reload()
+        if (self.service.workspace.skill_changed(snapshot) or not self.service.environment.approved()
+                or snapshot['config_digest'] != self.service.workspace.config_digest):
+            return None
+        try:
+            current, current_inputs, files = self.freeze(task)
+        except (ValueError, KeyError, APIError):
+            return None
+        changed = self.tasks.types['execute'].inputs(task, product=False).changed(current)
+        if not changed or not set(changed) <= self.SCENARIO_LEVEL:
+            return None
+        frozen = json.loads(task['input_json'])
+        before = {case['id']: canonical(case) for case in frozen.get('cases', [])}
+        after = {case['id']: canonical(case) for case in current_inputs.get('cases', [])}
+        cases = {cid for cid in before.keys() | after.keys() if before.get(cid) != after.get(cid)}
+        voided = {sid for sid, value in snapshot['scenarios'].items() if current['scenarios'].get(sid) != value}
+        voided |= {scene['id'] for scene in frozen.get('scenes', []) if set(scene.get('refs', [])) & cases}
+        return sorted(voided), self.drift(task, snapshot, current, files)
+
     @staticmethod
     def moved(result):
-        """执行期间产品内容有变化的仓库；没有变化时不写该字段。"""
-        return dict(product_changed=result['product_changed']) if result.get('product_changed') else {}
+        """执行期间产品内容有变化的仓库与本轮收下的地图反馈；没有时不写对应字段。"""
+        extras = dict(product_changed=result['product_changed']) if result.get('product_changed') else {}
+        if result.get('voided_scenarios'):
+            extras['voided_scenarios'] = result['voided_scenarios']
+        if result.get('not_executed'):
+            extras['not_executed'] = result['not_executed']
+        if result.get('atlas_feedback'):
+            extras['atlas_feedback'] = result['atlas_feedback']
+        return extras
 
     def materialize(self, task, inputs, environment):
         directory = self.tasks.directory(task['id'])
+        from .fixtures import materialize
+        materialize(self.service, directory, [task['batch']], inputs.get('fixtures'))
         selected = {s['id'] for s in inputs['scenes']}
         document = dict(inputs['document'], sops=[dict(n, scenarios=[s for s in n['scenarios'] if s['id'] in selected])
                          for n in inputs['document']['sops'] if any(s['id'] in selected for s in n['scenarios'])])
@@ -281,6 +377,13 @@ class Executions:
         (directory / 'cases.json').write_text(canonical([case for case in inputs['cases'] if case['id'] in referenced]), encoding='utf-8')
         (directory / 'pending.json').write_text(task['scope_json'], encoding='utf-8')
         (directory / 'previous-results.json').write_text(canonical(inputs['previous']), encoding='utf-8')
+        prints = json.loads(task['snapshot_json']).get('scenarios', {})
+        atlas_info = self.tasks.atlas.materialize_execution(directory, task['batch'],
+            [dict(id=s['id'], verify=s['verify'], fingerprint=prints.get(s['id'])) for s in inputs['scenes']])
+        from .identities import materialize as identities_materialize
+        has_identities = identities_materialize(self.service.workspace, self.store, directory, {s['verify'] for s in inputs['scenes']})
+        write_brief(directory, json.loads(task['scope_json']), inputs['entries'], atlas_info, inputs.get('fixtures') is not None,
+                    task_id=task['id'], identities=has_identities)
         with self.store.connection() as db:
             from .regressions import read_links
             batch = self.service.batch(db, task['workspace'], task['batch'])
@@ -337,7 +440,9 @@ class Executions:
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 
-    def read_results(self, task, scenes, session, batch=None):
+    def read_results(self, task, scenes, session, batch=None, *, partial=False):
+        """partial=True 时接受 status 为 not-executed 的标记行（须有 finding、无证据）：中途停止后未执行的场景，
+        不登记、留在待执行范围（D87）。复验须完整执行，不接受标记行。"""
         directory = self.tasks.directory(task['id'])
         path = directory / 'results.jsonl'
         if not path.is_file() or path.is_symlink():
@@ -388,8 +493,17 @@ class Executions:
             if sid in impact and impact[sid] == reused:
                 raise ValueError(sid + ' impact.json 判定与结果不一致：' +
                                  ('判定受影响，必须实际执行' if impact[sid] else '判定不受影响，必须沿用'))
+            if row.get('status') == 'not-executed':
+                if not partial:
+                    raise ValueError(sid + ' 复验须完整执行，不接受未执行标记')
+                if not isinstance(row.get('finding'), str) or not row['finding'].strip() or row.get('evidence'):
+                    raise ValueError(sid + ' 未执行标记须写 finding 说明原因，且不附证据')
+                rows.append(dict(scenario=sid, status='not-executed', finding=row['finding'].strip()))
+                continue
             if scope.get(sid) == 'rerun' and isinstance(note, str) and note.startswith('沿用：'):
                 raise ValueError(sid + ' 须实际执行并保存新证据，不得沿用')
+            if 'issue' in row and (type(row['issue']) is not int or row['issue'] < 1):
+                raise ValueError(sid + ' issue 应为问题台账编号（正整数）')
             evidence = row.get('evidence')
             if not isinstance(evidence, list):
                 raise ValueError(sid + ' evidence 应为路径数组')
@@ -452,9 +566,16 @@ class Executions:
             if receipt is not None:
                 return dict(rounds=receipt['rounds'], rows=receipt['rows'], **self.moved(receipt))
             reason, _ = self.changes(task, snapshot, started=True)
-            if reason:
+            if reason and self.scenario_changes(task, snapshot) is None:
                 raise InputChanged(reason)
-            rows = self.read_results(scoped, runnable, session) if runnable else []
+            rows = self.read_results(scoped, runnable, session, partial=True) if runnable else []
+            not_executed = [row['scenario'] for row in rows if row['status'] == 'not-executed']
+            rows = [row for row in rows if row['status'] != 'not-executed']
+            if not rows and not blocked:
+                raise ValueError('本轮没有执行任何场景（' + '、'.join(not_executed) + ' 都标为未执行）；不登记轮次，请重新执行')
+            from .issues import check_result_issues
+            with self.store.connection() as db:
+                check_result_issues(db, task['workspace'], rows)
             self.blocked_impact(task, blocked)
             append_blocked(self.tasks.directory(task['id']), blocked)
             rows.extend(dict(row, fingerprint=snapshot['scenarios'][row['scenario']], session=str(task['id'])) for row in blocked)
@@ -465,8 +586,13 @@ class Executions:
                 if self.tasks.stopping.is_set() or self.tasks.read(task['id'])['status'] not in (S.RUNNING, S.SESSION):
                     return dict(rounds=[], rows=[])
                 reason, moved = self.changes(task, snapshot, started=True)
+                voided = []
                 if reason:
-                    raise InputChanged(reason)
+                    partial = self.scenario_changes(task, snapshot)
+                    if partial is None or {row['scenario'] for row in rows} <= set(partial[0]):
+                        raise InputChanged(reason)
+                    voided, moved = partial
+                    rows = [row for row in rows if row['scenario'] not in voided]
                 batch = self.service.batch(db, task['workspace'], task['batch'])
                 version = self.service.latest_version(db, batch)
                 key = f"execute-{task['id']}-{task['attempt']}"
@@ -480,7 +606,7 @@ class Executions:
                     product['changed'] = moved
                 if product['dirty']:
                     product['uncommitted'] = self.uncommitted(task, snapshot)
-                body = dict(idempotency_key=key, scenario_file_sha256=snapshot['scenario_file_sha256'],
+                body = dict(idempotency_key=key, scenario_file_sha256=version['sha256'] if voided else snapshot['scenario_file_sha256'],
                     submitted_by=session, execution_origin=execution_origin, product=product, results=rows)
                 if implementer is not None:
                     body['implementer'] = implementer
@@ -488,9 +614,23 @@ class Executions:
                     rounds = [existing['number']]
                 else:
                     rounds = [self.service.register_round(db, batch, version, body, skill_digest=snapshot['skill_digest'])]
+                from .fixtures import link_results
+                link_results(db, task['id'], batch, rounds[0], self.tasks.directory(task['id']))
+                from .atlas import record_round
+                record_round(db, batch['id'], rounds[0], self.tasks.directory(task['id']))
+                from .issues import link_results as link_issues
+                link_issues(db, task['workspace'], batch, rounds[0], rows)
                 result = dict(rounds=rounds, rows=rows, session=session)
                 if moved:
                     result['product_changed'] = moved
+                if voided:
+                    result['voided_scenarios'] = voided
+                if not_executed:
+                    result['not_executed'] = sorted(not_executed)
+                feedback = self.tasks.atlas.collect_feedback(db, task['id'], self.tasks.directory(task['id']),
+                                                             scenarios={row['scenario'] for row in rows})
+                if feedback is not None:
+                    result['atlas_feedback'] = feedback
                 self.tasks.kernel.register(task, result, connection=db, phase='execute')
                 return result
 
@@ -506,7 +646,8 @@ class Executions:
         try:
             with self.tasks.lock:
                 self.tasks.starting = None
-            preflight = self.service.environment.agent_environment(self.service.workspace.repos)
+            declared = credential_names({'fixtures': inputs.get('fixtures')})
+            preflight = self.service.environment.agent_environment(self.service.workspace.repos, credential_names=declared)
             blocked = blocked_results(inputs['scenes'], inputs['entries'], preflight)
             blocked_ids = {row['scenario'] for row in blocked}
             runnable = [scene for scene in inputs['scenes'] if scene['id'] not in blocked_ids]
@@ -521,6 +662,8 @@ class Executions:
                     return
                 (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
                 if runnable:
+                    # 环境可能在准备后复用；补齐本轮冻结的配方凭据，仍只取看板启动环境。
+                    environment = self.service.environment.agent_environment(self.service.workspace.repos, credential_names=declared)
                     prompt = self.tasks.types['execute'].prepare(scoped, inputs=dict(inputs, scenes=runnable), environment=environment)
                     with self.tasks.lock:
                         process = self.tasks.kernel.launch(task, directory, prompt, self.tasks.types['execute'].launch(task, environment=environment))

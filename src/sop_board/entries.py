@@ -8,7 +8,7 @@ import stat
 import yaml
 
 
-FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence'}
+FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence', 'atlas', 'identities'}
 
 
 def web_evidence(entry):
@@ -38,7 +38,8 @@ def public_problems(problems, *, local):
     return result
 
 
-def validate_entries(entries):
+def validate_entries(entries, repos=None):
+    """repos 为 None 时（如手工 playwright scope 读取任务 entries.json）不核对 atlas 的仓库别名是否登记。"""
     problems = []
     if not isinstance(entries, dict) or not entries:
         return [dict(field='entries', problem='至少声明一个验收入口')]
@@ -70,6 +71,34 @@ def validate_entries(entries):
             if (entry.get('surface') != 'web' or not isinstance(policy, dict)
                     or policy.keys() - {'video', 'trace'} or any(type(v) is not bool for v in policy.values())):
                 problems.append(dict(field=field + '.web_evidence', problem='仅用于 Web 入口，须为只含 video、trace 布尔开关的对象'))
+        if 'identities' in entry:
+            if entry.get('surface') != 'web':
+                problems.append(dict(field=field + '.identities', problem='identities 只用于 Web 入口'))
+            else:
+                from .identities import validate
+                validate(entry['identities'], field + '.identities', problems)
+        if 'atlas' in entry:
+            atlas = entry['atlas']
+            def problem(key, message):
+                problems.append(dict(field=field + '.atlas' + key, problem=message))
+            if entry.get('surface') != 'web':
+                problem('', 'atlas 只用于 Web 入口')
+            if not isinstance(atlas, dict):
+                problem('', '应为含 repos 的对象')
+                continue
+            for extra in atlas.keys() - {'repos', 'languages'}:
+                problem('.' + str(extra), '格式外字段')
+            aliases = atlas.get('repos')
+            if not isinstance(aliases, list) or not aliases or not all(isinstance(v, str) and v.strip() for v in aliases):
+                problem('.repos', '应为非空仓库别名数组')
+            elif repos is not None and any(alias not in repos for alias in aliases):
+                problem('.repos', '仓库别名未登记')
+            if 'languages' in atlas:
+                languages = atlas['languages']
+                if (not isinstance(languages, list) or not languages
+                        or not all(isinstance(v, str) and v.strip() for v in languages)
+                        or len(set(languages)) != len(languages)):
+                    problem('.languages', '应为不重复的非空文字数组')
     return problems
 
 

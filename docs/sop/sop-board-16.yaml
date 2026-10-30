@@ -1,0 +1,530 @@
+# SOP-BOARD-16：交互地图、数据配方与执行减负
+# 预期依据 AdolphKevin 2026-10-30 的要求与决定（本会话；方案见 docs/proposals/2026-10-30-acceptance-throughput.md 第一期 D84～D90）：
+#   “先总体花一遍时间，先把整个 web 网页的交互都先梳理一遍……通过代码分析 web 能力。这样运行场景验证的时候，不就可以直接用了吗？”
+#   “进入页面后，发现按钮和场景里描述的按钮文本不匹配，然后会重新思考或者直接遇阻了”
+#   “规定执行者‘不自己造数据’，导致很多数据必须要在页面上建。这点是不是可以放宽？”
+#   决定①前置数据“配方优先，声明范围内可临时写”；决定②文案不一致“执行前列清单由人定，未定的执行时按 SOP 判”；决定③三期连续实施。
+# 版本 1（2026-10-30）：Claude 依据上述要求与方案编写。只写业务流程，实现细节以方案为准；与方案冲突时以本文件为验收依据并报告冲突。
+# 版本 2（2026-10-30）：按独立验收报告修正场景写法：--scope 改为空格分隔、子模块条目在 product-files.json、SOP-164-P03 的执行顺序、SOP-167 的顺序与中途停止的表述。
+#
+# “演示 Web 工作区”：按 docs/verification.md 用 sop-board init 以 --data 指定的独立数据目录登记的两仓 web 与 api，名称 demo-web：
+#   - api：Python 标准库 HTTP 服务加 SQLite 文件 data.db，提供 members、invitations、teams 的查询与写入接口，并在 / 下提供 web 的静态文件；
+#     植入一个缺陷：新建团队时名称被截断为前 10 个字符。
+#   - web：静态前端。src/routes.js 声明 /login、/settings/members、/settings/teams；src/nav.js 声明左侧导航「Members」「Teams」；
+#     locales/en.json 与 locales/zh.json 提供文案（?lang=zh 切换）。
+#     成员页有表格（Name、Email、Role 列，每页 10 行分页）、按钮 Invite members／邀请成员（键 members.invite）、行操作 Edit／编辑。
+#     邀请弹窗有 Email 字段与 Send invite／发送邀请；编辑弹窗有 Role 下拉、Save／保存、Discard／放弃（键 common.discard）。
+#     团队页有 New team／新建团队、名称字段与 Create／创建。没有“导出成员”功能。
+#     登录页只填账号名，无验证码，演示身份为 owner。
+#   - 入口 app（surface web，地址变量 DEMO_URL，driver 缺省）声明 atlas.repos: [web]、languages: [en, zh]；入口 api（surface http）用于少量接口核对。
+#   - 数据配方 fixtures/recipes.yaml：seed-members（参数 count，向 data.db 写入 count 个 seed-NN@example.invalid 成员；脚本会把环境变量 DEMO_WRITE_TOKEN 的取值原样打印一次，用于检验打码），
+#     real_only 为 ["经邀请链接加入的成员"]；fixtures.scope 为“只写 data.db 中 org=demo 的 members 与 teams 行，不删除”，credential_env 为 [DEMO_WRITE_TOKEN]，adhoc 为 true（SOP-161-N01 临时改为 false）。
+#   - 批次 web-demo（场景文件在 web 仓 docs/sop/web-demo.yaml）：
+#     WEB-P01 Owner 邀请成员：前置“组织 demo 已有 2 名成员”；点「邀请成员」，填邮箱，点「发送邀请」；预期列表出现该邮箱，状态为待接受。
+#     WEB-P02 成员列表分页：前置“组织 demo 已有 20 名成员”；打开成员页；预期第一页 10 行、共 2 页。
+#     WEB-N01 编辑成员后放弃：打开某成员的编辑，改角色后点「放弃更改」；预期角色不变（「放弃更改」与前端 Discard／放弃 不一致）。
+#     WEB-P03 新建团队：在团队页点「新建团队」，名称填 Customer Success A，点「创建」；预期列表显示完整名称（因植入缺陷会失败）。
+#     WEB-P04 导出成员：在成员页点「导出成员」；预期下载成员清单（前端没有该控件）。
+# “执行者”指验收中扮演开发会话的未参与实现的会话，各用一个稳定标签作为 --session；“真实 Codex”指本机已登录的 codex 命令。
+# 场景执行步骤中的“经真实入口执行”指在独立 Chrome（调试端口由手册指定）中打开演示 web 并操作，或对演示 api 发 HTTP 请求，证据写入任务目录 evidence/。
+
+metadata:
+  requirement: "sop-board：工作区级交互地图与场景对照、前置数据配方、运行辅助配置不作废、Web 失败隔离与执行减负"
+  batch: "sop-board-16"
+  version: 2
+  owner: "AdolphKevin"
+  sources:
+    - ref: "AdolphKevin 2026-10-30 的要求与三项决定（cw2-live-chat 组织设置验收复盘后，本会话）"
+      version: "2026-10-30"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/proposals/2026-10-30-acceptance-throughput.md 第一期 D84～D90"
+      version: "方案 1"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "atlas", "fixtures", "execution", "web"]
+
+sops:
+  - id: SOP-161
+    title: 数据配方与声明范围内的临时写入
+    actor: 执行者与协调会话
+    entry: "命令行 sop-board fixtures list/run/exec/mark；本机「数据配方」页；任务目录 evidence/fixtures/"
+    must:
+      - "运行登记的配方或在 adhoc 为 true 时临时写入，都留下完整记录：配方名或完整命令、参数、退出码、输出、写入前后核对、时间与执行者，凭据取值打码"
+      - "adhoc 为 false、配方不存在、参数缺失或凭据变量缺失时拒绝执行，不运行任何命令"
+      - "临时写入列为待整理，可标记为已整理为配方或无需整理，标记须填姓名"
+      - "按批次准备的记录出现在该批次之后各轮任务目录的 fixtures.json 中"
+    scenarios:
+      - id: SOP-161-P01
+        polarity: positive
+        title: 执行任务中运行配方，留痕完整且凭据打码
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区已登记且自检通过，data.db 中 org=demo 有 2 名成员", "DEMO_WRITE_TOKEN 已在执行者环境中设置为非空值"]
+        steps:
+          - "运行 sop-board fixtures list demo-web --data <数据目录>"
+          - "运行 sop-board execute prepare demo-web web-demo --scope WEB-P02 --session <执行者>，记下任务编号"
+          - "运行 sop-board fixtures run demo-web seed-members --task <编号> --scenario WEB-P02 --param count=18"
+          - "查看任务目录 evidence/fixtures/ 下的记录、本机「数据配方」页最近运行，以及 data.db 中 org=demo 的成员数"
+          - "取消该执行任务（sop-board task cancel）"
+        expected:
+          - "第 1 步输出环境说明、写入范围、配方 seed-members 及其参数、real_only 与“允许临时写入”"
+          - "第 3 步退出码为 0，data.db 中 org=demo 的成员变为 20 名"
+          - "记录含配方名、参数 count=18、退出码、输出与写入前后核对结果、时间、执行者与场景 WEB-P02"
+          - "记录与页面中脚本打印的 DEMO_WRITE_TOKEN 取值已被打码，任何文件中都找不到原值"
+        forbidden_effects: ["凭据原值出现在记录、页面或日志中", "写入 org=demo 之外的行"]
+        evidence_hints: ["命令输出", "evidence/fixtures/ 记录", "数据配方页截图", "写入前后的只读查询"]
+      - id: SOP-161-P02
+        polarity: positive
+        title: 范围内临时写入列为待整理，可标记整理结果
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-161-P01 完成，fixtures.adhoc 为 true"]
+        steps:
+          - "运行 sop-board fixtures exec demo-web --batch web-demo --session <协调> --reason 把成员 seed-01 改为 Admin -- <只更新 org=demo 中 seed-01 角色的命令>"
+          - "查看本机「数据配方」页的待整理列表"
+          - "运行 sop-board fixtures mark demo-web --run <该记录编号> --promoted set-role（不加 --by），再加 --by AdolphKevin 重试"
+          - "运行 sop-board execute prepare demo-web web-demo --scope WEB-P02 --session <执行者>，读取任务目录 fixtures.json 后取消该任务"
+        expected:
+          - "第 1 步执行成功，记录标为临时写入，含完整命令（凭据打码）、说明、批次与会话"
+          - "该记录出现在待整理列表中"
+          - "第 3 步不加 --by 时被拒绝并说明需要姓名；加上后记录显示“已整理为配方 set-role”、标记人 AdolphKevin，并离开待整理列表"
+          - "fixtures.json 含范围与配方摘要，并列出第 1 步的批次准备记录"
+        forbidden_effects: ["没有姓名时完成标记"]
+        evidence_hints: ["命令输出", "数据配方页截图", "fixtures.json"]
+      - id: SOP-161-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 不允许临时写入或缺少依据时拒绝执行
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，将 fixtures.adhoc 改为 false"]
+        steps:
+          - "运行 sop-board fixtures exec demo-web --batch web-demo --session <执行者> --reason 测试 -- <会写入 data.db 的命令>"
+          - "运行 sop-board fixtures run demo-web no-such-recipe --batch web-demo --session <执行者>"
+          - "运行 sop-board fixtures run demo-web seed-members --batch web-demo --session <执行者>（不传 count）"
+          - "在未设置 DEMO_WRITE_TOKEN 的终端运行 sop-board fixtures run demo-web seed-members --batch web-demo --session <执行者> --param count=1"
+          - "核对 data.db 成员数与记录；把 adhoc 改回 true"
+        expected:
+          - "四次都以非零退出码拒绝，分别说明不允许临时写入、配方不存在、缺少参数 count、缺少变量 DEMO_WRITE_TOKEN（只写变量名）"
+          - "data.db 没有变化，没有产生运行记录"
+        forbidden_effects: ["任何一次实际执行了命令", "输出凭据取值"]
+        evidence_hints: ["命令输出与退出码", "写入前后的只读查询"]
+
+  - id: SOP-162
+    title: 运行辅助配置的改动不使本轮作废
+    actor: 开发者
+    entry: "命令行 sop-board execute prepare/submit；工作区 config.yaml"
+    must:
+      - "执行期间改动 entries.<入口>.web_evidence、entries.<入口>.atlas 或顶层 fixtures，本轮不作废，也不要求重跑全量自检"
+      - "进行中的轮次按准备时固定的设置跑完，下一轮准备时采用新值"
+      - "业务配置字段的改动仍按现行规则使本轮作废"
+    scenarios:
+      - id: SOP-162-P01
+        polarity: positive
+        title: 执行期间关闭录屏、改配方范围，结果照常登记
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，入口 app 的 web_evidence 缺省（录屏与 trace 开启）"]
+        steps:
+          - "执行者 sop-board execute prepare demo-web web-demo --scope WEB-P02 --session <执行者>，读取 scope.json 中 WEB-P02 的 web_evidence"
+          - "在 config.yaml 中给入口 app 加 web_evidence: {video: false, trace: false}，并修改 fixtures.scope 的说明文字"
+          - "执行者经真实入口执行 WEB-P02（按准备时的设置留证），写出结果后运行 execute submit"
+          - "运行 sop-board status demo-web --json 查看自检与执行可用性；再 execute prepare 同一场景，读取新的 scope.json 后取消"
+        expected:
+          - "第 1 步 scope.json 中 WEB-P02 的 video、trace 为 true"
+          - "submit 返回 ok 为 true，任务为已完成，没有作废原因"
+          - "第 4 步工作区仍可执行，没有 workspace-not-ready；新任务的 scope.json 中 video、trace 为 false"
+        forbidden_effects: ["任务作废", "要求重跑全量自检才能继续执行"]
+        evidence_hints: ["scope.json（前后两份）", "命令输出", "status 输出"]
+      - id: SOP-162-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 执行期间改动业务配置仍作废
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["SOP-162-P01 完成"]
+        steps:
+          - "执行者 execute prepare demo-web web-demo --scope WEB-P02 --session <执行者>"
+          - "修改入口 app 的 operate 说明文字"
+          - "执行者写出结果后运行 execute submit"
+        expected:
+          - "submit 被拒绝或任务作废，原因说明配置已变化，需要重新准备"
+        forbidden_effects: ["按变化前的配置登记本轮结果"]
+        evidence_hints: ["命令输出", "任务详情"]
+
+  - id: SOP-163
+    title: 未检出的子模块不影响产品指纹
+    actor: 开发者
+    entry: "命令行 sop-board execute prepare；任务目录 snapshot.json 与 product-files.json；看板任务的待提交判断"
+    negative_exempt: "只修正快照取值，反向情形（产品真有未提交改动时仍记为 dirty）由 sop-board-15.yaml SOP-151 与既有快照场景覆盖"
+    must:
+      - "子模块未检出时，工作区快照对它记录外层仓库索引中的子模块提交，与已提交清单一致"
+      - "外层仓库的提交不改变该子模块条目的摘要"
+    scenarios:
+      - id: SOP-163-P01
+        polarity: positive
+        title: 带未检出子模块的仓库，快照不显示未提交改动
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区的 web 仓库加入一个子模块（git submodule add 后在新克隆中不检出，或 deinit 使目录为空），并已提交，工作区干净"]
+        steps:
+          - "运行 execute prepare demo-web web-demo --scope WEB-P02 --session <执行者>，读取 snapshot.json 的 dirty、未提交清单与 product-files.json 中该子模块路径的条目，取消任务"
+          - "在 web 仓库提交一处无关改动（README 加一行）"
+          - "再次 execute prepare 同一场景，读取 product-files.json 中该子模块条目后取消任务"
+        expected:
+          - "第 1 步 dirty 为 false，未提交清单中没有该子模块路径"
+          - "两次快照中该子模块条目的摘要相同，且对应 git ls-files -s 显示的子模块提交"
+        forbidden_effects: ["子模块条目随外层仓库提交变化", "因子模块把产品记为有未提交改动"]
+        evidence_hints: ["两份 snapshot.json 与 product-files.json", "git ls-files -s 输出"]
+
+  - id: SOP-164
+    title: 梳理交互：生成、校验、过期与更新交互地图
+    actor: 开发者与执行者
+    entry: "命令行 sop-board atlas prepare/submit；本机与内网「交互地图」页；看板“梳理交互”"
+    must:
+      - "入口声明 atlas 后，可由会话或看板梳理交互，登记带版本的交互地图"
+      - "地图只记录页面、导航、控件、弹窗、表格、各语言文案、定位器、请求与源码位置；写入可见性、校验规则、默认值或业务结果的字段被拒收"
+      - "前端源码变化后，涉及的页面标为过期；只更新过期页面时其余页面沿用"
+      - "执行者的地图反馈被收下，在下一次梳理中处理并标为已采纳"
+    scenarios:
+      - id: SOP-164-P01
+        polarity: positive
+        title: 会话梳理演示前端，登记第一版交互地图
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区自检通过，入口 app 已声明 atlas.repos 为 [web]、languages 为 [en, zh]，尚无交互地图"]
+        steps:
+          - "运行 sop-board atlas prepare demo-web --entry app --session <梳理者>，查看任务目录"
+          - "梳理者只读 web 仓源码，按任务目录的说明与结构写出 final.json：至少包含登录页、成员页、团队页，成员页的 Invite members 按钮与编辑弹窗的 Discard 按钮"
+          - "运行 sop-board atlas submit demo-web --task <编号>"
+          - "打开本机「交互地图」页与成员页详情；再经启动输出中的非回环地址打开同一页面"
+        expected:
+          - "任务目录含提示词、结构说明、前端仓库位置与入口声明"
+          - "submit 成功，登记版本 1；页面数与控件数与 final.json 一致"
+          - "成员页详情显示 Invite members／邀请成员、键 members.invite、推荐定位器与源码位置；Discard／放弃、键 common.discard"
+          - "内网页面可只读查看页面与控件，没有梳理按钮，不显示本机路径"
+        forbidden_effects: ["梳理任务修改了任何仓库文件"]
+        evidence_hints: ["任务目录清单", "final.json", "命令输出", "本机与内网页面截图"]
+      - id: SOP-164-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 地图写入预期类字段时拒收，修正后可提交
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-164-P01 已登记版本 1"]
+        steps:
+          - "运行 atlas prepare demo-web --entry app --pages settings.members --session <梳理者>"
+          - "在 final.json 成员页的 Invite members 控件上加 visible_to: [owner]，在邀请弹窗 Email 字段加 max_length: 254，运行 atlas submit"
+          - "删掉这两个字段后再次 submit"
+        expected:
+          - "第一次 submit 失败，问题逐条列出 visible_to 与 max_length 所在位置，说明地图不收可见性、校验规则这类预期；任务仍为会话处理中"
+          - "第二次 submit 成功，登记版本 2，除成员页外其他页面与版本 1 相同"
+        forbidden_effects: ["带预期字段的地图被登记"]
+        evidence_hints: ["两次 submit 输出", "版本对比"]
+      - id: SOP-164-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: atlas 声明不合格时报告配置问题
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "在 http 入口 api 下加 atlas.repos: [web]，运行 sop-board check demo-web 与 atlas prepare demo-web --entry api --session <梳理者>"
+          - "撤销后把 app 的 atlas.repos 改为 [no-such-repo] 再运行 check；最后恢复原配置"
+        expected:
+          - "check 分别报告“atlas 只用于 Web 入口”和“仓库别名未登记”，atlas prepare 被拒绝并说明原因"
+        forbidden_effects: ["接受不合格声明并创建梳理任务"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-164-P02
+        polarity: positive
+        title: 前端变化后页面标为过期，只更新过期页面
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["已有交互地图（SOP-164-N01 后为版本 2）"]
+        steps:
+          - "修改 web 仓团队页源码，把 New team 的英文文案改为 Add team（同步改 locales/en.json）"
+          - "打开「交互地图」页；运行 atlas prepare demo-web --entry app --stale --session <梳理者>，查看任务目录列出的过期页面与变化文件"
+          - "梳理者只重写团队页后 submit"
+        expected:
+          - "地图页显示团队页过期，成员页、登录页不过期"
+          - "任务目录列出过期页面团队页及其变化文件"
+          - "登记新版本：团队页按钮为 Add team／新建团队，其他页面与上一版本相同；过期标记清除"
+        forbidden_effects: ["未变化的页面被标为过期", "只更新过期页面时丢失其他页面"]
+        evidence_hints: ["地图页截图", "任务目录 stale 清单", "版本对比"]
+      - id: SOP-164-P03
+        polarity: positive
+        title: 执行者反馈被收下并在下一次梳理中采纳
+        actor: 执行者
+        priority: P1
+        verify: cli
+        initial_state: ["已有交互地图，web-demo 批次已绑定（SOP-165-P01）；在 SOP-165-P03 完成后执行，避免新地图版本让 bind --stale 纳入成员页的全部场景"]
+        steps:
+          - "执行者在一次执行任务目录写 atlas-feedback.jsonl：一条说明成员页分页控件缺失；另写一行格式错误的内容；正常 execute submit"
+          - "打开「交互地图」页的待处理反馈"
+          - "运行 atlas prepare demo-web --entry app --pages settings.members --session <梳理者>，补上分页控件并在输出中写明已处理该反馈，submit"
+        expected:
+          - "执行结果照常登记；提交输出提示有一行反馈格式不对未收下"
+          - "待处理反馈显示该条，含执行任务编号与场景"
+          - "梳理任务目录含这条反馈；submit 后该反馈标为已采纳，不再出现在待处理列表"
+        forbidden_effects: ["反馈格式错误导致执行结果不能登记"]
+        evidence_hints: ["atlas-feedback.jsonl", "submit 输出", "地图页截图"]
+      - id: SOP-164-P04
+        polarity: positive
+        title: 看板用真实 Codex 梳理交互
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["演示 Web 工作区以 --lan 启动，入口 app 已有交互地图"]
+        steps:
+          - "在本机「交互地图」页点击“梳理交互”，选择只更新过期页面（先在 web 仓改动成员页一处文案使其过期）"
+          - "等待任务结束，查看任务页与地图版本"
+        expected:
+          - "看板创建梳理交互任务并由真实 Codex 运行，任务页显示最近活动；完成后登记新版本，成员页反映新文案，过期标记清除"
+        forbidden_effects: ["梳理任务修改仓库文件", "任务失败时伪造成功"]
+        evidence_hints: ["任务页截图", "地图版本记录"]
+
+  - id: SOP-165
+    title: 场景绑定与界面对照清单
+    actor: 开发者与业务确认人
+    entry: "命令行 sop-board atlas bind/decide；本机与内网批次页「界面对照」"
+    negative_exempt: "对照与决定的反向情形（不填姓名、命令缺 --by 被拒）已写在 SOP-165-P02 的步骤与 forbidden_effects 中"
+    must:
+      - "按批次把场景步骤对应到地图页面与控件，场景中加引号的界面文案逐条对照"
+      - "与前端某种声明语言完全相同，或为同一多语言键的译文，都不进清单；对应控件文案不同为 mismatch，找不到对应控件为 absent，二者进清单"
+      - "清单逐条由人决定“按 SOP”或“改 SOP”，须填姓名；改 SOP 的场景暂不执行并单独计数，场景内容变化后条目自动关闭"
+    scenarios:
+      - id: SOP-165-P01
+        polarity: positive
+        title: 绑定批次后列出文案不一致与找不到的控件
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["已有交互地图，批次 web-demo 的 5 个场景已登记"]
+        steps:
+          - "运行 sop-board atlas bind demo-web web-demo --session <梳理者>，按任务说明写出绑定后 submit"
+          - "打开本机批次页「界面对照」"
+        expected:
+          - "登记 5 个场景的绑定，每个场景的步骤对应到页面与控件，并记录操作身份与是否改动数据"
+          - "清单含 WEB-N01 的「放弃更改」（mismatch，前端为 Discard／放弃）与 WEB-P04 的「导出成员」（absent）"
+          - "「邀请成员」「发送邀请」「新建团队」「创建」不在清单中（与 zh 文案一致）"
+        forbidden_effects: ["把中英翻译差异列为不一致"]
+        evidence_hints: ["绑定输出", "界面对照页截图"]
+      - id: SOP-165-P02
+        polarity: positive
+        title: 本机与内网逐条决定，记录决定人
+        actor: 业务确认人
+        priority: P0
+        verify: web
+        initial_state: ["SOP-165-P01 完成，看板以 --lan 启动"]
+        steps:
+          - "在本机「界面对照」对 WEB-P04「导出成员」选择“改 SOP”，不填姓名提交，再填 AdolphKevin 提交"
+          - "经非回环地址打开同一页面，对 WEB-N01「放弃更改」选择“按 SOP”，决定人填 测试同事"
+          - "运行 sop-board atlas decide demo-web web-demo --item WEB-N01#<条目> --decision change（不加 --by）"
+        expected:
+          - "不填姓名被拒绝；填写后两条分别显示决定、决定人与时间"
+          - "第 3 步被拒绝并说明需要 --by，原决定不变"
+        forbidden_effects: ["没有姓名的决定被登记"]
+        evidence_hints: ["本机与内网页面截图", "命令输出"]
+      - id: SOP-165-P03
+        polarity: positive
+        title: 改 SOP 的场景暂不执行，场景修改后回到待执行
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-165-P02 完成：WEB-P04 为改 SOP，WEB-N01 为按 SOP"]
+        steps:
+          - "运行 execute prepare demo-web web-demo --scope pending --session <执行者>，读取 pending.json 后取消；查看批次概览"
+          - "修改 web-demo.yaml：删除 WEB-P04 中「导出成员」的步骤，改为核对成员页没有导出入口，推送场景"
+          - "再次查看「界面对照」与批次概览，并 execute prepare --scope pending 读取 pending.json 后取消"
+          - "运行 atlas bind demo-web web-demo --stale --session <梳理者>，查看任务输入后完成提交"
+        expected:
+          - "第 1 步 pending.json 不含 WEB-P04；批次概览单列“等待修改场景 1”，不计入受阻或跳过"
+          - "第 3 步「导出成员」条目显示“场景已改”而关闭；WEB-P04 以新内容回到待执行"
+          - "第 4 步只处理 WEB-P04 这一个内容有变化的场景"
+        forbidden_effects: ["改 SOP 的场景在修改前被执行", "其他场景被重新绑定"]
+        evidence_hints: ["两份 pending.json", "批次概览截图", "bind 任务输入"]
+
+  - id: SOP-166
+    title: 执行时使用地图与绑定，执行材料瘦身
+    actor: 执行者
+    entry: "命令行 sop-board execute prepare/submit；任务目录 atlas.json、bindings.json、brief.md、atlas-feedback.jsonl"
+    must:
+      - "场景入口有交互地图时，执行任务目录提供地图节选（绑定到的页面、到达路径与文案，另附全部页面索引）、绑定与对照决定，以及不超过 5KB 的执行速查卡"
+      - "开场必读的提示词、速查卡与技能正文合计不超过 15KB，其余参考按需阅读"
+      - "预期只来自场景；按 SOP 与未定的对照条目在实际文案不符时判失败并写明实际文案"
+      - "轮次记录准备时的地图版本；执行期间地图更新不使本轮作废"
+    scenarios:
+      - id: SOP-166-P01
+        polarity: positive
+        title: 执行任务目录提供地图节选、绑定与速查卡
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["已有交互地图与 web-demo 绑定（SOP-165 之后），WEB-N01 为按 SOP"]
+        steps:
+          - "运行 execute prepare demo-web web-demo --scope WEB-P01 WEB-N01 --session <执行者>，查看任务目录与提示词"
+          - "统计提示词、brief.md 与 Web 技能正文的字节数"
+        expected:
+          - "atlas.json 只含两个场景绑定到的页面及其到达路径所用的控件与文案，并有全部页面的索引、地图版本与过期标记"
+          - "bindings.json 含两个场景的绑定，WEB-N01 的「放弃更改」标为按 SOP"
+          - "brief.md 不超过 5KB，写明阅读顺序、地图与反馈用法、数据配方规则、时间上限与停止条件、逐条写结果"
+          - "提示词、brief.md 与技能正文合计不超过 15KB"
+        forbidden_effects: ["节选包含与这两个场景无关的页面详情"]
+        evidence_hints: ["任务目录清单", "atlas.json", "bindings.json", "brief.md", "字节统计"]
+      - id: SOP-166-P02
+        polarity: positive
+        title: 独立执行者用地图完成场景，按 SOP 判文案不一致
+        actor: 执行者
+        priority: P0
+        verify: web
+        initial_state: ["SOP-166-P01 准备的任务", "data.db 中 org=demo 有成员"]
+        steps:
+          - "未参与实现的执行者按任务目录说明，用操作库按地图执行 WEB-P01 与 WEB-N01，经真实入口留证，生成结果后 execute submit"
+          - "查看两个场景的结果与轮次"
+        expected:
+          - "WEB-P01 通过，有截图与核对证据"
+          - "WEB-N01 失败，finding 写明场景要求「放弃更改」，实际为 Discard／放弃，依据为按 SOP 的对照决定"
+          - "轮次记录所用地图版本"
+        forbidden_effects: ["WEB-N01 因地图写的是 Discard 而判通过", "凭地图或源码而非实际页面判通过"]
+        evidence_hints: ["results.jsonl", "截图", "轮次接口"]
+      - id: SOP-166-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 执行期间地图更新不使本轮作废
+        actor: 执行者
+        priority: P1
+        verify: cli
+        initial_state: ["已有交互地图"]
+        steps:
+          - "执行者 execute prepare demo-web web-demo --scope WEB-P01 --session <执行者>，记下 atlas.json 的版本"
+          - "另一会话完成一次只更新成员页的梳理并登记新版本"
+          - "执行者执行 WEB-P01 后 execute submit"
+        expected:
+          - "submit 成功，任务没有作废；轮次记录的地图版本是第 1 步的版本"
+        forbidden_effects: ["因地图更新作废本轮"]
+        evidence_hints: ["atlas.json 版本", "命令输出", "轮次接口"]
+
+  - id: SOP-167
+    title: Web 场景失败隔离、时间上限与逐条落盘
+    actor: 执行者
+    entry: "随包 playwright-acceptance 模板与 atlas.mjs；sop-board playwright convert；execute submit"
+    negative_exempt: "失败隔离本身就是对失败路径的核对；连接中断与进程退出等异常情形由 SOP-167-P02、SOP-167-P03 覆盖"
+    must:
+      - "业务断言失败只记该场景失败并留截图与页面结构快照，关闭其页面后继续下一个场景，不重启 worker、不新建调试连接"
+      - "连接异常、授权等待、未知遮挡或状态不明时停止本轮，剩余场景列为未执行，不批量写成受阻或跳过"
+      - "缺省时间上限：单场景 4 分钟、定位或操作 15 秒、导航 30 秒，可用环境变量覆盖并记入报告"
+      - "每个场景结束即落盘，执行中途退出时已完成场景可转换和提交"
+    scenarios:
+      - id: SOP-167-P01
+        polarity: positive
+        title: 中间场景业务失败后继续执行后续场景
+        actor: 执行者
+        priority: P0
+        verify: web
+        initial_state: ["交互式 Chrome 已开启调试端口并授权一次，data.db 中 org=demo 有 20 名成员"]
+        steps:
+          - "execute prepare demo-web web-demo --scope WEB-P02 WEB-P03 WEB-N01 WEB-P01 --session <执行者>"
+          - "执行者用随包模板按 WEB-P02、WEB-P03、WEB-N01、WEB-P01 的顺序在一次运行中执行，转换报告并提交"
+          - "查看报告、连接日志与 Chrome 是否再次弹出调试授权"
+        expected:
+          - "WEB-P02 通过；WEB-P03 因名称被截断失败，WEB-N01 因文案不符失败；WEB-P01 在两个失败之后照常执行并通过"
+          - "每个失败场景都有截图与页面结构快照"
+          - "整次运行只建立一次调试连接，没有再次弹出授权"
+        forbidden_effects: ["首个失败后停止本轮", "失败后 worker 重启并重新连接"]
+        evidence_hints: ["Playwright 报告", "results.jsonl", "连接日志", "截图"]
+      - id: SOP-167-P02
+        polarity: positive
+        title: 连接中断时停止本轮并如实列出未执行范围
+        actor: 执行者
+        priority: P0
+        verify: web
+        initial_state: ["同 SOP-167-P01"]
+        steps:
+          - "执行 4 个场景的一次运行，在第 2 个场景进行中关闭 Chrome 的调试端口（退出验收 Chrome）"
+          - "用 sop-board playwright convert --allow-partial 转换，查看 coverage 与结果"
+        expected:
+          - "运行在连接中断后停止，第 3、4 个场景没有执行"
+          - "第 1 个场景的结果保留；第 2 个场景记为受阻并写明连接中断；第 3、4 个列入缺失清单，写成 not-executed 标记行，没有被写成受阻或跳过"
+        forbidden_effects: ["中断后自动重连继续执行", "把未执行场景批量写成受阻"]
+        evidence_hints: ["运行输出", "coverage.json", "results.jsonl"]
+      - id: SOP-167-P03
+        polarity: positive
+        title: 执行会话中途退出，已完成场景可转换和提交
+        actor: 执行者
+        priority: P1
+        verify: cli
+        initial_state: ["同 SOP-167-P01"]
+        steps:
+          - "执行 4 个场景的一次运行，在第 2 个场景完成后结束执行进程（kill）"
+          - "转换已落盘的结果，execute submit；查看批次页中这 4 个场景的最近结果"
+        expected:
+          - "前 2 个场景的结果与证据完整保留，转换与提交成功，提交输出的 not_executed 列出剩余 2 个场景"
+          - "剩余 2 个场景没有登记本轮结果，保持本轮之前的状态（本轮前处于待执行的仍在待执行范围）"
+        forbidden_effects: ["已完成场景的结果丢失", "未执行场景被登记为结果"]
+        evidence_hints: ["落盘文件", "submit 输出", "pending.json"]
+      - id: SOP-167-P04
+        polarity: positive
+        title: 定位不到控件时按缺省上限快速失败
+        actor: 执行者
+        priority: P1
+        verify: web
+        initial_state: ["同 SOP-167-P01"]
+        steps:
+          - "执行 WEB-P04（成员页没有「导出成员」），记录从点击定位开始到场景结束的时间"
+          - "设置覆盖定位上限的环境变量为 5 秒后再执行一次"
+        expected:
+          - "第一次在约 15 秒内结束该场景，报告记录定位上限 15 秒、场景上限 4 分钟，并给出页面结构快照"
+          - "第二次在约 5 秒内结束，报告记录覆盖后的上限"
+        forbidden_effects: ["定位等待 60 秒或更久", "场景无限等待"]
+        evidence_hints: ["报告中的时间与上限", "截图与页面结构快照"]
+
+  - id: SOP-168
+    title: 执行中按规则准备前置数据
+    actor: 执行者
+    entry: "执行任务目录 brief.md 与 fixtures.json；sop-board fixtures run/exec；场景结果详情"
+    must:
+      - "无关前置数据先用配方，没有合适配方且允许临时写入时在声明范围内临时写入，二者都留痕；带 --task 与 --scenario 的准备记录由看板关联到该场景的结果"
+      - "real_only 对象与被验收流程应产生的对象不得写库代替；无法经真实入口得到时记受阻并写明缺什么"
+      - "内网结果只显示打码后的准备记录"
+    scenarios:
+      - id: SOP-168-P01
+        polarity: positive
+        title: 用配方准备 20 名成员后执行分页场景
+        actor: 执行者
+        priority: P0
+        verify: web
+        initial_state: ["data.db 中 org=demo 只有 2 名成员，看板以 --lan 启动"]
+        steps:
+          - "execute prepare demo-web web-demo --scope WEB-P02 --session <执行者>"
+          - "执行者按 brief.md 的规则用 fixtures run seed-members 把成员补到 20 名（不经页面逐个创建），再经真实入口执行 WEB-P02 并提交"
+          - "查看本机与内网的场景结果"
+        expected:
+          - "WEB-P02 通过；场景结果显示本场景的准备记录（配方 seed-members，参数 count=18）"
+          - "evidence/fixtures/ 有对应记录；内网结果显示准备记录且凭据打码，不含本机路径"
+        forbidden_effects: ["在页面上逐个创建 18 名成员", "凭据或本机路径出现在内网结果中"]
+        evidence_hints: ["results.jsonl", "evidence/fixtures/", "本机与内网结果截图"]
+      - id: SOP-168-N01
+        polarity: negative
+        negative_type: permission
+        title: real_only 前置不得写库代替
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["web-demo 新增场景 WEB-P05：前置“成员 m1 已经通过邀请链接加入组织”，步骤为在成员页打开 m1 的编辑并核对角色可改；演示没有可用的邀请邮件"]
+        steps:
+          - "execute prepare demo-web web-demo --scope WEB-P05 --session <执行者>，执行者按 brief.md 判断前置"
+          - "执行者写出结果并提交"
+        expected:
+          - "执行者没有用配方或临时写入伪造“通过邀请链接加入”的成员"
+          - "WEB-P05 记为受阻，finding 写明该前置属于 real_only（经邀请链接加入的成员），需要经真实邀请流程或由人准备"
+        forbidden_effects: ["用 fixtures exec 直接写入一个已加入的 m1", "把 WEB-P05 判为通过"]
+        evidence_hints: ["results.jsonl", "fixtures 运行记录（应无相关写入）"]

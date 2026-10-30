@@ -21,6 +21,27 @@ from .repositories import Discovery
 
 def main():
     argv = sys.argv[1:]
+    if argv and argv[0] == 'attention':
+        from .attention import command
+        return command(argv[1:])
+    if argv and argv[0] == 'confirmer':
+        from .session import confirmer_command
+        return confirmer_command(argv[1:])
+    if argv and argv[0] in ('issue', 'decision'):
+        from .issues import command
+        return command(argv)
+    if argv and argv[0] == 'identity':
+        from .identities import command
+        return command(argv[1:])
+    if argv and argv[0] in ('run', 'plan'):
+        from .plans import command
+        return command(argv)
+    if argv and argv[0] == 'atlas':
+        from .atlas import command
+        return command(argv[1:])
+    if argv and argv[0] == 'fixtures':
+        from .fixtures import command
+        return command(argv[1:])
     if argv and argv[0] in ('status', 'task', 'draft', 'cases', 'merge', 'execute', 'fix', 'sop'):
         from .session import command
         return command(argv)
@@ -50,6 +71,7 @@ def main():
     if action == 'serve':
         parser.add_argument('--port', type=int, default=8787)
         parser.add_argument('--lan', action='store_true')
+        parser.add_argument('--paused', action='store_true', help='启动前暂停自动任务（验收或排查时避免一启动就派发任务），之后在页面上恢复')
     args = parser.parse_args(argv)
     environment = tasks = discovery = server = None
     try:
@@ -70,7 +92,9 @@ def main():
             if result.get('message'):
                 print(result['message'],flush=True)
             for credential in result['credentials']:
-                print(f"入口 {credential['entry']} · {credential['name']}：{credential['status']}", flush=True)
+                # 前置数据的凭据借用入口结构登记，显示时不冒充入口名称。
+                owner = '入口 ' + credential['entry'] if credential['entry'] in workspace.entries else '前置数据'
+                print(f"{owner} · {credential['name']}：{credential['status']}", flush=True)
             for number, step in enumerate(result['steps'], 1):
                 print(f"{number}. {step['name']}：{step['status']} · {step['message']}", flush=True)
                 if step['log']:
@@ -93,6 +117,9 @@ def main():
             db.execute("INSERT INTO settings(key,value) VALUES ('board_url',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (f'http://127.0.0.1:{server.server_port}',))
         service = server.service = Service(store, workspace, environment)
+        if args.paused:
+            service.set_automation_paused(True)
+            print('自动任务已暂停；在看板页面恢复后才派发任务', flush=True)
         server.jira = service.jira = Jira(os.environ.get('JIRA_EMAIL', ''),
                                         os.environ.get('JIRA_API_TOKEN', ''), timeout=os.environ.get('JIRA_TIMEOUT_SECONDS', '10'))
         if environment.approved():
