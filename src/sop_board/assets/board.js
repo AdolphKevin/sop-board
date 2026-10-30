@@ -514,6 +514,100 @@
         button.disabled = false;
       }
     };
+    document.querySelectorAll("[data-plan-run]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = form.querySelector("[data-run-message]");
+        const button = form.querySelector("button[type='submit']");
+        if (await submitDraft(form.action, {mode: new FormData(form).get("mode")}, message, button)) location.reload();
+      });
+    });
+    document.querySelectorAll("[data-run-control]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const fields = new FormData(form);
+        const message = form.querySelector("[data-run-message]");
+        const button = event.submitter || form.querySelector("button[type='submit']");
+        const by = fields.get("by").trim();
+        if (!by) {show(message, "请填写操作人姓名", "error"); return;}
+        // 按钮名不能是 action：同名控件会遮蔽 form.action，这里统一读属性。
+        if (await submitDraft(form.getAttribute("action"), {action: button.value, mode: fields.get("mode"), by}, message, button)) location.reload();
+      });
+    });
+    document.querySelectorAll("[data-attention-resolve]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = form.querySelector("[data-run-message]");
+        const button = form.querySelector("button[type='submit']");
+        const by = new FormData(form).get("by").trim();
+        if (!by) {show(message, "请填写处理人姓名", "error"); return;}
+        if (await submitDraft(form.action, {by}, message, button)) location.reload();
+      });
+    });
+    document.querySelectorAll("[data-issue-fix]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = form.querySelector("[data-run-message]");
+        const button = form.querySelector("button[type='submit']");
+        button.disabled = true;
+        try {
+          const response = await fetch(form.action, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+          const data = await response.json();
+          // 交接后未立即建任务（如自动任务已暂停）时保留页面，显示原因。
+          show(message, data.ok ? (data.notice || "已交给看板修复") + (data.task ? "：任务 #" + data.task.id : "") :
+            ((data.problems || []).map(p => p.problem).join("；") || "操作失败"), data.ok ? undefined : "error");
+          if (data.ok && data.task) location.reload();
+        } catch {
+          show(message, "请求失败，请稍后重试", "error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+    document.querySelectorAll("[data-atlas-bind]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = form.querySelector("[data-atlas-message]");
+        const button = form.querySelector("button[type='submit']");
+        if (await submitDraft(form.action, {stale: new FormData(form).get("stale") === "true"}, message, button)) location.reload();
+      });
+    });
+    document.querySelectorAll("[data-atlas-decision]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const fields = new FormData(form);
+        const message = form.querySelector("[data-atlas-message]");
+        const button = form.querySelector("button[type='submit']");
+        const by = fields.get("by").trim();
+        if (!by) {show(message, "请填写决定人姓名", "error"); return;}
+        if (await submitDraft(form.action, {decision: fields.get("decision"), by, note: fields.get("note").trim()}, message, button)) location.reload();
+      });
+    });
+    document.querySelectorAll("[data-atlas-survey]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = form.querySelector("[data-atlas-message]");
+        const button = form.querySelector("button[type='submit']");
+        const mode = new FormData(form).get("mode");
+        if (await submitDraft(form.action, {mode}, message, button)) location.reload();
+      });
+    });
+    document.querySelectorAll("[data-fixture-mark]").forEach(form => {
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const fields = new FormData(form);
+        const message = form.querySelector("[data-fixture-message]");
+        const button = form.querySelector("button[type='submit']");
+        const by = fields.get("by").trim();
+        const promoted = fields.get("recipe").trim();
+        if (!by) {show(message, "请填写标记人姓名", "error"); return;}
+        if (fields.get("resolution") === "promoted" && !promoted) {
+          show(message, "请填写配方名称", "error"); return;
+        }
+        const body = fields.get("resolution") === "promoted" ? {by, promoted} : {by, dismiss: true};
+        if (await submitDraft(form.action, body, message, button)) location.reload();
+      });
+    });
     document.querySelectorAll("[data-clarification-form]").forEach(form => {
       const message = form.querySelector("[data-clarification-message]");
       const button = form.querySelector("button[type='submit']");
@@ -828,7 +922,11 @@
       const response = await fetch(panel.dataset.environmentUrl, {cache: "no-store"});
       const data = await response.json();
       document.getElementById("environment-state").textContent = "环境" + data.status;
-      document.getElementById("environment-ports").textContent = "环境端口：" + (data.ports.join("、") || "未声明");
+      const ports = document.getElementById("environment-ports");
+      if (ports) ports.textContent = "环境端口：" + (data.ports.join("、") || "未声明");
+      const probes = document.getElementById("environment-probes");
+      if (probes && data.external) probes.textContent = "外部环境（使用者维护，看板只探测）：" + (data.external.probes.map(
+        p => p.name + (p.ok ? " 通过" : " 未通过") + (p.message ? "（" + p.message + "）" : "")).join("；") || "尚未探测");
       document.getElementById("environment-check-state").textContent = data.checking ? "自检中" : (data.check_passed ? "最近自检通过" : "尚未通过自检") + (data.checked_at ? " · " + data.checked_at : "");
       const checkNotice = document.getElementById("environment-check-notice");
       if (checkNotice) checkNotice.textContent = data.check_notice || "";

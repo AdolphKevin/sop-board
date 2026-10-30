@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -66,7 +67,18 @@ class Session:
         finally:
             self.service.merge_callback, self.service.execution_callback = merge, execute
 
-    def person(self, value):
+    def default_person(self):
+        """使用者为工作区设置的默认业务确认人（D99）；未设置时为空。"""
+        with self.store.connection() as db:
+            row = db.execute('SELECT value FROM settings WHERE key=?', ('default_confirmer:' + self.key,)).fetchone()
+        return row['value'] if row else ''
+
+    def person(self, value, *alternatives):
+        """署名：优先用本次给出的姓名；同一命令里人只给了一个姓名时，用它补齐其余署名；都没有时用默认业务确认人。"""
+        if not isinstance(value, str) or not value.strip():
+            value = next((v for v in alternatives if isinstance(v, str) and v.strip()), '') or self.default_person()
+            if not value:
+                raise ValueError('请填写使用者给出的姓名，或由使用者先用 sop-board confirmer --set <姓名> 设置默认业务确认人')
         value = identity(value)
         with self.store.connection() as db:
             sessions = {r[0].casefold() for r in db.execute('SELECT s.session_id FROM session_tasks s JOIN tasks t ON t.id=s.task WHERE t.workspace=?', (self.key,))}
@@ -298,9 +310,9 @@ class Session:
                 if explicit:
                     with self.store.connection() as db:
                         group = self.service.batch(db, self.key, batch)
-                        available = {s['scenario'] for s in calculate(db, group)['scenarios'] if not s['held']}
+                        available = {s['scenario'] for s in calculate(db, group)['scenarios'] if not s['held'] and not s.get('waiting_change')}
                     if set(selected) - available:
-                        raise ValueError('场景不存在或待补充：' + '、'.join(sorted(set(selected) - available)))
+                        raise ValueError('场景不存在、待补充或等待修改场景：' + '、'.join(sorted(set(selected) - available)))
                 # 明确编号与看板相同：待执行的场景保留原因（产品变化待判定项可按影响判定沿用），其余记为 rerun。
                 result = (self.tasks.executions.enqueue(self.key, batch, selected=selected, session=True) if explicit else
                           self.tasks.executions.enqueue(self.key, batch, selection=selected[0], session=True))
@@ -325,6 +337,9 @@ class Session:
 
     def prepare_execution(self, task):
         from .credentials import blocked_results
+        environment = self.service.environment
+        if environment.external() and not environment.check_external(record=False):
+            raise ValueError(environment.state['error'] + f"；已登记待人处理，执行任务 #{task['id']} 已认领，环境恢复后重新运行同一 execute prepare 继续")
         snapshot, inputs, files = self.tasks.executions.freeze(task)
         task.update(snapshot_json=canonical(snapshot), input_json=canonical(inputs))
         self.tasks.update(task['id'], snapshot_json=task['snapshot_json'], input_json=task['input_json'],
@@ -426,12 +441,34 @@ class Session:
             check = self.service.environment.latest_check()
             attempt = self.service.environment.latest_check_attempt()
             reports = sorted((self.workspace.data/'checks').glob('*.json'))
+            approved = self.service.environment.approved()
+            command = f'sop-board check {self.key} --data {shlex.quote(str(self.workspace.data))}'
+            if approved:
+                notice = ''
+            elif not self.workspace.configured:
+                notice = '配置不合格，修正后由使用者在沙箱外运行 ' + command
+            elif check is None:
+                notice = '尚未自检：请使用者在沙箱外运行 ' + command
+            elif check.get('config_digest') != self.workspace.config_digest:
+                notice = '配置变化后尚未自检，执行与修复已停用：请使用者在沙箱外运行 ' + command
+            else:
+                notice = '最近一次自检未通过，执行与修复已停用：查看报告修正后运行 ' + command
             return dict(ok=True, workspace=self.workspace.public(), data=str(self.workspace.data), batches=batches,
-                        setup_check=dict(ok=self.service.environment.approved(),finished_at=check.get('finished_at') if check else None,
+                        setup_check=dict(ok=approved,message=notice,finished_at=check.get('finished_at') if check else None,
                             report=str(reports[-1]) if reports else None,
                             latest_attempt=dict(ok=attempt.get('ok'),completed=attempt.get('completed',True),
                                 finished_at=attempt.get('finished_at'),report=attempt['path'],message=attempt.get('message','')) if attempt else None),
-                        attention=self.tasks.fixes.attention(self.key, self.board_origin())['items'])
+                        attention=self.tasks.fixes.attention(self.key, self.board_origin())['items'],
+                        default_confirmer=self.default_person() or None)
+
+    def other_sessions(self, owner):
+        """同一工作区其他会话认领、仍在处理或等待验证的任务（D99），供准备与提交时提示。"""
+        fold = lambda value: ' '.join(str(value).casefold().split())
+        with self.store.connection() as db:
+            rows = db.execute('SELECT t.id,t.kind,t.batch,t.status,s.session_id FROM tasks t JOIN session_tasks s ON s.task=t.id '
+                              'WHERE t.workspace=? AND t.status IN (?,?,?) ORDER BY t.id', (self.key, S.SESSION, S.WAIT_VALIDATION, S.WAIT_COMMIT)).fetchall()
+        return [dict(task=r['id'], kind=r['kind'], batch=r['batch'], status=r['status'], session=r['session_id'])
+                for r in rows if not owner or fold(r['session_id']) != fold(owner)]
 
     def board_origin(self):
         with self.store.connection() as db:
@@ -465,7 +502,7 @@ def parser_for(group):
         parser.set_defaults(action='status')
     else:
         actions = {'task': ('list','show','cancel'), 'draft': ('prepare','submit','annotate','confirm'),
-                   'cases': ('upload',), 'merge': ('prepare','submit','reply','exclude','include'),
+                   'cases': ('upload','export'), 'merge': ('prepare','submit','reply','exclude','include'),
                    'execute': ('prepare','submit'), 'fix': ('prepare','submit','land'), 'sop': ('upload','prepare','answer','submit')}[group]
         sub = parser.add_subparsers(dest='action', required=True)
         choices = {action: sub.add_parser(action) for action in actions}
@@ -487,21 +524,29 @@ def parser_for(group):
             child.add_argument('--task', type=int, required=True)
         if group == 'fix' and action == 'prepare':
             child.add_argument('--scenario', nargs='+', help='批次#场景；省略则认领当前可处理问题')
+            child.add_argument('--issues', nargs='+', type=int, default=[], help='问题台账编号：认领这些问题当前可认领的失败场景')
         if group == 'execute' and action == 'prepare':
             child.add_argument('--scope', nargs='+', default=['pending'])
             child.add_argument('--fix', type=int, help='独立复验已提交修复输出的会话任务，不再填写批次或 --scope')
+            child.add_argument('--plan', choices=('pending', 'failed', 'regression'), help='按执行计划取下一轮场景（D91），与 --scope 二选一')
+            child.add_argument('--round-size', type=int, help='按计划取场景时每轮的场景数，缺省按工作区 run.round_size 或 15')
         if group == 'execute' and action == 'submit':
             child.add_argument('--implementer', help='实际实现者；省略时登记独立性未声明')
+        if group == 'cases' and action == 'export':
+            child.add_argument('--upload', type=int, help='按哪次上传的格式和顺序导出；缺省为最近一次非合并澄清的上传')
+            child.add_argument('--out', type=Path, help='导出到新文件')
+            child.add_argument('--write-back', action='store_true', help='写回会话上传时记录的原文件')
         if group in ('cases','sop') and action == 'upload':
-            child.add_argument('--uploaded-by', required=True)
+            child.add_argument('--uploaded-by', help='上传人姓名；省略时用同一命令给出的其他姓名或默认业务确认人')
         if group == 'sop' and action in ('upload','submit'):
-            child.add_argument('--confirmed-by', required=True)
+            child.add_argument('--confirmed-by', help='业务确认人姓名；省略时用同一命令给出的其他姓名或默认业务确认人')
         if group == 'sop' and action == 'prepare':
             child.add_argument('--source',type=Path,nargs='+',action='extend',required=True)
         if group == 'sop' and action == 'answer':
             child.add_argument('--task',type=int)
-            for name in ('question','text','author'):
+            for name in ('question','text'):
                 child.add_argument('--'+name,required=True)
+            child.add_argument('--author', help='答复人姓名；省略时用默认业务确认人')
         if action in ('annotate','confirm'):
             child.add_argument('--version', type=int, required=True)
         if action == 'annotate':
@@ -509,12 +554,12 @@ def parser_for(group):
                                help='draft，或所选版本中的 case:<用例编号>、rule:<规则编号>、question:<问题编号>')
             child.add_argument('--kind', required=True,
                                help='comment、remove、add 或 answer；answer 只能指向 question:，remove 只能指向 case:')
-            for name in ('text','author'):
-                child.add_argument('--' + name, required=True)
+            child.add_argument('--text', required=True)
+            child.add_argument('--author', help='批注人姓名；省略时用默认业务确认人')
         if action == 'confirm':
-            child.add_argument('--confirmed-by', required=True)
+            child.add_argument('--confirmed-by', help='业务确认人姓名；省略时用同一命令给出的其他姓名或默认业务确认人')
         if action in ('reply','exclude','include'):
-            child.add_argument('--author', required=True)
+            child.add_argument('--author', help='答复人姓名；省略时用默认业务确认人')
             if action in ('reply','exclude'):
                 child.add_argument('--gap', required=True)
             if action == 'reply':
@@ -587,7 +632,7 @@ def command(arguments):
                     app.owner = identity(args.session)
                     if group == 'fix':
                         app.sync()
-                        tid = fixes.prepare(app.owner,args.scenario)
+                        tid = fixes.prepare(app.owner,args.scenario,args.issues)
                     else:
                         if args.scope != ['pending'] or args.replace_queued:
                             raise ValueError('--fix 的范围来自问题与受影响场景，不能同时指定 --scope 或替换排队任务')
@@ -598,8 +643,20 @@ def command(arguments):
                 else:
                     result = fixes.land(args.task)
             elif args.action == 'prepare':
-                result = app.prepare(KINDS[group], batch, args.session, replace_queued=args.replace_queued,
-                                     scope=getattr(args, 'scope', ('pending',)))
+                scope = getattr(args, 'scope', ('pending',))
+                if getattr(args, 'plan', None):
+                    if list(scope) != ['pending']:
+                        raise ValueError('--plan 与 --scope 二选一')
+                    from .plans import Runs, build
+                    app.sync()
+                    with app.store.connection() as db:
+                        from .attention import open_scenarios
+                        plan = build(db, app.service.batch(db, app.key, batch), args.plan, args.round_size or Runs(app.tasks).settings()['round_size'],
+                                     skip=open_scenarios(db, app.key, batch))
+                    if not plan['rounds']:
+                        raise ValueError('计划中没有待执行的场景')
+                    scope = [item['scenario'] for item in plan['rounds'][0]]
+                result = app.prepare(KINDS[group], batch, args.session, replace_queued=args.replace_queued, scope=scope)
             elif args.action == 'submit':
                 result = app.submit(KINDS[group], args.task, implementer=getattr(args, 'implementer', None), owner=args.session)
             else:
@@ -609,15 +666,22 @@ def command(arguments):
                 if group == 'sop':
                     from .validation import validate_batch
                     validate_batch(batch)
-                    body = dict(filename=filename.name,content=upload_text(filename,'sop-invalid','SOP 原文必须为 UTF-8'),uploaded_by=app.person(args.uploaded_by),
-                        confirmed_by=app.person(args.confirmed_by),base_sha256=app.service.sop_sha256(batch))
+                    body = dict(filename=filename.name,content=upload_text(filename,'sop-invalid','SOP 原文必须为 UTF-8'),
+                        uploaded_by=app.person(args.uploaded_by,args.confirmed_by),
+                        confirmed_by=app.person(args.confirmed_by,args.uploaded_by),base_sha256=app.service.sop_sha256(batch))
                     result = app.upload_sop(batch,body)
+                elif group == 'cases' and args.action == 'export':
+                    from .case_export import export
+                    result = export(app.service, app.key, batch, upload=args.upload, out=args.out, write_back=args.write_back)
                 elif group == 'cases':
                     from .cases import load_cases
                     body = dict(filename=filename.name, content=upload_text(filename, 'cases-invalid', '用例文件必须为 UTF-8'), uploaded_by=app.person(args.uploaded_by))
                     load_cases(body)
                     app.preflight('merge', batch)
                     result = app.service.upload_cases(app.key, batch, body)
+                    from .case_export import record_source
+                    with app.store.transaction() as db:
+                        record_source(db, app.service.batch(db, app.key, batch)['id'], result['upload'], filename)
                     if getattr(app, 'last_merge', None):
                         result['task'] = app.tasks.read(app.last_merge)
                 elif group == 'draft' and args.action == 'annotate':
@@ -645,11 +709,20 @@ def command(arguments):
                         result['task'] = app.claim(result['task']['id'])
         if app.replaced_tasks:
             result['replaced_tasks'] = app.replaced_tasks
+        if getattr(args, 'action', '') in ('prepare', 'submit') and isinstance(result, dict) and result.get('ok', True):
+            others = app.other_sessions(getattr(args, 'session', None) or result.get('session'))
+            if others:
+                result['other_sessions'] = others
+                result['concurrency_notice'] = ('同一工作区还有其他会话的任务：' + '；'.join(
+                    f"#{o['task']} {o['kind']}{'（' + o['batch'] + '）' if o['batch'] else ''} {o['status']}，会话 {o['session']}" for o in others) +
+                    '。它们可能同时改动产品代码或场景；登记结果前留意输出中的 product_changed 与 voided_scenarios，不替对方提交或取消任务')
         result = app.complete_links(result)
         if group == 'status' and not args.json:
             print('工作区：' + result['workspace']['name'])
             for row in result['batches']:
                 print(f"批次 {row['name']}：{row['scenario_count']} 条场景；待执行 {row['queue_counts']['pending']}")
+            print('自检：' + ('通过' if result['setup_check']['ok'] else result['setup_check']['message']))
+            print('默认业务确认人：' + (result['default_confirmer'] or '未设置（答复、确认和上传须写姓名）'))
             print('待开发者处理：' + str(len(result['attention'])) + ' 项')
             for item in result['attention']:
                 print(f"- {item['kind']}：{item['reason']} · {item['url']}" + (f" · {item['resume']}" if item.get('resume') else ''))
@@ -663,6 +736,42 @@ def command(arguments):
                       guidance='先按 sop-board guide 运行 sop-board init 登记工作区，再核对命令参数')
     except (OSError, ValueError, KeyError, TypeError, RecursionError, sqlite3.Error, subprocess.SubprocessError) as error:
         result = dict(ok=False, error_code='session-command-invalid', problems=[dict(field='command', problem=str(error))])
+    finally:
+        if app:
+            app.close()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 1
+
+
+def confirmer_command(arguments):
+    """sop-board confirmer [工作区] [--set 姓名 | --clear]：默认业务确认人（D99）。只登记使用者给出的姓名。"""
+    parser = argparse.ArgumentParser(prog='sop-board confirmer', description='默认业务确认人：会话的答复、确认和上传省略姓名时使用')
+    parser.add_argument('targets', nargs='*', help='[工作区]')
+    parser.add_argument('--data', type=Path)
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument('--set', dest='name', help='使用者给出的姓名')
+    choice.add_argument('--clear', action='store_true')
+    args = parser.parse_args(arguments)
+    app = None
+    try:
+        app = Session(args.targets[0] if args.targets else None, args.data)
+        key = 'default_confirmer:' + app.key
+        if args.name is not None:
+            if not args.name.strip():
+                raise ValueError('请填写使用者给出的姓名')
+            name = app.person(args.name)
+            with app.store.transaction() as db:
+                db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, name))
+        elif args.clear:
+            with app.store.transaction() as db:
+                db.execute('DELETE FROM settings WHERE key=?', (key,))
+        result = dict(ok=True, default_confirmer=app.default_person() or None)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    except APIError as error:
+        result = dict(ok=False, error_code=error.code, problems=error.problems)
+    except (WorkspaceNotFound, OSError, ValueError, sqlite3.Error) as error:
+        result = dict(ok=False, problems=[dict(field='confirmer', problem=str(error))])
     finally:
         if app:
             app.close()

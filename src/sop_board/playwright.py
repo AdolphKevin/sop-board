@@ -116,6 +116,10 @@ def _submit(args):
         sid = row.get('scenario') if isinstance(row, dict) else None
         if not isinstance(sid, str) or sid not in expected or sid in seen:
             raise InputError('结果含重复或范围外编号')
+        if row.get('status') == 'not-executed':
+            # 部分试跑的未执行标记行不登记，场景留在待执行范围（D87）。
+            uploads.append(None)
+            continue
         seen.add(sid)
         if row.get('status') not in ('pass', 'fail', 'blocked', 'skip') or not all(isinstance(row.get(k), str) and row[k].strip() for k in ('actual', 'executed_at', 'executor')):
             raise InputError(f'{sid} 结果字段不完整')
@@ -136,8 +140,10 @@ def _submit(args):
                 raise InputError('证据不存在、越界或超过 64 MiB')
             data.append((path.name, path.read_bytes()))
         uploads.append(data)
-    if not rows or not args.allow_partial and seen != set(expected):
+    if not seen or not args.allow_partial and seen != set(expected):
         raise InputError('结果未覆盖 scope；部分试跑须显式 --allow-partial')
+    rows, uploads = zip(*[(row, data) for row, data in zip(rows, uploads) if data is not None]) if seen else ([], [])
+    rows = list(rows)
     base = f"/api/v1/workspaces/{quote(scope['project'], safe='')}/batches/{quote(scope['batch'], safe='')}"
     opener = build_opener(ProxyHandler({}), NoRedirect())
     def request(path, data=None, extra=None):

@@ -49,6 +49,7 @@ class Service:
         self.store = store
         self.task_repositories = TaskRepositories(store)
         self.workspace, self.environment = workspace, environment
+        environment.alert = self.environment_alert
         self.workspace_problems = {}
         self.merge_callback = None
         self.sop_callback = None
@@ -61,6 +62,8 @@ class Service:
             for row in db.execute('SELECT input_json,snapshot_json FROM tasks'):
                 for value in row:
                     workspace.credential_names.update(declared_in(json.loads(value)))
+            for row in db.execute('SELECT record_json FROM fixture_runs'):
+                workspace.credential_names.update(declared_in(json.loads(row[0])))
 
     def automation_paused(self, db):
         row = db.execute("SELECT value FROM settings WHERE key='automation_paused'").fetchone()
@@ -91,6 +94,9 @@ class Service:
         problems = []
         for batch in db.execute('SELECT * FROM batches WHERE workspace=? AND (? IS NULL OR name=?) ORDER BY id', (key, name, name)):
             for scene in calculate(db, batch)['scenarios']:
+                if scene.get('waiting_change'):
+                    # 界面对照决定“改 SOP”的场景等场景修改（D85），它的失败不交给产品修复。
+                    continue
                 latest = max((r for r in (scene['latest_manual'], scene['latest_agent']) if r),
                              key=lambda r: r['number'], default=None)
                 if not latest or not (
@@ -118,9 +124,20 @@ class Service:
                               for e in latest['evidence']]))
         return problems
 
+    def environment_alert(self, text):
+        """外部环境探测未通过（D97）：登记待人处理；同一说明未处理前不重复登记。"""
+        from .attention import add
+        with self.store.connection() as db:
+            if db.execute("SELECT 1 FROM attention_items WHERE workspace=? AND kind='environment' AND text=? AND resolved_at IS NULL",
+                          (self.workspace.name, text)).fetchone():
+                return
+        add(self.store, self.workspace.name, kind='environment', text=text, created_by='环境探测')
+
     def fix_start_reason(self, db, key):
         if self.automation_paused(db):
             return '自动任务已暂停'
+        if self.environment.external():
+            return '外部环境由使用者维护，看板不做修复；请用会话修复'
         if db.execute("SELECT 1 FROM tasks WHERE workspace=? AND kind='fix' "
                       f'AND status NOT IN ({sql_states(FIX_TERMINAL)}) LIMIT 1', (key,)).fetchone():
             return '等待当前修复结束'
@@ -523,6 +540,8 @@ class Service:
             sources = {}
             for row in db.execute('SELECT * FROM sop_versions WHERE batch=? ORDER BY path,version DESC', (batch['id'],)):
                 version = dict(row)
+                upload = db.execute('SELECT uploaded_by FROM sop_uploads WHERE version=?', (row['id'],)).fetchone()
+                version['uploaded_by'] = upload['uploaded_by'] if upload else ''
                 version['authorship'] = [dict(sources=json.loads(r['sources_json']),answers=json.loads(r['answers_json']),
                     confirmed_by=r['confirmed_by'],registered_at=r['registered_at']) for r in db.execute(
                         'SELECT * FROM author_sop_registrations WHERE version=? ORDER BY task',(row['id'],))]
@@ -643,6 +662,10 @@ class Service:
                     review=self.fix_review_state(db, batch['workspace'], batch['name']),
                     execution=execution, execution_tasks=tasks, task_links=self.task_links(db, batch), fix_statistics=fix_statistics, automation_paused=self.automation_paused(db),
                     auto_execute=self.auto_execute_enabled(db), holds=read_holds(db, batch),
+                    atlas_checks=__import__('sop_board.atlas', fromlist=['read_checks']).read_checks(db, batch),
+                    **self.run_overview(db, batch),
+                    atlas_bindable=any(row[0] in __import__('sop_board.atlas', fromlist=['entries']).entries(self.workspace) for row in db.execute(
+                        'SELECT DISTINCT verify FROM scenarios WHERE batch=? AND current=1', (batch['id'],))),
                     regression_links=read_links(db, batch, local=local),
                     pushed_at=version["pushed_at"] if version else None,
                     pushed_by=version["pushed_by"] if version else None,
@@ -653,6 +676,24 @@ class Service:
                     entry_problems=self.entries(batch['workspace'], local=local)['problems'] if self.workspace.configured else [],
                     workspace_problems=public_problems(self.workspace_problems.get((batch["workspace"], batch["name"]), []), local=local),
                     scenario_file_sha256=version["sha256"] if version else None, product_digest=batch["product_digest"], **result)
+
+    def run_overview(self, db, batch):
+        """批次页：连续运行状态、按计划的下一轮预览、本批次待人处理事项、问题台账与决定记录（D91、D93、D94、D98、D99）。"""
+        from .plans import build, DEFAULTS
+        from .attention import items
+        from .issues import items as issue_items, decision_log
+        row = db.execute('SELECT * FROM batch_runs WHERE batch=?', (batch['id'],)).fetchone()
+        size = (getattr(self.workspace, 'run', None) or {}).get('round_size', DEFAULTS['round_size'])
+        from .attention import open_scenarios
+        try:
+            plan = build(db, batch, 'pending', size, skip=open_scenarios(db, self.workspace.name, batch['name']))
+        except (ValueError, KeyError):
+            plan = dict(total=0, groups=0, rounds=[])
+        return dict(batch_run=dict(row) if row else None, attention=[i for i in items(db, self.workspace.name) if i['batch'] == batch['name']],
+                    issues=issue_items(db, self.workspace.name, batch=batch['name']), decisions=decision_log(db, self.workspace.name, batch['name'], 20),
+                    environment={key: value for key, value in self.environment.public().items() if key in ('status', 'external')},
+                    plan_preview=dict(total=plan['total'], groups=plan['groups'], rounds=len(plan['rounds']), round_size=size,
+                                      next=plan['rounds'][0] if plan['rounds'] else []))
 
     def read_batch(self, key, name, scenarios=False, *, local=True):
         with self.store.connection() as db:
@@ -700,6 +741,11 @@ class Service:
                 task['ownership'] = claim_message(task['session_task'])
                 task['kind'] = 'fix'
             workspace['fix_tasks'] = [project_task(task, local=local) for task in workspace['fix_tasks']]
+            if local and self.workspace.fixtures is not None:
+                workspace['fixtures'] = True
+            from .atlas import entries as atlas_entries
+            if atlas_entries(self.workspace):
+                workspace['atlas'] = True
             return dict(ok=True, workspaces=[workspace], automation_paused=self.automation_paused(db))
 
     def read_round(self, key, name, number, *, local=True):
@@ -707,8 +753,9 @@ class Service:
             db.execute("BEGIN")
             batch = self.batch(db, key, name)
             row = db.execute("SELECT r.*,COALESCE(o.origin,'unknown') AS execution_origin,COALESCE(c.changed_json,'[]') AS product_changed,"
-                             "COALESCE(c.uncommitted_json,'[]') AS product_uncommitted "
+                             "COALESCE(c.uncommitted_json,'[]') AS product_uncommitted,COALESCE(a.versions_json,'{}') AS atlas_versions "
                              "FROM rounds r LEFT JOIN round_origins o ON o.round_id=r.id LEFT JOIN round_product_changes c ON c.round_id=r.id "
+                             "LEFT JOIN round_atlas a ON a.round_id=r.id "
                              "WHERE r.batch=? AND r.number=?", (batch["id"], number)).fetchone()
             if not row:
                 reject(404, "round-not-found", "round", "轮次不存在")
@@ -717,6 +764,10 @@ class Service:
                 item = dict(stored)
                 item["evidence"] = [dict(e) for e in db.execute(
                     "SELECT name,sha256 FROM result_evidence WHERE result_id=? ORDER BY ordinal", (stored["id"],))]
+                from .fixtures import result_runs
+                preparations = result_runs(db, stored['id'], self.workspace, local=local)
+                if preparations:
+                    item['fixtures'] = preparations
                 for key_ in ("id", "round_id"):
                     item.pop(key_)
                 for key_ in ("session", "finding", "note"):
@@ -732,7 +783,7 @@ class Service:
                                      changed=json.loads(row["product_changed"]),
                                      uncommitted=[item["path"] for item in json.loads(row["product_uncommitted"])]),
                         implementer=row["implementer"], submitted_by=row["submitted_by"], submitted_at=row["submitted_at"],
-                        results=results)
+                        atlas=json.loads(row["atlas_versions"]), results=results)
 
     def read_scenario(self, key, name, scenario, *, local=True):
         """详情保留当前与历史内容，不受 calculate 的当前版本过滤影响。"""
@@ -751,6 +802,10 @@ class Service:
                 "WHERE t.batch=? AND r.scenario=? ORDER BY t.number,r.id", (batch["id"], scenario))]
             for row in results:
                 row["product_changed"] = json.loads(row["product_changed"])
+                from .fixtures import result_runs
+                preparations = result_runs(db, row['id'], self.workspace, local=local)
+                if preparations:
+                    row['fixtures'] = preparations
                 if not local:
                     row.pop("session", None)
                 row["evidence"] = [dict(item) for item in db.execute(

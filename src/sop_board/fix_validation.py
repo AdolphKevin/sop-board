@@ -38,17 +38,29 @@ class FixValidation:
         workspace = self.fixes.service.workspace
         directory, snapshot = runtime['directory'], runtime['snapshot']
         runnable, blocked, info = runtime['runnable'], runtime['blocked'], runtime['info']
-        addresses = {name: environment[entry['address_env']] for name, entry in workspace.entries.items()
-            if entry.get('address_env') and entry['address_env'] in environment and entry['address_env'] not in credential_names(workspace.entries)}
+        entries = snapshot.get('execution_entries', workspace.execution_entries())
+        from .fixtures import materialize
+        materialize(self.fixes.service, directory, {s['batch'] for s in runtime['selected']}, snapshot.get('fixtures'))
+        addresses = {name: environment[entry['address_env']] for name, entry in entries.items()
+            if entry.get('address_env') and entry['address_env'] in environment and entry['address_env'] not in credential_names(entries)}
         (directory / 'credential-blocked.json').write_text(canonical(blocked), encoding='utf-8')
         (directory / 'retest.json').write_text(canonical([dict(batch=s['batch'], scenario=s['id'], scene={k:v for k,v in s.items() if k != 'batch'}) for s in runnable]), encoding='utf-8')
-        (directory / 'entries.json').write_text(canonical(dict(entries=workspace.execution_entries(), addresses=addresses)), encoding='utf-8')
+        batches = {s['batch'] for s in runnable}
+        if len(batches) == 1:
+            # 单批次复验同样提供地图节选、绑定与速查卡；跨批次复验按地图索引与 atlas show 查找（D86）。
+            from .service import fingerprint
+            from .executions import write_brief
+            info_atlas = self.tasks.atlas.materialize_execution(directory, next(iter(batches)),
+                [dict(id=s['id'], verify=s['verify'], fingerprint=fingerprint({k: v for k, v in s.items() if k != 'batch'})) for s in runnable])
+            write_brief(directory, [dict(scenario=s['id'], reason='rerun') for s in runnable], entries, info_atlas,
+                        snapshot.get('fixtures') is not None, task_id=task['id'])
+        (directory / 'entries.json').write_text(canonical(dict(entries=entries, addresses=addresses)), encoding='utf-8')
         (directory / 'snapshot.json').write_text(canonical(dict(snapshot, repositories=info['repos'])), encoding='utf-8')
         (directory / 'repos.json').write_text(canonical({alias:str(path) for alias,path in runtime['directories'].items()}),encoding='utf-8')
         (directory / 'cases.json').write_text(canonical(snapshot['cases']), encoding='utf-8')
         web_scopes = []
         for index, batch in enumerate(dict.fromkeys(scene['batch'] for scene in runnable), 1):
-            batch_scenes = [scene for scene in runnable if scene['batch'] == batch and workspace.entries[scene['verify']]['surface'] == 'web' and workspace.entries[scene['verify']].get('driver') in (None, 'playwright-acceptance')]
+            batch_scenes = [scene for scene in runnable if scene['batch'] == batch and entries[scene['verify']]['surface'] == 'web' and entries[scene['verify']].get('driver') in (None, 'playwright-acceptance')]
             if not batch_scenes:
                 continue
             folder = directory / 'playwright' / str(index)
@@ -59,7 +71,7 @@ class FixValidation:
                 for node in document['sops'] if any(scene['id'] in ids for scene in node['scenarios'])]
             source = folder / 'scenarios.yaml'
             source.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding='utf-8')
-            scope_file = write_scope(folder, task['workspace'], batch, source, batch_scenes, entries=workspace.entries)
+            scope_file = write_scope(folder, task['workspace'], batch, source, batch_scenes, entries=entries)
             web_scopes.append(dict(batch=batch, scope=str(scope_file), scenarios=str(source)))
         (directory / 'playwright-scopes.json').write_text(canonical(web_scopes), encoding='utf-8')
         prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(task_directory=directory, skill_path=workspace.skill,
@@ -196,7 +208,9 @@ class FixValidation:
         if stale:
             return dict(status='void', reason=stale, evidence=[], scenarios=[])
         try:
-            snapshot = dict(snapshot, skill_digest=workspace.skill_digest())
+            from .fixtures import definition
+            snapshot = dict(snapshot, skill_digest=workspace.skill_digest(),
+                            execution_entries=workspace.execution_entries(), fixtures=definition(workspace))
             self.tasks.worktree_environments[task['id']] = self.fixes.repositories.ensure(task['id'], snapshot['aliases'])
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             return dict(status='fail', reason='复测前工作树核对失败：' + str(error), evidence=[], scenarios=[])

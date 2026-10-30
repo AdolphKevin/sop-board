@@ -39,7 +39,7 @@ class Fixes:
                 f'AND status IN ({sql_states(FIX_ACTIVE)})', (key,)).fetchone())
 
     def schedule(self, task):
-        error = codex_available()
+        error = self.tasks.kernel.agent_available('fix')
         if error:
             self.tasks.update(task['id'], status=S.UNAVAILABLE, error=error)
             return
@@ -597,6 +597,13 @@ class Fixes:
                     db.execute('UPDATE batches SET product_digest=? WHERE id=?', (product['product_digest'], batch['id']))
                 db.execute('UPDATE fix_validations SET promoted_round=? WHERE task=? AND attempt=? AND validation=? AND batch=?',
                     (number, task['id'], task['attempt'], record['validation'], record['batch']))
+                from .fixtures import link_results
+                directory = self.tasks.directory(task['id']) / 'validations' / str(task['attempt']) / str(record['validation'])
+                link_results(db, task['id'], batch, number, directory)
+                from .atlas import record_round
+                record_round(db, batch['id'], number, directory)
+                if not rounds:  # 同一复验目录的反馈只收一次
+                    self.tasks.atlas.collect_feedback(db, task['id'], directory)
                 rounds.append(dict(batch=record['batch'], round=number))
             db.execute(f"UPDATE tasks SET status='{S.MERGED}',finished_at=?,error=?,rounds_json=? WHERE id=?",
                 (now(), reason, canonical(rounds), task['id']))
@@ -790,7 +797,33 @@ class Fixes:
         db.execute('INSERT INTO fix_tasks(task) VALUES (?)', (task_id,))
         db.executemany('INSERT INTO fix_problems(task,batch,scenario,fingerprint,result_id,first_attempt,input_json) VALUES (?,?,?,?,?,0,?)',
             [(task_id,p['batch'],p['scenario'],p['fingerprint'],p['result_id'],canonical(p)) for p in problems])
+        from .issues import link_fix
+        link_fix(db, key, task_id, {(p['batch'], p['scenario']) for p in problems})
         return task_id
+
+    def handoff_issue(self, key, number):
+        """问题台账“交给看板修复”（D98）：把问题关联场景中当前可交接的会话失败一并交给看板，合成一个修复任务。"""
+        if key != self.service.workspace.name:
+            reject(404,'workspace-not-found','workspace','工作区不存在')
+        from .issues import scenarios_of
+        task_id = None
+        with self.tasks.lock, self.store.transaction() as db:
+            try:
+                pairs = scenarios_of(db, key, [number])
+            except ValueError as error:
+                reject(404,'issue-not-found','issue',str(error))
+            failures = [p for p in self.session_failures(db,key) if (p['batch'],p['scenario']) in pairs]
+            if not failures:
+                reject(409,'nothing-to-fix','issue',f'问题 {number} 关联的场景没有可交给看板的会话失败')
+            for problem in failures:
+                db.execute('INSERT OR IGNORE INTO fix_handoffs(result_id,requested_at) VALUES (?,?)',(problem['result_id'],now()))
+            reason = self.service.fix_start_reason(db,key)
+            if not self.service.environment.approved():
+                reason = '等待工作区自检通过'
+            if not reason:
+                task_id = self.enqueue_problems(db,key,self.unresolved(db,key,automatic=True),f'开发者将问题 {number} 交给看板修复')
+        return dict(ok=True,task=self.tasks.read(task_id) if task_id else None,handed=[f"{p['batch']}#{p['scenario']}" for p in failures],
+            notice='已交给看板修复' + ('，暂未开始：'+reason if reason else ''))
 
     def handoff(self, key, body):
         if key != self.service.workspace.name:

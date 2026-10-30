@@ -88,7 +88,7 @@ class Visibility:
         error = task.get('error', '')
         if not error and task['status'] == S.NEEDS_SYNC:
             error = '任务输入已变化，本轮结果未写入；看板未自动发起新合并时，请开发者在本机核对后重新合并'
-        safe = bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀|编写 SOP)任务 #[0-9]+ 结束', error))
+        safe = bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀|编写 SOP|梳理交互)任务 #[0-9]+ 结束', error))
         if error and not safe and error not in ('等待 Codex 名额', '等待浏览器', '等待验收浏览器', '等待工作区自检通过'):
             error = {S.QUEUED: '任务已排队，等待开始', S.RUNNING: '任务正在运行',
                      S.ANALYZING: '正在分析问题原因', S.FIXING: '正在修复问题',
@@ -120,7 +120,7 @@ GENERATE = Visibility(COMMON | {'result': fields('ok', 'version'), 'gaps': GAPS,
                'all-annotations.json', 'cases.yaml', 'cases-generated.yaml', 'scenarios.yaml')))
 AUTHOR_SOP = Visibility(COMMON | {'result': fields('ok', 'version', 'sha256', 'confirmed_by')})
 EXECUTE = Visibility(COMMON | {'scope': SCOPE, 'rounds': [True], 'reused_count': True, 'rerun_count': True,
-                               'result': fields('ok', 'reused_count', 'rerun_count') | {'product_changed': [True]}},
+                               'result': fields('ok', 'reused_count', 'rerun_count') | {'product_changed': [True], 'voided_scenarios': [True], 'not_executed': [True]}},
                     frozenset(('scenarios.yaml', 'cases.json')))
 DISTILL = Visibility(COMMON | {'scope': SCOPE, 'validation_scenarios': [True]})
 FIX = Visibility(COMMON | fields('repair_origin') | {'scope': SCOPE, 'result': FIX_RESULT, 'problems': [FIX_PROBLEM],
@@ -129,6 +129,8 @@ FIX = Visibility(COMMON | fields('repair_origin') | {'scope': SCOPE, 'result': F
 
 POLICIES = dict(merge=MERGE, generate=GENERATE, execute=EXECUTE, fix=FIX, distill=DISTILL)
 POLICIES['author-sop'] = AUTHOR_SOP
+ATLAS = Visibility(COMMON | {'result': fields('ok', 'entry', 'version', 'pages', 'controls', 'feedback_handled')})
+POLICIES['atlas'] = ATLAS
 
 
 def project(task, *, local):

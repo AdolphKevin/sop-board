@@ -1,0 +1,112 @@
+{
+ "type": "object",
+ "properties": {
+  "scenarios": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "scenario": {
+      "type": "string"
+     },
+     "identity": {
+      "type": "string"
+     },
+     "mutates": {
+      "type": "boolean"
+     },
+     "steps": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "step": {
+         "type": "integer"
+        },
+        "page": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "controls": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "note": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "step",
+        "page",
+        "controls",
+        "note"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "texts": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "text": {
+         "type": "string"
+        },
+        "at": {
+         "type": "string"
+        },
+        "status": {
+         "type": "string",
+         "enum": [
+          "match",
+          "translation",
+          "mismatch",
+          "absent",
+          "data"
+         ]
+        },
+        "ref": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "note": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "text",
+        "at",
+        "status",
+        "ref",
+        "note"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "scenario",
+     "identity",
+     "mutates",
+     "steps",
+     "texts"
+    ],
+    "additionalProperties": false
+   }
+  },
+  "notes": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "scenarios",
+  "notes"
+ ],
+ "additionalProperties": false
+}

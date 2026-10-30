@@ -87,6 +87,10 @@ class PortBusy(ValueError):
         super().__init__(f'端口 {port} 正由工作区 {owner} 的环境使用')
 
 
+class EnvironmentUnhealthy(ValueError):
+    """外部环境探测（含自愈后复测）未通过。"""
+
+
 class CheckUnavailable(ValueError):
     """当前运行条件不足，不能据此否定已完成的配置自检。"""
 
@@ -128,6 +132,83 @@ class Environment:
         self.stopping = False
         self.check_thread = None
         self.check_request_lock = threading.Lock()
+        # 外部环境探测未通过时的提醒（由 Service 接到待人处理队列）。
+        self.alert = None
+
+    def external(self):
+        """adapter.mode: external（D97）：服务由使用者或其脚本启停，看板只探测与执行已授权的自愈命令。"""
+        return self.workspace.adapter.get('mode') == 'external'
+
+    def resolve(self, argv):
+        argv = list(argv)
+        executable = self.workspace.data / argv[0]
+        if executable.is_file():
+            argv[0] = str(executable)
+        return argv
+
+    def probe(self):
+        """逐项只读探测；URL 以收到小于 500 的 HTTP 状态为通过，端口以能建立连接为通过，命令以退出码 0 为通过。
+        不保存探测输出，避免环境值进入记录。"""
+        import urllib.error
+        import urllib.request
+        results = []
+        for item in self.workspace.adapter.get('health', []):
+            timeout = item.get('timeout', 10)
+            try:
+                if 'url' in item:
+                    try:
+                        with urllib.request.urlopen(urllib.request.Request(item['url'], method='GET'), timeout=timeout) as response:
+                            code = response.status
+                    except urllib.error.HTTPError as error:
+                        code = error.code
+                    ok, message = code < 500, f'HTTP {code}'
+                elif 'port' in item:
+                    with socket.create_connection((item.get('host', '127.0.0.1'), item['port']), timeout=timeout):
+                        pass
+                    ok, message = True, '端口可连接'
+                else:
+                    code = subprocess.run(self.resolve(item['command']), cwd=self.workspace.data, env=self.environment(self.workspace.repos),
+                                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                          timeout=timeout).returncode
+                    ok, message = code == 0, f'退出码 {code}'
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                ok, message = False, (str(getattr(error, 'reason', '') or error) or type(error).__name__)[:200]
+            results.append(dict(name=item['name'], ok=ok, message=message))
+        return results
+
+    def heal(self):
+        """依次执行已授权的自愈命令（如重连端口转发）。命令须在完成后退出，常驻进程由脚本自行放到后台；
+        输出不保存，只记录退出码。返回失败说明。"""
+        failures = []
+        for index, argv in enumerate(self.workspace.adapter.get('heal', []), 1):
+            try:
+                code = subprocess.run(self.resolve(argv), cwd=self.workspace.data, env=self.environment(self.workspace.repos),
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      timeout=self.workspace.adapter['ready_timeout'], start_new_session=True).returncode
+                if code:
+                    failures.append(f'自愈命令 {index} 退出码 {code}')
+            except (OSError, subprocess.SubprocessError) as error:
+                failures.append(f'自愈命令 {index} 未能运行：{error}')
+        return failures
+
+    def check_external(self, *, alert=True, record=True):
+        """探测；未通过且声明了自愈命令时先自愈再探测一次；仍未通过时提醒登记待人处理。返回是否通过。"""
+        probes = self.probe()
+        healed, failures = False, []
+        if not all(p['ok'] for p in probes) and self.workspace.adapter.get('heal'):
+            failures, healed = self.heal(), True
+            probes = self.probe()
+        ok = all(p['ok'] for p in probes)
+        failed = [p['name'] for p in probes if not p['ok']]
+        error = '' if ok else ('外部环境探测未通过：' + '、'.join(failed) +
+                               ('（已执行自愈命令后仍未通过）' if healed else '（未声明自愈命令）'))
+        self.state = dict(status='外部环境就绪' if ok else '外部环境异常', mode='external', probes=probes, healed=healed,
+                          heal_failures=failures, probed_at=stamp(), repositories={}, config_digest=self.workspace.config_digest, error=error)
+        if record:
+            self._record()
+        if not ok and alert and self.alert:
+            self.alert(error)
+        return ok
 
     def latest_check(self):
         files = sorted((self.workspace.data / 'checks').glob('*.json'))
@@ -178,7 +259,7 @@ class Environment:
         # Explicit repository inputs always override values inherited by the board.
         env.update(extra or {})
         from .credentials import names
-        for key in names(self.workspace.entries):
+        for key in names(self.workspace.credential_entries()):
             env.pop(key, None)
             if os.environ.get(key):
                 env[key] = os.environ[key]
@@ -189,7 +270,7 @@ class Environment:
         env['SOP_ENV_LOG_DIR'] = str(log_dir or self.workspace.data / 'env')
         return env
 
-    def agent_environment(self, directories, extra=None):
+    def agent_environment(self, directories, extra=None, *, credential_names=()):
         from .tasks import codex_environment
         from .credentials import AgentEnvironment, names
         full = self.environment(directories, extra)
@@ -201,7 +282,7 @@ class Environment:
             key = entry.get('address_env')
             if key and key in full:
                 env[key] = full[key]
-        declared = names(self.workspace.entries)
+        declared = sorted(set(names(self.workspace.credential_entries())) | set(credential_names))
         for key in declared:
             # 凭据只取启动看板的进程环境，不能被工作树适配返回值替换。
             env.pop(key, None)
@@ -244,7 +325,7 @@ class Environment:
         # 最后一行可能含环境值，不进入日志、任务输出或自检报告。
         visible = lines[:-1] if json_output else lines
         from .credentials import names, redact
-        secrets = [os.environ[name] for name in names(self.workspace.entries) if os.environ.get(name)]
+        secrets = [os.environ[name] for name in names(self.workspace.credential_entries()) if os.environ.get(name)]
         log.write_bytes(redact(('\n'.join(visible) + '\n' + stderr.decode('utf-8', errors='replace')).encode(), secrets))
         if failure or process.returncode:
             permission = permission_failure(stderr) or permission_failure(stdout)
@@ -335,7 +416,7 @@ class Environment:
             self.state['pid'] = self.process.pid
             process = self.process
             from .credentials import names, StreamRedactor
-            secrets = [os.environ[name] for name in names(self.workspace.entries) if os.environ.get(name)]
+            secrets = [os.environ[name] for name in names(self.workspace.credential_entries()) if os.environ.get(name)]
             def read():
                 redactor = StreamRedactor(secrets)
                 with self.log.open('wb') as stream:
@@ -387,6 +468,10 @@ class Environment:
             raise ValueError('看板正在退出')
         if not self.approved():
             raise ValueError('尚未搭建或自检未通过，执行与修复停用')
+        if self.external():
+            if not self.check_external():
+                raise EnvironmentUnhealthy(self.state['error'] + '；已登记待人处理，环境恢复后重新开始')
+            return
         current = {a: dict(directory=str(p), commit=git(p, 'rev-parse', '--verify', 'HEAD').decode().strip())
                    for a, p in self.workspace.repos.items()}
         if (not self.process or self.process.poll() is not None or self.state['repositories'] != current
@@ -406,6 +491,8 @@ class Environment:
             self.workspace.reload()
             if not self.approved():
                 raise ValueError('工作区配置变化或自检未通过')
+            if self.external():
+                raise ValueError('外部环境由使用者维护，看板不能为修复工作树另起环境；请用会话修复（sop-board fix prepare）')
             self._stop()
             try:
                 self._start(directories, extra)
@@ -422,6 +509,10 @@ class Environment:
             self.workspace.reload()
             if not self.approved():
                 raise ValueError('配置变化或自检未通过，请先自检')
+            if self.external():
+                # 外部环境不由看板启停：“重启环境”只重新探测，必要时执行自愈命令。
+                self.check_external()
+                return
             self._stop()
             self.ensure_baseline()
         finally:
@@ -460,6 +551,10 @@ class Environment:
                       checked_at=record['finished_at'] if record else None, check_passed=approved,
                       setup_instructions=instructions,
                       ports=self.workspace.adapter['ports'] if self.workspace.configured else [])
+        if self.workspace.configured and self.external():
+            # 内网只显示探测项名称与是否通过，地址与说明只在本机显示。
+            result['external'] = dict(probed_at=state.get('probed_at'), healed=state.get('healed', False),
+                                      probes=[p if local else dict(name=p['name'], ok=p['ok']) for p in state.get('probes', [])])
         result['check_notice'] = ((attempt.get('message','自检未能在当前环境运行') if local else
             '自检未能在当前环境运行，请开发者在沙箱外处理；已完成的自检结果保留')
             if attempt and attempt.get('completed') is False else '')
@@ -480,7 +575,7 @@ class Environment:
             directory = self.workspace.data / 'checks'
             directory.mkdir(exist_ok=True)
             from .credentials import statuses
-            result.update(config_digest=self.workspace.config_digest,credentials=statuses(self.workspace.entries))
+            result.update(config_digest=self.workspace.config_digest,credentials=statuses(self.workspace.credential_entries()))
             def step(name, action):
                 if not result['ok']:
                     result['steps'].append(dict(name=name, status='未执行', message='前一步未通过' if result['completed'] else '前一步未能完成', log=None))
@@ -564,6 +659,12 @@ class Environment:
                 if failure:
                     raise failure
                 return '已建立并核对各仓工作树，环境就绪并清理；建立日志：' + str(build_log) + '；清理日志：' + str(cleanup_log), log
+            def health():
+                ok = self.check_external(alert=False)
+                text = '；'.join(f"{p['name']} {'通过' if p['ok'] else '未通过'}（{p['message']}）" for p in self.state['probes'])
+                if not ok:
+                    raise ValueError(self.state['error'] + '：' + text)
+                return ('外部环境由使用者维护，看板只探测：' + text + ('；首次探测未通过，已执行自愈命令' if self.state['healed'] else '')), None
             def skills():
                 self.workspace.reload()
                 if self.workspace.skill_problems:
@@ -573,7 +674,9 @@ class Environment:
                     helper = self.workspace.driver_paths.get(name)
                     used.append(name + ('；辅助技能：' + helper if helper else '；辅助技能：无'))
                 return '；'.join(used), None
-            for name, action in [('配置与仓库', config), ('端口', ports), ('基线环境', baseline), ('临时工作树环境', worktrees), ('验证技能', skills)]:
+            steps = ([('配置与仓库', config), ('外部环境探测', health), ('验证技能', skills)] if self.external() else
+                     [('配置与仓库', config), ('端口', ports), ('基线环境', baseline), ('临时工作树环境', worktrees), ('验证技能', skills)])
+            for name, action in steps:
                 step(name, action)
             if self.workspace.reload() or result['config_digest'] != self.workspace.config_digest:
                 result.update(ok=False,completed=True)

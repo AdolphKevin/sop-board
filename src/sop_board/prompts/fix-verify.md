@@ -1,7 +1,10 @@
 $validation_instruction
 任务目录：$task_directory
+任务目录有 brief.md（单批次复验时提供）时先读它：其中写明本轮的地图节选（atlas.json、bindings.json）用法、前置数据规则、时间上限与停止条件，与本提示词同为操作契约。
 $environment_instruction
 只在任务目录写结果与 evidence/，不改仓库，不写测试，不提交或推送。
+
+无关前置数据指 initial_state 中不由本场景步骤产生、也不验证其产生过程的对象或状态。需要准备时先读本轮 fixtures.json，优先用 sop-board fixtures run；没有合适配方且 adhoc 为 true 时，才在声明环境与 scope 内用 fixtures exec --reason <说明> 临时写入。两种命令都带 --task <本任务编号>、--scenario <场景编号> 留痕；跨批次复验用 --scenario <批次>#<场景编号>。real_only 对象与被验收流程应产生的对象只能经真实入口产生，不能写库代替；禁止 DROP、TRUNCATE、无条件 DELETE/UPDATE 及范围外写入。无法准备时记 blocked，finding 写明缺什么配方、范围或真实流程。准备记录只说明数据来源，预期来自场景，结论来自真实入口的观察。
 
 读取 retest.json（batch、scenario、scene）、entries.json（入口与地址）、snapshot.json、cases.json。
 入口 credential_env 声明的变量已从${environment_origin}的环境传入，按项目手册和本任务授权记录使用。只在进程环境和获授权请求中使用取值，关闭命令跟踪，日志、脚本、截图与结果先脱敏；材料只记变量名。缺变量的场景由看板记为受阻，不在 retest.json 中，不更换账号或扩大权限。

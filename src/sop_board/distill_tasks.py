@@ -164,7 +164,7 @@ class DistillTasks:
             needs_browser = any(inputs['entries'][s['verify']]['surface'] == 'web' for s in inputs['scenes'])
             if not self.tasks.kernel.browser(task, needs_browser):
                 return
-            error = codex_available()
+            error = self.tasks.kernel.agent_available('distill')
             if error:
                 raise ValueError(error)
             self.tasks.kernel.start(task, self.execute, S.DISTILLING)

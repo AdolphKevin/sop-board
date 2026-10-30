@@ -30,8 +30,10 @@ class Generations:
     def versions(self, db, draft):
         versions = [dict(row) for row in db.execute('SELECT v.*,EXISTS(SELECT 1 FROM session_tasks s WHERE s.task=v.task) AS session_owned '
             'FROM draft_versions v WHERE draft=? ORDER BY number', (draft['id'],))]
+        from .kernel import resume_command
         for version in versions:
             version['output'] = json.loads(version.pop('output_json'))
+            version['resume'] = resume_command(version['thread_id'], self.tasks.directory(version['task']))
         return versions
 
     def annotations(self, db, draft):
