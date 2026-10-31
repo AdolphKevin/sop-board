@@ -169,7 +169,7 @@ Web 入口可声明 `atlas`，用 `sop-board atlas prepare/submit` 或看板「�
 
 看板可按任务类型改用 Claude Code 执行（`agents`），按“身份 → 页面 → 前置状态”生成执行计划并连续运行，需要人做的事集中在「待人处理」，Web 入口可声明身份池与验证码上限。详见[执行代理、执行计划与连续运行](docs/reference.md#执行代理执行计划与连续运行)。
 
-执行期间只有部分场景变化时只作废这些场景。服务由使用者自己启停时可声明 `adapter.mode: external`，看板只探测并执行已授权的自愈命令。问题记在看板的问题台账（`sop-board issue`），人的决定用 `sop-board decision add` 登记；场景不重叠的会话修复可以并存，其他会话的执行轮次在修复后的产品上独立通过时即可 `fix land`。使用者可设置默认业务确认人（`sop-board confirmer`），答复改写过的用例可用 `sop-board cases export` 导出或写回。详见[问题台账与决定记录](docs/reference.md#问题台账与决定记录)与[配置与环境](docs/reference.md#配置与环境)。
+执行期间只有部分场景变化时只作废这些场景。服务由使用者自己启停时可声明 `adapter.mode: external`，看板只探测并执行已授权的自愈命令。问题记在看板的问题台账（`sop-board issue`），人的决定用 `sop-board decision add` 登记；场景不重叠的会话修复可以并存，其他会话的执行轮次在修复后的产品上独立通过时即可 `fix land`。`fix land` 只核对修复改动的文件，其他变化记入关闭记录（本机专用、永不提交的文件可在 `local_only` 声明后单独列出）；会话修复只核对自己问题场景的输入，登记新版 SOP 改写其他场景不挡住关闭；已放弃的会话修复补跑问题场景通过后也能关闭。使用者可设置默认业务确认人（`sop-board confirmer`），答复改写过的用例可用 `sop-board cases export` 导出或写回。详见[问题台账与决定记录](docs/reference.md#问题台账与决定记录)与[配置与环境](docs/reference.md#配置与环境)。
 
 </details>
 

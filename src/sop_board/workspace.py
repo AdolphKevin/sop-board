@@ -24,8 +24,9 @@ def digest(value):
 
 
 def business_config(config):
-    """运行辅助声明不影响业务输入；格式校验仍检查完整配置。"""
-    result = {key: value for key, value in config.items() if key not in ('fixtures', 'agents', 'run')}
+    """运行辅助声明不影响业务输入；格式校验仍检查完整配置。
+    local_only 只决定关闭修复记录里哪些文件单独列为本机保留文件（D100），不改变产品快照与执行内容。"""
+    result = {key: value for key, value in config.items() if key not in ('fixtures', 'agents', 'run', 'local_only')}
     if isinstance(result.get('adapter'), dict):
         # 外部环境的探测与自愈命令只决定看板何时提醒人，不改变产品或环境内容（D97）。
         result['adapter'] = {key: value for key, value in result['adapter'].items() if key not in ('health', 'heal')}
@@ -33,6 +34,43 @@ def business_config(config):
         result['entries'] = {name: {key: value for key, value in entry.items() if key not in ('web_evidence', 'atlas', 'identities')}
                              if isinstance(entry, dict) else entry for name, entry in result['entries'].items()}
     return result
+
+
+def repo_paths(value, field, repos, problem, noun):
+    """仓库别名到仓内相对路径数组（snapshot_exclude、local_only 共用）；返回别名到 Path 列表。"""
+    result = {}
+    if not isinstance(value, dict):
+        problem(field, '须为仓库别名到仓内相对路径数组的对象')
+        return result
+    for alias, paths in value.items():
+        name = field + '.' + str(alias)
+        if alias not in repos:
+            problem(name, '须为已声明的仓库别名')
+            continue
+        if not isinstance(paths, list):
+            problem(name, '须为仓内相对路径数组')
+            continue
+        selected = []
+        for item in paths:
+            if (not isinstance(item, str) or not item.strip() or '\0' in item
+                    or Path(item).is_absolute() or '..' in Path(item).parts or not Path(item).parts):
+                problem(name, '须为非空仓内相对路径，不能含 .. 或等于仓库根目录')
+                continue
+            relative = Path(item)
+            resolved = (repos[alias] / relative).resolve()
+            if resolved == repos[alias] or not resolved.is_relative_to(repos[alias]):
+                problem(name, noun + '须位于声明仓库内，不能等于仓库根目录')
+            elif relative in selected:
+                problem(name, noun + '不能重复')
+            else:
+                selected.append(relative)
+        result[alias] = selected
+    return result
+
+
+def under(path, roots):
+    """仓内相对路径是否等于或位于所列路径之下（按完整路径段匹配，不支持通配符）。"""
+    return any(Path(path).is_relative_to(root) for root in roots)
 
 
 def command_argv(value):
@@ -272,7 +310,7 @@ class Workspace:
 
     def reload(self):
         repos, identities, entries, adapter, problems = {}, {}, {}, {}, []
-        snapshot_exclude = {}
+        snapshot_exclude, local_only = {}, {}
         scenarios, scenario_repo, skill = None, None, None
         fixtures, fixture_recipes = None, dict(recipes=[], real_only=[])
         agents, run = {}, {}
@@ -286,7 +324,7 @@ class Workspace:
             config = yaml.load(raw, Loader=ConfigLoader)
             if not isinstance(config, dict):
                 raise ValueError('配置应为对象')
-            for field in config.keys() - {'repos', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents', 'run'}:
+            for field in config.keys() - {'repos', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'local_only', 'fixtures', 'agents', 'run'}:
                 problem(field, '格式外字段')
             values = config.get('repos')
             if not isinstance(values, dict) or not values:
@@ -326,33 +364,9 @@ class Workspace:
                         problem('scenarios.path', '场景路径不是目录')
                     else:
                         scenarios, scenario_repo = path, alias
-            exclusions = config.get('snapshot_exclude', {})
-            if not isinstance(exclusions, dict):
-                problem('snapshot_exclude', '须为仓库别名到仓内相对路径数组的对象')
-            else:
-                for alias, paths in exclusions.items():
-                    field = 'snapshot_exclude.' + alias
-                    if alias not in repos:
-                        problem(field, '须为已声明的仓库别名')
-                        continue
-                    if not isinstance(paths, list):
-                        problem(field, '须为仓内相对路径数组')
-                        continue
-                    selected = []
-                    for value in paths:
-                        if (not isinstance(value, str) or not value.strip() or '\0' in value
-                                or Path(value).is_absolute() or '..' in Path(value).parts or not Path(value).parts):
-                            problem(field, '须为非空仓内相对路径，不能含 .. 或等于仓库根目录')
-                            continue
-                        relative = Path(value)
-                        resolved = (repos[alias] / relative).resolve()
-                        if resolved == repos[alias] or not resolved.is_relative_to(repos[alias]):
-                            problem(field, '排除路径须位于声明仓库内，不能等于仓库根目录')
-                        elif relative in selected:
-                            problem(field, '排除路径不能重复')
-                        else:
-                            selected.append(relative)
-                    snapshot_exclude[alias] = selected
+            snapshot_exclude = repo_paths(config.get('snapshot_exclude', {}), 'snapshot_exclude', repos, problem, '排除路径')
+            # D100：本机保留、永不提交的文件；关闭会话修复时在记录中单独列出，执行快照照常包含。
+            local_only = repo_paths(config.get('local_only', {}), 'local_only', repos, problem, '本机保留路径')
             skill = config.get('skill')
             entries = config.get('entries', {})
             problems.extend(validate_entries(entries, repos))
@@ -423,7 +437,7 @@ class Workspace:
         problems.extend(skill_problems)
         changed = fingerprint != self.config_digest
         self.repos, self.identities, self.entries, self.adapter = repos, identities, entries if isinstance(entries, dict) else {}, adapter
-        self.snapshot_exclude = snapshot_exclude
+        self.snapshot_exclude, self.local_only = snapshot_exclude, local_only
         self.fixtures, self.fixture_recipes = fixtures, fixture_recipes
         self.agents, self.run = agents, run
         from .credentials import names
