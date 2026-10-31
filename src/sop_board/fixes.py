@@ -501,7 +501,10 @@ class Fixes:
     def scenario_changes(self, task, scope=None, label='问题场景'):
         """D101：会话修复只核对本修复涉及的场景，不看其他场景、其他批次、无关用例与工作区配置。
         scope 为 (批次, 场景, 指纹) 列表；缺省取问题场景及认领时的指纹，登记修复输出后只看产品问题。
-        场景须仍在当前版本且指纹相同，引用的来源用例须与修复准备时相同；返回变化说明，没有变化时返回空字符串。"""
+        场景须仍在当前版本且指纹相同，引用的来源用例的前置条件、步骤与预期须与修复准备时相同（依据说明、标签等元数据的修订不算）；
+        返回变化说明，没有变化时返回空字符串。"""
+        def checked(case):
+            return canonical({key: case.get(key) for key in ('preconditions', 'steps', 'expected_results')})
         frozen_cases = task['snapshot'].get('cases', {})
         changed, unions = [], {}
         with self.store.connection() as db:
@@ -519,11 +522,11 @@ class Fixes:
                 refs = json.loads(current['body']).get('refs') or []
                 if refs:
                     if name not in unions:
-                        unions[name] = {case['id']: canonical(case) for case in self.service.case_union(db, batch)}
-                    before = {case['id']: canonical(case) for case in frozen_cases.get(name, [])}
+                        unions[name] = {case['id']: checked(case) for case in self.service.case_union(db, batch)}
+                    before = {case['id']: checked(case) for case in frozen_cases.get(name, [])}
                     if any(before.get(ref) != unions[name].get(ref) for ref in refs):
                         changed.append(name + '#' + scenario)
-        return label + '内容或其引用的用例变化：' + '、'.join(dict.fromkeys(changed)) if changed else ''
+        return label + '内容或其引用用例的前置条件、步骤、预期变化：' + '、'.join(dict.fromkeys(changed)) if changed else ''
 
     def defer_merge(self, task, plans, reason=''):
         self.repositories.record_blocked(task['id'], plans)

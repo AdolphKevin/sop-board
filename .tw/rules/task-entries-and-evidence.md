@@ -46,6 +46,6 @@ D99：默认业务确认人存于 settings（default_confirmer:<工作区>），
 
 D100：会话修复 fix land 只核对修复输出登记时记下的 changes：内容须与独立通过快照一致（否则 fix-content-changed）、须已提交（否则 fix-commit-required），两者都只列这些文件；其他文件的变化不挡住关闭，成功输出与尝试记录列出 other_changes（超过 100 条另记总数）。顶层 local_only（写法与校验同 snapshot_exclude，运行配置，不计入业务配置摘要）声明本机专用、永不提交的文件，关闭时单独列为 local_only；changes 中的文件不受声明影响。两种依据的比较都排除场景目录与 snapshot_exclude，“已跟踪但已删除”与“不存在”视为相同。执行快照照常包含 local_only 文件。
 
-D101：会话修复的再次准备、fix submit、复验准备与提交、fix land 只核对本修复的问题场景（复验为所选场景）：仍在当前版本、指纹与认领时（复验为准备时）相同、引用用例与修复快照相同；不再比较全部批次的场景版本、用例并集、配置摘要与自检状态。受保护的 SOP 与场景文件只在再次准备与 fix submit 时核对（SOP-146-N02），复验与 land 不核对。复验准备另须 require_ready，复验快照的 config_digest 取准备时的值，复验期间业务配置或自检状态变化仍作废。看板修复的冻结规则不变。
+D101：会话修复的再次准备、fix submit、复验准备与提交、fix land 只核对本修复的问题场景（复验为所选场景）：仍在当前版本、指纹与认领时（复验为准备时）相同、引用用例的前置条件、步骤与预期与修复快照相同（description、tags 等不比较）；不再比较全部批次的场景版本、用例并集、配置摘要与自检状态。受保护的 SOP 与场景文件只在再次准备与 fix submit 时核对（SOP-146-N02），复验与 land 不核对。复验准备另须 require_ready，复验快照的 config_digest 取准备时的值，复验期间业务配置或自检状态变化仍作废。看板修复的冻结规则不变。
 
 D102：已放弃的会话修复，最后一次尝试已登记产品修复输出（不是已放弃、运行中或已中断）、产品问题没有被其他未放弃的修复认领时，fix land 可按 D98 的独立通过关闭为已处理，关闭说明写明此前放弃的时间；否则返回 fix-not-ready 或 fix-problem-reclaimed。其他操作仍不复活已放弃的修复。verified_by_rounds 同时返回逐个问题场景的原因，fix-validation-required 据此列出须补跑的场景。
