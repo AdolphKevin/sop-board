@@ -498,6 +498,33 @@ class Fixes:
             return '、'.join(changed) + '变化'
         return ''
 
+    def scenario_changes(self, task, scope=None, label='问题场景'):
+        """D101：会话修复只核对本修复涉及的场景，不看其他场景、其他批次、无关用例与工作区配置。
+        scope 为 (批次, 场景, 指纹) 列表；缺省取问题场景及认领时的指纹，登记修复输出后只看产品问题。
+        场景须仍在当前版本且指纹相同，引用的来源用例须与修复准备时相同；返回变化说明，没有变化时返回空字符串。"""
+        frozen_cases = task['snapshot'].get('cases', {})
+        changed, unions = [], {}
+        with self.store.connection() as db:
+            if scope is None:
+                scope = [(r['batch'], r['scenario'], r['fingerprint']) for r in db.execute(
+                    "SELECT DISTINCT batch,scenario,fingerprint FROM fix_problems WHERE task=? AND category IN ('','product') "
+                    'ORDER BY batch,scenario', (task['id'],))]
+            for name, scenario, fingerprint in scope:
+                batch = db.execute('SELECT * FROM batches WHERE workspace=? AND name=?', (task['workspace'], name)).fetchone()
+                current = batch and db.execute('SELECT fingerprint,body FROM scenarios WHERE batch=? AND scenario=? AND current=1',
+                                               (batch['id'], scenario)).fetchone()
+                if not current or current['fingerprint'] != fingerprint:
+                    changed.append(name + '#' + scenario)
+                    continue
+                refs = json.loads(current['body']).get('refs') or []
+                if refs:
+                    if name not in unions:
+                        unions[name] = {case['id']: canonical(case) for case in self.service.case_union(db, batch)}
+                    before = {case['id']: canonical(case) for case in frozen_cases.get(name, [])}
+                    if any(before.get(ref) != unions[name].get(ref) for ref in refs):
+                        changed.append(name + '#' + scenario)
+        return label + '内容或其引用的用例变化：' + '、'.join(dict.fromkeys(changed)) if changed else ''
+
     def defer_merge(self, task, plans, reason=''):
         self.repositories.record_blocked(task['id'], plans)
         message = reason or '；'.join(p['alias'] + '：' + '；'.join(p['reasons']) for p in plans if p['reasons'])

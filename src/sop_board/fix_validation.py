@@ -87,11 +87,18 @@ class FixValidation:
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         return prompt
 
-    def input_change(self, task, info, aliases, directories):
-        """复验依据的场景、用例、配置或产品代码变化时返回原因；输入变化不是复测未通过（SOP-BOARD-5）。"""
+    def input_change(self, task, info, aliases, directories, *, snapshot=None, selected=None):
+        """复验依据的场景、用例、配置或产品代码变化时返回原因；输入变化不是复测未通过（SOP-BOARD-5）。
+        会话修复的复验（D101）只核对所选场景及其引用的用例，业务配置与自检状态以复验准备时为准；
+        看板修复仍核对修复冻结的全部输入。"""
         workspace = self.fixes.service.workspace
         workspace.reload()
-        stale = self.fixes.snapshot_changes(task)
+        if selected is not None and self.tasks.kernel.claim(task):
+            if not self.fixes.service.environment.approved() or (snapshot or {}).get('config_digest') != workspace.config_digest:
+                return '工作区配置或自检状态变化'
+            stale = self.fixes.scenario_changes(task, [(s['batch'], s['id'], fingerprint(s)) for s in selected], label='复验场景')
+        else:
+            stale = self.fixes.snapshot_changes(task)
         if stale:
             return stale
         if self.tasks.validation_type.inputs(task, product=info).changed(workspace.product(aliases, directories)):
@@ -131,7 +138,7 @@ class FixValidation:
         raw = [json.loads(line) for line in (directory / 'results.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
         if any((r.get('batch'), r.get('scenario')) not in {(s['batch'], s['id']) for s in selected} for r in raw):
             raise ValueError('复测结果有范围外批次或场景')
-        changed = self.input_change(task, info, aliases, directories)
+        changed = self.input_change(task, info, aliases, directories, snapshot=snapshot, selected=selected)
         if workspace.skill_changed(snapshot):
             raise ValueError('验证技能变化')
         if changed:
@@ -157,7 +164,7 @@ class FixValidation:
             if 'aliases' in runtime:
                 # 已持有写事务：同时到达的用例上传、场景推送须等本次登记结束，检查与登记之间不会插入输入变化。
                 try:
-                    changed = self.input_change(task, info, runtime['aliases'], runtime['directories'])
+                    changed = self.input_change(task, info, runtime['aliases'], runtime['directories'], snapshot=snapshot, selected=selected)
                 except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                     changed = '登记前无法重新核对输入：' + str(error)
                 if changed:

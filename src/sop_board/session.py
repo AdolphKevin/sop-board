@@ -453,7 +453,9 @@ class Session:
                 notice = '配置变化后尚未自检，执行与修复已停用：请使用者在沙箱外运行 ' + command
             else:
                 notice = '最近一次自检未通过，执行与修复已停用：查看报告修正后运行 ' + command
+            # 本机命令行列出配置问题的字段与原因，配置不合格时不必另跑自检才知道哪里错。
             return dict(ok=True, workspace=self.workspace.public(), data=str(self.workspace.data), batches=batches,
+                        problems=list(self.workspace.problems),
                         setup_check=dict(ok=approved,message=notice,finished_at=check.get('finished_at') if check else None,
                             report=str(reports[-1]) if reports else None,
                             latest_attempt=dict(ok=attempt.get('ok'),completed=attempt.get('completed',True),
