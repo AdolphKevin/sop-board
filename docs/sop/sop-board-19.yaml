@@ -1,0 +1,279 @@
+# SOP-BOARD-19：会话修复能关闭——本机保留文件与按问题场景冻结输入
+# 预期依据：AdolphKevin 2026-10-31 的要求“继续优化 sop-board，现在的约束导致项目总是提交不成功”与随后的确认和决定
+#   “确认”“再放宽一步”“20、26 和 67 都用新的方法关闭修复”（方案 docs/proposals/2026-10-31-fix-landing.md D100～D102）。
+# 版本 1（2026-10-31）：Claude 依据方案在实现前编写；实现与返工会话只读本文件，与方案不一致处以本文件为准并报告。
+#   同日交使用者确认前修订一处：原 SOP-192-P02 写“修复进行中改写别的场景，fix submit 照常登记”，与已确认的 SOP-146-N02
+#   （修复会话期间场景文件变化时提交被拒，看板分不清是谁改的）冲突，改为修复进行中改动工作区业务配置；场景文件在修复会话期间仍受保护。
+# 版本 2（2026-10-31）：AdolphKevin 确认方案后决定“再放宽一步”：fix land 只核对修复改动的文件，其他文件的变化记入关闭记录
+#   （SOP-191 改写，同步改写 sop-board-14.yaml 的 SOP-146-N05 与 sop-board-18.yaml 的 SOP-183-N03）；并要求已放弃的修复也能按新办法关闭，新增 SOP-193（D102）。
+#   同日实现者自检后统一拒收码：只因通过之后修复改动的文件又变化时，两种依据都返回 fix-content-changed（SOP-193 的 must 与 N01 随之写明）。
+#
+# “演示 Web 工作区”同 sop-board-16.yaml 文件头（WEB-P03 因 api 的植入缺陷失败）。另需：
+#   - “本机文件”：api 仓中与修复无关、整个过程都不提交的两处改动——未跟踪的 local.env（一行 DEMO_LOCAL=1），
+#     以及对已跟踪 README.md 末尾追加一行的未提交修改；修复认领前就已存在，场景另有说明前内容不变。
+#   - “待关闭修复”：会话 F 运行 fix prepare demo-web --scenario web-demo#WEB-P03 --session <F>，修正 api 的截断缺陷，
+#     写 final.json 后 fix submit，修复处于待验证；随后未参与修复的会话 E 运行
+#     execute prepare demo-web web-demo --scope WEB-P03 --session <E>，经真实入口执行通过后 submit；
+#     开发者只提交修复改动的文件，不提交本机文件。
+#   - “web 批次”：场景文件 metadata.repos 只含 web 的另一批次，含两条场景。
+#   - “已放弃的待关闭修复”：同“待关闭修复”，但会话 F 在 fix submit 之后、独立执行之前，由开发者运行 sop-board task cancel demo-web --task <编号> 放弃，
+#     状态为已放弃；独立执行轮次与提交按各场景步骤进行。
+# 执行步骤中的 fix land 均指 sop-board fix land demo-web --task <待关闭修复编号>。
+# “执行者”指验收中扮演开发会话的未参与实现的会话，F、E、R、R2 各用一个稳定标签作为 --session。
+
+metadata:
+  requirement: "sop-board：会话修复在带本机保留文件、其他场景或配置变化时仍能按独立通过关闭"
+  batch: "sop-board-19"
+  version: 2
+  owner: "AdolphKevin"
+  sources:
+    - ref: "AdolphKevin 2026-10-31 的要求（cw2-live-chat 修复 #26、#67 无法关闭之后，本会话）"
+      version: "2026-10-31"
+      confirmed_by: "AdolphKevin"
+    - ref: "docs/proposals/2026-10-31-fix-landing.md D100～D102"
+      version: "方案 2"
+      confirmed_by: "AdolphKevin"
+  tags: ["sop-board", "fix", "land", "local-only", "stale-input", "abandoned"]
+
+sops:
+  - id: SOP-191
+    title: 关闭修复只核对修复改动的文件，本机保留文件单独记录
+    actor: 开发者
+    entry: "命令行 sop-board fix land、status；数据目录 config.yaml；修复页"
+    must:
+      - "fix land 只核对修复改动的文件：须已提交且与独立通过时一致；其他文件（已提交或未提交）的变化不挡住关闭，关闭输出与记录列出它们，按产品变化规则判定影响"
+      - "工作区可在 config.yaml 用 local_only 声明本机保留、永不提交的文件，关闭时这些文件单独列为本机保留文件；改动该声明不作废在途任务，不要求重新自检"
+      - "修复自己改动的文件即使被声明，也须已提交且与验证时一致"
+    scenarios:
+      - id: SOP-191-P01
+        polarity: positive
+        title: 声明本机文件后关闭修复，本机文件单独列出
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，带本机文件与待关闭修复，config.yaml 未声明 local_only，最近自检通过"]
+        steps:
+          - "记录 api 仓的 git status 与 local.env、README.md 的 sha256；在 config.yaml 加入 local_only: {api: [local.env, README.md]}，运行 sop-board status demo-web --json"
+          - "运行 fix land，然后在修复页查看该修复；再次记录 git status 与两个文件的 sha256"
+        expected:
+          - "status 的 problems 为空，setup_check.ok 仍为 true，finished_at 与加入声明前相同"
+          - "land 成功，修复为已处理；输出的 local_only 列出 api/local.env 与 api/README.md，均为未提交、内容与验证时相同，没有 other_changes；关闭说明写明带有 2 个本机保留文件"
+          - "两次记录的 git status 与 sha256 相同"
+        forbidden_effects: ["看板提交、移走或改写本机文件", "加入声明后要求重新自检或作废任务"]
+        evidence_hints: ["命令输出", "git status 与 sha256 前后", "修复页截图"]
+      - id: SOP-191-P02
+        polarity: positive
+        title: 未声明的本机文件不挡住关闭，记为其他变化
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，带本机文件与待关闭修复，config.yaml 未声明 local_only"]
+        steps:
+          - "运行 fix land"
+        expected:
+          - "关闭成功，修复为已处理；输出的 other_changes 列出 api/local.env 与 api/README.md，均为未提交、内容与验证时相同；关闭说明写明验证后另有 2 处修复以外的变化"
+        forbidden_effects: ["因修复以外的未提交文件拒绝关闭"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-191-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 修复改动的文件在通过后又变化不能关闭
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，带本机文件与待关闭修复，已声明 local_only: {api: [local.env, README.md]}"]
+        steps:
+          - "再改修复改动的 api 文件（不提交），运行 fix land"
+          - "撤销该修改，在 api 仓修改另一个与修复无关的已跟踪文件（不提交），再运行 fix land"
+        expected:
+          - "第一次返回 fix-content-changed，只列出该修复文件，不列本机文件；修复状态不变"
+          - "第二次关闭成功，输出的 other_changes 列出另改的文件，为未提交、内容与验证时不同"
+        forbidden_effects: ["修复改动的文件与验证时不同仍关闭"]
+        evidence_hints: ["两条命令输出"]
+      - id: SOP-191-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 修复改动的文件不能靠声明跳过提交
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，带本机文件与待关闭修复，但开发者还没有提交修复改动"]
+        steps:
+          - "在 local_only 的 api 列表中加入修复改动的那个文件，运行 fix land"
+        expected:
+          - "返回 fix-commit-required，只列出修复改动的文件；修复没有关闭"
+        forbidden_effects: ["修复改动未提交即关闭"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-191-N03
+        polarity: negative
+        negative_type: invalid-input
+        title: 不合格的本机保留声明被拒
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["演示 Web 工作区"]
+        steps:
+          - "把 local_only 写成 {api: [/etc/hosts]}，运行 sop-board status demo-web --json"
+          - "改写成 {nope: [a.txt]}，再运行一次"
+        expected:
+          - "两次都显示配置不合格，problems 的字段分别为 local_only.api 与 local_only.nope，并说明路径须在仓内、仓库别名须已登记"
+        forbidden_effects: ["接受仓外路径或未登记的仓库"]
+        evidence_hints: ["两条命令输出"]
+
+  - id: SOP-192
+    title: 会话修复只核对本修复涉及的场景输入
+    actor: 开发者
+    entry: "命令行 sop-board fix submit、fix land、execute prepare --fix、execute submit"
+    must:
+      - "修复输出登记后，其他场景的内容与无关用例的变化（包括使用者登记新版 SOP），不使独立复验的准备与登记、fix land 被拒；工作区配置变化不使 fix submit 与 fix land 被拒"
+      - "修复的问题场景（独立复验为所选场景）内容或其引用的用例变化时仍拒绝，并列出变化的场景"
+      - "修复会话期间场景文件仍受保护：认领后场景文件变化，fix submit 仍被拒（SOP-146-N02）"
+      - "准备会话修复与独立复验仍要求工作区自检通过；独立复验期间业务配置或自检状态变化，仍按执行规则作废"
+    scenarios:
+      - id: SOP-192-P01
+        polarity: positive
+        title: 修复后改写别的场景不挡住关闭
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，待关闭修复（没有本机文件）"]
+        steps:
+          - "修改 WEB-P02 的一条预期并提交场景文件，等看板登记新版本"
+          - "运行 fix land"
+        expected:
+          - "land 成功，修复为已处理"
+        forbidden_effects: ["返回 session-command-invalid，说明场景版本或用例并集变化"]
+        evidence_hints: ["场景版本列表", "命令输出"]
+      - id: SOP-192-P02
+        polarity: positive
+        title: 修复进行中改了工作区配置，修复输出照常登记
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，会话 F 已认领 WEB-P03，修复尚未提交"]
+        steps:
+          - "修改 config.yaml 中入口 api 的 operate 文字（业务配置）"
+          - "会话 F 修正 api 的缺陷，写 final.json 后运行 fix submit"
+        expected:
+          - "fix submit 成功，修复为待验证"
+        forbidden_effects: ["提交以“工作区配置或自检状态变化”被拒"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-192-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 问题场景自身变化时不能关闭
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区，待关闭修复（没有本机文件）"]
+        steps:
+          - "修改 WEB-P03 的一条预期并提交场景文件，等看板登记新版本"
+          - "运行 fix land"
+        expected:
+          - "返回 ok 为 false，error_code 为 session-command-invalid，说明 web-demo#WEB-P03 的场景内容变化"
+          - "修复没有关闭，状态与操作前相同"
+        forbidden_effects: ["按旧内容的通过关闭修复"]
+        evidence_hints: ["命令输出", "任务状态前后"]
+      - id: SOP-192-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 自检失效时不能准备复验，已有的独立通过仍可关闭
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，待关闭修复（没有本机文件）"]
+        steps:
+          - "修改 config.yaml 中入口 api 的 operate 文字，运行 sop-board status demo-web --json"
+          - "未参与修复的会话 R 运行 execute prepare demo-web --fix <待关闭修复编号> --session <R>"
+          - "运行 fix land"
+        expected:
+          - "status 的 setup_check.ok 为 false，提示重新自检"
+          - "复验准备返回 workspace-not-ready，没有创建复验任务"
+          - "fix land 成功，修复为已处理"
+        forbidden_effects: ["自检失效时创建复验任务", "因配置变化拒绝关闭"]
+        evidence_hints: ["三条命令输出"]
+      - id: SOP-192-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 独立复验只因所选场景变化而作废
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["演示 Web 工作区与 web 批次；会话 F 修复 WEB-P03 后 fix submit，修复为待验证"]
+        steps:
+          - "会话 R 运行 execute prepare demo-web --fix <修复编号> --session <R> 并开始执行；执行期间修改 web 批次一条场景的预期并提交；R 写完结果后 execute submit"
+          - "会话 R2 再准备一次复验并开始执行；执行期间修改 WEB-P03 的一条预期并提交；R2 写完结果后 execute submit"
+        expected:
+          - "第一次提交登记了复验结果，没有因输入变化作废"
+          - "第二次提交 ok 为 false，复验作废，原因写明 web-demo#WEB-P03 的场景内容变化，不记为一次未通过"
+        forbidden_effects: ["因复验范围外的场景变化作废", "所选场景变化后仍登记复验结果"]
+        evidence_hints: ["两次 submit 输出", "修复的尝试与复验记录"]
+
+  - id: SOP-193
+    title: 已放弃的会话修复按独立通过关闭
+    actor: 开发者
+    entry: "命令行 sop-board task cancel、fix prepare、fix land、execute prepare/submit；修复页与问题台账"
+    must:
+      - "已放弃的会话修复，最后一次尝试已登记产品修复输出、问题没有被其他未放弃的修复认领时，可用 fix land 关闭为已处理；关闭说明写明此前放弃的时间"
+      - "关闭依据同 D98：每个产品问题场景在修复输出登记之后、由修复会话以外的执行者在当前提交的修复内容上通过；修复改动的文件须已提交"
+      - "缺少有效独立通过时，fix-validation-required 逐个列出问题场景与原因（没有结果、最近结果不是通过、通过在修复输出之前等）；只因通过之后修复改动的文件又变化时，返回 fix-content-changed，列出文件与对应的问题场景、轮次"
+    scenarios:
+      - id: SOP-193-P01
+        polarity: positive
+        title: 补跑问题场景后关闭已放弃的修复
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示 Web 工作区（没有本机文件），已放弃的待关闭修复，开发者已提交修复改动，WEB-P03 最近结果仍为修复前的失败"]
+        steps:
+          - "运行 fix land"
+          - "未参与修复的会话 E 运行 execute prepare demo-web web-demo --scope WEB-P03 --session <E>，经真实入口执行通过后 submit"
+          - "再运行 fix land，查看修复页与关联问题"
+        expected:
+          - "第一次返回 fix-validation-required，说明 web-demo#WEB-P03 最近结果为失败"
+          - "第二次成功，修复由已放弃变为已处理，关闭说明写明此前放弃的时间，以及修复改动已提交、与独立执行（web-demo 第 N 轮）内容一致"
+        forbidden_effects: ["已放弃的修复不经独立通过就关闭", "把修复会话自己的轮次当作依据"]
+        evidence_hints: ["两次 land 输出", "修复页截图"]
+      - id: SOP-193-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 通过之后修复改动的文件又被改动时列出须补跑的场景
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，已放弃的待关闭修复已有 WEB-P03 的独立通过轮次，改动已提交"]
+        steps:
+          - "再修改并提交修复改动的 api 文件，运行 fix land"
+        expected:
+          - "返回 fix-content-changed，列出该修复文件，写明在 web-demo#WEB-P03 第 N 轮之后变化、须重新独立验证；修复仍为已放弃"
+        forbidden_effects: ["按改动之前的通过关闭修复"]
+        evidence_hints: ["命令输出"]
+      - id: SOP-193-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 问题已被其他修复认领时不能关闭已放弃的修复
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示 Web 工作区，已放弃的待关闭修复 #F，WEB-P03 最近结果仍为失败"]
+        steps:
+          - "会话 G 运行 fix prepare demo-web --scenario web-demo#WEB-P03 --session <G>"
+          - "运行 fix land demo-web --task <#F>"
+        expected:
+          - "G 认领成功；land 返回 fix-problem-reclaimed，列出 web-demo#WEB-P03 与 G 的修复编号；#F 仍为已放弃"
+        forbidden_effects: ["同一问题由两个修复同时记为已处理"]
+        evidence_hints: ["两条命令输出"]
+      - id: SOP-193-N03
+        polarity: negative
+        negative_type: incomplete-input
+        title: 没有登记修复输出的已放弃修复不能关闭
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["演示 Web 工作区，会话 F 认领 WEB-P03 后、提交修复输出前，开发者放弃了该修复"]
+        steps:
+          - "运行 fix land"
+        expected:
+          - "返回 fix-not-ready，说明最后一次尝试没有登记产品修复输出、原失败可重新认领；修复仍为已放弃"
+        forbidden_effects: ["关闭没有修复输出的已放弃修复"]
+        evidence_hints: ["命令输出"]

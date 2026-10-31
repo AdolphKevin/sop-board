@@ -1,5 +1,6 @@
 # SOP-BOARD-14 的验收场景
 # 预期依据 docs/proposals/2026-10-22-integrated-rework.md（已批准，2026-10-22）的 D72～D83 与附录（D83 及 D79 中注明“D83 修订”的执行环境段由方案负责人于 2026-10-23 补充，AdolphKevin 2026-10-24 确认），以及 docs/reference.md 的开发会话入口（会话准备阻挡、blocked/skip 证据、execution_origin 与会话结束清理）、会话修复与独立复验、跨仓修复中与 D83 对应的约定和放弃修复任务的约定（提交 4831b16、fbbc434、32ea410；AdolphKevin 2026-10-24 确认）；只写业务流程，验收只以本文件、sop-board-12.yaml 的 SOP-127 与 sop-board-13.yaml 的 SOP-131～135 经真实入口执行为准。
+# 版本 10（2026-10-31）：按 AdolphKevin 2026-10-31 的决定“再放宽一步”（fix land 只核对修复改动的文件，其他变化记入关闭记录、交给产品变化的影响判定，方案 docs/proposals/2026-10-31-fix-landing.md D100），改写 SOP-146-N05。
 # 版本 9（2026-10-24）：交付记录整理时发现 D83 与放弃修复任务的两项约定没有场景，按 docs/verification.md“K4 会话入口返工 1 定点复核”补齐——SOP-142 加 P04、N04（会话登记已有 SOP 原文，与看板上传同一校验）；SOP-144 加 P04、N04（受阻、跳过可不附证据但须写原因，实际执行的通过、失败须有证据）与 P05（按入口准备执行环境）；SOP-145 加 P03（仅排队或等待的看板任务不阻挡会话准备）、N02（运行或切换、占用环境的任务阻挡）、N03（同批次同类排队任务经同意才替换）、N04（已结束的任务不被接管或复活）；SOP-146 加 P03（等待中的看板修复不阻挡会话修复认领与复验准备）；新增节点 SOP-150（会话失败分流与修复任务放弃）。原有场景的编号与内容不变。两类依据（D83；放弃修复任务的约定）经 AdolphKevin 于 2026-10-24 确认，统一验收中按其同意由审核方改写；审核子代理复核后补齐前置、构造方法与执行顺序。SOP-150-N05 的“放弃会话修复不连带取消复验”属依据推断：docs/reference.md 会话修复段把“原修复已不在待验证或待提交时本次复验作废”列在放弃与提交交错的情形下，只有放弃不连带取消复验时该情形才会因放弃出现。补验 R-G8 发现 TC_MEMBER_OPEN_002 需要“已到期会员”前置而演示 app 无法准备，演示 app 能力补上设定会员到期。
 # 版本 8（2026-10-24）：复审后补齐——演示 app 的能力说明补上会员开通与增加积分，与入口声明的操作名一致；统一验收中按 AdolphKevin 同意由审核方改写。
 # 版本 7（2026-10-24）：审核子代理复核后补齐——入口声明写明演示操作名，与 sop-board-13.yaml 版本 7 一致；统一验收中按 AdolphKevin 同意由审核方改写。
@@ -15,7 +16,7 @@
 metadata:
   requirement: "sop-board：任务内核统一、开发会话中可完成写 SOP、生成草稿、合并用例、执行验收、修复复验，独立性如实登记；两个入口互不干扰，放弃修复任务后如实保留尝试与状态"
   batch: "sop-board-14"
-  version: 9
+  version: 10
   owner: "AdolphKevin"
   sources:
     - ref: "docs/proposals/2026-10-22-integrated-rework.md 的 D72～D82 与附录"
@@ -494,14 +495,14 @@ sops:
       - id: SOP-146-N05
         polarity: negative
         negative_type: stale-input
-        title: 提交内容与复验快照不一致时拒绝关闭
+        title: 修复改动的文件提交内容与复验快照不一致时拒绝关闭
         actor: 开发者
         priority: P1
         verify: cli
         initial_state: ["复验通过"]
-        steps: ["开发者在提交前又修改一处产品代码并一起提交", "运行 sop-board fix land"]
-        expected: ["命令拒绝并列出差异，须重新复验"]
-        forbidden_effects: []
+        steps: ["开发者在提交前又修改了修复改动的 lib 文件并一起提交，运行 sop-board fix land", "撤销那处修改、只提交复验时的修复内容，同时另提交一处与修复无关的产品改动，再运行 sop-board fix land"]
+        expected: ["第一次拒绝，列出该修复文件，须重新复验", "第二次关闭成功，输出的 other_changes 列出那处与修复无关的改动，关闭说明写明验证后另有修复以外的变化"]
+        forbidden_effects: ["修复改动的文件与复验快照不同仍关闭"]
         evidence_hints: ["命令输出"]
       - id: SOP-146-P03
         polarity: positive

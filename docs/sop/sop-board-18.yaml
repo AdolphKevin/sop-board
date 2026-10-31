@@ -1,6 +1,7 @@
 # SOP-BOARD-18：场景级作废、使用者维护的环境、问题台账与修复波次、编写与协同
 # 预期依据：AdolphKevin 2026-10-30 的要求与“三期连续做完”的决定（方案 docs/proposals/2026-10-30-acceptance-throughput.md 第三期 D96～D99）。
 # 版本 1（2026-10-30）：Claude 依据方案编写；与方案不一致处以本文件为准，并已同步方案正文。
+# 版本 3（2026-10-31）：按 AdolphKevin 2026-10-31 的决定“再放宽一步”（方案 docs/proposals/2026-10-31-fix-landing.md D100），改写 SOP-183-N03：通过轮次之后只核对修复改动的文件，其他文件的变化记入关闭记录。
 # 版本 2（2026-10-30）：补充 SOP-183-P08（问题交给看板修复）与 SOP-183-P09（场景加入问题时关联正在进行的修复）；按独立验收报告澄清 SOP-181-P01、SOP-182-P02、SOP-184-P05 的写法。
 #
 # “演示 Web 工作区”同 sop-board-16.yaml、sop-board-17.yaml 文件头。另需：
@@ -15,7 +16,7 @@
 metadata:
   requirement: "sop-board：执行期间只作废变化的场景、使用者维护的环境、问题台账与修复波次、默认业务确认人与用例回写"
   batch: "sop-board-18"
-  version: 2
+  version: 3
   owner: "AdolphKevin"
   sources:
     - ref: "AdolphKevin 2026-10-30 的要求与三项决定（本会话）"
@@ -302,16 +303,18 @@ sops:
       - id: SOP-183-N03
         polarity: negative
         negative_type: stale-input
-        title: 通过轮次之后内容又变化不能关闭
+        title: 通过轮次之后修复改动的文件又变化不能关闭
         actor: 开发者
         priority: P1
         verify: cli
         initial_state: ["修复已有独立执行轮次通过，改动已提交"]
         steps:
-          - "在同一仓库另改一个文件（不提交），运行 fix land；撤销该改动后再 fix land"
+          - "再改修复改动的文件（不提交），运行 fix land"
+          - "撤销该改动，在同一仓库另改一个与修复无关的文件（不提交），再运行 fix land"
         expected:
-          - "第一次返回 fix-content-changed，列出另改的文件；撤销后关闭成功"
-        forbidden_effects: ["内容与通过轮次不同仍关闭"]
+          - "第一次返回 fix-content-changed，只列出该修复文件"
+          - "第二次关闭成功，输出的 other_changes 列出另改的文件（未提交、内容与验证时不同），关闭说明写明验证后另有修复以外的变化"
+        forbidden_effects: ["修复改动的文件与通过轮次不同仍关闭"]
         evidence_hints: ["命令输出"]
       - id: SOP-183-P07
         polarity: positive
