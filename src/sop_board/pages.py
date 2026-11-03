@@ -1073,7 +1073,7 @@ def merges(workspace, name, tasks, case_data, selected=None, *, local=False, eta
     latest = next((t['progress'] for t in reversed(tasks) if t['kind'] == 'merge'), None)
     content = (batch_nav(workspace, name, 'merges') + f"<h1>批次 {text(name)} 的任务</h1>" +
                (progress_html or merge_status(workspace, name, latest)) + identity_bar() +
-               "<p>合并结果写入配置的场景目录。待同步时请核对工作区的修改或配置变化。</p>" +
+               "<p>合并结果写入配置的场景目录。待同步时请核对工作区场景文件的修改或入口声明的变化。</p>" +
                (f"<button type='button' data-developer-action='{text(api + '/merges')}'>重新合并</button>" if local else "") +
                "<p id='developer-message' role='status' aria-live='polite'></p>")
     if conversation is not None:

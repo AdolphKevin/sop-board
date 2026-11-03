@@ -206,7 +206,6 @@ class Discovery:
     def __init__(self, service):
         self.service = service
         self.stopping = threading.Event()
-        self.first_scan = True
         self.thread = threading.Thread(target=self.run, name='workspace-discovery', daemon=True)
 
     def scan(self, *, reconcile=True):
@@ -214,7 +213,7 @@ class Discovery:
         from .scenario_file import load_scenarios
         from .service import fingerprint
         workspace = self.service.workspace
-        changed = workspace.reload()
+        workspace.reload()
         if reconcile:
             self.service.environment.reconcile()
         errors = {}
@@ -257,12 +256,8 @@ class Discovery:
                 for (key, name), problems in errors.items():
                     db.execute("INSERT OR IGNORE INTO batches(workspace,name,path,product_digest) VALUES (?,?,?,'')",
                                (key, name, problems[0]['path']))
-                waiting = [r[0] for r in db.execute('SELECT name FROM batches WHERE workspace=?', (workspace.name,))] if changed or self.first_scan else []
-            self.first_scan = False
+            # 看板启动与工作区配置变化都不排合并；合并只由上传、答复、场景文件变化或人发起的重新合并触发。
             self.service.workspace_problems = errors
-            if self.service.merge_callback:
-                for name in waiting:
-                    self.service.merge_callback(workspace.name, name, trigger='配置变化')
 
     def run(self):
         while not self.stopping.wait(5):

@@ -12,7 +12,7 @@ from importlib.resources import files
 from urllib.parse import quote
 
 # 旧模块路径仍转导出进程入口；实现只在 kernel 中保留。
-from .kernel import (ALL_STATES, Kernel, MERGE_DEDUP, MERGE_RESULTS, OUTPUT_ACTIVE, S, sql_states,
+from .kernel import (Kernel, MERGE_DEDUP, MERGE_RESULTS, OUTPUT_ACTIVE, S, sql_states,
                      parse_timeout, codex_environment, codex_failure, start_codex, resume_codex,
                      codex_available, terminate_group, queue_view)
 
@@ -126,9 +126,8 @@ class Tasks:
                     reject(409, 'case-kind-invalid', 'case', '当前合并中此用例不是细节用例')
                 db.execute('INSERT OR IGNORE INTO case_flow_choices(batch,case_id,chosen_at) VALUES (?,?,?)', (batch['id'], force_case, now()))
             snapshot, scenario_sha, digest = self.freeze_merge(db, key, name, batch, version, cases, full_reason=full_reason)
-            # 开发者重新合并只复用排队或运行中的同输入任务；上传与场景变化按 SOP-BOARD-3 只与有效结果去重；
-            # 启动或配置扫描是核对而非新事件，任何已有的同输入合并（含已中断、已放弃）都不再新建，由开发者重试或放弃。
-            states = OUTPUT_ACTIVE if trigger == '重新合并' or fresh else ALL_STATES if trigger == '配置变化' else MERGE_DEDUP
+            # 开发者重新合并只复用排队或运行中的同输入任务；上传与场景变化按 SOP-BOARD-3 只与有效结果去重。
+            states = OUTPUT_ACTIVE if trigger == '重新合并' or fresh else MERGE_DEDUP
             placeholders = ','.join('?' for _ in states)
             # 已落地的合并以写入后的输入登记 landed_digest，重启扫描不再以自己的输出为依据重复合并。
             previous = db.execute(f"SELECT id,status FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
@@ -222,7 +221,7 @@ class Tasks:
                     result_json=canonical(summary(snapshot)))
 
     def merge_inputs(self, db, batch, version, cases):
-        """合并的业务输入及其来源；上传序号和已分配节点不是业务输入，配置改变也必须生成新快照。"""
+        """合并的业务输入及其来源；上传序号和已分配节点不是业务输入；工作区配置只有入口声明属于合并输入。"""
         from .repositories import read_sop_sources
         workspace = self.service.workspace
         forced_flow = self.service.flow_choices(db, batch)
@@ -239,7 +238,7 @@ class Tasks:
         confirmed = self.confirmed_draft_cases(db, batch)
         clarifications = self.conversation.snapshot(db, batch)
         inputs = dict(cases=dict(metadata=json.loads(upload['metadata']), test_cases=cases),
-                      scenarios=version['sha256'] if version else '', entries=entries, config_digest=workspace.config_digest,
+                      scenarios=version['sha256'] if version else '', entries=entries,
                       forced_flow=forced_flow, sop=[dict(path=s['path'], sha256=s['sha256']) for s in sop_sources])
         # 暂缓展示来自结果，不是新输入；避免自己的落地触发下一轮。
         inputs['clarifications'] = {k: v for k, v in clarifications.items() if k != 'holds'}
@@ -548,8 +547,9 @@ class Tasks:
         snapshot = inputs.snapshot
         working = working or snapshot
         workspace.reload()
-        if not workspace.configured or snapshot['config_digest'] != workspace.config_digest:
-            check['problems'] = ['工作区配置变化，请重新合并']
+        # 合并只用到入口声明；工作区其他配置（如 snapshot_exclude、适配）变化不使合并结果失效。
+        if not workspace.configured or canonical(snapshot['entries']) != canonical(dict(entries=workspace.entries)):
+            check['problems'] = ['入口声明变化，请重新合并']
             return S.NEEDS_SYNC
         with self.store.connection() as db:
             batch = self.service.batch(db, task['workspace'], task['batch'])
