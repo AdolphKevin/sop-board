@@ -18,7 +18,7 @@ SCOPE = [fields('batch', 'scenario', 'reason')]
 GAPS = [fields('id', 'kind', 'title', 'scenario', 'current', 'missing', 'question', 'known') |
         {'options': [True], 'cases': [True]}]
 HELD = [fields('case', 'retention') | {'reasons': [True], 'gaps': [True], 'scenarios': [True]}]
-MERGE_RESULT = fields('ok', 'workspace_changed', 'reply', 'session_note') | {
+MERGE_RESULT = fields('ok', 'workspace_changed', 'reply', 'session_note', 'mode', 'mode_reason', 'baseline', 'changed_count', 'carried_count') | {
     'responses': [fields('message', 'action', 'note')],
     'pairs': [fields('case', 'kind', 'kind_reason', 'note') | {'scenarios': [True]}],
     'scenarios': [fields('id', 'action', 'target', 'reason')],

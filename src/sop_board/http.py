@@ -412,7 +412,7 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/cases/([^/]+)/flow", path)):
                 result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]), trigger='开发者指定独立场景', force_case=unquote(match[3]))
             elif method == "POST" and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/merges", path)):
-                result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]))
+                result = self.server.tasks.enqueue_merge(unquote(match[1]), unquote(match[2]), full_reason='开发者重新合并')
             elif method == 'POST' and (match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/draft/annotations/([0-9]+)/reject", path)):
                 result = self.server.tasks.generations.reject_annotation(unquote(match[1]), unquote(match[2]), int(match[3]), body)
             elif match := re.fullmatch(r"/api/v1/workspaces/([^/]+)/batches/([^/]+)/draft(?:/(annotations|revise|confirm))?", path):

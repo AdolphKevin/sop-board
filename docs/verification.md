@@ -146,6 +146,78 @@ D83 与放弃修复任务的约定由 SOP-142-P04/N04、SOP-144-P04/N04/P05、SO
 
 **判定**：同 SOP-BOARD-16。另核对回归：修复会话期间改场景文件，`fix submit` 仍列出受保护文件（SOP-146-N02）；按改写后的 SOP-146-N05、SOP-183-N03，通过之后改修复自己的文件仍返回 `fix-content-changed`，另改与修复无关的文件则关闭成功并列入 `other_changes`。
 
+## SOP-BOARD-20 按条增改与增量合并
+
+依据 [sop-board-20.yaml](sop/sop-board-20.yaml) 的 SOP-201～203。方案与场景只读，按最终冻结源码交未参与实现的执行者验证。CLI 自检可手写合并输出，但须标为模拟模型输出；SOP-203-P03、P05 的看板调度须真实 Codex，页面须本机和实际非回环浏览器分别操作，不能用静态材料替代。
+
+### 搭建按条批次
+
+1. 按 SOP-BOARD-16 文件头的演示 Web 工作区搭建 demo-web：独立的 web、api Git 仓，origin 与本机提交身份已配置，入口 app、api 和验证技能合格，服务与数据库仅本轮使用。数据目录、仓库、证据目录均在仓库外的同一个隔离根目录，所有命令显式带 `--data <演示数据目录>`。使用被测源码的独立安装或 `uv run sop-board`，不改全局安装、既有工作区和 8787 端口。自检涉及 Git 工作树时在沙箱外执行，沙箱内只读最近结果。
+2. 以自选空闲端口 `sop-board demo-web --data <演示数据目录> --port <端口> --lan --paused` 启动，记录非回环地址；本机关闭“场景写入后自动执行”，清除默认业务确认人。需要真实看板调度的场景再恢复自动任务；其他场景保持暂停。演示 owner 是本地隔离账号，按标准先保存本任务一次授权，再登录演示 Web；dev-a、tester-a 只作为场景规定的署名。模型、浏览器与服务启动记录分开留证。
+3. 在仓库外创建 `team-cases.yaml`。metadata 固定为 `{module: 团队, feature: 成员与团队, owner: tester-a, last_reviewed: '2026-11-01'}`。按下表写 test_cases，均给 `priority: P0`、`type: functional`、`preconditions: [Owner 已登录组织 demo]`，tags 含相应 `section:`，反向条目再加 `negative`；步骤与预期分别为非空字符串数组。成员列表用例另加前置“组织有 20 名成员”。保留原文件摘要。
+
+| 编号（前缀均为 TC_TEAM_） | 标题 / section | 步骤 | expected_results |
+| --- | --- | --- | --- |
+| INVITE_001 | Owner 邀请成员 / 成员邀请 | 点「邀请成员」；填 a@example.invalid；点「发送邀请」 | 列表出现该邮箱，状态为待接受 |
+| INVITE_002 | 邀请邮箱格式校验 / 成员邀请 | 填 not-an-email 后点「发送邀请」 | 提示邮箱格式不正确，不发送 |
+| INVITE_003 | 重复邀请被拒 / 成员邀请（反向） | 已有待接受的 a@example.invalid，再次邀请 | 提示已邀请，列表不新增 |
+| INVITE_004 | Owner 一次邀请两名成员 / 成员邀请 | 填 b@example.invalid 与 c@example.invalid | 出现两条待接受记录 |
+| CREATE_001 | 新建团队 / 团队 | 名称填 Customer Success A，点「创建」 | 列表显示该团队 |
+| CREATE_002 | 团队名称为空不能创建 / 团队（反向） | 名称留空点「创建」 | 提示名称必填，列表不变 |
+| LIST_001 | 成员列表分页 / 成员列表 | 打开成员页 | 分页显示 |
+
+4. 测试同事以 `cases upload demo-web case-amend team-cases.yaml --uploaded-by tester-a --session <A> --data <目录>` 登记上传 #1，再 `merge prepare demo-web case-amend --session <A> --data <目录>`。读取返回目录的 schema.json，在 final.json 给出全部 7 条 cases：INVITE_002 为 detail，merged_into=TC_TEAM_INVITE_001；其余 flow，merged_into=null；actor=Owner、verify=app；INVITE_003 的 negative_type=duplicate，CREATE_002=empty-input，其余 null；initial_state=null（用例已给前置条件），kind_reason 说明流程或字段核对。
+5. nodes 给出成员邀请、团队、成员列表三个 section，actor=Owner、entry 为相应页面操作说明、merge_into=null。negative_exempt 给成员列表，reason 说明只核对分页展示，inferred=false。gaps 给一条业务缺口：id=G1、kind=business、cases=[TC_TEAM_LIST_001]、title=每页条数未确认、scenario=组织有 20 名成员时打开成员页、current=只写分页显示、missing=每页条数、question=每页显示多少条？、known=null、options=[]。其余 scenarios、relocate、notes、responses、case_updates 均为空数组，reply 为空字符串。经 `merge submit demo-web --task <编号> --data <目录>` 落地。
+6. 基线须有 5 条场景：INVITE_001（含 INVITE_002 的细节预期）、INVITE_003、INVITE_004、CREATE_001、CREATE_002；LIST_001 暂缓且无场景。保存场景文件、页面内容指纹、配对、用例来源、缺口与该合并任务全部材料。检查 merge-land 收据和任务已落地，避免把失败或尚未提交的任务当作基线。
+
+### 保存与恢复基线状态
+
+停止本轮看板、会话命令及自己启动的演示服务，确认没有进程持有演示数据库；保存完整数据目录（含 workspace.sqlite3、任务目录和配置）与完整 web 仓副本（含 .git 和场景目录）。api 使用本轮固定数据，数据库文件也应在隔离根目录单独保存。以下路径全部由执行者填入，备份只做一次且不覆盖：
+
+```sh
+cp -a <演示数据目录> <隔离根目录>/baseline-data
+cp -a <web仓目录> <隔离根目录>/baseline-web
+cp -a <api数据库文件> <隔离根目录>/baseline-api.db
+```
+
+每条要求“基线状态”的场景开始前，先停进程，把当前数据目录和 web 仓改名保存为该条场景的现场，再把副本复制回**原来的绝对路径**；恢复 API 数据文件。路径不变，config.yaml、任务目录内的路径及 Git 身份才能继续对应。用例原文件从只读备份恢复；A、B 各复用原有稳定会话编号，不把署名当会话编号。必要时重启演示服务和同一暂停看板，再核对 7 条用例、5 条场景、1 条缺口及基线任务编号。P01 完成状态供相应后续场景使用时另外保存一份，不能误用初始基线。中断和失败也先留证再恢复。
+
+每次 put、拒收、重交前后保存命令、退出码、上传数、决定、任务、场景文件摘要、场景版本及配对。校验错误行号对照原片段；全量输出缺 6 条、增量缺变化编号与沿用细节失效分别留首次失败。沿用数量以最终输出实际省略的用例判断计算。P04 两次合并之间不恢复基线，以证明下一轮使用上轮落地后的用例与判断。
+
+### P06 的升级前构建
+
+使用仓库的 `c9d42ec` 原始提交构建，避免用新版任务删 judgment.json 冒充升级。源码通过只读归档导出到仓库外；不切分支、不创建工作树、不更改当前检出。示例中的 shell 变量须由执行者设置为本轮隔离目录：
+
+```sh
+mkdir "$OLD_SOURCE"
+git archive c9d42ec | tar -x -C "$OLD_SOURCE"
+uv build --wheel --out-dir "$OLD_WHEELS" "$OLD_SOURCE"
+uv venv "$OLD_ENV"
+uv pip install --python "$OLD_ENV/bin/python" "$OLD_WHEELS"/*.whl
+```
+
+记录 `git rev-parse c9d42ec`、wheel 摘要及命令。用 `$OLD_ENV/bin/sop-board` 在另一演示数据目录登记工作区、上传同一 team-cases.yaml，并按上文完整判断完成基线；确认任务有 final.json、scenario-file.yaml 和 merge-land 收据，**没有 judgment.json**。保存升级前基线状态。停止旧版看板后，用被测版本的命令和同一 `--data`、相同 web 仓继续 P06 的 put、prepare、submit；核对 mode=增量、基线编号、沿用判断与旧 final.json 一致、未变化场景指纹不变。另核对澄清改写后的用例成为下轮基线，不能仅比较旧任务冻结输入。无法取得旧提交、构建失败或原生链路不能运行时单列未执行。
+
+### 证据、清理与旧场景
+
+本机与真实非回环地址分别保存任务 JSON、合并页 HTML 和浏览器截图。增量任务 delta.json、最终 final.json、完整 judgment.json 仅在本机留存；非回环下载 judgment.json 必须 403，公开任务只含模式、原因、基线编号与计数，不含路径、会话和完整判断。页面保持 3 秒任务轮询，核对准备、失败、重交及落地的显示变化。模式切为全量时任务根目录没有 delta.json，prompt.md 没有增量追加段；历史归档保留。
+
+按影响面重跑的旧场景（审核方定稿，不全量重跑；旧场景中的令牌、`/projects/` 路径按 v9 的工作区接口与免令牌规则对应）：
+
+| 场景 | 重跑理由 |
+| --- | --- |
+| sop-board-2：SOP-23-P02 | cases put 与上传共用用例版本表，load_cases 增加继承文件头 |
+| sop-board-3：SOP-31-P04 | 开发者重新合并改为强制全量，同输入且尚未开始的任务改按全量冻结；仍须返回同输入的运行中任务，完成后新任务的输入摘要与原任务相同 |
+| sop-board-3：SOP-33-P05、SOP-33-N01、SOP-33-N04 | 上传改动用例后的合并在新版为增量（假 codex 给出完整判断时仍须落地且节点编号不变）；不合规判断的问题清单新增缺少用例的补充；去重用的输入摘要不变 |
+| sop-board-4：SOP-42-P01 | 增量合并落地（登记事务内写 judgment.json）后仍只自动执行新增与内容变化的场景 |
+| sop-board-14：SOP-143-N01 | 会话 merge prepare 插入 --full 分支后，看板合并运行中仍拒绝准备同一批次 |
+| sop-board-18：SOP-184-P03、SOP-184-N02 | cases export 为 --case 重构了导出来源 |
+| sop-board-13：SOP-132-P03、SOP-134-P02 | 真实 Codex 在增量合并下处理已落地用例改出的新缺口、旧文件覆盖澄清后按已采纳答复再次改写 |
+
+不重跑的理由：全量合并的提示词、schema、核对与组装未改，SOP-33 其余条目、SOP-133 由上表与 SOP-203-P05 的全量路径覆盖；页面只新增模式一行且内网可见字段由 SOP-203-P01 核对；随包技能新增的按条增改说明没有 agent 场景，真实会话效果留到使用者升级全局安装后在实际项目中观察，报告中列为未执行。
+
+最终按 16 条场景逐条报告，独立验收、实现者自检、真实 Codex、浏览器和模拟输出分别标明。结束时停止本轮进程，先将输入、输出、原始响应、日志、摘要及恢复记录归档到仓库外证据位置，再删除本轮临时数据、仓库副本与构建目录；不清理任何既有工作区、全局安装或他人进程。
+
 ## 准备与真实入口
 
 需要 Python 3.10 以上、uv、Git、POSIX 进程组，以及用于列出占用进程的 lsof。本机 Codex 的实际合并和执行调用使用开发者已有登录状态；不可调用时保存真实错误，不修改凭据或替换为假输出。

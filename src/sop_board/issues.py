@@ -20,7 +20,7 @@ LABELS = dict(open='待处理', fixing='修复中', verifying='待验证', close
 VERIFYING = frozenset((S.WAIT_VALIDATION, S.WAIT_COMMIT, S.VERIFYING, S.PROMOTING, S.DEVELOPER_MERGE))
 FIXED = frozenset((S.HANDLED, S.MERGED))
 REOPENED = frozenset((S.ABANDONED, S.DEVELOPER, S.FAILED, S.VOID))
-SOURCES = dict(session='会话登记', issue='问题台账', atlas='界面对照', merge='合并答复')
+SOURCES = dict(session='会话登记', issue='问题台账', atlas='界面对照', merge='合并答复', **{'case-amend': '按条增改'})
 
 
 def status(stored, fix_status):

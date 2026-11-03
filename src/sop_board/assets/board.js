@@ -965,6 +965,7 @@
       const task = data.task, progress = task.progress || {};
       const version = ['status','error','void_reason','started_at','finished_at','ownership'].map(key => task[key] ?? null);
       version.push(progress.ahead ?? null, progress.last_activity ?? null);
+      version.push(...['mode','mode_reason','changed_count','carried_count'].map(key => task.result?.[key] ?? null));
       if (JSON.stringify(version) !== JSON.stringify(JSON.parse(panel.dataset.taskVersion))) pendingRefresh = true;
       await refreshPage();
     } catch { /* Keep the last visible state until the next poll. */ }

@@ -1125,6 +1125,10 @@ def merges(workspace, name, tasks, case_data, selected=None, *, local=False, eta
                 if progress.get('session_id'):
                     content += '<p>继续会话：<code>' + text(progress['resume']) + '</code></p>'
         result = task['result']
+        if result.get('mode') == '增量':
+            content += f"<p>增量合并：判断 {result['changed_count']} 条变化用例，沿用 {result['carried_count']} 条</p>"
+        elif result.get('mode') == '全量':
+            content += '<p>全量合并：' + text(result['mode_reason']) + '</p>'
         if result.get('session_note'):
             content += '<p>' + text(result['session_note']) + '</p>'
         content += '<h3>用例到场景</h3><ul>'
@@ -1286,12 +1290,14 @@ def fixes(workspace, tasks, selected=None, *, review=None, local=False, progress
 def task_watch(task):
     progress = task.get('progress', {})
     version = [task.get(key) for key in ('status','error','void_reason','started_at','finished_at','ownership')] + [progress.get('ahead'), progress.get('last_activity')]
+    version += [task.get('result', {}).get(key) for key in ('mode', 'mode_reason', 'changed_count', 'carried_count')]
     return f"<span hidden data-task-state-url='/api/v1/tasks/{task['id']}' data-task-version='{text(json.dumps(version, ensure_ascii=False))}'></span>"
 
 
 def task_progress(task):
     progress = task.get('progress', {})
     version = [task.get(key) for key in ('status','error','void_reason','started_at','finished_at','ownership')] + [progress.get('ahead'), progress.get('last_activity')]
+    version += [task.get('result', {}).get(key) for key in ('mode', 'mode_reason', 'changed_count', 'carried_count')]
     content = f"<section data-task-state-url='/api/v1/tasks/{task['id']}' data-task-version='{text(json.dumps(version, ensure_ascii=False))}'><h2>任务 #{task['id']} · {task_status(task)}</h2>"
     if progress.get('ahead') is not None:
         content += f"<p>前面还有 {progress['ahead']} 个任务 · 同时运行上限 {progress['max_running']}</p>"
