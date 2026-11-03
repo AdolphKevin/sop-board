@@ -2,6 +2,8 @@
 # 预期依据：使用者 2026-11-03 的问题“为什么要强制改用例文件并上传，再走看板合并流程生成场景？”与随后的要求
 #   “在 sop-board 写‘按条增改用例’的方案，制定好方案后开始改造并审核”（方案 docs/proposals/2026-11-03-case-amend.md D103～D105）。
 # 版本 1（2026-11-03）：Claude 依据方案在实现前编写；实现与返工会话只读本文件，与方案不一致处以本文件为准并报告。
+# 版本 2（2026-11-03）：使用者要求“sop-board 被莫名其妙的触发了自动合并，将这个自动合并的逻辑删掉”（cw2 改 snapshot_exclude 后看板以“配置变化”排了两次全量合并），
+#   方案增加 D106：新增 SOP-204；SOP-203 的 must 与 SOP-203-N02 的全量原因由“入口声明或工作区配置有变化”改为“入口声明有变化”。
 #
 # “演示 Web 工作区”同 sop-board-16.yaml 文件头（工作区 demo-web，入口 app 与 api）。本文件另需：
 #   - 工作区“场景写入后自动执行”关闭；默认业务确认人未设置。
@@ -27,14 +29,14 @@
 metadata:
   requirement: "sop-board：按条增改用例时不需整份文件，署名并记下依据，合并只判断变化的用例并沿用其余判断"
   batch: "sop-board-20"
-  version: 1
+  version: 2
   owner: "blur.yin"
   sources:
     - ref: "使用者 2026-11-03 的问题与要求（cw2 paseo agent e367b611 之后，本会话）"
       version: "2026-11-03"
       confirmed_by: "blur.yin"
-    - ref: "docs/proposals/2026-11-03-case-amend.md D103～D105"
-      version: "方案 1"
+    - ref: "docs/proposals/2026-11-03-case-amend.md D103～D106"
+      version: "方案 2"
       confirmed_by: "blur.yin"
   tags: ["sop-board", "cases", "merge", "incremental"]
 
@@ -203,7 +205,7 @@ sops:
       - "上一轮合并已落地、之后只有用例新增或变化时，合并只需判断这些用例，其余判断由看板沿用，补齐后的完整判断按全量合并的同一套规则核对与组装"
       - "增量与全量在 prepare 输出、任务结果与合并页上可见，全量时写明原因"
       - "输出漏掉变化用例或沿用判断失效时拒收，不写入任何内容"
-      - "会话要求全量、开发者在看板重新合并，或 SOP、入口、配置、场景文件、待处理回复等其他输入变化时为全量"
+      - "会话要求全量、开发者在看板重新合并，或 SOP、入口声明、场景文件、待处理回复等其他输入变化时为全量"
     scenarios:
       - id: SOP-203-P01
         polarity: positive
@@ -347,7 +349,67 @@ sops:
           - "恢复基线状态；在数据目录 config.yaml 中改入口 app 的 operate 文字，按手册重新自检通过；用 amend-1.yaml 运行 put --by dev-a --reason 核对 --session <B>，再 prepare --session <B>"
           - "运行 sop-board cases upload demo-web fresh-batch team-cases.yaml --uploaded-by tester-a --session <B>，再 sop-board merge prepare demo-web fresh-batch --session <B>"
         expected:
-          - "四次 prepare 的 mode 都是全量，原因分别为：有待处理的合并回复；场景文件在上一轮合并之后有变化；入口声明或工作区配置有变化；没有可沿用的上一轮合并"
+          - "四次 prepare 的 mode 都是全量，原因分别为：有待处理的合并回复；场景文件在上一轮合并之后有变化；入口声明有变化；没有可沿用的上一轮合并"
           - "四个任务目录都没有 delta.json"
         forbidden_effects: ["在这些情况下按增量沿用判断"]
         evidence_hints: ["每次 prepare 输出", "任务目录文件清单"]
+
+  - id: SOP-204
+    title: 工作区配置变化与看板启动不触发合并
+    actor: 开发者
+    entry: "数据目录 config.yaml；看板进程；命令行 sop-board task list、cases put、merge prepare/submit；合并页"
+    must:
+      - "看板启动、工作区配置变化都不给任何批次排合并"
+      - "入口声明以外的配置变化不使进行中的合并待同步，也不使下一次合并改为全量"
+      - "入口声明变化时，进行中的合并落地转待同步并说明原因，看板不自动重新合并"
+    scenarios:
+      - id: SOP-204-P01
+        polarity: positive
+        title: 改 snapshot_exclude 与重启看板都不排合并，之后按条增改仍为增量
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["基线状态；看板以 --lan 启动，自动任务未暂停"]
+        steps:
+          - "记录 sop-board task list demo-web 中的合并任务"
+          - "在数据目录 config.yaml 加入 snapshot_exclude: {web: [docs/test-cases]} 并保存，等待 30 秒，再次查看合并任务与看板日志"
+          - "停止看板后按原命令重新启动，等待 30 秒，再次查看合并任务"
+          - "用 SOP-201-P01 的 amend-1.yaml 运行 put --by dev-a --reason 名称不截断 --session <B>，再 prepare --session <B>"
+        expected:
+          - "改配置后与重启后，两个批次都没有新增合并任务，看板日志没有为批次排合并的记录"
+          - "prepare 的 mode 为增量，基线为基线合并的任务"
+        forbidden_effects: ["看板以“配置变化”或启动为由排合并或启动模型"]
+        evidence_hints: ["前后 task list", "看板日志", "prepare 输出"]
+      - id: SOP-204-P02
+        polarity: positive
+        title: 合并进行中改入口以外的配置，合并照常落地
+        actor: 开发会话
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-201-P01 完成：合并任务由会话 B 认领，尚未准备"]
+        steps:
+          - "运行 prepare --session <B>，按 SOP-203-P01 写 final.json"
+          - "在数据目录 config.yaml 加入 snapshot_exclude: {web: [docs/test-cases]} 并保存"
+          - "运行 submit --task <编号>，查看任务状态、场景文件与 task list"
+        expected:
+          - "submit 成功落地，任务不是待同步；TC_TEAM_CREATE_001 与 TC_TEAM_CREATE_003 的场景按新判断写入"
+          - "之后没有新增合并任务"
+        forbidden_effects: ["因配置变化转待同步"]
+        evidence_hints: ["submit 输出", "场景文件 diff", "task list"]
+      - id: SOP-204-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 合并进行中改了入口声明时转待同步，看板不自动重新合并
+        actor: 开发会话
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-201-P01 完成：合并任务由会话 B 认领，尚未准备；看板以 --lan 启动，自动任务未暂停"]
+        steps:
+          - "运行 prepare --session <B>，按 SOP-203-P01 写 final.json"
+          - "在数据目录 config.yaml 中改入口 app 的 operate 文字并保存"
+          - "运行 submit --task <编号>，查看任务状态、原因与场景文件；等待 30 秒后查看 task list"
+        expected:
+          - "提交不落地：这一会话任务作废（看板调度的合并为待同步），原因为入口声明变化，请重新合并；场景文件与场景版本不变"
+          - "30 秒内没有新增合并任务"
+        forbidden_effects: ["按旧入口声明落地", "看板自动排新的合并"]
+        evidence_hints: ["submit 输出", "任务详情", "场景文件前后对比", "task list"]

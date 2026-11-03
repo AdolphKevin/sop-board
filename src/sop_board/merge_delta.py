@@ -76,8 +76,8 @@ def freeze(tasks, db, batch, snapshot, *, full_reason=None):
     if any(m['pending'] for m in snapshot['clarifications']['messages']):
         return full('有待处理的合并回复')
     current = baseline_inputs(snapshot)
-    if before['config_digest'] != current['config_digest'] or before['entries'] != current['entries']:
-        return full('入口声明或工作区配置有变化')
+    if json.dumps(before['entries'], sort_keys=True) != json.dumps(current['entries'], sort_keys=True):
+        return full('入口声明有变化')
     if before['sop'] != current['sop'] or before['sop_upload_id'] != current['sop_upload_id']:
         return full('业务 SOP 原文有变化')
     if before['forced_flow'] != current['forced_flow']:
