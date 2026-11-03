@@ -90,7 +90,7 @@
       if (!response.ok) return;
       const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
       const next = parsed.querySelector("main");
-      if (!next || (!next.dataset.stateUrl && !next.querySelector("[data-task-state-url]"))) return;
+      if (!next || (!next.dataset.stateUrl && !next.querySelector("[data-task-state-url], [data-execution-home]"))) return;
       if (hasDraft() || writes) {deferRefresh(); return;}
       const disclosures = Array.from(document.querySelectorAll("details[data-disclosure][open]"), item => item.dataset.disclosure);
       next.querySelectorAll("details[data-disclosure]").forEach(item => {item.open = disclosures.includes(item.dataset.disclosure);});
@@ -347,7 +347,7 @@
       applyFilter();
     }
     const statusNames = {pass: "通过", fail: "不通过（失败）", blocked: "不通过（受阻）", skip: "跳过"};
-    const queueNames = {pending: "待执行", issues: "问题", retest: "复测", reviewed: "已复核通过"};
+    const queueNames = {pending: "待执行", "source-changed": "产品变化待判定", issues: "问题", retest: "复测", reviewed: "已复核通过"};
     const element = (tag, value) => {
       const node = document.createElement(tag);
       if (value !== undefined) node.textContent = value;
@@ -877,6 +877,9 @@
       const batches = home ? new Map(data.workspaces.flatMap(workspace => workspace.batches.map(batch =>
         ["/api/v1/workspaces/" + encodeURIComponent(workspace.key) + "/batches/" + encodeURIComponent(batch.name), batch]))) :
         new Map([[controls[0].dataset.executionUrl, data]]);
+      if (home) home.querySelectorAll("[data-home-batch]").forEach(row => {
+        if (batches.get(row.dataset.homeBatch)?.etag !== row.dataset.etag) pendingRefresh = true;
+      });
       controls.forEach(group => {
         const batch = batches.get(group.dataset.executionUrl);
         if (!group.isConnected || group.dataset.busy || !batch?.execution) return;
@@ -895,6 +898,7 @@
           renderExecutionMessage(group);
         }
       });
+      if (home) await refreshPage();
     } catch { /* Keep the last server-provided counts until the next successful read. */ }
     finally {executionPolling = false;}
   }, 3000);

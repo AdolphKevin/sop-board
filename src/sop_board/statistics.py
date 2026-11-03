@@ -122,7 +122,7 @@ def calculate(db, batch):
         row["submitted_at_display"] = local_time(row["submitted_at"])
         row["evidence"] = evidence.get(row["id"], [])
         by_scenario.setdefault((row["scenario"], row["fingerprint"]), []).append(row)
-    queues = {'pending': [], 'issues': [], 'retest': [], 'waiting-change': []}
+    queues = {'pending': [], 'source-changed': [], 'issues': [], 'retest': [], 'waiting-change': []}
     agent_pass = agent_fail = first_pass = first_fail = reviewed = manual_pass = manual_fail = executed = 0
     details, misjudgments = [], []
     agent_counts = {"pass": 0, "fail": 0, "blocked": 0, "skip": 0}
@@ -148,9 +148,10 @@ def calculate(db, batch):
             reviewed += 1
             manual_pass += m["status"] == "pass"
             manual_fail += m["status"] == "fail"
-        if not latest or (a and latest["status"] == "pass" and a["status"] == "pass" and
-                          stale(a, batch["product_digest"])):
+        if not latest:
             queue = "pending"
+        elif a and latest["status"] == "pass" and a["status"] == "pass" and stale(a, batch["product_digest"]):
+            queue = "source-changed"
         elif latest["status"] in ("fail", "blocked", "skip"):
             queue = "issues"
         elif a and latest is a and a["status"] == "pass":
