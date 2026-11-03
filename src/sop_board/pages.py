@@ -136,7 +136,8 @@ def home(data, *, environment=None, local=False):
     cards = []
     for workspace in data['workspaces']:
         batches = ''.join(
-            "<li class='batch-entry'><div class='batch-entry-heading'><div class='batch-entry-info'>"
+            f"<li class='batch-entry' data-home-batch='/api/v1/workspaces/{text(quote(workspace['key'], safe=''))}/batches/{text(quote(batch['name'], safe=''))}' "
+            f"data-etag='{text(batch['etag'])}'><div class='batch-entry-heading'><div class='batch-entry-info'>"
             "<span class='batch-entry-label'>验收批次</span>"
             f"<h3><a href='{text(batch_url(workspace['key'], batch['name']))}'>{text(batch['name'])}</a></h3></div>"
             f"<a class='button batch-entry-open' href='{text(batch_url(workspace['key'], batch['name']))}' "
@@ -183,8 +184,13 @@ def execution_state(data):
         return "尚无场景"
     if data.get('execution_count') == 0 and data.get('holds', {}).get('held'):
         return '当前场景全部暂缓，等待补充'
+    pending = []
     if data["queue_counts"]["pending"]:
-        return f"有待执行 {data['queue_counts']['pending']} 条"
+        pending.append(f"有待执行 {data['queue_counts']['pending']} 条")
+    if data["queue_counts"]["source-changed"]:
+        pending.append(f"产品变化待判定 {data['queue_counts']['source-changed']} 条")
+    if pending:
+        return '，'.join(pending)
     execution = data["agent_execution"]
     counts = execution["counts"]
     submitted = time_tag(execution["submitted_at"]) if execution["submitted_at"] else "无"
@@ -267,7 +273,7 @@ def execution_controls(workspace, name, data, *, local=False):
                     f"data-execution-scope='{scope}' aria-describedby='{text(reason_id)}'" +
                     (' disabled' if reason else '') + f">{label}（{count} 条）</button>"
                     f"<span id='{text(reason_id)}' data-execution-reason='{scope}'>{text(reason)}</span></div>")
-    return content + "<p data-execution-message='' role='status' aria-live='polite'></p></div>"
+    return content + "<p>与‘待执行’队列相比，还包含失败和产品变化待判定的场景</p><p data-execution-message='' role='status' aria-live='polite'></p></div>"
 
 
 def validation_notice(workspace, batch, selected, *, local=False):
@@ -353,11 +359,13 @@ def batch(workspace, data, *, environment=None, local=False, merge=None):
     more_metrics = metrics_for([("manual_pass_rate", "人工复测通过率"), ("retest_coverage", "复测覆盖率"),
                                 ("first_pass_rate", "一次通过率")])
     scenario_names = data.get('scenario_titles', {})
-    descriptions = {'pending': '尚未完成执行的场景', 'issues': '失败或受阻，需要跟进', 'retest': 'Agent 已通过，等待人工复核',
+    descriptions = {'pending': '当前内容没有结果的场景',
+                    'source-changed': 'Agent 已通过，之后产品有变化；下次执行逐条判定影响，不受影响的沿用，受影响的重跑',
+                    'issues': '失败或受阻，需要跟进', 'retest': 'Agent 已通过，等待人工复核',
                     'waiting-change': '界面对照决定改 SOP，场景修改后自动回到待执行'}
-    active_queue = next((key for key in ('issues', 'pending', 'retest') if data['queue_counts'][key]), 'retest')
+    active_queue = next((key for key in ('issues', 'pending', 'source-changed', 'retest') if data['queue_counts'][key]), 'retest')
     queues = []
-    shown = [("pending", "待执行"), ("issues", "问题"), ("retest", "复测")]
+    shown = [("pending", "待执行"), ("source-changed", "产品变化待判定"), ("issues", "问题"), ("retest", "复测")]
     if data['queue_counts'].get('waiting-change'):
         shown.append(("waiting-change", "等待修改场景"))
     for key, label in shown:
@@ -555,7 +563,7 @@ def review_controls(workspace, name, item):
             "<noscript>请启用 JavaScript 后复核。</noscript></form>")
 
 
-QUEUE = {"pending": "待执行", "issues": "问题", "retest": "复测", "reviewed": "已复核通过", "held": "待补充（沿用原场景，暂不计入执行）",
+QUEUE = {"pending": "待执行", "source-changed": "产品变化待判定", "issues": "问题", "retest": "复测", "reviewed": "已复核通过", "held": "待补充（沿用原场景，暂不计入执行）",
          "waiting-change": "等待修改场景（界面对照决定改 SOP，暂不执行）"}
 FILTERS = [("all", "全部"), ("unreviewed", "未人工复核"), ("agent-pass", "Agent 已通过"),
            ("fail", "不通过"), ("blocked", "受阻")]
@@ -649,6 +657,7 @@ def progress(workspace, data, coverage):
         return f"<div id='metric-{key}'><dt>{label}</dt><dd>{value}</dd></div>"
 
     development = metric("pending", "待执行", data["queue_counts"]["pending"])
+    development += metric("source-changed", "产品变化待判定", data["queue_counts"]["source-changed"])
     for key, label in [("executed_progress", "已执行进度"), ("agent_pass_rate", "Agent 验收通过率"), ("first_pass_rate", "一次通过率")]:
         development += metric(key, label, ratio(data["statistics"][key]))
     testing = metric("retest", "待复核", data["queue_counts"]["retest"])

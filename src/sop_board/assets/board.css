@@ -73,7 +73,7 @@ summary:hover { color: var(--accent); }
 .workspace-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 24px 0 12px; }
 .workspace-heading h2 { margin: 0; }
 .workspace-heading > span { font-size: 12px; color: var(--muted); }
-.queues { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.queues { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .queues section { margin: 0; padding: 20px; }
 .section-heading h2 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
 .section-heading p { font-size: 12px; color: var(--muted); margin: 0 0 16px; }

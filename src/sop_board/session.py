@@ -456,7 +456,7 @@ class Session:
     def status(self):
         with self.tasks.lock:
             with self.store.connection() as db:
-                batches = [dict(name=b['name'], **{k: v for k, v in calculate(db, b).items() if k in ('scenario_count','queue_counts','statistics')})
+                batches = [dict(name=b['name'], **{k: v for k, v in calculate(db, b).items() if k in ('scenario_count','queue_counts','queues','statistics')})
                            for b in db.execute('SELECT * FROM batches WHERE workspace=? ORDER BY name', (self.key,))]
             check = self.service.environment.latest_check()
             attempt = self.service.environment.latest_check_attempt()
@@ -757,7 +757,7 @@ def command(arguments):
         if group == 'status' and not args.json:
             print('工作区：' + result['workspace']['name'])
             for row in result['batches']:
-                print(f"批次 {row['name']}：{row['scenario_count']} 条场景；待执行 {row['queue_counts']['pending']}")
+                print(f"批次 {row['name']}：{row['scenario_count']} 条场景；待执行 {row['queue_counts']['pending']}；产品变化待判定 {row['queue_counts']['source-changed']}")
             print('自检：' + ('通过' if result['setup_check']['ok'] else result['setup_check']['message']))
             print('默认业务确认人：' + (result['default_confirmer'] or '未设置（答复、确认和上传须写姓名）'))
             print('待开发者处理：' + str(len(result['attention'])) + ' 项')

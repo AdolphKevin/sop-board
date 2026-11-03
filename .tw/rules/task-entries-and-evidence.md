@@ -1,8 +1,8 @@
 ---
 title: "任务内核、两个入口与证据有效性"
 scope: ["self:src/sop_board/**", "self:docs/**"]
-source: ["self:docs/proposals/2026-10-22-integrated-rework.md", "self:docs/reference.md", "self:docs/standard.md", "self:docs/proposals/2026-10-31-fix-landing.md", "self:docs/proposals/2026-11-03-case-amend.md"]
-guards: ["self:docs/sop/sop-board-14.yaml#SOP-144", "self:docs/sop/sop-board-14.yaml#SOP-145", "self:docs/sop/sop-board-14.yaml#SOP-149", "self:docs/sop/sop-board-12.yaml#SOP-127", "self:docs/sop/sop-board-19.yaml#SOP-191", "self:docs/sop/sop-board-19.yaml#SOP-192", "self:docs/sop/sop-board-20.yaml#SOP-201", "self:docs/sop/sop-board-20.yaml#SOP-202", "self:docs/sop/sop-board-20.yaml#SOP-203"]
+source: ["self:docs/proposals/2026-10-22-integrated-rework.md", "self:docs/reference.md", "self:docs/standard.md", "self:docs/proposals/2026-10-31-fix-landing.md", "self:docs/proposals/2026-11-03-case-amend.md", "self:docs/proposals/2026-11-03-pending-impact-display.md"]
+guards: ["self:docs/sop/sop-board-14.yaml#SOP-144", "self:docs/sop/sop-board-14.yaml#SOP-145", "self:docs/sop/sop-board-14.yaml#SOP-149", "self:docs/sop/sop-board-12.yaml#SOP-127", "self:docs/sop/sop-board-19.yaml#SOP-191", "self:docs/sop/sop-board-19.yaml#SOP-192", "self:docs/sop/sop-board-20.yaml#SOP-201", "self:docs/sop/sop-board-20.yaml#SOP-202", "self:docs/sop/sop-board-20.yaml#SOP-203", "self:docs/sop/sop-board-21.yaml#SOP-211"]
 ---
 # 任务内核、两个入口与证据有效性
 
@@ -55,3 +55,5 @@ D103～D105：cases put 按编号与并集当前内容比较，只登记新增�
 增量合并以最近 merge-land 收据为基线，核对当前场景内容仍是该轮落地结果，比较落地后（含 case_updates）的用例及草稿确认信息；升级前任务兼容读取 final.json 与已登记澄清改写。SOP、入口声明、独立场景选择、排除范围变化、待处理回复、没有变化用例或不可读基线均全量。只有看板开发者重新合并与会话 prepare --full 强制全量，其他触发名称不决定模式。delta.json 与追加提示词仅用于增量；输出须覆盖全部变化用例，出现的条目完整覆盖沿用值，缺失条目才补齐，relocate 不沿用。仅沿用仍适用的节点、豁免、kept 去向及全部关联用例未变化的缺口，缺口重新编号。补齐后仍经 merge_conversation.validate 与原 judgment_problems/assemble 核对，不新增宽松核对器。完整判断与下一轮基线材料存于仅本机的 judgment.json；result_json 只增模式、原因、基线与计数，沿用数不含输出给出的用例判断。数据库格式仍为 5，不加表和列。场景依据为 SOP-201～203，真实入口与独立验收另行留证。
 
 D106：看板启动扫描与工作区配置变化不再给批次排合并；合并输入与落地核对只看入口声明，不看工作区配置摘要，其他配置（snapshot_exclude、适配等）变化不使合并待同步或改为全量。入口声明变化时进行中的合并落地转待同步，由人重新合并。
+
+D107：显示队列与执行范围分开。pending 只计当前内容没有结果的场景；最近 Agent 结果与最近结果都是通过、且产品内容摘要不同或执行期间有变化的场景单列 source-changed（产品变化待判定），不进复测，暂缓与等待修改场景仍优先排除。queue_counts、queues、页面和 status 共用同一统计来源；执行按钮条数、pending_scope、--scope pending、执行计划 pending 模式及影响判定、沿用规则保持不变。具体状态行、队列与指标维护在 docs/reference.md；场景依据为 docs/sop/sop-board-21.yaml 的 SOP-211。
