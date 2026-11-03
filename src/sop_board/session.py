@@ -255,8 +255,13 @@ class Session:
         existing = None
         if connection is None:
             existing, _ = self.preflight('merge', name)
+        elif self.owner and trigger == '按条增改':
+            # 按条增改在登记事务内触发合并，不能再走 preflight；与 cases upload 一样续用本会话已认领的合并。
+            existing = connection.execute('SELECT t.* FROM tasks t JOIN session_tasks s ON s.task=t.id '
+                'WHERE t.workspace=? AND t.batch=? AND t.kind=? AND t.status=? AND s.session_id=?',
+                (key, name, 'merge', S.SESSION, self.owner)).fetchone()
         if existing:
-            return dict(ok=True, task=self.tasks.read(existing['id']))
+            return dict(ok=True, task=self.tasks.read(existing['id'], connection=connection))
         result = self.tasks.enqueue_merge(key, name, trigger, force_case, connection=connection, fresh=True)
         if result:
             self.last_merge = result['task']['id']
@@ -269,13 +274,18 @@ class Session:
         outputs = ['results.jsonl', 'impact.json'] if task['kind'] == 'execute' else ['final.json']
         if task['kind'] == 'execute' and json.loads(task['input_json']).get('fix'):
             outputs = ['results.jsonl']
-        return dict(ok=True, task=task['id'], kind=task['kind'], status=task['status'], workspace=self.key,
+        descriptor = dict(ok=True, task=task['id'], kind=task['kind'], status=task['status'], workspace=self.key,
             url=self.board_origin()+f"/w/{self.key}/tasks/{task['id']}",
             batch=task['batch'], directory=str(directory), prompt=str(directory / 'prompt.md'),
             outputs={name: str(directory / name) for name in outputs},
             session=self.tasks.kernel.claim(task)['session_id'])
+        if task['kind'] == 'merge':
+            snapshot = json.loads(task['input_json'])
+            descriptor.update(mode=snapshot.get('mode', '全量'), mode_reason=snapshot.get('mode_reason', '旧版全量任务'),
+                              baseline=snapshot.get('baseline'), changed_cases=[c['case'] for c in snapshot.get('changed', [])])
+        return descriptor
 
-    def prepare(self, kind, batch, owner, *, replace_queued=False, scope=('pending',)):
+    def prepare(self, kind, batch, owner, *, replace_queued=False, scope=('pending',), full=False):
         self.owner, self.replace_queued = identity(owner), replace_queued
         with self.tasks.lock:
             self.sync()
@@ -320,6 +330,16 @@ class Session:
                 self.claim(tid)
                 task = self.raw(tid)
             directory = self.tasks.directory(task['id'])
+            if kind == 'merge' and full:
+                if self.tasks.kernel.receipt(task, phase='merge-land'):
+                    reject(409, 'merge-output-exists', 'task', '任务已有输出，请先提交或取消；--full 只用于尚未提交输出的任务')
+                if (directory / 'final.json').exists():
+                    self.tasks.kernel.archive(task, checkpoint='full', names={'final.json', 'check.json'})
+                self.tasks.update(task['id'], **self.tasks.refresh_merge(task, full_reason='会话要求全量'))
+                task = self.raw(task['id'])
+                self.tasks.prepare_merge(task)
+                self.tasks.conversation.taken(task)
+                return self.descriptor(task)
             if (directory / 'prompt.md').is_file() and (directory / 'input.json').is_file():
                 self.tasks.conversation.taken(task)
                 return self.descriptor(task)
@@ -504,7 +524,7 @@ def parser_for(group):
         parser.set_defaults(action='status')
     else:
         actions = {'task': ('list','show','cancel'), 'draft': ('prepare','submit','annotate','confirm'),
-                   'cases': ('upload','export'), 'merge': ('prepare','submit','reply','exclude','include'),
+                   'cases': ('upload','put','export'), 'merge': ('prepare','submit','reply','exclude','include'),
                    'execute': ('prepare','submit'), 'fix': ('prepare','submit','land'), 'sop': ('upload','prepare','answer','submit')}[group]
         sub = parser.add_subparsers(dest='action', required=True)
         choices = {action: sub.add_parser(action) for action in actions}
@@ -519,7 +539,7 @@ def parser_for(group):
             child.add_argument('--session', required=True)
             if group != 'fix':
                 child.add_argument('--replace-queued', action='store_true')
-        elif action in ('submit','confirm','reply','exclude','include','answer'):
+        elif action in ('submit','confirm','reply','exclude','include','answer','put'):
             child.add_argument('--session', help='提交时核对认领；答复/确认时可认领随后触发的合并')
             child.add_argument('--replace-queued', action='store_true')
         if action in ('submit','land'):
@@ -535,9 +555,17 @@ def parser_for(group):
         if group == 'execute' and action == 'submit':
             child.add_argument('--implementer', help='实际实现者；省略时登记独立性未声明')
         if group == 'cases' and action == 'export':
+            child.add_argument('--case', dest='selected', action='append', default=[], help='按顺序导出指定用例，可重复')
             child.add_argument('--upload', type=int, help='按哪次上传的格式和顺序导出；缺省为最近一次非合并澄清的上传')
             child.add_argument('--out', type=Path, help='导出到新文件')
             child.add_argument('--write-back', action='store_true', help='写回会话上传时记录的原文件')
+        if group == 'cases' and action == 'put':
+            child.add_argument('--from', dest='from_file', type=Path, required=True)
+            child.add_argument('--case', dest='selected', action='append', default=[])
+            child.add_argument('--by', help='使用者给出的姓名；省略时用默认业务确认人')
+            child.add_argument('--reason', required=True, help='使用者的依据原文')
+        if group == 'merge' and action == 'prepare':
+            child.add_argument('--full', action='store_true', help='同一未提交任务重新准备为全量合并')
         if group in ('cases','sop') and action == 'upload':
             child.add_argument('--uploaded-by', help='上传人姓名；省略时用同一命令给出的其他姓名或默认业务确认人')
         if group == 'sop' and action in ('upload','submit'):
@@ -658,7 +686,8 @@ def command(arguments):
                     if not plan['rounds']:
                         raise ValueError('计划中没有待执行的场景')
                     scope = [item['scenario'] for item in plan['rounds'][0]]
-                result = app.prepare(KINDS[group], batch, args.session, replace_queued=args.replace_queued, scope=scope)
+                result = app.prepare(KINDS[group], batch, args.session, replace_queued=args.replace_queued, scope=scope,
+                                     full=getattr(args, 'full', False))
             elif args.action == 'submit':
                 result = app.submit(KINDS[group], args.task, implementer=getattr(args, 'implementer', None), owner=args.session)
             else:
@@ -674,7 +703,13 @@ def command(arguments):
                     result = app.upload_sop(batch,body)
                 elif group == 'cases' and args.action == 'export':
                     from .case_export import export
-                    result = export(app.service, app.key, batch, upload=args.upload, out=args.out, write_back=args.write_back)
+                    result = export(app.service, app.key, batch, upload=args.upload, out=args.out, write_back=args.write_back, selected=args.selected)
+                elif group == 'cases' and args.action == 'put':
+                    filename = args.from_file
+                    body = dict(filename=filename.name, content=upload_text(filename, 'cases-invalid', '用例文件必须为 UTF-8'),
+                                uploaded_by=app.person(args.by))
+                    result = app.service.put_cases(app.key, batch, body, selected=args.selected, reason=args.reason,
+                        before_write=lambda: app.preflight('merge', batch) if app.owner else None)
                 elif group == 'cases':
                     from .cases import load_cases
                     body = dict(filename=filename.name, content=upload_text(filename, 'cases-invalid', '用例文件必须为 UTF-8'), uploaded_by=app.person(args.uploaded_by))

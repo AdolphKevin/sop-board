@@ -1,8 +1,8 @@
 ---
 title: "任务内核、两个入口与证据有效性"
 scope: ["self:src/sop_board/**", "self:docs/**"]
-source: ["self:docs/proposals/2026-10-22-integrated-rework.md", "self:docs/reference.md", "self:docs/standard.md", "self:docs/proposals/2026-10-31-fix-landing.md"]
-guards: ["self:docs/sop/sop-board-14.yaml#SOP-144", "self:docs/sop/sop-board-14.yaml#SOP-145", "self:docs/sop/sop-board-14.yaml#SOP-149", "self:docs/sop/sop-board-12.yaml#SOP-127", "self:docs/sop/sop-board-19.yaml#SOP-191", "self:docs/sop/sop-board-19.yaml#SOP-192"]
+source: ["self:docs/proposals/2026-10-22-integrated-rework.md", "self:docs/reference.md", "self:docs/standard.md", "self:docs/proposals/2026-10-31-fix-landing.md", "self:docs/proposals/2026-11-03-case-amend.md"]
+guards: ["self:docs/sop/sop-board-14.yaml#SOP-144", "self:docs/sop/sop-board-14.yaml#SOP-145", "self:docs/sop/sop-board-14.yaml#SOP-149", "self:docs/sop/sop-board-12.yaml#SOP-127", "self:docs/sop/sop-board-19.yaml#SOP-191", "self:docs/sop/sop-board-19.yaml#SOP-192", "self:docs/sop/sop-board-20.yaml#SOP-201", "self:docs/sop/sop-board-20.yaml#SOP-202", "self:docs/sop/sop-board-20.yaml#SOP-203"]
 ---
 # 任务内核、两个入口与证据有效性
 
@@ -49,3 +49,7 @@ D100：会话修复 fix land 只核对修复输出登记时记下的 changes：�
 D101：会话修复的再次准备、fix submit、复验准备与提交、fix land 只核对本修复的问题场景（复验为所选场景）：仍在当前版本、指纹与认领时（复验为准备时）相同、引用用例的前置条件、步骤与预期与修复快照相同（description、tags 等不比较）；不再比较全部批次的场景版本、用例并集、配置摘要与自检状态。受保护的 SOP 与场景文件只在再次准备与 fix submit 时核对（SOP-146-N02），复验与 land 不核对。复验准备另须 require_ready，复验快照的 config_digest 取准备时的值，复验期间业务配置或自检状态变化仍作废。看板修复的冻结规则不变。
 
 D102：已放弃的会话修复，最后一次尝试已登记产品修复输出（不是已放弃、运行中或已中断）、产品问题没有被其他未放弃的修复认领时，fix land 可按 D98 的独立通过关闭为已处理，关闭说明写明此前放弃的时间；否则返回 fix-not-ready 或 fix-problem-reclaimed。其他操作仍不复活已放弃的修复。verified_by_rounds 同时返回逐个问题场景的原因，fix-validation-required 据此列出须补跑的场景。
+
+D103～D105：cases put 按编号与并集当前内容比较，只登记新增与改写；片段继承最近非澄清上传的 metadata 并去掉 sop-draft，问题行号仍对应原文件。署名只用使用者姓名或默认业务确认人，依据原文与上传、编号一起登记为“按条增改”决定；全部未变化不写记录。按条上传不记录原路径，不能 write-back。export --case 按指定顺序导出并集当前内容，文件头取最近非澄清上传，只配合 --out，与 --upload、--write-back 互斥。
+
+增量合并以最近 merge-land 收据为基线，核对当前场景内容仍是该轮落地结果，比较落地后（含 case_updates）的用例及草稿确认信息；升级前任务兼容读取 final.json 与已登记澄清改写。SOP、入口、配置、独立场景选择、排除范围变化、待处理回复、没有变化用例或不可读基线均全量。只有看板开发者重新合并与会话 prepare --full 强制全量，其他触发名称不决定模式。delta.json 与追加提示词仅用于增量；输出须覆盖全部变化用例，出现的条目完整覆盖沿用值，缺失条目才补齐，relocate 不沿用。仅沿用仍适用的节点、豁免、kept 去向及全部关联用例未变化的缺口，缺口重新编号。补齐后仍经 merge_conversation.validate 与原 judgment_problems/assemble 核对，不新增宽松核对器。完整判断与下一轮基线材料存于仅本机的 judgment.json；result_json 只增模式、原因、基线与计数，沿用数不含输出给出的用例判断。数据库格式仍为 5，不加表和列。场景依据为 SOP-201～203，真实入口与独立验收另行留证。

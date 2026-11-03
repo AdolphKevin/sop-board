@@ -12,7 +12,7 @@ description: 在已登记的工作区处理业务 SOP：登记已有 SOP 原文�
 | --- | --- |
 | 根据 PRD、需求、评审记录或技术方案写业务 SOP | [编写业务 SOP](references/author-sop.md) |
 | 登记已有业务 SOP 原文，或生成、修订、确认草稿 | [草稿](references/draft.md) |
-| 上传并合并用例、回答合并缺口、本批不纳入或重新纳入 | [合并](references/merge.md) |
+| 上传并合并用例、按条增改用例、回答合并缺口、本批不纳入或重新纳入 | [合并](references/merge.md) |
 | 梳理 Web 入口的交互地图，或处理执行者的地图反馈 | [梳理交互](references/atlas.md) |
 | 执行或重新验证已存在的场景 | [执行](references/execute.md) |
 | 分析并修复不通过的场景、登记修复后的独立复验 | [修复与独立复验](references/fix.md) |

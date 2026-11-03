@@ -46,7 +46,16 @@ def snapshot_free(workspace, path):
     return True, ''
 
 
-def export(service, workspace_key, batch_name, *, upload=None, out=None, write_back=False):
+def export(service, workspace_key, batch_name, *, upload=None, out=None, write_back=False, selected=()):
+    if selected:
+        if upload is not None:
+            raise ValueError('--case 不能与 --upload 同用')
+        if write_back:
+            raise ValueError('--case 不能与 --write-back 同用')
+        if not out:
+            raise ValueError('--case 只能配合 --out <文件>')
+        if len(set(selected)) != len(selected):
+            raise ValueError('--case 编号不能重复')
     if bool(out) == bool(write_back):
         raise ValueError('请用 --out <文件> 导出，或用 --write-back 写回原上传文件（二选一）')
     with service.store.connection() as db:
@@ -63,9 +72,12 @@ def export(service, workspace_key, batch_name, *, upload=None, out=None, write_b
             chosen = next((u for u in uploads if u['number'] == upload), None)
             if chosen is None:
                 raise ValueError(f'上传 {upload} 不存在；可选：' + '、'.join(f"{u['number']}（{u['filename']}）" for u in uploads))
-        original = [json.loads(r['body']) for r in db.execute('SELECT body FROM case_versions WHERE batch=? AND upload=? ORDER BY id',
-                                                                 (batch['id'], chosen['number']))]
         latest = {c['id']: c for c in service.case_union(db, batch)}
+        if selected and set(selected) - latest.keys():
+            raise ValueError('编号不存在：' + '、'.join(sorted(set(selected) - latest.keys())))
+        original = ([latest[cid] for cid in selected] if selected else
+                    [json.loads(r['body']) for r in db.execute('SELECT body FROM case_versions WHERE batch=? AND upload=? ORDER BY id',
+                                                              (batch['id'], chosen['number']))])
         source = db.execute('SELECT * FROM case_upload_sources WHERE batch=? AND upload=?', (batch['id'], chosen['number'])).fetchone()
     cases = [latest.get(case['id'], case) for case in original]
     changed = [case['id'] for case, before in zip(cases, original) if case != before]
@@ -106,5 +118,6 @@ def export(service, workspace_key, batch_name, *, upload=None, out=None, write_b
                        (hashlib.sha256(text.encode('utf-8')).hexdigest(), batch['id'], chosen['number']))
     return dict(ok=True, path=str(target), upload=chosen['number'], filename=chosen['filename'], cases=len(rows), changed=changed,
                 written_back=bool(write_back),
-                notice='已按原上传的用例顺序输出；YAML 重新排版，原文件中的注释不保留' if write_back else
+                notice='已按指定顺序导出用例的当前内容，可直接用于 cases put' if selected else
+                       '已按原上传的用例顺序输出；YAML 重新排版，原文件中的注释不保留' if write_back else
                        '已按原上传的格式和顺序导出；交给测试同事替换原文件前请核对 changed 列出的改写')

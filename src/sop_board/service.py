@@ -260,13 +260,16 @@ class Service:
             etag += '-w' + hashlib.sha256(canonical(problems).encode()).hexdigest()[:12]
         if self.workspace.configured:
             etag += '-e' + hashlib.sha256(canonical(self.entries(batch['workspace'])).encode()).hexdigest()[:12]
-        tasks = [dict(r) for r in db.execute("SELECT id,status,scope_json,started_at,finished_at,error,void_reason,rounds_json FROM tasks "
+        tasks = [dict(r) for r in db.execute("SELECT id,status,scope_json,started_at,finished_at,error,void_reason,rounds_json, "
+            "json_extract(result_json,'$.mode') AS mode,json_extract(result_json,'$.mode_reason') AS mode_reason, "
+            "json_extract(result_json,'$.carried_count') AS carried_count FROM tasks "
             "WHERE workspace=? AND batch=? AND kind IN ('execute','generate','merge','distill') ORDER BY id", (batch['workspace'], batch['name']))]
         for task in tasks:
             task['session_task'] = session_claim(db, task['id'])
         if tasks:
             etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
-        merges = [dict(r) for r in db.execute("SELECT id,status FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
+        merges = [dict(r) for r in db.execute("SELECT id,status,json_extract(result_json,'$.mode') AS mode, "
+            "json_extract(result_json,'$.mode_reason') AS mode_reason FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
             f'AND status IN ({sql_states(OUTPUT_ACTIVE)}) ORDER BY id', (batch['workspace'], batch['name']))]
         positions = queue_positions(db) if any(task['status'] == S.QUEUED for task in merges) else {}
         for task in merges:
@@ -388,6 +391,10 @@ class Service:
         if on_upload is None and self.merge_callback and self.workspace.configured:
             self.merge_callback(key, name, trigger="上传用例")
         return result
+
+    def put_cases(self, key, name, body, *, selected=(), reason, before_write=None):
+        from .case_amend import put
+        return put(self, key, name, body, selected=selected, reason=reason, before_write=before_write)
 
     def sop_path(self, name):
         validate_batch(name)

@@ -23,7 +23,7 @@ def syntax_problem(error):
                 problem=f"YAML 语法错误：{reason}（列 {mark.column + 1 if mark else '未知'}）")
 
 
-def load_cases(body):
+def load_cases(body, *, inherited_metadata=None):
     problems, lines = [], {(): None}
 
     def add(path, message, line=None):
@@ -109,6 +109,9 @@ def load_cases(body):
         for index, child in enumerate(item):
             string(child, path + (index,), nonempty_items)
 
+    # 片段只补内存中的文件头，原文位置表不动，错误行号仍对应使用者的文件。
+    if 'metadata' not in value and inherited_metadata is not None:
+        value['metadata'] = inherited_metadata
     # 缺少任一顶层字段时为文件级错误，无可对应的行号。
     shape(value, (), {"metadata", "test_cases"})
     if "metadata" not in value or "test_cases" not in value:

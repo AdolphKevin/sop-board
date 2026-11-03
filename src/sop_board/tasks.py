@@ -18,7 +18,7 @@ from .kernel import (ALL_STATES, Kernel, MERGE_DEDUP, MERGE_RESULTS, OUTPUT_ACTI
 
 
 from .errors import reject, APIError
-from .drafts import SCHEMA, assemble, section, schema_problems, normalize_judgment
+from .drafts import SCHEMA, assemble, section, schema_problems, normalize_judgment, judgment_problems
 
 import yaml
 from .service import canonical, now
@@ -101,7 +101,7 @@ class Tasks:
             'AND newer.case_id=v.case_id AND newer.upload>v.upload) ORDER BY v.case_id', (batch['id'],))
             if 'sop-draft' in json.loads(row['metadata']).get('tags', [])}
 
-    def enqueue_merge(self, key, name, trigger="重新合并", force_case=None, *, connection=None, fresh=False):
+    def enqueue_merge(self, key, name, trigger="重新合并", force_case=None, *, connection=None, fresh=False, full_reason=None):
         workspace = self.service.workspace
         workspace.reload()
         if not workspace.configured:
@@ -125,24 +125,29 @@ class Tasks:
                 if not known and (not pair or pair['kind'] != 'detail'):
                     reject(409, 'case-kind-invalid', 'case', '当前合并中此用例不是细节用例')
                 db.execute('INSERT OR IGNORE INTO case_flow_choices(batch,case_id,chosen_at) VALUES (?,?,?)', (batch['id'], force_case, now()))
-            snapshot, scenario_sha, digest = self.freeze_merge(db, key, name, batch, version, cases)
+            snapshot, scenario_sha, digest = self.freeze_merge(db, key, name, batch, version, cases, full_reason=full_reason)
             # 开发者重新合并只复用排队或运行中的同输入任务；上传与场景变化按 SOP-BOARD-3 只与有效结果去重；
             # 启动或配置扫描是核对而非新事件，任何已有的同输入合并（含已中断、已放弃）都不再新建，由开发者重试或放弃。
             states = OUTPUT_ACTIVE if trigger == '重新合并' or fresh else ALL_STATES if trigger == '配置变化' else MERGE_DEDUP
             placeholders = ','.join('?' for _ in states)
             # 已落地的合并以写入后的输入登记 landed_digest，重启扫描不再以自己的输出为依据重复合并。
-            previous = db.execute(f"SELECT id FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
+            previous = db.execute(f"SELECT id,status FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
                                   f"AND (input_digest=? OR json_extract(result_json,'$.landed_digest')=?) AND status IN ({placeholders}) ORDER BY id LIMIT 1",
                                   (key, name, digest, digest, *states)).fetchone()
+            from .merge_delta import summary
             if previous:
                 task_id = previous['id']
+                if full_reason and previous['status'] == S.QUEUED:
+                    # 尚未开始的同输入任务改按全量冻结；运行中或会话认领的任务不改动。
+                    db.execute('UPDATE tasks SET input_json=?,result_json=? WHERE id=? AND status=?',
+                               (canonical(snapshot), canonical(summary(snapshot)), task_id, S.QUEUED))
             else:
-                task_id = db.execute(f"INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at) VALUES ('merge',?,?,'{S.QUEUED}',?,?,?,?,?)",
-                                     (key, name, trigger, digest, canonical(snapshot), scenario_sha, now())).lastrowid
+                task_id = db.execute(f"INSERT INTO tasks(kind,workspace,batch,status,trigger,input_digest,input_json,scenario_file_sha256,created_at,result_json) VALUES ('merge',?,?,'{S.QUEUED}',?,?,?,?,?,?)",
+                                     (key, name, trigger, digest, canonical(snapshot), scenario_sha, now(), canonical(summary(snapshot)))).lastrowid
             self.conversation.dispatched(db, batch['id'])
             return dict(ok=True, task=self.read(task_id, connection=db))
 
-    def freeze_merge(self, db, key, name, batch, version, cases):
+    def freeze_merge(self, db, key, name, batch, version, cases, *, full_reason=None):
         workspace = self.service.workspace
         inputs, sources = self.merge_inputs(db, batch, version, cases)
         forced_flow, upload, entries = sources['forced_flow'], sources['upload'], sources['entries']
@@ -195,18 +200,26 @@ class Tasks:
         if uploaded_sop:
             snapshot['sop_upload_id'] = uploaded_sop['id']
             snapshot['uploaded_sop'] = inputs['uploaded_sop']
+        from .merge_delta import freeze
+        snapshot.update(freeze(self, db, batch, snapshot, full_reason=full_reason))
+        # 模式不计入输入摘要：重新合并仍按 SOP-31-P04 复用同输入的排队或运行中任务。
         digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
         return snapshot, scenario_sha, digest
 
-    def refresh_merge(self, task):
+    def refresh_merge(self, task, *, full_reason=None):
         self.service.workspace.reload()
         with self.store.transaction() as db:
             batch = self.service.batch(db, task['workspace'], task['batch'])
+            previous = json.loads(task['input_json'])
+            if full_reason is None and previous.get('mode_reason') in ('会话要求全量', '开发者重新合并'):
+                full_reason = previous['mode_reason']
             snapshot, sha, digest = self.freeze_merge(db, task['workspace'], task['batch'], batch,
-                self.service.latest_version(db, batch), self.service.case_union(db, batch))
+                self.service.latest_version(db, batch), self.service.case_union(db, batch), full_reason=full_reason)
             # 会话 prepare 或重试重新冻结的快照包含此刻全部回复，与入队相同计为已派发，本轮结束后不再为它们补派。
             self.conversation.dispatched(db, batch['id'])
-        return dict(input_json=canonical(snapshot), input_digest=digest, scenario_file_sha256=sha, snapshot_json='{}')
+        from .merge_delta import summary
+        return dict(input_json=canonical(snapshot), input_digest=digest, scenario_file_sha256=sha, snapshot_json='{}',
+                    result_json=canonical(summary(snapshot)))
 
     def merge_inputs(self, db, batch, version, cases):
         """合并的业务输入及其来源；上传序号和已分配节点不是业务输入，配置改变也必须生成新快照。"""
@@ -299,8 +312,12 @@ class Tasks:
         if task['kind'] == 'distill':
             from .distill_inputs import pending_validation
             task['validation_scenarios'] = pending_validation(task['status'], json.loads(task['input_json']) if task['status'] == S.WAIT_VALIDATION else {})
-        task.pop('input_json')
+        raw_input = task.pop('input_json')
         task['result'] = json.loads(task.pop('result_json'))
+        # 入队、重冻结与提交通常已把模式写入结果；只有少数失败路径覆盖了结果时才解析输入快照（大批次可达数 MB）。
+        if task['kind'] == 'merge' and 'mode' not in task['result'] and '"mode":' in raw_input:
+            from .merge_delta import summary
+            task['result'] = summary(json.loads(raw_input)) | task['result']
         task['gaps'] = task['result'].get('gaps', [])
         for field in ('scope', 'snapshot', 'rounds'):
             task[field] = json.loads(task.pop(field + '_json'))
@@ -340,7 +357,8 @@ class Tasks:
                   'cases.yaml', 'cases.json', 'case_choices.json', 'case_confirmations.json', 'scenarios.yaml', 'scenario-file.yaml', 'nodes.json',
                   'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'impact.json', 'pending.json', 'previous-results.json',
                   'regression-links.json', 'credential-blocked.json', 'regression.json', 'pass-evidence.json', 'fixtures.json', 'fixtures-state.json',
-                  'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json', 'clarifications.json', 'resume-fallback.json'}
+                  'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json', 'clarifications.json', 'resume-fallback.json',
+                  'delta.json', 'judgment.json'}
         public |= {'sop.md', 'repos.json', 'draft.json', 'annotations.json', 'sop-before.md', 'sop.diff',
                    'original-sop.md', 'history.json', 'all-annotations.json', 'revision.json', 'cases-generated.yaml',
                    'sources.json', 'questions.json', 'answers.json', 'sop-guide.md'}
@@ -433,7 +451,7 @@ class Tasks:
                 self.kernel.archive(task)
                 self.kernel.wake(task_id)
                 self.update(task_id, status=S.QUEUED, started_at=None, finished_at=None,
-                            session_id=None, error='', result_digest=None, result_json='{}',
+                            session_id=None, error='', result_digest=None, result_json=refreshed.pop('result_json', '{}'),
                             **refreshed,
                             void_reason='', rounds_json='[]', attempt=task['attempt'] + 1)
             if task['kind'] == 'generate':
@@ -447,6 +465,11 @@ class Tasks:
         directory.mkdir(parents=True, exist_ok=True)
         snapshot = json.loads(task['input_json'])
         prompt = files('sop_board').joinpath('prompts/merge.md').read_text(encoding='utf-8')
+        if snapshot.get('mode') == '增量':
+            (directory / 'delta.json').write_text(canonical({k: snapshot[k] for k in ('baseline', 'changed', 'carried')}), encoding='utf-8')
+            prompt += '\n' + files('sop_board').joinpath('prompts/merge-delta.md').read_text(encoding='utf-8')
+        else:
+            (directory / 'delta.json').unlink(missing_ok=True)
         (directory / 'cases.yaml').write_text(yaml.safe_dump(dict(metadata=snapshot['case_metadata'], test_cases=snapshot['cases']), allow_unicode=True), encoding='utf-8')
         (directory / 'scenarios.yaml').write_text(self.conversation.decision_snapshot(snapshot)['scenarios'], encoding='utf-8')
         (directory / 'entries.yaml').write_text(yaml.safe_dump(snapshot['entries'], allow_unicode=True), encoding='utf-8')
@@ -477,6 +500,13 @@ class Tasks:
             raise FileNotFoundError('Codex 没有写出最终输出')
         snapshot = json.loads(task['input_json'])
         result = read_merge_output(final)
+        from .merge_delta import complete, summary
+        merge_info = summary(snapshot) if 'mode' in snapshot else {}
+        if snapshot.get('mode') == '增量':
+            result, count, problems = complete(snapshot, result)
+            merge_info = summary(snapshot, carried_count=count)
+            if problems:
+                return S.FAILED, dict(merge_info, ok=False, problems=problems)
         with self.lock:
             if self.stopping.is_set() or self.read(task['id'])['status'] not in (S.RUNNING, S.SESSION):
                 return S.INTERRUPTED, dict(ok=False, problems=['合并任务已停止，未写入工作区'])
@@ -484,7 +514,7 @@ class Tasks:
                 batch = self.service.batch(db, task['workspace'], task['batch'])
                 working, plan, problems = self.conversation.validate(snapshot, result, task, db, batch)
             if problems:
-                return S.FAILED, dict(ok=False, problems=problems)
+                return S.FAILED, dict(merge_info, ok=False, problems=problems)
             decision = self.conversation.decision_snapshot(working)
             if not decision['cases'] and not (yaml.safe_load(decision['scenarios']) or {}).get('sops'):
                 if any(result[key] for key in ('cases', 'nodes', 'scenarios', 'gaps', 'relocate', 'negative_exempt')):
@@ -494,7 +524,11 @@ class Tasks:
                 check = dict(ok=True, problems=[], gaps=[], held=[], pairs=[], scenarios=[])
             else:
                 raw, check = assemble(decision, result)
+            check.update(merge_info)
             if not check['ok']:
+                # 组装可能先因节点缺失返回；沿用同一用例核对器，把漏项编号一并呈报。
+                missing = [p for p in judgment_problems(decision, result) if p.startswith('cases 缺少用例 ')]
+                check['problems'].extend(p for p in missing if p not in check['problems'])
                 return S.FAILED, check
             check.update(reply=result['reply'], responses=result['responses'], case_updates=result['case_updates'])
             fallback = directory / 'resume-fallback.json'
@@ -504,11 +538,11 @@ class Tasks:
                 (directory / 'scenario-file.yaml').write_text(raw, encoding='utf-8')
                 (directory / 'pairs.json').write_text(canonical(dict(covered=check['pairs'], conflict=[], disposed=[])), encoding='utf-8')
             try:
-                return self.land(task, raw, check, working=working, plan=plan), check
+                return self.land(task, raw, check, working=working, plan=plan, judgment=result), check
             except (OSError, ValueError, sqlite3.Error, APIError) as problem:
                 return S.FAILED, dict(check, ok=False, problems=[f'合并结果无法写入工作区：{problem}'])
 
-    def land(self, task, raw, check, *, working=None, plan=None):
+    def land(self, task, raw, check, *, working=None, plan=None, judgment=None):
         workspace = self.service.workspace
         inputs = self.types['merge'].inputs(task)
         snapshot = inputs.snapshot
@@ -548,6 +582,13 @@ class Tasks:
             batch = self.service.batch(db, task['workspace'], task['batch'])
             if plan is not None:
                 self.conversation.register(db, batch, task, working, plan)
+            if judgment is not None:
+                from .merge_delta import baseline_inputs
+                baseline = baseline_inputs(working)
+                baseline['cases'] = self.service.case_union(db, batch)
+                baseline['confirmed_draft_cases'] = self.confirmed_draft_cases(db, batch)
+                (self.directory(task['id']) / 'judgment.json').write_text(canonical(dict(judgment,
+                    gaps=check['gaps'], baseline_inputs=baseline)), encoding='utf-8')
             landed, _ = self.merge_inputs(db, batch, self.service.latest_version(db, batch), self.service.case_union(db, batch))
             known = {m['id'] for m in snapshot.get('clarifications', {}).get('messages', [])}
             landed['clarifications']['messages'] = [m for m in landed['clarifications']['messages'] if m['id'] in known]
