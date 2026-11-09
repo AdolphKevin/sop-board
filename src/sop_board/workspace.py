@@ -143,11 +143,14 @@ def validate_agents(value, problem):
     return result
 
 
-def configuration_digest(data, config, tracked):
+def configuration_digest(data, config, tracked, *, readonly=False):
     # 同一业务配置第一次读取时沿用旧的原文摘要，使升级前、配置未动的自检与任务继续有效。
     # 后续只改辅助字段或 YAML 排版仍返回同一摘要。只保存摘要，不保存配置或凭据。
     semantic = digest(dict(tracked, config=business_config(config)))
     directory = data / 'config-digests'
+    if readonly:
+        path = directory / semantic
+        return path.read_text(encoding='ascii').strip() if path.is_file() else digest(tracked)
     directory.mkdir(exist_ok=True)
     with (directory / semantic).open('a+', encoding='ascii') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
@@ -274,9 +277,10 @@ def locate_workspace():
 
 
 class Workspace:
-    def __init__(self, name=None, data=None):
+    def __init__(self, name=None, data=None, *, readonly=False):
         if data is None:
             data = Path.home() / '.sop-board' / workspace_name(name) if name is not None else locate_workspace()
+        self.readonly = readonly
         self.data = Path(data).expanduser().resolve()
         marker = self.data / 'workspace.json'
         try:
@@ -423,7 +427,7 @@ class Workspace:
                             path = self.data / arg
                             if path.is_file() and path.resolve().is_relative_to(self.data):
                                 tracked[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
-            fingerprint = configuration_digest(self.data, config, tracked)
+            fingerprint = configuration_digest(self.data, config, tracked, readonly=self.readonly)
         except FileNotFoundError:
             problem('config.yaml', '尚未搭建：配置文件不存在')
             fingerprint = ''
@@ -438,6 +442,12 @@ class Workspace:
         changed = fingerprint != self.config_digest
         self.repos, self.identities, self.entries, self.adapter = repos, identities, entries if isinstance(entries, dict) else {}, adapter
         self.snapshot_exclude, self.local_only = snapshot_exclude, local_only
+        for entry in self.entries.values():
+            binding = entry.get('spec_library') if isinstance(entry, dict) else None
+            if isinstance(binding, str) and ':' in binding:
+                alias, relative = binding.split(':', 1)
+                if alias in repos and relative and Path(relative) not in self.snapshot_exclude.get(alias, []):
+                    self.snapshot_exclude.setdefault(alias, []).append(Path(relative))
         self.fixtures, self.fixture_recipes = fixtures, fixture_recipes
         self.agents, self.run = agents, run
         from .credentials import names
@@ -469,6 +479,17 @@ class Workspace:
     def execution_entries(self):
         return {name: dict(entry, **({'driver_path': self.driver_paths[name]} if name in self.driver_paths else {}))
                 for name, entry in self.entries.items()}
+
+    def spec_library(self, entry, *, directories=None, entries=None):
+        declaration = (entries or self.entries)[entry].get('spec_library')
+        if not declaration:
+            return None
+        alias, relative = declaration.split(':', 1)
+        root = (directories or {}).get(alias, self.repos[alias])
+        path = root / relative
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or path.resolve() == root.resolve():
+            raise ValueError('规范库路径越界或是符号链接')
+        return path.resolve()
 
     def display_path(self, path):
         return self.scenario_repo + ':' + path.relative_to(self.repos[self.scenario_repo]).as_posix()

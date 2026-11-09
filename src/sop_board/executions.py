@@ -103,6 +103,8 @@ class Executions:
                 if not manual and not self.service.auto_execute_enabled(db):
                     return None
                 batch = self.service.batch(db, key, name)
+                from .scenario_edits import require_clean
+                require_clean(db, batch, self.store.data)
                 merge = None if session else self.waiting_merge(db, key, name)
                 version = self.service.latest_version(db, batch)
                 document = yaml.safe_load(version['content']) if version else {'sops': []}
@@ -158,6 +160,8 @@ class Executions:
         workspace = self.service.workspace
         with self.store.connection() as db:
             batch = self.service.batch(db, task['workspace'], task['batch'])
+            from .scenario_edits import require_clean
+            require_clean(db, batch, self.store.data)
             version = self.service.latest_version(db, batch)
             if not version:
                 raise ValueError('批次尚无场景')
@@ -375,6 +379,8 @@ class Executions:
         (directory / 'entries.json').write_text(canonical(dict(entries=inputs['entries'], addresses=addresses)), encoding='utf-8')
         referenced = {ref for scene in inputs['scenes'] for ref in scene.get('refs', [])}
         (directory / 'cases.json').write_text(canonical([case for case in inputs['cases'] if case['id'] in referenced]), encoding='utf-8')
+        from .spec_library import seed
+        seed(self.service.workspace, directory, task['batch'], web_scenes, inputs['entries'], inputs['cases'])
         (directory / 'pending.json').write_text(task['scope_json'], encoding='utf-8')
         (directory / 'previous-results.json').write_text(canonical(inputs['previous']), encoding='utf-8')
         prints = json.loads(task['snapshot_json']).get('scenarios', {})
@@ -528,6 +534,10 @@ class Executions:
                     raise ValueError(sid + ' 不符合沿用条件，须重跑；沿用必须保留原通过状态并说明理由')
                 prepared += previous['evidence']
             row.update(fingerprint=snapshot['scenarios'][sid], executor=session, session=str(task['id']), evidence=prepared)
+            from .spec_library import run_for_result
+            assets = run_for_result(directory, row, task=task['id'], batch=batch or task['batch'])
+            if assets:
+                row['spec_assets'] = assets
             rows.append(row)
         if selected - seen:
             raise ValueError('、'.join(sorted(selected - seen)) + ' 缺少结果行')

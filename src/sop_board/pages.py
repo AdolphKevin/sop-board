@@ -7,7 +7,7 @@ import json
 import re
 from urllib.parse import quote, urlsplit
 
-from .kernel import (DISTILL_RETRY, DISTILL_TERMINAL, EXECUTION_CANCEL, EXECUTION_RETRY, FIX_NO_CANCEL,
+from .kernel import (DISTILL_RETRY, DISTILL_TERMINAL, EXECUTION_CANCEL, FIX_NO_CANCEL,
                      FIX_RETRY, FIX_TERMINAL, GENERATE_CANCEL_BUTTON, MERGE_GAPS, MERGE_RESULTS, OUTPUT_RETRY,
                      S, resume_command)
 
@@ -28,6 +28,14 @@ def text(value):
 
 def batch_url(workspace, batch):
     return f"/w/{quote(workspace, safe='')}/b/{quote(batch, safe='')}"
+
+
+def spec_library_summary(value):
+    if not value:
+        return ''
+    states = {'verified': '已核实通过', 'reviewed-failing': '已审核未通过', 'unverified': '未核实'}
+    reviews = '；'.join(states.get(r['state'], r['state']) + ' · ' + r['by'] for r in value.get('reviews', []))
+    return '<p>脚本复用 ' + text(value.get('reuse_count', 0)) + ' 条' + (' · ' + text(reviews) if reviews else '') + '</p>'
 
 
 def time_tag(value, element_id=None):
@@ -514,6 +522,8 @@ def scenario(data, *, local=False):
                     extras.append(f"<p>{name}：{value}</p>")
             if result.get("product_changed"):
                 extras.append(product_changed_notice(result["product_changed"]))
+            if result.get('spec_library'):
+                extras.append(spec_library_summary(result['spec_library']))
             if result.get('fixtures'):
                 extras.append('<h4>前置数据准备</h4>' + fixture_records(result['fixtures'], local=local))
             result_label = (MANUAL_STATUS if result["kind"] == "manual" else STATUS)[result["status"]]
@@ -1077,6 +1087,26 @@ def merge_conversation(workspace, name, data, case_data):
     return content + '</section>'
 
 
+def merge_diff(task):
+    content = '<p>' + text(task['notice']) + '</p>' if task.get('notice') else ''
+    diff = task.get('scenario_diff')
+    if not diff:
+        return content
+    content += f"<h3>场景差异</h3><p>场景数：{diff['before_count']} → {diff['after_count']}</p>"
+    for key, title in (('added', '新增'), ('removed', '移除'), ('changed', '改动')):
+        content += '<p>' + title + '：' + text('、'.join(diff[key]) or '无') + '</p>'
+    for item in diff['merged_into']:
+        content += '<p>' + text(item['scenario']) + ' 从流程改为细节，并入 ' + text(item['target']) + '</p>'
+    for item in diff['field_changes']:
+        content += '<p>' + text(item['scenario']) + '.' + text(item['field']) + '：' + text(item['before']) + ' → ' + text(item['after']) + '</p>'
+    if diff.get('overwritten_edits'):
+        content += '<h4>本次覆盖的手改场景</h4>'
+        for key, label in (('generated', '由用例生成'), ('other', '非用例场景')):
+            for action, title in (('added', '新增'), ('removed', '删除'), ('changed', '改动')):
+                content += '<p>' + label + ' · ' + title + '：' + text('、'.join(diff['overwritten_edits'][key][action]) or '无') + '</p>'
+    return content
+
+
 def merges(workspace, name, tasks, case_data, selected=None, *, local=False, etag=None, progress_html='', conversation=None):
     api = f"/api/v1/workspaces/{quote(workspace, safe='')}/batches/{quote(name, safe='')}"
     latest = next((t['progress'] for t in reversed(tasks) if t['kind'] == 'merge'), None)
@@ -1134,6 +1164,9 @@ def merges(workspace, name, tasks, case_data, selected=None, *, local=False, eta
                 if progress.get('session_id'):
                     content += '<p>继续会话：<code>' + text(progress['resume']) + '</code></p>'
         result = task['result']
+        content += merge_diff(task)
+        if 'rebuild_scenarios' in result:
+            content += '<p>将按用例重建的手改场景：' + text('、'.join(result['rebuild_scenarios']) or '无') + '</p>'
         if result.get('mode') == '增量':
             content += f"<p>增量合并：判断 {result['changed_count']} 条变化用例，沿用 {result['carried_count']} 条</p>"
         elif result.get('mode') == '全量':
@@ -1169,8 +1202,14 @@ def merges(workspace, name, tasks, case_data, selected=None, *, local=False, eta
             content += f"<p><a href='{text(api)}/merges/{task['id']}/scenario-file' download>下载合并场景</a> " + f"<a href='{text(api)}/merges/{task['id']}/pairs.json' download>下载配对文件</a></p>"
         for name_, url in task.get('files', {}).items():
             content += f"<p><a href='{text(url)}' download>{text(name_)}</a></p>"
-        if local and task['status'] in EXECUTION_RETRY:
-            content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'>重试</button>"
+        if local:
+            retry_reason = '' if task['status'] in OUTPUT_RETRY else (
+                '请先答复缺口，再重新合并' if task['status'] == S.NEEDS_INPUT else
+                '任务已完成；需要重新判断时使用重新合并' if task['status'] == S.COMPLETED else '当前状态不可重试')
+            content += (f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/retry'" +
+                        (f" disabled title='{text(retry_reason)}'" if retry_reason else '') + '>重试</button>')
+            if retry_reason:
+                content += '<span>' + text(retry_reason) + '</span>'
         if local and task['status'] in EXECUTION_CANCEL:
             content += f"<button type='button' data-developer-action='/api/v1/tasks/{task['id']}/cancel'>放弃</button>"
         content += '</section>'
@@ -1333,7 +1372,7 @@ def product_changed_notice(paths, limit=20):
 def task_page(workspace, task, *, actions, case_data=None, local=False):
     if task['kind'] == 'merge':
         return merges(workspace, task['batch'], [task], case_data, str(task['id']), local=local, progress_html=task_progress(task))
-    progress = task_progress(task)
+    progress = task_progress(task) + spec_library_summary(task.get('spec_library'))
     if task['kind'] == 'fix':
         return fixes(workspace, [task], str(task['id']), local=local, progress_html=progress)
     content = f"<p><a href='{text(batch_url(workspace, task['batch']))}'>返回批次</a></p>" + progress

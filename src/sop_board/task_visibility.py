@@ -6,6 +6,17 @@ import re
 from .kernel import S
 
 
+SYNC_REASON = '任务输入已变化，本轮结果未写入；看板未自动发起新合并时，请开发者在本机核对后重新合并'
+DEFAULT_REASONS = {S.NEEDS_SYNC: SYNC_REASON, S.NEEDS_INPUT: '仍有信息待补充，请查看当前问题',
+    S.INTERRUPTED: '任务已中断，可由开发者在本机重试', S.DEVELOPER: '请开发者在本机查看任务原因',
+    S.DEVELOPER_MERGE: '请开发者在本机核对并合入', S.WAIT_COMMIT: '等待开发者提交产品改动',
+    S.WAIT_VALIDATION: '等待当前产品验证通过'}
+
+
+def default_reason(task):
+    return task.get('error') or DEFAULT_REASONS.get(task['status'], '')
+
+
 def fields(*names):
     return {name: True for name in names}
 
@@ -14,11 +25,20 @@ PROGRESS = fields('id', 'status', 'started_at', 'finished_at', 'timeout', 'elaps
                   'max_running', 'last_activity', 'error', 'ownership', 'gap_count', 'held_count', 'auto_execute')
 COMMON = fields('id', 'kind', 'workspace', 'batch', 'status', 'trigger', 'created_at', 'started_at',
                 'finished_at', 'attempt', 'error', 'void_reason', 'ownership') | {'progress': PROGRESS}
+COMMON['spec_library'] = fields('reuse_count') | {'reviews': [fields('state', 'by')]}
+SCENARIO_DIFF = fields('before_count', 'after_count') | {
+    **{k: [True] for k in ('added', 'removed', 'changed')},
+    'field_changes': [fields('scenario', 'field', 'before', 'after')],
+    'merged_into': [fields('scenario', 'target')],
+    'overwritten_edits': {k: {action: [True] for action in ('added', 'removed', 'changed')} for k in ('generated', 'other')},
+}
 SCOPE = [fields('batch', 'scenario', 'reason')]
 GAPS = [fields('id', 'kind', 'title', 'scenario', 'current', 'missing', 'question', 'known') |
         {'options': [True], 'cases': [True]}]
 HELD = [fields('case', 'retention') | {'reasons': [True], 'gaps': [True], 'scenarios': [True]}]
 MERGE_RESULT = fields('ok', 'workspace_changed', 'reply', 'session_note', 'mode', 'mode_reason', 'baseline', 'changed_count', 'carried_count') | {
+    'scenario_diff': SCENARIO_DIFF, 'notice': True,
+    'rebuild_scenarios': [True],
     'responses': [fields('message', 'action', 'note')],
     'pairs': [fields('case', 'kind', 'kind_reason', 'note') | {'scenarios': [True]}],
     'scenarios': [fields('id', 'action', 'target', 'reason')],
@@ -85,10 +105,8 @@ class Visibility:
                 for problem in task.get('problems', [])])
         result = select(task, self.public)
         # 原始运行错误可能含命令、会话或路径；内网只说明可采取的业务动作。
-        error = task.get('error', '')
-        if not error and task['status'] == S.NEEDS_SYNC:
-            error = '任务输入已变化，本轮结果未写入；看板未自动发起新合并时，请开发者在本机核对后重新合并'
-        safe = bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀|编写 SOP|梳理交互)任务 #[0-9]+ 结束', error))
+        error = default_reason(task)
+        safe = error in DEFAULT_REASONS.values() or bool(re.fullmatch(r'等待(?:合并|草稿|执行|修复|沉淀|编写 SOP|梳理交互)任务 #[0-9]+ 结束', error))
         if error and not safe and error not in ('等待 Codex 名额', '等待浏览器', '等待验收浏览器', '等待工作区自检通过'):
             error = {S.QUEUED: '任务已排队，等待开始', S.RUNNING: '任务正在运行',
                      S.ANALYZING: '正在分析问题原因', S.FIXING: '正在修复问题',
@@ -99,7 +117,7 @@ class Visibility:
                      S.NEEDS_INPUT: '仍有信息待补充，请查看当前问题',
                      S.WAIT_BROWSER: '等待浏览器',
                      S.WAIT_COMMIT: '等待开发者提交产品改动', S.WAIT_VALIDATION: '等待当前产品验证通过',
-                     S.NEEDS_SYNC: '任务输入已变化，本轮结果未写入；看板未自动发起新合并时，请开发者在本机核对后重新合并',
+                     S.NEEDS_SYNC: SYNC_REASON,
                      S.WAIT_MERGE: '等待合并结束', S.INTERRUPTED: '任务已中断，可由开发者在本机重试'}.get(
                          task['status'], '请开发者在本机查看任务原因')
         if 'error' in result:
@@ -112,7 +130,8 @@ class Visibility:
         return result
 
 
-MERGE = Visibility(COMMON | {'result': MERGE_RESULT, 'gaps': GAPS, 'reused_count': True},
+MERGE = Visibility(COMMON | {'result': MERGE_RESULT, 'gaps': GAPS, 'reused_count': True,
+    'scenario_diff': SCENARIO_DIFF, 'notice': True, 'superseded_by': True},
     frozenset(('cases.yaml', 'case_choices.json', 'case_confirmations.json', 'scenarios.yaml',
                'scenario-file.yaml', 'nodes.json', 'pairs.json')), frozenset(('sop',)))
 GENERATE = Visibility(COMMON | {'result': fields('ok', 'version'), 'gaps': GAPS, 'reused_count': True},

@@ -3,11 +3,14 @@ import {execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import fs from 'node:fs';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {cdpEndpoint, connectTimeout, checkPort} from './scenarios/connection.mjs';
 import {readScope, webEvidence} from './scenarios/scope.mjs';
 
 export default async function globalSetup() {
   const problems = [];
+  // 开始时固定脚本和依赖；后续改文件不能借本次运行收入。
+  const directory = path.dirname(fileURLToPath(import.meta.url));
   let scope;
   try { scope = readScope(); } catch (error) { problems.push('执行范围不合格：' + error.message); }
   try {
@@ -30,6 +33,10 @@ export default async function globalSetup() {
       // 真正的目标页/iframe 预检在共享 worker fixture 首次连接中完成。
       await checkPort(cdpEndpoint(), Math.min(connectTimeout(), 5000));
     } catch (error) { problems.push('浏览器检查失败：' + error.message); }
+  }
+  if (!problems.length && fs.existsSync(path.join(directory, 'spec-assets.mjs'))) {
+    const {recordRun} = await import('./spec-assets.mjs');
+    recordRun(directory, scope);
   }
   if (problems.length) throw new Error('受阻：环境检查未通过，本轮未执行任何场景：\n- ' + problems.join('\n- '));
 }

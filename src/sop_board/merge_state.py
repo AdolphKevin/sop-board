@@ -4,10 +4,10 @@ import json
 from .kernel import MERGE_GAPS, sql_states
 
 
-def read_holds(db, batch):
+def read_holds(db, batch, *, task=None):
     row = db.execute("SELECT id,result_json FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
-                     f"AND status IN ({sql_states(MERGE_GAPS)}) ORDER BY id DESC LIMIT 1",
-                     (batch['workspace'], batch['name'])).fetchone()
+                     f"AND status IN ({sql_states(MERGE_GAPS)}) AND (? IS NULL OR id=?) ORDER BY id DESC LIMIT 1",
+                     (batch['workspace'], batch['name'], task, task)).fetchone()
     if row is None:
         return dict(task=None, gaps=[], held=[])
     result = json.loads(row['result_json'])

@@ -59,6 +59,12 @@ export const test = base.extend({
     try {
       const annotation = scopeAnnotation(readScope(), testInfo.title.split(/\s+/)[0]);
       if (annotation) testInfo.annotations.push(annotation);
+      if (process.env.PW_SPEC_RUN) {
+        const run = JSON.parse(fs.readFileSync(process.env.PW_SPEC_RUN, 'utf8'));
+        const item = run.scenarios[testInfo.title.split(/\s+/)[0]];
+        if (item) testInfo.annotations.push({type: 'sop-spec-run', description: JSON.stringify({
+          id: run.id, file: process.env.PW_SPEC_RUN, candidate_sha256: item.candidate_sha256})});
+      }
     } catch (error) { throw blocked('执行范围不合格：' + error.message); }
     await use();
   }, {auto: true}],

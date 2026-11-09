@@ -3,12 +3,14 @@ import argparse
 from contextlib import nullcontext
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import shlex
 import sqlite3
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit
 
 from .adapters import Environment
@@ -283,12 +285,21 @@ class Session:
             snapshot = json.loads(task['input_json'])
             descriptor.update(mode=snapshot.get('mode', '全量'), mode_reason=snapshot.get('mode_reason', '旧版全量任务'),
                               baseline=snapshot.get('baseline'), changed_cases=[c['case'] for c in snapshot.get('changed', [])])
+            if snapshot.get('scenario_edits'):
+                edits = snapshot['scenario_edits']
+                descriptor['scenario_edits'] = edits
+                descriptor['rebuild_scenarios'] = sorted(set(edits['generated']['changed'] + edits['generated']['removed']))
+                descriptor['notice'] = '将按用例重建的手改场景：' + ('、'.join(descriptor['rebuild_scenarios']) or '无')
         return descriptor
 
     def prepare(self, kind, batch, owner, *, replace_queued=False, scope=('pending',), full=False):
         self.owner, self.replace_queued = identity(owner), replace_queued
         with self.tasks.lock:
             self.sync()
+            if kind == 'execute':
+                from .scenario_edits import require_clean
+                with self.store.connection() as db:
+                    require_clean(db, self.service.batch(db, self.key, batch), self.store.data)
             existing, replaced = self.preflight(kind, batch)
             if existing:
                 task = existing
@@ -523,8 +534,8 @@ def parser_for(group):
         choices = {'status': parser}
         parser.set_defaults(action='status')
     else:
-        actions = {'task': ('list','show','cancel'), 'draft': ('prepare','submit','annotate','confirm'),
-                   'cases': ('upload','put','export'), 'merge': ('prepare','submit','reply','exclude','include'),
+        actions = {'task': ('list','show','wait','cancel'), 'draft': ('prepare','submit','annotate','confirm'),
+                   'cases': ('upload','put','export'), 'merge': ('prepare','submit','reply','exclude','include','restore'),
                    'execute': ('prepare','submit'), 'fix': ('prepare','submit','land'), 'sop': ('upload','prepare','answer','submit')}[group]
         sub = parser.add_subparsers(dest='action', required=True)
         choices = {action: sub.add_parser(action) for action in actions}
@@ -535,6 +546,8 @@ def parser_for(group):
         if group == 'task':
             child.add_argument('--task', type=int)
             child.add_argument('--batch')
+            if action == 'wait':
+                child.add_argument('--timeout', type=float, default=600, help='等待秒数，默认 600；0 表示不限时')
         if action in ('prepare','upload'):
             child.add_argument('--session', required=True)
             if group != 'fix':
@@ -563,7 +576,8 @@ def parser_for(group):
             child.add_argument('--from', dest='from_file', type=Path, required=True)
             child.add_argument('--case', dest='selected', action='append', default=[])
             child.add_argument('--by', help='使用者给出的姓名；省略时用默认业务确认人')
-            child.add_argument('--reason', required=True, help='使用者的依据原文')
+            child.add_argument('--reason', help='使用者的依据原文；正式登记必填')
+            child.add_argument('--dry-run', action='store_true', help='只比较差异，不登记上传、决定或合并，可省署名依据')
         if group == 'merge' and action == 'prepare':
             child.add_argument('--full', action='store_true', help='同一未提交任务重新准备为全量合并')
         if group in ('cases','sop') and action == 'upload':
@@ -590,8 +604,12 @@ def parser_for(group):
             child.add_argument('--confirmed-by', help='业务确认人姓名；省略时用同一命令给出的其他姓名或默认业务确认人')
         if action in ('reply','exclude','include'):
             child.add_argument('--author', help='答复人姓名；省略时用默认业务确认人')
-            if action in ('reply','exclude'):
+            if action == 'reply':
                 child.add_argument('--gap', required=True)
+            if action == 'exclude':
+                selection = child.add_mutually_exclusive_group(required=True)
+                selection.add_argument('--gap')
+                selection.add_argument('--case', dest='selected', action='append', help='本批不纳入的用例编号，可重复')
             if action == 'reply':
                 child.add_argument('--text', required=True)
             else:
@@ -617,7 +635,7 @@ def target_args(group, args):
         if not target:
             raise ValueError('请给出上传文件路径')
         filename = Path(target.pop())
-    if group == 'task' and args.action in ('show','cancel') and args.task is None:
+    if group == 'task' and args.action in ('show','wait','cancel') and args.task is None:
         if not target or not target[-1].isdigit():
             raise ValueError('请用 --task <编号> 或末尾的任务编号指定任务')
         args.task = int(target.pop())
@@ -635,18 +653,34 @@ def command(arguments):
     group = arguments[0]
     args = parser_for(group).parse_args(arguments[1:])
     app = None
+    exit_code = 0
     try:
+        if group == 'task' and args.action == 'wait' and (not math.isfinite(args.timeout) or args.timeout < 0):
+            raise ValueError('--timeout 应为大于等于 0 的有限秒数')
         workspace, batch, filename = target_args(group, args)
         app = Session(workspace, args.data)
-        with app.tasks.lock:
+        # 等待只读状态，不能持有跨进程写锁，否则另一个终端无法提交任务。
+        with (nullcontext() if group == 'task' and args.action == 'wait' else app.tasks.lock):
             if group == 'status':
                 result = app.status()
             elif group == 'task':
                 if args.action == 'list':
                     result = app.tasks.list(app.key, args.batch)
-                elif args.action == 'show':
+                elif args.action in ('show', 'wait'):
                     app.raw(args.task)
                     result = dict(ok=True, task=app.tasks.read(args.task))
+                    if args.action == 'wait':
+                        from .kernel import RUNNING
+                        waiting = RUNNING | {S.QUEUED, S.WAIT_BROWSER, S.WAIT_MERGE}
+                        deadline = time.monotonic() + args.timeout if args.timeout else None
+                        while result['task']['status'] in waiting:
+                            remaining = deadline - time.monotonic() if deadline is not None else None
+                            if remaining is not None and remaining <= 0:
+                                result['timed_out'] = True
+                                exit_code = 3
+                                break
+                            time.sleep(min(1, remaining) if remaining is not None else 1)
+                            result['task'] = app.tasks.read(args.task)
                 else:
                     result = app.cancel(args.task)
             elif group == 'sop' and args.action != 'upload':
@@ -690,6 +724,10 @@ def command(arguments):
                                      full=getattr(args, 'full', False))
             elif args.action == 'submit':
                 result = app.submit(KINDS[group], args.task, implementer=getattr(args, 'implementer', None), owner=args.session)
+            elif group == 'merge' and args.action == 'restore':
+                app.sync()
+                from .scenario_edits import restore
+                result = restore(app.service, app.key, batch)
             else:
                 app.configured()
                 app.owner = identity(args.session) if getattr(args, 'session', None) else None
@@ -707,9 +745,9 @@ def command(arguments):
                 elif group == 'cases' and args.action == 'put':
                     filename = args.from_file
                     body = dict(filename=filename.name, content=upload_text(filename, 'cases-invalid', '用例文件必须为 UTF-8'),
-                                uploaded_by=app.person(args.by))
+                                uploaded_by='' if args.dry_run else app.person(args.by))
                     result = app.service.put_cases(app.key, batch, body, selected=args.selected, reason=args.reason,
-                        before_write=lambda: app.preflight('merge', batch) if app.owner else None)
+                        dry_run=args.dry_run, before_write=None if args.dry_run else lambda: app.preflight('merge', batch) if app.owner else None)
                 elif group == 'cases':
                     from .cases import load_cases
                     body = dict(filename=filename.name, content=upload_text(filename, 'cases-invalid', '用例文件必须为 UTF-8'), uploaded_by=app.person(args.uploaded_by))
@@ -733,15 +771,25 @@ def command(arguments):
                         result['task'] = app.tasks.read(app.last_merge)
                 else:
                     author = app.person(args.author)
+                    conversation = app.tasks.conversation
+                    if args.action == 'reply':
+                        body = dict(author=author, messages=[dict(gap=None if args.gap=='none' else args.gap, text=args.text)])
+                    else:
+                        body = dict(author=author, gap=getattr(args, 'gap', None), cases=getattr(args, 'selected', None) or [], reason=args.reason)
+                    include = args.case if args.action == 'include' else None
                     if app.owner:
+                        # 先完整核对，不能让无效答复或决定取消合法的看板排队任务。
+                        with app.store.connection() as db:
+                            group_batch = app.service.batch(db, app.key, batch)
+                            if args.action == 'reply':
+                                conversation.check_messages(db, group_batch, body)
+                            else:
+                                conversation.check_exclusion(db, group_batch, body, include=include, source='会话')
                         app.preflight('merge', batch)
                     if args.action == 'reply':
-                        result = app.tasks.conversation.submit(app.key, batch, dict(author=author,
-                            messages=[dict(gap=None if args.gap=='none' else args.gap, text=args.text)]), source='会话', session=app.owner)
+                        result = conversation.submit(app.key, batch, body, source='会话', session=app.owner)
                     else:
-                        result = app.tasks.conversation.exclude(app.key, batch,
-                            dict(author=author, gap=getattr(args, 'gap', None), reason=args.reason),
-                            include=args.case if args.action=='include' else None, source='会话', session=app.owner)
+                        result = conversation.exclude(app.key, batch, body, include=include, source='会话', session=app.owner)
                     if app.owner and result.get('task') and result['task']['status'] == S.QUEUED:
                         result['task'] = app.claim(result['task']['id'])
         if app.replaced_tasks:
@@ -765,7 +813,7 @@ def command(arguments):
                 print(f"- {item['kind']}：{item['reason']} · {item['url']}" + (f" · {item['resume']}" if item.get('resume') else ''))
         else:
             print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result.get('ok', True) else 1
+        return exit_code if result.get('ok', True) else 1
     except APIError as error:
         result = dict(ok=False, error_code=error.code, problems=error.problems)
     except WorkspaceNotFound as error:
@@ -777,7 +825,7 @@ def command(arguments):
         if app:
             app.close()
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 1
+    return 2 if group == 'task' and args.action == 'wait' else 1
 
 
 def confirmer_command(arguments):

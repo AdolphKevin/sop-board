@@ -202,6 +202,15 @@ CREATE TABLE IF NOT EXISTS results (
     session TEXT, finding TEXT, note TEXT, independence TEXT NOT NULL,
     UNIQUE(round_id,scenario)
 );
+CREATE TABLE IF NOT EXISTS playwright_result_assets (
+    result_id INTEGER PRIMARY KEY REFERENCES results(id), task INTEGER,
+    record_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS playwright_reviews (
+    result_id INTEGER NOT NULL REFERENCES results(id), version TEXT NOT NULL,
+    state TEXT NOT NULL, reviewer TEXT NOT NULL, review_json TEXT NOT NULL,
+    PRIMARY KEY(result_id,version)
+);
 CREATE TABLE IF NOT EXISTS result_evidence (
     result_id INTEGER NOT NULL REFERENCES results(id), ordinal INTEGER NOT NULL,
     name TEXT NOT NULL, sha256 TEXT NOT NULL REFERENCES evidence(sha256),

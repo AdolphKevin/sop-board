@@ -36,6 +36,10 @@ class FixValidation:
 
     def prepare(self, task, runtime, environment):
         workspace = self.fixes.service.workspace
+        from .scenario_edits import require_clean
+        with self.store.connection() as db:
+            for name in {s['batch'] for s in runtime['selected']}:
+                require_clean(db, self.fixes.service.batch(db, workspace.name, name), self.store.data)
         directory, snapshot = runtime['directory'], runtime['snapshot']
         runnable, blocked, info = runtime['runnable'], runtime['blocked'], runtime['info']
         entries = snapshot.get('execution_entries', workspace.execution_entries())
@@ -72,6 +76,12 @@ class FixValidation:
             source = folder / 'scenarios.yaml'
             source.write_text(yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding='utf-8')
             scope_file = write_scope(folder, task['workspace'], batch, source, batch_scenes, entries=entries)
+            from .spec_library import seed
+            (folder / 'entries.json').write_text(canonical(dict(entries=entries, addresses=addresses)), encoding='utf-8')
+            batch_cases = snapshot['cases'].get(batch, []) if isinstance(snapshot['cases'], dict) else snapshot['cases']
+            (folder / 'cases.json').write_text(canonical(batch_cases), encoding='utf-8')
+            seed(workspace, folder, batch, [{k: v for k, v in scene.items() if k != 'batch'} for scene in batch_scenes],
+                 entries, batch_cases, directories=runtime['directories'])
             web_scopes.append(dict(batch=batch, scope=str(scope_file), scenarios=str(source)))
         (directory / 'playwright-scopes.json').write_text(canonical(web_scopes), encoding='utf-8')
         prompt = Template(files('sop_board').joinpath('prompts/fix-verify.md').read_text(encoding='utf-8')).substitute(task_directory=directory, skill_path=workspace.skill,

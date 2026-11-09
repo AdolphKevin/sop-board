@@ -79,7 +79,7 @@ def scenario_id(title):
         return None
     head = parts[0]
     # 场景编号来自 SOP（沿用原连字符规则，如 SOP-12-P01）或用例合并（与用例编号规则相同，如 TC_ORD_005）。
-    if re.match(r'^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+$', head) or re.fullmatch(r'TC_[A-Z0-9_]{3,}_[0-9]{3}', head):
+    if re.fullmatch(r'[A-Za-z][A-Za-z0-9_.-]*[-_][A-Za-z0-9_.-]+', head):
         return head
     return None
 
@@ -291,6 +291,26 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
             'executor': executor,
             'evidence': evidence,
         }
+        run_bindings = [json.loads(a['description']) for _, test, _ in entries
+                        for a in test.get('annotations', []) if a.get('type') == 'sop-spec-run']
+        if run_bindings:
+            if any(binding != run_bindings[0] for binding in run_bindings):
+                raise ConvertError('同场景的测试来自不同资产运行：' + sid)
+            binding = run_bindings[0]
+            run_file = Path(binding['file'])
+            run = json.loads(run_file.read_text(encoding='utf-8'))
+            item = run.get('scenarios', {}).get(sid)
+            if (run.get('id') != binding.get('id') or not item or item.get('candidate_sha256') != binding.get('candidate_sha256')
+                    or scope and (run.get('batch') != scope['batch'] or run.get('scope') != scope)):
+                raise ConvertError('报告与运行摘要或 scope 不一致：' + sid)
+            target = out / 'spec-runs' / (safe_name(run['id'], 'run') + '.json')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and target.read_bytes() != run_file.read_bytes():
+                raise ConvertError('运行编号冲突，不能覆盖摘要')
+            if target.resolve() != run_file.resolve():
+                shutil.copyfile(run_file, target)
+            row['spec_run'] = dict(id=run['id'], file=target.relative_to(out).as_posix(),
+                                   candidate_sha256=item['candidate_sha256'])
         if session:
             row['session'] = session
         if sid in findings:

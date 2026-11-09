@@ -6,7 +6,7 @@
 
 1. **读输入。** 场景文件（`docs/sop/*.yaml`）、看板任务的 `entries.json`、`pending.json` 与 Web 专用的 `web-pending.json`。工作区为该入口梳理过交互地图时，以地图为准，执行中只把缺口写进 `atlas-feedback.jsonl`，不再每轮新建界面地图；没有地图时才用项目的界面地图（`surface-map.md`）。先固定原工作区、批次、场景编号和指纹，使用[执行范围快照](references/run-scope.md)防止串批次或漏测。只有业务目标、前置分支或预期不明确时退回对应场景；缺少按钮名称、iframe 或定位器可在下一步只读探测补全，不改变业务含义。
 2. **弄清界面结构并复用状态。** 有产品源码时先读源码（路由、多语言文案、打开弹窗的调用），再在真实页面做只读探测并补充操作映射；没有源码时只做只读探测，做法见[只读探测](references/web.md#只读探测)。目标是确认每一步的目标在哪一层：页面本身、应用 iframe、App Bridge modal、新标签页。先用当前可见内容确认目标是否已就绪；满足导航前提时直接复用当前视图及所在容器，只有不满足时才走项目映射中的必要导航。场景明确要求重新打开、刷新或重置时仍按原步骤执行。结论写进界面地图；没有源码核对的条目在"依据"列写"未核对源码，探测于 <日期>"，产品改版后要重新探测。
-3. **写脚本。** 把 `templates/playwright.config.mjs` 与 `global-setup.mjs` 复制到仓库外的本轮任务目录，`progress-reporter.mjs` 也放在任务目录根部；`fixtures.mjs`、`connection.mjs`、`recording.mjs`、`scope.mjs`、`atlas.mjs`、浏览器执行脚本放进其下的 `scenarios/`；没有交互地图时另放 `surface-map.md`。`global-setup.mjs` 在开跑前用当前项目的 Playwright 检查版本、scope 和调试端口，仅本轮需要录屏时检查 ffmpeg；共享 worker 首次连接时核对 CDP、唯一目标页及可选 `PW_FRAME`，失败不执行业务步骤。预检不额外建立 CDP 会话，worker 内各用例共用一次连接，按各自入口开关录屏和保存 trace。模板把业务失败标为预期失败（D87）：只记该场景失败并留截图与页面结构快照，关闭本场景新开的页面，worker 不重启、连接保留，后续场景照常执行；受阻、连接断开、目标页关闭仍是意外失败，`maxFailures: 1` 在首个出现时停止本轮，连接异常时不让后续用例继续重连。`workers: 1`、`retries: 0` 本身不能阻止意外失败后 worker 重启和重新授权。多休眠标签页可选 `PW_CDP_MODE=target`（Node >=22）；不把超时直接解释为用户未同意。一条步骤对应一个 `step()`，标题照抄场景步骤；用例标题以场景编号开头；tag 由 `scripts/case_tags.py` 从配对文件生成，不手写。定位优先用角色和可见文字，其次稳定属性；没有可用属性时建议产品方补 `data-testid`。
+3. **复用与补齐。** 先读 specs-manifest.json：seeded 只运行任务冻结副本，missing 才新写，reference 按当前要求核对，conflict 保留已有内容并处理；重复准备不覆盖候选。辅助入口默认 .off，启用在 note 写明。仅补缺失文件，把 `templates/playwright.config.mjs`、`spec-assets.mjs` 与 `global-setup.mjs` 复制到仓库外的本轮任务目录，`progress-reporter.mjs` 也放在任务目录根部；`fixtures.mjs`、`connection.mjs`、`recording.mjs`、`scope.mjs`、`atlas.mjs`、浏览器执行脚本放进其下的 `scenarios/`；没有交互地图时另放 `surface-map.md`。`global-setup.mjs` 在开跑前用当前项目的 Playwright 检查版本、scope 和调试端口，仅本轮需要录屏时检查 ffmpeg；共享 worker 首次连接时核对 CDP、唯一目标页及可选 `PW_FRAME`，失败不执行业务步骤。预检不额外建立 CDP 会话，worker 内各用例共用一次连接，按各自入口开关录屏和保存 trace。模板把业务失败标为预期失败（D87）：只记该场景失败并留截图与页面结构快照，关闭本场景新开的页面，worker 不重启、连接保留，后续场景照常执行；受阻、连接断开、目标页关闭仍是意外失败，`maxFailures: 1` 在首个出现时停止本轮，连接异常时不让后续用例继续重连。`workers: 1`、`retries: 0` 本身不能阻止意外失败后 worker 重启和重新授权。多休眠标签页可选 `PW_CDP_MODE=target`（Node >=22）；不把超时直接解释为用户未同意。一条步骤对应一个 `step()`，标题照抄场景步骤；用例标题以场景编号开头；tag 由 `scripts/case_tags.py` 从配对文件生成，不手写。定位优先用角色和可见文字，其次稳定属性；没有可用属性时建议产品方补 `data-testid`。
 4. **核对前置条件。** 开跑前先核对已知的账号、对象和数据可用性，避免明知缺失仍连接浏览器。执行前按 `initial_state` 逐项核对；复用视图不等于复用上一条的数据或授权状态。无关前置数据先按本轮 `fixtures.json` 用 `sop-board fixtures run` 准备；没有合适配方且 `adhoc: true` 时，可在声明环境与范围内用 `fixtures exec --reason` 临时写入。两者带 `--task`、`--scenario` 留痕。`real_only` 对象与本场景流程应产生的对象必须经真实入口产生，不能写库代替。仍无法准备时抛出以 `受阻：` 开头的错误并停止本轮，finding 写缺什么配方、范围或真实流程；剩余未执行场景不批量写成受阻。完整边界见[前置数据](references/web.md#前置数据)。
 5. **执行。** `npx --no-install playwright test`，保留 `workers: 1`、`retries: 0`、`maxFailures: 1`。缺省时间上限为单场景 4 分钟、定位或操作 15 秒、导航 30 秒（`PW_SCENARIO_TIMEOUT_MS`、`PW_ACTION_TIMEOUT_MS`、`PW_NAVIGATION_TIMEOUT_MS` 可覆盖，记入报告 metadata.limits）。有地图时设置 `PW_ATLAS`，用 `atlas.mjs` 的 `openPage`、`locate`、`act` 按地图操作，`AtlasGap` 表示地图缺口，写进任务目录 `atlas-feedback.jsonl` 后再只读探测。定位失败先停止当前动作并只读核对当前页面、容器和定位依据，不循环点击旧入口。发送、保存、接管、支付等动作只提交一次；预先注册需要等待的请求或页面事件，按项目映射等待完成信号并核对可见结果，再刷新、导航或结束页面。失败或完成状态不明时不自动重试，由人决定恢复数据还是判失败。
 6. **核对结果。** 只断言用户看得见的结果，不用 URL 或内部状态代替；逐项核对 `forbidden_effects`。预期不符即失败；人机验证、登录过期、未知遮挡、前置条件不满足为受阻。
@@ -28,7 +28,7 @@
 
 ## 回归沉淀
 
-浏览器执行脚本和界面地图保留在仓库外的看板任务目录，后续按场景重新执行。用户另行要求把已确认且经真实入口通过的场景沉淀为产品测试时，使用随包 [regression-distill](../regression-distill/SKILL.md)，由它调查已有设施、按成本分层、运行并登记关联，改动留给开发者审核。只有产品已有端到端设施且业务需要时才编写浏览器回归。入口仍由工作区 config.yaml 声明，不新增 checks 或场景 regression 字段。依赖已登录 Chrome 的脚本只在本机运行，如实报告实际执行与独立性。
+经审核、受版本管理的规范执行资产库可以保存在产品仓库，由入口 spec_library 声明；任务冻结副本、探测记录、审核材料与过程证据继续保存在仓库外的任务目录，后续仍须实际执行、保存新证据。用户另行要求把已确认且经真实入口通过的场景沉淀为产品测试时，使用随包 [regression-distill](../regression-distill/SKILL.md)，由它调查已有设施、按成本分层、运行并登记关联，改动留给开发者审核。只有产品已有端到端设施且业务需要时才编写浏览器回归。入口仍由工作区 config.yaml 声明，不新增 checks 或场景 regression 字段。依赖已登录 Chrome 的脚本只在本机运行，如实报告实际执行与独立性。
 
 ## 任务与工作区约定
 
@@ -37,3 +37,11 @@
 若任务来自 `sop-board execute prepare`，也只在返回的任务目录写结果和证据，再由 `execute submit --task <编号> --implementer <实际实现者>` 统一登记，不另跑 playwright submit。独立的手工试跑仍可用上述提交命令，并可加 `--implementer`；当前实现会话执行须如实登记自检，未给实现者则为未声明。
 
 当前工作区版本使用 config.yaml 声明入口，sop-board guide 是工作区搭建指引；playwright guide 为 Web 驱动指引。手工 scope 用 --workspace，既有 project 字段存工作区键，提交走 /api/v1/workspaces/。工作区的 source-changed 沿用和跨仓修复范围以任务提示为准，修复复测不得沿用。
+
+## 规范库维护支线
+
+修改候选前后运行 specs check --format json，标识从输出复制；任务 spec-ledger.json 精确记录文字节点、结构 old/new 与理由。非撤销 rewrite 的 sop_change 为 null；withdraw 绑定真实 cases put 决定与用例前后指纹。先解决所有违规，待审核项逐条留账，不能放宽原要求取得通过。
+
+保留 spec-runs、本轮报告和 convert 关联，经 execute submit 登记后，生成 specs review 材料交未参与改写者实际审核，再 promote 收入。verified 对应已登记通过，reviewed-failing 对应真实失败与 finding；收入推进基线，首次新写同样建基线。import 的历史账本没有本包审核效力，改写过的只能先作未核实参考。
+
+patrol plan 不访问产品或自动批准请求；实际审核安全声明后才 run。未知请求发出前中止、导航越界停止，任一失败非零并留截图/atlas-feedback。开跑取入口当前 web_evidence，此后固定本次；巡检不登记场景结果。详见[规范库与巡检](spec-library.md)。

@@ -16,7 +16,7 @@ export default defineConfig({
   metadata: {sopScope: readScope(), limits},
   globalSetup: './global-setup.mjs',
   testDir: './scenarios',
-  testMatch: /.*\.spec\.mjs/,
+  testMatch: /.*\.spec\.mjs$/,
   workers: 1,
   fullyParallel: false,
   retries: 0,

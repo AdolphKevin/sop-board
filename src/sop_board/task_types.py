@@ -1,4 +1,5 @@
 """各类任务的输入、准备、启动、消费、操作与等待约定。"""
+import hashlib
 import json
 import os
 import sqlite3
@@ -34,8 +35,14 @@ class MergeType(TaskType):
     invalid_input = '任务输入不合格，请重新合并'
 
     def inputs(self, task):
-        return Inputs(json.loads(task['input_json']), dict(
+        snapshot = json.loads(task['input_json'])
+        if 'observed_scenarios' in snapshot:
+            # 兼容升级前已准备的会话，不再把重复原文传给输入核对。
+            raw = snapshot.pop('observed_scenarios')
+            snapshot['observed_scenarios_sha256'] = hashlib.sha256(raw.encode()).hexdigest() if raw else ''
+        return Inputs(snapshot, dict(
             cases='用例', case_metadata='用例来源', scenarios='场景', entries='验收入口',
+            observed_scenarios_sha256='准备时场景文件',
             config_digest='工作区配置', forced_flow='开发者分类选择',
             all_cases='用例并集', excluded_cases='本批不纳入的用例',
             confirmed_draft_cases='草稿确认', sop_sources='业务 SOP', sop_upload_id='业务 SOP 上传版本'))

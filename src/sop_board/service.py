@@ -224,7 +224,7 @@ class Service:
                 except ValueError as error:
                     problems.append(dict(field='metadata.repos', problem=str(error)))
         entries = self.workspace.entries if local else {
-            name: {k: v for k, v in entry.items() if k != 'credential_env'} if isinstance(entry, dict) else {}
+            name: {k: v for k, v in entry.items() if k not in ('credential_env', 'spec_library')} if isinstance(entry, dict) else {}
             for name, entry in self.workspace.entries.items()}
         return dict(ok=not problems, entries=entries, problems=public_problems(problems, local=local))
 
@@ -265,6 +265,8 @@ class Service:
             "json_extract(result_json,'$.carried_count') AS carried_count FROM tasks "
             "WHERE workspace=? AND batch=? AND kind IN ('execute','generate','merge','distill') ORDER BY id", (batch['workspace'], batch['name']))]
         for task in tasks:
+            from .spec_library import summary as spec_summary
+            task['spec_library'] = spec_summary(db, task=task['id'])
             task['session_task'] = session_claim(db, task['id'])
         if tasks:
             etag += '-t' + hashlib.sha256(canonical(tasks).encode()).hexdigest()[:12]
@@ -315,7 +317,8 @@ class Service:
         merge = db.execute(f"SELECT id,result_json FROM tasks WHERE workspace=? AND batch=? AND kind='merge' AND status='{S.COMPLETED}' ORDER BY id DESC LIMIT 1",
                            (batch['workspace'], batch['name'])).fetchone()
         fixes, fix_statistics = self.batch_fixes(db, batch)
-        return dict(batch=dict(batch), workspace=dict(db.execute("SELECT key,root,name FROM workspaces WHERE key=?", (batch["workspace"],)).fetchone(), repositories=self.workspace.public()["repositories"]),
+        from .spec_library import summary as spec_summary
+        return dict(spec_library=spec_summary(db, batch=batch['id']), batch=dict(batch), workspace=dict(db.execute("SELECT key,root,name FROM workspaces WHERE key=?", (batch["workspace"],)).fetchone(), repositories=self.workspace.public()["repositories"]),
                     fixes=fixes, fix_statistics=fix_statistics, regression_links=read_links(db, batch, local=local),
                     merge=dict(id=merge['id'], **json.loads(merge['result_json'])) if merge else None,
                     version=self.latest_version(db, batch), summary=summary, cases=cases,
@@ -392,9 +395,9 @@ class Service:
             self.merge_callback(key, name, trigger="上传用例")
         return result
 
-    def put_cases(self, key, name, body, *, selected=(), reason, before_write=None):
+    def put_cases(self, key, name, body, *, selected=(), reason, before_write=None, dry_run=False):
         from .case_amend import put
-        return put(self, key, name, body, selected=selected, reason=reason, before_write=before_write)
+        return put(self, key, name, body, selected=selected, reason=reason, before_write=before_write, dry_run=dry_run)
 
     def sop_path(self, name):
         validate_batch(name)
@@ -589,6 +592,8 @@ class Service:
                                 "finding,note,independence) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                 (round_id, row["scenario"], row["fingerprint"], row["status"], row["actual"], row["executed_at"],
                                  row["executor"], row.get("session"), row.get("finding"), row.get("note"), independence))
+            from .spec_library import save_result
+            save_result(db, cursor.lastrowid, row)
             for ordinal, evidence in enumerate(row["evidence"], 1):
                 db.execute("INSERT INTO result_evidence VALUES (?,?,?,?)", (cursor.lastrowid, ordinal, evidence["name"], evidence["sha256"]))
         return number
@@ -648,6 +653,8 @@ class Service:
 
     def summary(self, db, batch, *, local=True):
         result = calculate(db, batch)
+        from .spec_library import summary as spec_summary
+        result['spec_library'] = spec_summary(db, batch=batch['id'])
         execution = self.execution_options(db, batch, result, local=local)
         result['scenario_titles'] = {scene['scenario']: scene['title'] for scene in result.pop('scenarios')}
         version = self.latest_version(db, batch)
@@ -769,6 +776,10 @@ class Service:
             results = []
             for stored in db.execute("SELECT * FROM results WHERE round_id=? ORDER BY id", (row["id"],)):
                 item = dict(stored)
+                from .spec_library import result_assets
+                assets = result_assets(db, stored['id'], local=local)
+                if assets is not None:
+                    item['spec_library'] = assets
                 item["evidence"] = [dict(e) for e in db.execute(
                     "SELECT name,sha256 FROM result_evidence WHERE result_id=? ORDER BY ordinal", (stored["id"],))]
                 from .fixtures import result_runs
@@ -809,6 +820,10 @@ class Service:
                 "WHERE t.batch=? AND r.scenario=? ORDER BY t.number,r.id", (batch["id"], scenario))]
             for row in results:
                 row["product_changed"] = json.loads(row["product_changed"])
+                from .spec_library import result_assets
+                assets = result_assets(db, row['id'], local=local)
+                if assets is not None:
+                    row['spec_library'] = assets
                 from .fixtures import result_runs
                 preparations = result_runs(db, row['id'], self.workspace, local=local)
                 if preparations:
@@ -947,6 +962,7 @@ class Service:
                         review=self.fix_review_state(db, key, name))
 
     def push(self, key, batch, body, *, pairings=None, auto_execute=True, on_registered=None):
+        landed = pairings is not None
         validate_push(body)
         document = load_scenarios(body["content"])
         if document["metadata"]["batch"] != batch:
@@ -974,6 +990,15 @@ class Service:
             batch_id = db.execute("SELECT id FROM batches WHERE workspace=? AND name=?", (key, batch)).fetchone()[0]
             self.save_sop_sources(db, batch_id, body.get('sop_sources', []))
             previous = db.execute("SELECT * FROM versions WHERE batch=? ORDER BY version DESC LIMIT 1", (batch_id,)).fetchone()
+            # 历史配对只能来自本批真实合并写入的版本，不按 refs 或同名编号猜配对。
+            from .scenario_edits import landed_versions, pairings as historical_pairs
+            has_landed = False
+            if pairings is None:
+                for known in landed_versions(db, self.batch(db, key, batch), self.store.data):
+                    has_landed = True
+                    if known['content'] == body['content']:
+                        pairings = historical_pairs(db, known)
+                        break
             if previous and previous["content"] == body["content"]:
                 if pairings is not None:
                     self.save_case_pairings(db, previous["id"], pairings)
@@ -1004,13 +1029,12 @@ class Service:
                            canonical(scenario)))
             if on_registered:
                 on_registered(db, batch_id)
-        landed = pairings is not None
         with self.store.connection() as db:
             has_cases = bool(self.case_union(db, self.batch(db, key, batch)))
             auto_execute = auto_execute and self.auto_execute_enabled(db)
         if auto_execute and self.execution_callback and self.workspace.configured and (landed or not has_cases):
             self.execution_callback(key, batch, scope=[dict(scenario=s, reason='new' if s in added else 'changed')
                 for s in computed if s in added or s in changed], trigger='合并写入' if landed else '场景版本')
-        if self.merge_callback and not landed and self.workspace.configured:
+        if self.merge_callback and not landed and not has_landed and self.workspace.configured:
             self.merge_callback(key, batch, trigger='场景文件变化')
         return dict(ok=True, version=version, added=added, changed=changed, removed=removed, unchanged=False)

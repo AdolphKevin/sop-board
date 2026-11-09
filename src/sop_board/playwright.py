@@ -65,6 +65,15 @@ Playwright 依赖在验收工作目录安装：@playwright/test >=1.64；需要�
 手工登记：sop-board playwright submit --help（使用当前工作区 API，无需令牌）
 配对标签：sop-board playwright tags --pairs <pairs.json> --out <cases.json>
 
+规范库：Web 入口 spec_library: <仓库别名>:<目录>；自动排除产品快照，改绑须重新自检。
+prepare 后先读 specs-manifest.json，运行 seeded 的冻结副本，只为 missing 补齐，保留 conflict。
+保真与收入：sop-board playwright specs check / review / promote（--task、--scenario 批次#场景、--data）。
+check --format json 给出断言/文字节点标识，逐项记入 spec-ledger.json；实际运行并登记后交未参与改写者审核收入。
+历史导入：sop-board playwright specs import --from <accept-run目录> --batch <批次> --data <目录>。
+只读巡检：sop-board playwright patrol plan / run --entry <入口> --out <库外材料> --data <目录>。
+巡检须审核页面、到达步骤、请求用途和数量；未知请求发出前停止，不登记场景通过。
+细则：内置技能 references/spec-library.md；运行摘要在任务 spec-runs/，不借旧证据收入。
+
 完整执行默认拒绝漏测；部分试跑显式加 --allow-partial 并检查 coverage.json。
 不依赖 team-workflow 或 tw 命令。详见内置技能 references/contracts.md、references/run-scope.md。
 """
@@ -159,6 +168,10 @@ def _submit(args):
             result = json.loads(request('/api/v1/evidence', data, {'Content-Type': 'application/octet-stream', 'X-Evidence-Name': quote(name, safe='')}))
             refs.append(dict(name=name, sha256=result['sha256']))
         row.update(evidence=refs, fingerprint=expected[row['scenario']])
+        from .spec_library import run_for_result
+        assets = run_for_result(result_file.parent, row, batch=scope['batch'])
+        if assets:
+            row['spec_assets'] = assets
     body = dict(idempotency_key=args.idempotency_key, scenario_file_sha256=scope['scenario_file_sha256'],
         product=product, submitted_by=args.submitted_by, execution_origin='session', results=rows)
     if args.implementer is not None:
@@ -168,11 +181,16 @@ def _submit(args):
 
 
 def command(arguments):
+    if arguments and arguments[0] in ('specs', 'patrol'):
+        from . import spec_library, patrol
+        return (spec_library if arguments[0] == 'specs' else patrol).command(arguments[1:])
     if arguments and arguments[0] in ('convert', 'tags'):
         return _script('to_scenarios.py' if arguments[0] == 'convert' else 'case_tags.py', arguments[1:])
     parser = argparse.ArgumentParser(prog='sop-board playwright')
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('guide')
+    sub.add_parser('specs', help='规范脚本的 check/review/promote/import')
+    sub.add_parser('patrol', help='只读巡检的 plan/run')
     sub.add_parser('convert', add_help=False, help='转换 Playwright JSON 报告，参数用 convert --help 查看')
     sub.add_parser('tags', add_help=False, help='从配对文件生成标签，参数用 tags --help 查看')
     scope = sub.add_parser('scope', help='从当前场景原文创建范围快照')

@@ -2,6 +2,8 @@
 import argparse
 from http.server import ThreadingHTTPServer
 from importlib.resources import files
+from importlib import metadata
+import json
 import os
 from pathlib import Path
 import signal
@@ -19,8 +21,47 @@ from .network import local_ipv4_addresses
 from .repositories import Discovery
 
 
+COMMAND_GROUPS = {
+    '看板': {'<工作区>': '启动看板，可加 --lan 与 --paused', 'status': '查看批次、就绪情况和待处理事项',
+             'check': '检查工作区与运行环境', 'run': '管理连续执行', 'plan': '查看执行计划'},
+    '会话入口': {'sop': '登记或编写业务 SOP', 'draft': '生成、修订与确认草稿', 'cases': '上传、预览增改或导出用例',
+                 'merge': '合并用例、答复缺口或还原场景', 'execute': '准备与提交场景执行', 'fix': '修复、独立复验与关闭',
+                 'task': '列出、查看、等待或取消任务', 'atlas': '梳理交互地图与场景绑定', 'distill': '登记回归测试关联'},
+    '台账': {'attention': '登记与处理待办事项', 'confirmer': '查看或设置默认业务确认人', 'issue': '维护问题台账',
+             'decision': '登记与查看人的决定', 'identity': '管理执行身份与使用记录', 'fixtures': '准备隔离数据并留痕'},
+    '安装': {'init': '登记工作区与仓库', 'guide': '读取完整搭建指引', 'playwright': '读取 Web 驱动指引与转换执行材料',
+             'skills': '安装随包技能到两个客户端'},
+}
+
+
+def version():
+    try:
+        distribution = metadata.distribution('sop-board')
+        direct = json.loads(distribution.read_text('direct_url.json') or '{}')
+        source = direct.get('url') or str(distribution.locate_file(''))
+        return f"sop-board {distribution.version}\n安装来源：{source}\n代码位置：{Path(__file__).resolve().parent}"
+    except metadata.PackageNotFoundError:
+        # 直接从源码运行时仍可报告该检出的包版本。
+        import re
+        root = Path(__file__).resolve().parents[2]
+        package_version = re.search(r'^version = "([^"]+)"', (root / 'pyproject.toml').read_text(), re.M)[1]
+        return f'sop-board {package_version}\n安装来源：源码 {root}'
+
+
 def main():
     argv = sys.argv[1:]
+    if argv == ['--version']:
+        print(version())
+        return 0
+    if argv and argv[0] in ('--help', '-h'):
+        print('用法：sop-board <工作区> [--data 目录] [--port 端口] [--lan] [--paused]\n'
+              '      sop-board <子命令> --help\n      sop-board --version')
+        for title, commands in COMMAND_GROUPS.items():
+            print('\n' + title)
+            for command, description in commands.items():
+                print(f'  {command:14} {description}')
+        print('\n启动参数：--port 默认 8787；--lan 允许内网只读访问；--paused 暂停自动任务。')
+        return 0
     if argv and argv[0] == 'attention':
         from .attention import command
         return command(argv[1:])

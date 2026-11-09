@@ -17,9 +17,13 @@ def baseline_inputs(snapshot):
 
 
 def summary(snapshot, *, carried_count=None):
-    return dict(mode=snapshot['mode'], mode_reason=snapshot['mode_reason'], baseline=snapshot['baseline'],
+    result = dict(mode=snapshot['mode'], mode_reason=snapshot['mode_reason'], baseline=snapshot['baseline'],
                 changed_count=len(snapshot['changed']),
                 carried_count=len(snapshot['carried'].get('cases', [])) if carried_count is None else carried_count)
+    if snapshot.get('scenario_edits'):
+        group = snapshot['scenario_edits']['generated']
+        result['rebuild_scenarios'] = sorted(set(group['changed'] + group['removed']))
+    return result
 
 
 def freeze(tasks, db, batch, snapshot, *, full_reason=None):
@@ -69,12 +73,22 @@ def freeze(tasks, db, batch, snapshot, *, full_reason=None):
         landed = (directory / 'scenario-file.yaml').read_text(encoding='utf-8')
         source = tasks.service.workspace.scenario_path(batch['name'])
         actual = source.read_text(encoding='utf-8') if source.exists() else ''
-        if snapshot['scenarios'] != landed or actual != landed:
+        if snapshot['scenarios'] != landed or (not snapshot.get('scenario_edits') and actual != landed):
             return full('场景文件在上一轮合并之后有变化')
     except OSError:
         return full('上一轮合并的场景结果无法读取')
-    if any(m['pending'] for m in snapshot['clarifications']['messages']):
-        return full('有待处理的合并回复')
+    pending = [m for m in snapshot['clarifications']['messages'] if m['pending']]
+    if any(m['gap'] is None for m in pending):
+        return full('存在通用答复（--gap none），需要全量合并')
+    from .merge_state import read_holds
+    holds = read_holds(db, batch, task=baseline['id'])
+    gaps = {g['id']: g for g in holds['gaps'] if isinstance(g, dict)}
+    replies = []
+    for message in pending:
+        task_id, gid = message['gap'].split(':')
+        if int(task_id) != baseline['id'] or gid not in gaps:
+            return full('答复对应的缺口 ' + message['gap'] + ' 在基线找不到，需要全量合并')
+        replies.append(dict(message=message['id'], text=message['text'], gap=message['gap'], gap_snapshot=gaps[gid]))
     current = baseline_inputs(snapshot)
     if json.dumps(before['entries'], sort_keys=True) != json.dumps(current['entries'], sort_keys=True):
         return full('入口声明有变化')
@@ -90,18 +104,21 @@ def freeze(tasks, db, batch, snapshot, *, full_reason=None):
     changed = [dict(case=c['id'], action='updated' if c['id'] in old else 'added', previous=old.get(c['id']))
                for c in snapshot['cases'] if old.get(c['id']) != c or
                before['confirmed_draft_cases'].get(c['id']) != current['confirmed_draft_cases'].get(c['id'])]
+    affected = {cid for reply in replies for cid in reply['gap_snapshot']['cases']}
+    included = {c['case'] for c in changed}
+    changed.extend(dict(case=c['id'], action='reply', previous=old.get(c['id'])) for c in snapshot['cases']
+                   if c['id'] in affected and c['id'] not in included)
     if not changed:
         return full('没有新增或变化的用例')
     changed_ids = {c['case'] for c in changed}
     unchanged = {c['id'] for c in snapshot['cases']} - changed_ids
     original = yaml.safe_load(snapshot['scenarios']) or {}
     scenes = {s['id'] for n in original.get('sops', []) for s in n['scenarios']} - {c['id'] for c in snapshot['cases']}
-    receipt = tasks.kernel.receipt(baseline, connection=db, phase='merge-land')
     carried = dict(cases=[c for c in judgment['cases'] if c['id'] in unchanged],
                    nodes=judgment['nodes'], negative_exempt=judgment['negative_exempt'],
                    scenarios=[s for s in judgment['scenarios'] if s['action'] == 'kept' and s['id'] in scenes],
-                   gaps=[g for g in receipt['check'].get('gaps', []) if g['cases'] and set(g['cases']) <= unchanged])
-    return dict(result, mode='增量', mode_reason='只有用例新增或变化，其余合并输入未变化', changed=changed, carried=carried)
+                   gaps=[g for g in holds['gaps'] if isinstance(g, dict) and g['cases'] and set(g['cases']) <= unchanged])
+    return dict(result, mode='增量', mode_reason='只有用例新增、变化或具体缺口答复，其余合并输入未变化', changed=changed, carried=carried, replies=replies)
 
 
 def complete(snapshot, output):

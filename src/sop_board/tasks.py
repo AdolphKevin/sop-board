@@ -148,6 +148,11 @@ class Tasks:
 
     def freeze_merge(self, db, key, name, batch, version, cases, *, full_reason=None):
         workspace = self.service.workspace
+        from .scenario_edits import edited
+        edits = edited(db, batch, self.store.data, version)
+        observed = version
+        if edits and not full_reason:
+            version = edits['baseline']
         inputs, sources = self.merge_inputs(db, batch, version, cases)
         forced_flow, upload, entries = sources['forced_flow'], sources['upload'], sources['entries']
         uploaded_sop, sop_sources = sources['uploaded_sop'], sources['sop_sources']
@@ -161,6 +166,8 @@ class Tasks:
                         batch=name, case_metadata=json.loads(upload['metadata']), upload=upload['number'], nodes=nodes,
                         config_digest=workspace.config_digest, forced_flow=forced_flow,
                         confirmed_draft_cases=sources['confirmed_draft_cases'])
+        snapshot['observed_scenarios_sha256'] = observed['sha256'] if observed else ''
+        snapshot['scenario_edits'] = edits['groups'] if edits else None
         # 只继承已有记录证明曾经并入、且仍在当前场景中的禁止副作用。
         # 任意外来用例场景上的额外断言不因此成为确定字段的输入。
         transferred = {}
@@ -193,7 +200,7 @@ class Tasks:
         if prior:
             snapshot['entry_gaps'] = dict(entries=json.loads(prior['input_json'])['entries'],
                 gaps=[g for g in json.loads(prior['result_json']).get('gaps', []) if isinstance(g, dict) and g['kind'] == 'entry'])
-        scenario_sha = version['sha256'] if version else ''
+        scenario_sha = observed['sha256'] if observed else ''
         if version and not (yaml.safe_load(version['content']) or {}).get('sops') and not workspace.scenario_path(name).exists():
             scenario_sha = ''
         if uploaded_sop:
@@ -201,6 +208,7 @@ class Tasks:
             snapshot['uploaded_sop'] = inputs['uploaded_sop']
         from .merge_delta import freeze
         snapshot.update(freeze(self, db, batch, snapshot, full_reason=full_reason))
+        inputs['scenarios'] = observed['sha256'] if observed else ''
         # 模式不计入输入摘要：重新合并仍按 SOP-31-P04 复用同输入的排队或运行中任务。
         digest = hashlib.sha256(canonical(inputs).encode()).hexdigest()
         return snapshot, scenario_sha, digest
@@ -209,7 +217,8 @@ class Tasks:
         self.service.workspace.reload()
         with self.store.transaction() as db:
             batch = self.service.batch(db, task['workspace'], task['batch'])
-            previous = json.loads(task['input_json'])
+            # 任务页投影不含 input_json；重试和会话重新准备都读取持久化原始输入。
+            previous = json.loads(db.execute('SELECT input_json FROM tasks WHERE id=?', (task['id'],)).fetchone()['input_json'])
             if full_reason is None and previous.get('mode_reason') in ('会话要求全量', '开发者重新合并'):
                 full_reason = previous['mode_reason']
             snapshot, sha, digest = self.freeze_merge(db, task['workspace'], task['batch'], batch,
@@ -296,6 +305,8 @@ class Tasks:
         if row is None:
             return None
         task = dict(row)
+        from .task_visibility import default_reason
+        task['error'] = default_reason(task)
         task['result'] = json.loads(task.pop('result_json'))
         return self.merge_progress(task)
 
@@ -305,6 +316,8 @@ class Tasks:
         if not row:
             reject(404, 'task-not-found', 'task', '任务不存在')
         task = dict(row)
+        from .task_visibility import default_reason
+        task['error'] = default_reason(task)
         task['progress'] = self.kernel.progress(task, local=local, connection=connection)
         task['session_task'] = task['progress']['session_task']
         task['ownership'] = task['progress']['ownership']
@@ -313,6 +326,15 @@ class Tasks:
             task['validation_scenarios'] = pending_validation(task['status'], json.loads(task['input_json']) if task['status'] == S.WAIT_VALIDATION else {})
         raw_input = task.pop('input_json')
         task['result'] = json.loads(task.pop('result_json'))
+        if task['kind'] == 'merge':
+            task['scenario_diff'] = task['result'].get('scenario_diff')
+            task['notice'] = task['result'].get('notice', '')
+            with (nullcontext(connection) if connection is not None else self.store.connection()) as db:
+                replacement = db.execute("SELECT id FROM tasks WHERE workspace=? AND batch=? AND kind='merge' "
+                    "AND status=? AND id>? ORDER BY id LIMIT 1", (task['workspace'], task['batch'], S.COMPLETED, task['id'])).fetchone() if task['status'] == S.NEEDS_SYNC else None
+            task['superseded_by'] = replacement['id'] if replacement else None
+            if task['superseded_by']:
+                task['notice'] = f"已被合并 #{task['superseded_by']} 取代"
         # 入队、重冻结与提交通常已把模式写入结果；只有少数失败路径覆盖了结果时才解析输入快照（大批次可达数 MB）。
         if task['kind'] == 'merge' and 'mode' not in task['result'] and '"mode":' in raw_input:
             from .merge_delta import summary
@@ -325,11 +347,17 @@ class Tasks:
             from .statistics import task_counts
             with (nullcontext(connection) if connection is not None else self.store.connection()) as db:
                 task.update(task_counts(db, task['workspace'], task['batch'], task['rounds']))
+        from .spec_library import summary as spec_summary, read as read_spec
+        with (nullcontext(connection) if connection is not None else self.store.connection()) as db:
+            task['spec_library'] = spec_summary(db, task=task_id)
         directory = self.directory(task_id)
+        manifest = directory / 'specs-manifest.json'
+        if manifest.is_file():
+            task['spec_library']['reuse_count'] = len(read_spec(manifest).get('seeded', []))
         task['files'] = {}
         for parent, folders, names in (os.walk(directory, followlinks=False) if local else ()):
             if Path(parent) == directory:
-                folders[:] = [name for name in folders if name in {'evidence', 'sop', 'sources', 'attempts', 'interruptions', 'validations', 'playwright'} or re.fullmatch(r'attempt-[0-9]+', name)]
+                folders[:] = [name for name in folders if name in {'evidence', 'sop', 'sources', 'attempts', 'interruptions', 'validations', 'playwright', 'scenarios', 'spec-runs'} or re.fullmatch(r'attempt-[0-9]+', name)]
             if '.git' in folders or '.git' in names:
                 folders.clear()
                 continue
@@ -357,13 +385,13 @@ class Tasks:
                   'entries.yaml', 'entries.json', 'snapshot.json', 'changes.json', 'impact.json', 'pending.json', 'previous-results.json',
                   'regression-links.json', 'credential-blocked.json', 'regression.json', 'pass-evidence.json', 'fixtures.json', 'fixtures-state.json',
                   'result.json', 'check.json', 'pairs.json', 'problems.json', 'feedback.json', 'clarifications.json', 'resume-fallback.json',
-                  'delta.json', 'judgment.json'}
+                  'delta.json', 'judgment.json', 'specs-manifest.json', 'spec-ledger.json', 'scope.json', 'playwright.config.mjs', 'global-setup.mjs', 'progress-reporter.mjs', 'spec-assets.mjs'}
         public |= {'sop.md', 'repos.json', 'draft.json', 'annotations.json', 'sop-before.md', 'sop.diff',
                    'original-sop.md', 'history.json', 'all-annotations.json', 'revision.json', 'cases-generated.yaml',
                    'sources.json', 'questions.json', 'answers.json', 'sop-guide.md'}
-        directories = {'evidence', 'sop', 'sources', 'attempts', 'interruptions', 'validations', 'playwright'}
+        directories = {'evidence', 'sop', 'sources', 'attempts', 'interruptions', 'validations', 'playwright', 'scenarios', 'spec-runs'}
         if len(relative.parts) == 1:
-            if relative.name not in public and not re.fullmatch(r'commit-[0-9]+-[a-z0-9-]+\.txt', relative.name):
+            if relative.name not in public and not relative.name.startswith('spec-review-') and not re.fullmatch(r'commit-[0-9]+-[a-z0-9-]+\.txt', relative.name):
                 return False
         elif relative.parts[0] not in directories and not re.fullmatch(r'attempt-[0-9]+', relative.parts[0]):
             return False
@@ -465,7 +493,7 @@ class Tasks:
         snapshot = json.loads(task['input_json'])
         prompt = files('sop_board').joinpath('prompts/merge.md').read_text(encoding='utf-8')
         if snapshot.get('mode') == '增量':
-            (directory / 'delta.json').write_text(canonical({k: snapshot[k] for k in ('baseline', 'changed', 'carried')}), encoding='utf-8')
+            (directory / 'delta.json').write_text(canonical({k: snapshot[k] for k in ('baseline', 'changed', 'carried', 'replies')}), encoding='utf-8')
             prompt += '\n' + files('sop_board').joinpath('prompts/merge-delta.md').read_text(encoding='utf-8')
         else:
             (directory / 'delta.json').unlink(missing_ok=True)
@@ -484,6 +512,9 @@ class Tasks:
             confirmed_draft_cases=snapshot.get('confirmed_draft_cases', {}))), encoding='utf-8')
         (directory / 'clarifications.json').write_text(canonical(snapshot.get('clarifications', {})), encoding='utf-8')
         prompt += f'\n本轮任务目录：{directory}\n请只读取这个目录中的本轮材料，clarifications.json 包含完整历史与本轮待处理回复。\n'
+        if snapshot.get('scenario_edits'):
+            rebuilt = sorted(set(snapshot['scenario_edits']['generated']['changed'] + snapshot['scenario_edits']['generated']['removed']))
+            prompt += '\n将按用例重建的手改场景：' + ('、'.join(rebuilt) or '无') + '。\n'
         (directory / 'input.json').write_text(task['input_json'], encoding='utf-8')
         (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
         (directory / 'schema.json').write_text(canonical(SCHEMA), encoding='utf-8')
@@ -539,7 +570,11 @@ class Tasks:
             try:
                 return self.land(task, raw, check, working=working, plan=plan, judgment=result), check
             except (OSError, ValueError, sqlite3.Error, APIError) as problem:
-                return S.FAILED, dict(check, ok=False, problems=[f'合并结果无法写入工作区：{problem}'])
+                failed = dict(check, ok=False, problems=[f'合并结果无法写入工作区：{problem}'])
+                if not self.kernel.receipt(task, phase='merge-land'):
+                    for key in ('scenario_diff', 'notice', 'landed_version'):
+                        failed.pop(key, None)
+                return S.FAILED, failed
 
     def land(self, task, raw, check, *, working=None, plan=None, judgment=None):
         workspace = self.service.workspace
@@ -568,7 +603,8 @@ class Tasks:
         changed = inputs.changed(dict(snapshot, cases=[c for c in cases if c['id'] not in exclusions],
             all_cases=cases, excluded_cases=exclusions, case_metadata=metadata,
             confirmed_draft_cases=confirmed_draft_cases, forced_flow=choices,
-            scenarios=version['content'] if version else ''))
+            scenarios=snapshot['scenarios'] if snapshot.get('scenario_edits') else version['content'] if version else '',
+            observed_scenarios_sha256=(version['sha256'] if version else '') if 'observed_scenarios_sha256' in snapshot else None))
         if changed:
             check['problems'] = ['用例、场景或开发者分类选择变化，请重新合并']
             return S.NEEDS_SYNC
@@ -580,6 +616,28 @@ class Tasks:
         status = S.COMPLETED if raw is not None else S.NEEDS_INPUT
         def registered(db, batch_id):
             batch = self.service.batch(db, task['workspace'], task['batch'])
+            if raw is not None:
+                from .scenario_edits import differences, scenes
+                current_version = self.service.latest_version(db, batch)
+                check['landed_version'] = current_version['id']
+                diff = differences(version['content'] if version else '', current_version['content'])
+                old_scenes, new_scenes = scenes(version['content'] if version else ''), scenes(current_version['content'])
+                diff['field_changes'] = [dict(scenario=sid, field=field, before=old_scenes[sid][field], after=new_scenes[sid][field])
+                    for sid in diff['changed'] for field in ('actor', 'verify', 'polarity')
+                    if old_scenes[sid][field] != new_scenes[sid][field]]
+                prior_flows = {p['case'] for p in snapshot.get('prior_pairs', []) if p['kind'] == 'flow'}
+                if snapshot.get('scenario_edits'):
+                    from .scenario_edits import landed_versions, pairings
+                    baseline = next(landed_versions(db, batch, self.store.data), None)
+                    if baseline:
+                        prior_flows |= {p['case'] for p in pairings(db, baseline) if p['kind'] == 'flow'}
+                diff['merged_into'] = [dict(scenario=p['case'], target=p['scenarios'][0]) for p in check['pairs']
+                    if p['case'] in diff['removed'] and p['case'] in prior_flows and p['kind'] == 'detail']
+                diff['overwritten_edits'] = snapshot.get('scenario_edits')
+                check['scenario_diff'] = diff
+                count = len({v['scenario'] for v in diff['field_changes'] if v['field'] in ('actor', 'verify')})
+                if snapshot.get('mode') == '全量' and count:
+                    check['notice'] = f'全量合并改动了 {count} 个场景的角色或入口'
             if plan is not None:
                 self.conversation.register(db, batch, task, working, plan)
             if judgment is not None:

@@ -1,8 +1,8 @@
 ---
 title: "任务内核、两个入口与证据有效性"
 scope: ["self:src/sop_board/**", "self:docs/**"]
-source: ["self:docs/proposals/2026-10-22-integrated-rework.md", "self:docs/reference.md", "self:docs/standard.md", "self:docs/proposals/2026-10-31-fix-landing.md", "self:docs/proposals/2026-11-03-case-amend.md", "self:docs/proposals/2026-11-03-pending-impact-display.md"]
-guards: ["self:docs/sop/sop-board-14.yaml#SOP-144", "self:docs/sop/sop-board-14.yaml#SOP-145", "self:docs/sop/sop-board-14.yaml#SOP-149", "self:docs/sop/sop-board-12.yaml#SOP-127", "self:docs/sop/sop-board-19.yaml#SOP-191", "self:docs/sop/sop-board-19.yaml#SOP-192", "self:docs/sop/sop-board-20.yaml#SOP-201", "self:docs/sop/sop-board-20.yaml#SOP-202", "self:docs/sop/sop-board-20.yaml#SOP-203", "self:docs/sop/sop-board-21.yaml#SOP-211"]
+source: ["self:docs/proposals/2026-10-22-integrated-rework.md", "self:docs/reference.md", "self:docs/standard.md", "self:docs/proposals/2026-10-31-fix-landing.md", "self:docs/proposals/2026-11-03-case-amend.md", "self:docs/proposals/2026-11-03-pending-impact-display.md", "self:docs/proposals/2026-11-04-session-board-friction.md"]
+guards: ["self:docs/sop/sop-board-14.yaml#SOP-144", "self:docs/sop/sop-board-14.yaml#SOP-145", "self:docs/sop/sop-board-14.yaml#SOP-149", "self:docs/sop/sop-board-12.yaml#SOP-127", "self:docs/sop/sop-board-19.yaml#SOP-191", "self:docs/sop/sop-board-19.yaml#SOP-192", "self:docs/sop/sop-board-20.yaml#SOP-201", "self:docs/sop/sop-board-20.yaml#SOP-202", "self:docs/sop/sop-board-20.yaml#SOP-203", "self:docs/sop/sop-board-21.yaml#SOP-211", "self:docs/sop/sop-board-22.yaml#SOP-221", "self:docs/sop/sop-board-22.yaml#SOP-222", "self:docs/sop/sop-board-22.yaml#SOP-223", "self:docs/sop/sop-board-22.yaml#SOP-224", "self:docs/sop/sop-board-22.yaml#SOP-225", "self:docs/sop/sop-board-22.yaml#SOP-226"]
 ---
 # 任务内核、两个入口与证据有效性
 
@@ -52,8 +52,33 @@ D102：已放弃的会话修复，最后一次尝试已登记产品修复输出�
 
 D103～D105：cases put 按编号与并集当前内容比较，只登记新增与改写；片段继承最近非澄清上传的 metadata 并去掉 sop-draft，问题行号仍对应原文件。署名只用使用者姓名或默认业务确认人，依据原文与上传、编号一起登记为“按条增改”决定；全部未变化不写记录。按条上传不记录原路径，不能 write-back。export --case 按指定顺序导出并集当前内容，文件头取最近非澄清上传，只配合 --out，与 --upload、--write-back 互斥。
 
-增量合并以最近 merge-land 收据为基线，核对当前场景内容仍是该轮落地结果，比较落地后（含 case_updates）的用例及草稿确认信息；升级前任务兼容读取 final.json 与已登记澄清改写。SOP、入口声明、独立场景选择、排除范围变化、待处理回复、没有变化用例或不可读基线均全量。只有看板开发者重新合并与会话 prepare --full 强制全量，其他触发名称不决定模式。delta.json 与追加提示词仅用于增量；输出须覆盖全部变化用例，出现的条目完整覆盖沿用值，缺失条目才补齐，relocate 不沿用。仅沿用仍适用的节点、豁免、kept 去向及全部关联用例未变化的缺口，缺口重新编号。补齐后仍经 merge_conversation.validate 与原 judgment_problems/assemble 核对，不新增宽松核对器。完整判断与下一轮基线材料存于仅本机的 judgment.json；result_json 只增模式、原因、基线与计数，沿用数不含输出给出的用例判断。数据库格式仍为 5，不加表和列。场景依据为 SOP-201～203，真实入口与独立验收另行留证。
+增量合并以最近 merge-land 收据为基线，核对场景输入为该轮落地结果（陌生手改期间按 D108 取最近落地版本），比较落地后（含 case_updates）的用例及草稿确认信息；升级前任务兼容读取 final.json 与已登记澄清改写。SOP、入口声明、独立场景选择、排除范围变化、通用答复或基线找不到所答缺口、没有变化或具体答复涉及用例、不可读基线均全量。具体缺口答复涉及用例与新增、变化用例取并集作为增量范围，delta.json 保留答复原文、缺口与关联用例。只有看板开发者重新合并与会话 prepare --full 强制全量，其他触发名称不决定模式。delta.json 与追加提示词仅用于增量；输出须覆盖全部变化用例，出现的条目完整覆盖沿用值，缺失条目才补齐，relocate 不沿用。仅沿用仍适用的节点、豁免、kept 去向及全部关联用例未变化的缺口，缺口重新编号。补齐后仍经 merge_conversation.validate 与原 judgment_problems/assemble 核对，不新增宽松核对器。完整判断与下一轮基线材料存于仅本机的 judgment.json；result_json 保存模式、原因、基线、计数与已落地场景差异，沿用数不含输出给出的用例判断。数据库格式仍为 5，不加表和列。场景依据为 SOP-201～203，真实入口与独立验收另行留证。
 
 D106：看板启动扫描与工作区配置变化不再给批次排合并；合并输入与落地核对只看入口声明，不看工作区配置摘要，其他配置（snapshot_exclude、适配等）变化不使合并待同步或改为全量。入口声明变化时进行中的合并落地转待同步，由人重新合并。
 
 D107：显示队列与执行范围分开。pending 只计当前内容没有结果的场景；最近 Agent 结果与最近结果都是通过、且产品内容摘要不同或执行期间有变化的场景单列 source-changed（产品变化待判定），不进复测，暂缓与等待修改场景仍优先排除。queue_counts、queues、页面和 status 共用同一统计来源；执行按钮条数、pending_scope、--scope pending、执行计划 pending 模式及影响判定、沿用规则保持不变。具体状态行、队列与指标维护在 docs/reference.md；场景依据为 docs/sop/sop-board-21.yaml 的 SOP-211。
+
+D108～D113：已有落地合并的用例批次遇到陌生场景内容，扫描与 PUT 都登记版本、按真实配对分组提示 scenario-edited，不排合并；匹配本批任一合并写入版本才复制它自己的配对与内容依据。restore 还原最近落地版本并保留手改历史。手改期间执行与修复复验准备拒绝 scenario-file-edited；由用例、答复或决定触发的合并取最近落地场景作输入，模式按 D104/D109，落地覆盖手改并记入 scenario_diff，准备后再次变化时看板待同步，会话沿用已作废。人发起重新合并保持全量并预告重建编号。无用例批次保持原行为。
+
+场景差异仅在落地事务写入任务结果，并经同一业务白名单向内网投影；任务 show 顶层与页面同源。task wait 等到结束或需人处理，默认 600 秒、0 不限时，退出码 0/2/3 分别表示返回、参数错误或不存在、超时；等待不改变任务。cases put --dry-run 只免署名依据，不放宽内容校验，不登记业务记录。exclude --case 与 --gap 二选一，复用答复与排除表，不改格式 5。
+
+同批之后第一个已完成合并取代旧待同步任务的待处理提示，历史状态不变；其他状态及其他批次不算取代。本机与内网空原因共用默认说明。随包技能及 guide 的产品仓库约定要求提交或宣布可验收前报告各批次待执行和产品变化待判定数量、逐条影响判定与重跑估计；知识目录排除和默认确认人设置均由使用者决定。场景依据为 SOP-221～226，真实新会话、真实看板 Codex 与浏览器须另行独立执行，文本核对不能代替。
+
+场景完整字段比较仅供 scenario-edited 和 scenario_diff；push.changed 与自动执行沿用四要素指纹，不因标题、角色、入口或证据提示变化扩大范围。合并快照的准备时文件状态只存 SHA-256，旧原文字段只读兼容。restore 先登记摘要计算后读取的实际字节，替换前再核对；并发保存返回 scenario-file-changed、保留新内容供重试。旧收据未产生新版本时，以任务落地原文匹配本批不晚于收据的版本，写入者不限。缺口答复索引与沿用缺口共用 read_holds 的落地任务结果和排除过滤，包含系统补充缺口。reply、exclude、include 的完整只读校验先于排队替换，无效请求不取消合法任务。
+
+## D114～D118：规范执行资产与只读巡检
+
+Web 入口 spec_library 属业务配置，新增/改绑重新自检并作废已准备任务，库目录自动按完整路径段排除快照，库内容维护不作配置变化。最终范围冻结后只预置本批次、同编号、同场景指纹且 verified 的脚本与全部依赖，保留冲突、停用辅助入口；跨批次复验各有冻结副本，不从共享目录加载。复用、实际执行、沿用和巡检分别计数。
+
+每次开跑在 spec-runs 固定候选、依赖与运行器摘要，convert 关联结果，执行记录保留库摘要。check 比较对象、计算、步骤与条件，分相同/待审核/违规/无基线。文字账本限具体断言和节点，结构留 old/new，撤销绑定真实 cases put 决定与用例前后指纹。未参与改写者实际审核后 promote，执行/实现同会话拒收；收入须匹配已登记真实运行，推进基线与历史。工具署名不证明实际独立参与。
+
+patrol 候选补齐页面、路径、数量、允许请求的业务用途、禁止动作、审核与未覆盖范围；未审核不运行，未知请求发出前中止、越界停止，任何失败非零并留截图/地图反馈。开跑取当前 web_evidence 后冻结本次，不登记场景或清除待判定。import 仅读 cw2 accept-run，来源最近通过且规范未改写才已核实；改写及其余未核实，未知指纹只参考，历史账本未经本包审核。
+
+受版本管理的规范库可进产品仓库；任务副本与审核/巡检过程在仓库外，原文仅本机，内网新增投影只有复用数量、审核结论与姓名。正文以文件保存，新增运行/审核侧表保持格式5与旧表列。字段和标识以 docs/reference.md 为准，随包操作见 playwright-acceptance/references/spec-library.md。
+
+返工1：规范导入约束只作用于库资产，普通脚本运行摘要不收窄旧导入能力；动态未解析项明示。巡检逐跳校验HTTP重定向，不把302交回浏览器绕过拦截；不能安全保持来源/导航语义就停止，清理及在途请求结束后再次核对失败。断言前置标识保留相对顺序；最近历史结果缺有效时间不得借旧通过升级。复验缺摘要门槛和库关联共用按批次/场景唯一解析的子目录清单，歧义或缺失拒收。
+
+返工2身份来源：候选账本author只取与候选运行绑定的登记executor；implementer单独记录产品原实现者，review单独记录审核者。索引来源、审核材料、基线与后续归档保持同一身份区分；旧材料不静默改写。审核会话仍同时拒绝执行/实现身份，不能因作者字段修正放松拒收。
+
+
+会话的提问、选择和确认遵循随包入口的等待规则：呈报后结束本轮，收到下一轮明确答复才继续业务命令，单轮客户端相同；同一次请求内已有明确答复不重复询问。署名范围以一次请求为限（使用者提出的一项操作，从提出到登记完成，含差异确认往返）：之前请求中的姓名不沿用到新的请求，新请求及其确认都没给姓名且没有默认业务确认人时，先询问并结束本轮；新请求中再次得到相同姓名时才提示，提示须写明命令 sop-board confirmer <工作区> --set <姓名>（SOP-225-N01，2026-11-08 修正 D112 文本中“已有姓名授权时沿用”的越界措辞；复验发现只转述“可设为默认确认人”而不写命令，随之要求写明命令）。关键参考只引用该通用规则。合并重试的原始输入从持久化行读取，任务页的读取投影不作为重新准备的输入。合并页本机保留重试控件，启用状态与合并操作资格一致，待补充等不支持直接重试的状态给停用原因，内网不显示。

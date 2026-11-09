@@ -57,7 +57,7 @@ sop-board playwright submit --results /work/round/results.jsonl --scope /work/sc
 
 ## 验证与维护
 
-用户要求把已确认且经真实入口通过的场景保留为产品回归测试时，另用随包 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md) 按成本选择测试层、核对实际运行并登记关联。浏览器验收脚本与界面地图保留在仓库外的任务目录；本技能不把它们直接复制为产品回归套件，只有产品已有端到端设施且业务需要时才由 regression-distill 编写浏览器测试。
+用户要求把已确认且经真实入口通过的场景保留为产品回归测试时，另用随包 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md) 按成本选择测试层、核对实际运行并登记关联。经审核、受版本管理的规范执行资产可以保存在入口 spec_library 声明的产品仓库目录；任务冻结副本、探测记录与过程证据仍保存在仓库外的任务目录；本技能不把它们直接复制为产品回归套件，只有产品已有端到端设施且业务需要时才由 regression-distill 编写浏览器测试。
 
 遵循 main 的场景验收方式，通过实际命令、工作区 HTTP 入口与页面核对，不恢复上游删除的根 tests/。现有技能资源随包保留；发行包应包含技能、模板和转换器。提交后核对工作区、批次、编号、轮次、证据及进度，不以 Playwright 的绿色数量代替整批业务结果。
 
@@ -68,3 +68,17 @@ sop-board playwright submit --results /work/round/results.jsonl --scope /work/sc
 目标视图已满足前置条件时直接复用，不再次点击外层入口。定位失效先只读核对当前文档、弹窗及 frame；正确业务操作后的结果不符仍为失败，定位和连接问题单独记为执行受阻。保存或提交前注册响应/事件等待，核对业务成功的可见结果后才刷新或导航；状态不明时不重复提交。
 
 仅更新技能说明及模板不会改写现有任务目录中的执行脚本。继续旧任务前须核对其项目映射、完成等待和停止配置；不因模板已修正就宣称旧轮次结果有效。
+
+## 复用、保真审核与巡检
+
+准备后先读 specs-manifest.json，优先运行 seeded 的冻结脚本，只为 missing 补齐；reference 按当前要求核对，conflict 保留已有文件并处理。库目录自动排除产品快照，改变绑定须重新自检，库内容维护只影响后续任务。
+
+改脚本用 `playwright specs check --task … --scenario 批次#场景 --format json --data …` 读取标识，在任务 spec-ledger.json 逐项记账；实际运行、convert 并登记后，用 review 导出逐条去向交未参与改写者实际审核，再 promote 收入并推进基线。首次新写也须逐断言审核。根模板新增 spec-assets.mjs，新准备任务会提供；辅助入口默认 .off，启用须在 note 说明。spec-runs 关联本轮真实结果，不能借旧通过。
+
+改 UI 后先 patrol plan，按地图补齐允许页面、到达路径、请求业务用途、目标数量和未覆盖范围，实际审核后再 run。未知请求发出前停止、越界停止、失败非零并留截图与地图反馈；不把 GET 当只读证明。巡检只用已有浏览器状态，开跑读取当前录制开关后固定本次，不登记场景通过或作为沿用理由。
+
+历史导入用 `playwright specs import --from <accept-run目录> --batch <批次> --data <目录>`：只支持 cw2 accept-run，改写过的标未核实；来源最近通过、脚本相同的标已核实，来源指纹不同或未知仍只参考，不改变看板结果。
+
+命令、标识、账本和安全声明见[参考手册](reference.md#web-规范脚本库保真审核与只读巡检)与随包 [spec-library.md](../src/sop_board/skills/playwright-acceptance/references/spec-library.md)。新增命令同版发行，原文仅本机，内网只显示复用数量、审核结论与审核人姓名。
+
+返工1：普通无库脚本导入atlas等原有辅助文件不再被规范限制；重定向逐跳核对，同源数据请求可按声明继续，跨源及不能保持浏览器语义的导航重定向停止并改用审核后的直达地址。清理期间违规也算失败；分批复验摘要和复用关联使用本批清单。详见参考手册“返工1补充边界”。

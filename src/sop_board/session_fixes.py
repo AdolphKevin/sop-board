@@ -187,6 +187,12 @@ class SessionFixes:
             reject(409, 'fix-not-ready', 'fix', '修复须先提交产品修复输出，处于待验证或等待开发者提交状态')
         # 复验是一次执行：开始前须自检通过（D101 之前由修复冻结的自检状态间接保证）。
         self.service.require_ready(self.workspace.name)
+        from .repositories import Discovery
+        from .scenario_edits import require_clean
+        Discovery(self.service).scan(reconcile=False)
+        with self.store.connection() as db:
+            for name in {s['batch'] for s in info['scope']}:
+                require_clean(db, self.service.batch(db, self.workspace.name, name), self.store.data)
         self.check_current(info, protected=False)
         environment = self.service.environment
         if environment.external() and not environment.check_external(record=False):
@@ -206,13 +212,16 @@ class SessionFixes:
             blocker = self.tasks.kernel.session_blocker(dict(id=-1,kind='execute',workspace=self.workspace.name,batch=''),rows)
             if blocker:
                 reject(409,'task-blocked','task',f'等待任务 #{blocker["id"]}（{blocker["status"]}）结束')
+        validator = FixValidation(self.fixes)
+        products = [p for p in info['result']['problems'] if p['category']=='product']
+        selected, aliases = validator.selection(info, products)
+        with self.store.connection() as db:
+            for name in {s['batch'] for s in selected}:
+                require_clean(db, self.service.batch(db, self.workspace.name, name), self.store.data)
         changes = changed_files(info['snapshot']['session_files'], self.files(info['snapshot']['aliases']))
         for repo in info['repositories']:
             repo['changed_files'] = changes[repo['alias']]
             self.fixes.repositories.update(fix_id, repo['alias'], changed_files_json=canonical(repo['changed_files']))
-        validator = FixValidation(self.fixes)
-        products = [p for p in info['result']['problems'] if p['category']=='product']
-        selected, aliases = validator.selection(info, products)
         product = self.workspace.product(aliases)
         manifests = self.files(aliases)
         # 业务配置以复验准备时为准（D101），复验期间变化仍按执行规则作废。

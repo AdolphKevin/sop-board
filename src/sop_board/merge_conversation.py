@@ -169,33 +169,38 @@ class MergeConversation:
             return None
         return next((g for g in holds['gaps'] if isinstance(g, dict) and g['id'] == gid), None)
 
-    def submit(self, key, name, body, *, source='看板', session=None):
-        if source not in ('看板', '会话'):
-            raise ValueError('回复来源不合格')
+    def check_messages(self, db, batch, body):
+        """完整只读核对，供会话在取消已有排队任务前使用。"""
         author = self.author(body)
         messages = body.get('messages')
         if not isinstance(messages, list) or not messages:
             reject(422, 'clarification-invalid', 'messages', '请填写至少一条回复')
+        if not self.service.case_union(db, batch):
+            reject(409, 'cases-missing', 'messages', '批次没有用例，无法补充澄清')
+        problems, checked = [], []
+        for index, item in enumerate(messages):
+            prefix = f'messages.{index}'
+            if not isinstance(item, dict):
+                problems.append(dict(field=prefix, problem='应为对象'))
+                continue
+            raw = item.get('text')
+            if not isinstance(raw, str) or not raw.strip() or len(raw) > 4000:
+                problems.append(dict(field=prefix + '.text', problem='回复应为非空文字，且不超过 4000 字'))
+            reference = item.get('gap')
+            gap = self.gap(db, batch, reference) if reference is not None else None
+            if 'gap' not in item or reference is not None and gap is None:
+                problems.append(dict(field=prefix + '.gap', problem='请选择当前缺口，或用 null 表示通用说明'))
+            checked.append((reference, gap, raw))
+        if problems:
+            raise APIError(422, 'clarification-invalid', problems)
+        return author, checked
+
+    def submit(self, key, name, body, *, source='看板', session=None):
+        if source not in ('看板', '会话'):
+            raise ValueError('回复来源不合格')
         with self.tasks.lock, self.store.transaction() as db:
             batch = self.service.batch(db, key, name)
-            if not self.service.case_union(db, batch):
-                reject(409, 'cases-missing', 'messages', '批次没有用例，无法补充澄清')
-            problems, checked = [], []
-            for index, item in enumerate(messages):
-                prefix = f'messages.{index}'
-                if not isinstance(item, dict):
-                    problems.append(dict(field=prefix, problem='应为对象'))
-                    continue
-                raw = item.get('text')
-                if not isinstance(raw, str) or not raw.strip() or len(raw) > 4000:
-                    problems.append(dict(field=prefix + '.text', problem='回复应为非空文字，且不超过 4000 字'))
-                reference = item.get('gap')
-                gap = self.gap(db, batch, reference) if reference is not None else None
-                if 'gap' not in item or reference is not None and gap is None:
-                    problems.append(dict(field=prefix + '.gap', problem='请选择当前缺口，或用 null 表示通用说明'))
-                checked.append((reference, gap, raw))
-            if problems:
-                raise APIError(422, 'clarification-invalid', problems)
+            author, checked = self.check_messages(db, batch, body)
             ids = [db.execute('INSERT INTO merge_messages(batch,author,created_at,gap,gap_json,text,source) VALUES (?,?,?,?,?,?,?)',
                 (batch['id'], author, now(), ref, canonical(gap), raw, source)).lastrowid for ref, gap, raw in checked]
             active = self.active(db, batch)
@@ -206,30 +211,41 @@ class MergeConversation:
         return dict(ok=True, messages=ids, task=self.tasks.types['merge'].visibility.project(queued['task']) if queued else None,
                     notice=notice)
 
-    def exclude(self, key, name, body, *, include=None, source='看板', session=None):
+    def check_exclusion(self, db, batch, body, *, include=None, source='看板'):
+        """排除和重新纳入共用的只读校验；此处不取消队列或登记决定。"""
         if source not in ('看板', '会话'):
             raise ValueError('回复来源不合格')
         author = self.author(body)
-        with self.tasks.lock, self.store.transaction() as db:
-            batch = self.service.batch(db, key, name)
-            cases = {c['id'] for c in self.service.case_union(db, batch)}
-            if include is None:
-                gap = self.gap(db, batch, body.get('gap'))
-                if not gap or gap['kind'] != 'entry':
-                    reject(422, 'clarification-invalid', 'gap', '请选择当前由开发者处理的缺口')
+        cases = {c['id'] for c in self.service.case_union(db, batch)}
+        if include is None:
+            gap = self.gap(db, batch, body.get('gap'))
+            selected = body.get('cases', [])
+            if bool(selected) == bool(body.get('gap')):
+                reject(422, 'clarification-invalid', 'case', '--case 与 --gap 必须二选一')
+            if selected and (not isinstance(selected, list) or any(not isinstance(cid, str) for cid in selected)
+                             or len(set(selected)) != len(selected) or set(selected) - cases):
+                reject(422, 'clarification-invalid', 'case', '用例不存在或编号重复')
+            if not selected and (not gap or gap['kind'] != 'entry'):
+                reject(422, 'clarification-invalid', 'gap', '请选择当前由开发者处理的缺口')
+            reason = body.get('reason')
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
+                reject(422, 'clarification-invalid', 'reason', '请填写不超过 4000 字的理由')
+            affected, operation, raw = selected or gap['cases'], 'exclude', reason
+        else:
+            if include not in cases or not db.execute('SELECT 1 FROM merge_exclusions WHERE batch=? AND case_id=?', (batch['id'], include)).fetchone():
+                reject(409, 'case-not-excluded', 'case', '用例未被标为本批不纳入')
+            gap, affected, operation, raw = None, [include], 'include', '重新纳入本批'
+            if source == '会话':
                 reason = body.get('reason')
                 if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
-                    reject(422, 'clarification-invalid', 'reason', '请填写不超过 4000 字的理由')
-                affected, operation, raw = gap['cases'], 'exclude', reason
-            else:
-                if include not in cases or not db.execute('SELECT 1 FROM merge_exclusions WHERE batch=? AND case_id=?', (batch['id'], include)).fetchone():
-                    reject(409, 'case-not-excluded', 'case', '用例未被标为本批不纳入')
-                gap, affected, operation, raw = None, [include], 'include', '重新纳入本批'
-                if source == '会话':
-                    reason = body.get('reason')
-                    if not isinstance(reason, str) or not reason.strip() or len(reason) > 4000:
-                        reject(422, 'clarification-invalid', 'reason', '请填写不超过 4000 字的重新纳入理由')
-                    raw += '：' + reason
+                    reject(422, 'clarification-invalid', 'reason', '请填写不超过 4000 字的重新纳入理由')
+                raw += '：' + reason
+        return author, gap, affected, operation, raw
+
+    def exclude(self, key, name, body, *, include=None, source='看板', session=None):
+        with self.tasks.lock, self.store.transaction() as db:
+            batch = self.service.batch(db, key, name)
+            author, gap, affected, operation, raw = self.check_exclusion(db, batch, body, include=include, source=source)
             mid = db.execute('INSERT INTO merge_messages(batch,author,created_at,gap,gap_json,text,status,source,operation,cases_json,note) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                 (batch['id'], author, now(), body.get('gap') if gap else None, canonical(gap), raw, '已采纳', source, operation, canonical(affected), '由回复人决定')).lastrowid
             for cid in affected:

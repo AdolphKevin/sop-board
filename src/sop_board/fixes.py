@@ -798,14 +798,19 @@ class Fixes:
                     batch=problem['batch'],scenario=problem['scenario'],result_id=problem['result_id'],
                     url=origin+f'/w/{key}/fixes',reason=problem['batch']+'#'+problem['scenario']+'：'+reason))
             items += self.tasks.conversation.attention(db, key, origin, local=local)
+            from .scenario_edits import attention
+            items += attention(db, key, origin, self.store.data)
         for task in self.tasks.list(key, local=local)['tasks']:
             if task['status'] == S.ABANDONED:
+                continue
+            if task.get('superseded_by'):
                 continue
             url = f"/w/{key}/tasks/{task['id']}"
             base = dict(task=task['id'], batch=task['batch'], url=origin + url,
                 **({'resume': task['progress']['resume']} if task['progress'].get('resume') else {}))
             if task['status'] in mapping or task.get('attention'):
-                reasons = [task['error']] + [f"{p['batch']} {p['scenario']}：{p['reason']} · {p['plan']}" for p in task.get('attention', [])]
+                from .task_visibility import default_reason
+                reasons = [default_reason(task)] + [f"{p['batch']} {p['scenario']}：{p['reason']} · {p['plan']}" for p in task.get('attention', [])]
                 items.append(dict(base, kind=mapping.get(task['status'], 'developer-action'), reason='；'.join(filter(None, reasons))))
             manual = [r for r in task.get('jira', []) if r['comment'] != '评论成功' or r['transition'] != '流转成功']
             if manual:

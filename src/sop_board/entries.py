@@ -8,7 +8,7 @@ import stat
 import yaml
 
 
-FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence', 'atlas', 'identities'}
+FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence', 'atlas', 'identities', 'spec_library'}
 
 
 def web_evidence(entry):
@@ -71,6 +71,17 @@ def validate_entries(entries, repos=None):
             if (entry.get('surface') != 'web' or not isinstance(policy, dict)
                     or policy.keys() - {'video', 'trace'} or any(type(v) is not bool for v in policy.values())):
                 problems.append(dict(field=field + '.web_evidence', problem='仅用于 Web 入口，须为只含 video、trace 布尔开关的对象'))
+        if 'spec_library' in entry:
+            value = entry['spec_library']
+            alias, separator, relative = value.partition(':') if isinstance(value, str) else ('', '', '')
+            if (entry.get('surface') != 'web' or not separator or not alias or not relative.strip()
+                    or Path(relative).is_absolute() or '..' in Path(relative).parts or not Path(relative).parts
+                    or '\0' in relative or repos is not None and alias not in repos):
+                problems.append(dict(field=field + '.spec_library', problem='仅用于 Web，须为已登记仓库别名:仓内目录，不能是仓库根目录'))
+            elif repos is not None:
+                path = repos[alias] / relative
+                if path.is_symlink() or not path.resolve().is_relative_to(repos[alias]) or path.resolve() == repos[alias] or path.exists() and not path.is_dir():
+                    problems.append(dict(field=field + '.spec_library', problem='规范库须为仓库内普通目录，不能越界或是符号链接'))
         if 'identities' in entry:
             if entry.get('surface') != 'web':
                 problems.append(dict(field=field + '.identities', problem='identities 只用于 Web 入口'))

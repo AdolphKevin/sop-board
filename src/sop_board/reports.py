@@ -38,6 +38,10 @@ def markdown(data, generated_at):
         ("场景版本", version["version"] if version else "无"), ("推送提交号", version["commit_id"] if version else "无"),
         ("用例并集的最新上传序号", data["latest_upload"] or "无"),
         ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("沿用场景", summary["reused_count"]), ("重跑场景", summary["rerun_count"]), ("生成时间", generated_at)])]
+    assets = data.get('spec_library', {})
+    if assets.get('reuse_count') or assets.get('reviews'):
+        sections.append('## 脚本复用与审核\n\n复用 ' + str(assets.get('reuse_count', 0)) + ' 条。\n\n' +
+            table(['审核结论', '审核人'], [[{'verified':'已核实通过','reviewed-failing':'已审核未通过','unverified':'未核实'}.get(r['state'], r['state']), r['by']] for r in assets.get('reviews', [])]))
     matched, unmatched = [], []
     pairings = {p["case"]: p for p in data["pairings"]}
     holds = data.get('holds', {})

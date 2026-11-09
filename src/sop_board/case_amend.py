@@ -8,7 +8,7 @@ from .service import canonical, now
 from .validation import validate_batch
 
 
-def put(service, key, name, body, *, selected=(), reason, before_write=None, preview=False):
+def put(service, key, name, body, *, selected=(), reason, before_write=None, preview=False, dry_run=False):
     if before_write:
         # 排队替换沿用现有会话操作；先作无副作用的完整校验，避免非法输入取消旧任务。
         with service.workspace_lock:
@@ -18,7 +18,7 @@ def put(service, key, name, body, *, selected=(), reason, before_write=None, pre
             before_write()
             return put(service, key, name, body, selected=selected, reason=reason)
     validate_batch(name)
-    if not isinstance(reason, str) or not reason.strip():
+    if not dry_run and (not isinstance(reason, str) or not reason.strip()):
         reject(422, 'cases-invalid', 'reason', '请填写按条增改的依据原文')
     if len(set(selected)) != len(selected):
         reject(422, 'cases-invalid', 'case', '--case 编号不能重复')
@@ -32,7 +32,7 @@ def put(service, key, name, body, *, selected=(), reason, before_write=None, pre
         if metadata and 'tags' in metadata:
             metadata['tags'] = [tag for tag in metadata['tags'] if tag != 'sop-draft']
         try:
-            document = load_cases(body, inherited_metadata=metadata)
+            document = load_cases(dict(body, uploaded_by='差异预览') if dry_run else body, inherited_metadata=metadata)
         except APIError as error:
             if metadata is None and any(p['problem'] == '缺少字段：metadata' for p in error.problems):
                 reject(422, 'cases-invalid', 'metadata', '本批还没有用例上传，片段缺少 metadata；请带上 metadata 或改用 cases upload')
@@ -59,8 +59,11 @@ def put(service, key, name, body, *, selected=(), reason, before_write=None, pre
                 changes.append(case)
         if not changes:
             return dict(ok=True, cases=results, upload=None, task=None, notice='所选用例均未变化，没有登记上传、决定或合并')
-        if preview:
-            return dict(cases=results)
+        if preview or dry_run:
+            notice = '差异预览，未登记上传、决定或合并'
+            if any(r['overrides_clarification'] for r in results):
+                notice += '；本次将覆盖合并澄清改写，下一轮合并仍按已采纳的答复核对'
+            return dict(ok=True, cases=results, upload=None, task=None, notice=notice)
         db.execute("INSERT OR IGNORE INTO batches(workspace,name,path,product_digest) VALUES (?,?,'','')", (key, name))
         batch = service.batch(db, key, name)
         number = db.execute('SELECT COALESCE(MAX(number),0)+1 FROM case_uploads WHERE batch=?', (batch['id'],)).fetchone()[0]

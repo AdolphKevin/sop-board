@@ -256,7 +256,7 @@ class Discovery:
                 for (key, name), problems in errors.items():
                     db.execute("INSERT OR IGNORE INTO batches(workspace,name,path,product_digest) VALUES (?,?,?,'')",
                                (key, name, problems[0]['path']))
-            # 看板启动与工作区配置变化都不排合并；合并只由上传、答复、场景文件变化或人发起的重新合并触发。
+            # 看板启动与配置变化不排合并；已有落地合并的场景变化由 push 登记并提示，不再自动合并。
             self.service.workspace_problems = errors
 
     def run(self):

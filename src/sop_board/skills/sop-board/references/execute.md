@@ -14,3 +14,5 @@
 运行辅助字段 `entries.<入口>.web_evidence`、`entries.<入口>.atlas`、顶层 `fixtures` 及配方文件可更新；格式合格时不作废当前轮次，也不要求重跑全量自检。已准备任务使用冻结内容，下一轮才采用新值。
 
 已有 execute prepare 任务时，Web 驱动只生成该目录中的结果与证据，由 execute submit 统一登记；不要另外 playwright submit 重复登记。独立的手工 Web 试跑仍可用兼容的 playwright submit，可加 --implementer。执行通过后，只有使用者另行授权测试建设，才转交 [regression-distill](../../regression-distill/SKILL.md)。修复后的独立复验使用 [fix.md](fix.md) 中的 execute prepare --fix：不填写批次或范围，实现者由修复记录绑定，不能使用修复会话自己的身份。
+
+查询任务用 `sop-board task show <工作区> --task <编号>`，等待用 `sop-board task wait <工作区> --task <编号> [--timeout 秒]`；沿用同一 `--data`，状态与退出码见 [sessions.md](sessions.md)，不查询数据库代替等待。
