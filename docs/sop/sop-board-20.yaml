@@ -338,20 +338,22 @@ sops:
       - id: SOP-203-N02
         polarity: negative
         negative_type: stale-input
-        title: 其他输入变化或首次合并时为全量并写明原因
+        title: 通用答复、人工全量、入口变化或首次合并时写明全量原因
         actor: 开发会话
         priority: P0
+        refs: ["docs/proposals/2026-11-04-session-board-friction.md D108、D109（方案 1）"]
         verify: cli
         initial_state: ["基线状态", "另有批次 fresh-batch，没有任何上传"]
         steps:
           - "运行 sop-board merge reply demo-web case-amend --gap none --text \"成员列表每页显示 10 条\" --author dev-a --session <B>，再 prepare --session <B>，查看输出与任务目录"
-          - "恢复基线状态；在 web 仓场景文件中给 TC_TEAM_CREATE_002 场景的 steps 加一句并保存；用 SOP-201-P01 的 amend-1.yaml 运行 put --by dev-a --reason 核对 --session <B>，再 prepare --session <B>"
+          - "恢复基线状态；在 web 仓场景文件中给 TC_TEAM_CREATE_002 场景的 steps 加一句并保存；等待扫描 30 秒，查看 status 与 task list；再明确运行 prepare --session <B> --full，查看重建提示"
           - "恢复基线状态；在数据目录 config.yaml 中改入口 app 的 operate 文字，按手册重新自检通过；用 amend-1.yaml 运行 put --by dev-a --reason 核对 --session <B>，再 prepare --session <B>"
           - "运行 sop-board cases upload demo-web fresh-batch team-cases.yaml --uploaded-by tester-a --session <B>，再 sop-board merge prepare demo-web fresh-batch --session <B>"
         expected:
-          - "四次 prepare 的 mode 都是全量，原因分别为：有待处理的合并回复；场景文件在上一轮合并之后有变化；入口声明有变化；没有可沿用的上一轮合并"
+          - "四次 prepare 的 mode 都是全量，原因分别为：存在 --gap none 的通用答复；会话明确要求全量；入口声明有变化；没有可沿用的上一轮合并"
+          - "第二个分支手改只登记版本并出现 scenario-edited，30 秒内没有因此新增合并任务；明确 --full 后才准备全量，输出列出 TC_TEAM_CREATE_002 将按用例重建（D108）；具体缺口答复不再笼统按此场景判全量（D109，见 SOP-222）"
           - "四个任务目录都没有 delta.json"
-        forbidden_effects: ["在这些情况下按增量沿用判断"]
+        forbidden_effects: ["在四次已明确全量的准备中按增量沿用判断", "仅因场景手改自动排合并"]
         evidence_hints: ["每次 prepare 输出", "任务目录文件清单"]
 
   - id: SOP-204

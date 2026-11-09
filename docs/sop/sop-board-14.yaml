@@ -360,13 +360,14 @@ sops:
       - id: SOP-145-N01
         polarity: negative
         negative_type: permission
-        title: 内网访问不到会话入口的写操作与任务附件
+        title: 内网访问不到会话入口的写操作与本机专用任务附件
         actor: 测试同事
         priority: P0
+        refs: ["docs/reference.md 内网访问分级：协作附件白名单与本机专用材料（2026-11-05 审核方按现行规则改写，原预期“附件请求被拒”早于协作白名单）"]
         verify: api
         initial_state: ["存在一个会话认领的任务"]
-        steps: ["tester-a 以非回环地址请求该任务详情、附件与任务页"]
-        expected: ["只返回白名单字段，没有会话编号、续接命令、输入快照、本机路径与命令", "附件请求被拒"]
+        steps: ["tester-a 以非回环地址请求该任务详情、任务页，以及该任务的协作附件（如用例、场景文件、配对）与本机专用附件（如提示词、会话记录、输入快照）"]
+        expected: ["只返回白名单字段，没有会话编号、续接命令、输入快照、本机路径与命令", "协作白名单内的附件按现行规则可读取；提示词、会话记录、快照与任务证据等本机专用附件返回 403 local-only"]
         forbidden_effects: []
         evidence_hints: ["响应原文"]
       - id: SOP-145-P03

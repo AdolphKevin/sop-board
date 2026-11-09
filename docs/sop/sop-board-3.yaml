@@ -126,11 +126,11 @@ sops:
         title: 重新合并与排队或运行中的任务输入相同时返回该任务，已合并完成的输入仍新建任务
         actor: 开发者
         priority: P0
-        refs: ["I2", "I4"]
+        refs: ["I2", "I4", "db731b0：落地合并以写入后的输入登记 landed_digest（2026-11-05 审核方据此澄清“输入摘要与 T1 相同”）"]
         verify: api
         initial_state: ["假 codex 在 PATH 最前，每次运行等待 30 秒后写出合规判断字段", "不带 --writable-repo 启动的测试看板，开发者令牌已设置，批次 demo 已推送演示场景文件并附带入口声明", "已向批次 demo 上传演示用例文件，由此建立的合并任务 T1 为运行中"]
         steps: ["以开发者令牌请求 POST /api/v1/projects/github-com-demo-org-demo-app/batches/demo/merges", "请求 GET /api/v1/tasks?project=github-com-demo-org-demo-app&batch=demo", "等待 T1 结束后再以开发者令牌请求同一重新合并接口，并请求任务列表与新任务的任务接口"]
-        expected: ["第一次重新合并返回 ok 为 true，task 的编号为 T1", "此时批次 demo 只有 T1 一个合并任务，T1 的种类为 merge，触发原因为上传用例", "T1 为已完成后，再次重新合并返回新任务 T2，种类为 merge，触发原因为重新合并，输入摘要与 T1 相同", "任务列表中出现 T2"]
+        expected: ["第一次重新合并返回 ok 为 true，task 的编号为 T1", "此时批次 demo 只有 T1 一个合并任务，T1 的种类为 merge，触发原因为上传用例", "T1 为已完成后，再次重新合并返回新任务 T2，种类为 merge，触发原因为重新合并，输入摘要与 T1 落地后登记的输入摘要（result.landed_digest，db731b0）相同", "任务列表中出现 T2"]
         forbidden_effects: ["与运行中的 T1 输入相同时另建任务"]
         evidence_hints: ["请求与响应原文（令牌脱敏）", "每次请求后的任务列表"]
 
@@ -466,13 +466,13 @@ sops:
         title: 重新合并时编号不变，相同输入不重复建任务
         actor: 开发者
         priority: P1
-        refs: ["I4"]
+        refs: ["I4", "docs/proposals/2026-11-04-session-board-friction.md D108（方案 1）"]
         verify: api
-        initial_state: ["假 codex 在 PATH 最前，返回固定的判断字段，其中原有场景 N1-P02 为 kept", "演示仓库的 docs/sop/demo.yaml 含节点 N1 的正向场景 N1-P02 并已提交", "授权看板已对批次 demo 上传演示用例文件，合并已完成并写入 demo.yaml（节点 S01 登录、S02 订单）"]
-        steps: ["等待 10 秒，查看批次版本与任务列表", "开发者在 demo.yaml 中修改 TC_DEMO_LOGIN_001 的 evidence_hints（不改场景内容四要素），等待 10 秒并等新触发的合并结束", "再次上传原文相同的演示用例文件，请求任务列表", "上传一份新增 TC_DEMO_ORDER_002（section:订单）并修改 TC_DEMO_LOGIN_001 的 expected_results 的用例文件，等待合并结束，读取 demo.yaml"]
-        expected: ["看板写入 demo.yaml 后没有登记推送人为工作区的同内容版本，也没有因此触发合并", "开发者的修改被登记为推送人为工作区的新版本，并触发一次合并", "相同原文的上传返回 unchanged_upload 为 true，没有新建合并任务", "最后的合并结果中节点编号 S01、S02 不变，TC_DEMO_LOGIN_001 的 expected 为修改后的预期，N1-P02 的编号与内容不变，新增场景 TC_DEMO_ORDER_002 在 S02"]
-        forbidden_effects: ["产生输入相同的重复任务"]
-        evidence_hints: ["任务列表", "批次版本信息", "各次合并结果"]
+        initial_state: ["按 docs/verification.md 的 v9 演示工作区方式登记演示仓库和入口，隔离数据目录、--lan、空闲端口，自动执行关闭", "演示仓库的 docs/sop/demo.yaml 含节点 N1 的正向非用例场景 N1-P02，首轮真实合并将它 kept；批次 demo 已上传演示用例并落地（S01 登录、S02 订单），保留完整配对与文件原文", "需要后续看板合并时真实 Codex 可用；技术替身记录只能作自检"]
+        steps: ["等待 30 秒，查看批次版本与任务列表", "开发者在 demo.yaml 中只修改 TC_DEMO_LOGIN_001 的 evidence_hints，等待扫描 30 秒，查看版本、attention 与任务", "运行 sop-board merge restore <演示工作区> demo --data <隔离数据目录>，核对文件与配对还原后，再上传原文相同的演示用例文件", "上传新增 TC_DEMO_ORDER_002（section:订单）并修改 TC_DEMO_LOGIN_001.expected_results 的用例文件，等待合并落地，读取 demo.yaml"]
+        expected: ["看板落地后不登记工作区同内容版本，也不因此排合并", "evidence_hints 的陌生改动登记新版本并出现 scenario-edited，列 TC_DEMO_LOGIN_001 为由用例生成的改动；不自动合并、不覆盖文件（D108）", "restore 写回最近落地原文并沿用配对、解除提示；相同原文用例上传返回 unchanged_upload 为 true，没有新合并任务", "最后 S01、S02 编号不变，TC_DEMO_LOGIN_001.expected 为新用例预期，N1-P02 编号与内容不变，TC_DEMO_ORDER_002 在 S02"]
+        forbidden_effects: ["仅因手改生成合并任务", "产生输入相同的重复任务", "为继续后续步骤悄悄忽略陌生文件"]
+        evidence_hints: ["任务、版本与 attention 前后值", "restore 输出和配对", "真实合并记录与各次文件差异"]
 
       - id: SOP-33-N01
         polarity: negative
@@ -569,16 +569,16 @@ sops:
 
       - id: SOP-33-P11
         polarity: positive
-        title: 场景文件出现新版本时触发合并，包括推送与工作区发现
+        title: 场景陌生版本经推送或工作区发现都只提示而不触发合并
         actor: 开发者
         priority: P0
-        refs: ["I4", "I1"]
+        refs: ["I4", "I1", "docs/proposals/2026-11-04-session-board-friction.md D108（方案 1）"]
         verify: api
-        initial_state: ["假 codex 在 PATH 最前，返回合规判断字段", "演示仓库已提交 docs/sop/demo.yaml（批次 demo），授权看板已登记该批次，上传演示用例文件后的合并任务已结束"]
-        steps: ["用 sop-verify 推送内容不同的合格场景文件到批次 demo，请求任务列表", "待该任务结束后，把演示仓库的 docs/sop/demo.yaml 改为另一份合格内容，等待 10 秒后请求批次版本与任务列表"]
-        expected: ["推送后新增一个合并任务", "工作区修改被登记为推送人为工作区的新版本，随后再新增一个合并任务"]
-        forbidden_effects: []
-        evidence_hints: ["每一步后的任务列表", "批次版本信息"]
+        initial_state: ["v9 隔离演示工作区，入口来自 config.yaml，看板 --lan 启动、自动任务已恢复、自动执行关闭", "批次 demo 已有用例和落地合并，当前文件为该落地原文；两份待推送/写入的新内容均不同于本批任一落地版本"]
+        steps: ["按现行请求格式 PUT /api/v1/workspaces/<演示工作区>/batches/demo/scenario-file 提交第一份陌生内容，等待 30 秒，读取版本、attention 与任务", "先用 merge restore 还原，再把磁盘 docs/sop/demo.yaml 改为第二份陌生内容，等待扫描 30 秒，重复读取"]
+        expected: ["两个入口均登记对应的新场景版本，并出现 scenario-edited；原因按由用例生成/非用例场景分组列新增、删除、改动编号，附按用例重建的说明（D108）", "两次都没有因场景变化排合并，陌生内容不被静默覆盖；中间 restore 解除提示并沿用最近落地配对"]
+        forbidden_effects: ["场景变化自动排合并", "恢复旧令牌或项目 API"]
+        evidence_hints: ["请求响应、命令与退出码", "两次前后任务和场景版本", "attention 与文件摘要"]
 
       - id: SOP-33-P12
         polarity: positive
@@ -610,16 +610,16 @@ sops:
       - id: SOP-33-N04
         polarity: negative
         negative_type: duplicate
-        title: 输入组合与已完成的合并相同时不再建任务，与失败任务相同时照常建任务
+        title: 重复推送陌生内容不排合并，历史落地内容沿用配对
         actor: 开发岗代理
         priority: P1
-        refs: ["I4"]
+        refs: ["I4", "docs/proposals/2026-11-04-session-board-friction.md D108（方案 1）"]
         verify: api
-        initial_state: ["假 codex 在 PATH 最前，返回合规判断字段", "不带 --writable-repo 启动的测试看板的批次 demo 已推送场景文件 A（附带入口声明），上传演示用例文件后的合并任务 T1 已完成", "另备好内容各不相同的合格场景文件 B 与 C，每次推送都附带同一入口声明"]
-        steps: ["推送与当前版本完全相同的场景文件 A，请求任务列表", "推送 B，等待新任务结束", "再次推送 A，请求任务列表", "把假 codex 改为以退出码 1 结束，推送 C，等待新任务结束", "把假 codex 改回写出合规判断字段，推送 B，请求任务列表", "再次推送 C，请求任务列表"]
-        expected: ["第一次推送返回 unchanged 为 true，没有新增任务", "推送 B 后新增合并任务 T2 并为已完成", "再次推送 A 登记为新版本，但输入组合与已完成的 T1 相同，没有新增任务", "推送 C 后新增合并任务 T3 并为失败", "再次推送 B 时输入组合与已完成的 T2 相同，没有新增任务", "再次推送 C 时相同输入的只有失败的 T3，新增合并任务 T4"]
-        forbidden_effects: ["产生输入与已完成任务相同的合并任务"]
-        evidence_hints: ["推送响应", "每一步后的任务列表与输入摘要"]
+        initial_state: ["v9 隔离演示工作区的批次 demo 已有用例，先后经真实合并落地 A、B 两个不同版本，分别保存原文与配对，当前为 B", "另有陌生合格内容 C，从未落地；真实入口产生的一次失败合并已保留，但没有把 C 变成落地内容；自动任务恢复、自动执行关闭"]
+        steps: ["按现行场景文件 PUT 格式推送当前 B，读取任务与版本", "推送陌生 C，等待扫描后再次推送完全相同的 C", "推送旧落地原文 A，再推送 B，逐次读取版本、配对、attention 与任务列表"]
+        expected: ["相同 B 返回 unchanged 为 true，不登记重复版本或新合并", "首次 C 登记版本并出现 scenario-edited；重复 C 不登记重复版本，两次均不排合并，不能因有失败历史恢复旧的场景推送触发（D108）", "切回 A、B 时登记新版本，分别沿用其对应落地配对、解除 scenario-edited，不排合并"]
+        forbidden_effects: ["把失败尝试的内容当作已落地", "重复推送陌生内容触发重试", "只按编号相同沿用配对"]
+        evidence_hints: ["推送响应与任务前后值", "A/B 原文和配对", "C、失败任务与 attention 记录"]
 
       - id: SOP-33-N05
         polarity: negative
@@ -691,13 +691,13 @@ sops:
         title: 工作区场景文件与合并依据不同时停在待同步且文件不变
         actor: 开发者
         priority: P0
-        refs: ["I4", "I1"]
+        refs: ["I4", "I1", "docs/proposals/2026-11-04-session-board-friction.md D108（方案 1）"]
         verify: cli
-        initial_state: ["假 codex 在 PATH 最前，每次运行等待 15 秒后写出合规判断字段", "授权看板已登记演示仓库与 demo.yaml，磁盘文件与当前版本相同"]
-        steps: ["上传演示用例文件触发合并任务 T1", "T1 开始后 2 秒内把演示仓库的 demo.yaml 改为另一份合格内容并保存，记录其 sha256", "T1 结束时（新任务结束前）查看 T1、demo.yaml、批次版本与合并页"]
-        expected: ["T1 为待同步", "此时 demo.yaml 的 sha256 与修改后记录的相同", "开发者的修改被登记为推送人为工作区的新版本，并触发新的合并任务 T2", "合并页同时列出 T1 与 T2", "没有推送人为 看板合并 #<T1 编号> 的场景版本"]
-        forbidden_effects: ["T1 覆盖开发者的修改"]
-        evidence_hints: ["任务接口响应", "demo.yaml 前后的 sha256", "合并页截图"]
+        initial_state: ["v9 隔离演示工作区已登记演示仓库与 demo.yaml，已有用例及落地合并 T0，磁盘文件与落地原文相同", "--lan 看板、自动任务恢复、自动执行关闭；本机真实 Codex 可用"]
+        steps: ["本机合并页明确发起重新合并 T1", "T1 实际运行且输入冻结后，把演示仓库的 demo.yaml 改成从未落地过的合格内容，记录时刻与 sha256", "等 T1 结束再观察 30 秒，读取 T1、demo.yaml、版本、attention、任务列表与合并页"]
+        expected: ["T1 为待同步，没有它的落地版本或配对", "demo.yaml 的 sha256 与手改后相同，手改被登记为工作区新版本", "出现 scenario-edited 并列出差异；不会因新内容自动排 T2（D108）", "合并页保留 T0 和 T1 历史，未把 T1 改成已完成"]
+        forbidden_effects: ["T1 覆盖手改", "自动排下一轮", "用会话提交作废冒充看板待同步"]
+        evidence_hints: ["真实 Codex 任务记录与时序", "文件 sha256、版本及配对前后值", "attention、任务和合并页截图"]
 
       - id: SOP-34-P02
         polarity: positive

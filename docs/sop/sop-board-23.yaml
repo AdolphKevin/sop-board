@@ -1,0 +1,868 @@
+# SOP-BOARD-23：Web 验收规范脚本库、保真检查与只读巡检（D114～D118，同一版交付，含 import）
+# 预期依据：docs/proposals/2026-11-04-playwright-spec-library.md 方案 1，第三、五、七节。
+# 使用者 2026-11-04 决定原话（方案状态栏）：
+#   “把 cw2 自建的验收层（断言保真检查和审核账本、改 UI 后的只读巡检、spec 复用）收进 `sop-board playwright`。”
+# 状态栏记录选项原话：“库放产品仓库且不计入快照”“未参与该次改写者可审核”“cw2 最近通过的直接标已核实”“三项一起做”。
+# 第七节记录使用者决定；D117 经使用者 2026-11-04 复核改为“改写过的标未核实”；调查报告的建议不作为新增要求。
+# Claude 于 2026-11-04 审核版本 1，按补充契约与 D117 复核结论修改后定稿。
+# 本次为审核方场景编写者返工；实现者不得修改本文件，后续业务执行与结果登记另行留证。
+#
+# 搭建、前置状态及恢复见 docs/verification.md 末尾「SOP-BOARD-23」。本会话只编写，不执行、不登记验收结果。
+# 演示工作区 demo-web、工作批次 spec-demo；被验收的看板批次为 sop-board-23，两者不得混淆。
+# 入口 cli/api/web 用于验证 Flow Board；演示工作区 app/api 用于真实运行可复用脚本。
+# 所有支持 --data 的命令显式带本轮隔离目录；specs 命令参数以方案补充契约为准；未约定的操作细节从正式文档核对，缺契约处报告，不从当前实现推导预期。
+# 不改全局安装，不碰真实 cw2 目录、cw2-live-chat 工作区与 8787；不新增产品测试。
+# A=实际脚本改写会话，E=本轮实际运行会话，R=未参与该次改写且不同于任务执行/实现会话的实际审核会话；产品实现者另行如实登记。
+# 不把换标签当独立审核；被测功能的实现者不能执行本批独立验收。所有账号仅为授权的演示账号。
+#
+# L0：产品 web 仓受版本管理的 acceptance/spec-library/，由 app.spec_library 声明为 web:acceptance/spec-library。
+#   当前脚本 specs/<批次>/<场景>.spec.mjs；基线 baseline/<批次>/<场景>/<版本号>/；历史 _history/<批次>/<场景>/<版本号>/。
+#   另含 pages/、INDEX.json、text-ledger.json、assertion-ledger.json、patrol.json、support/<标识>/manifest.json。
+#   TC_WEB_OK_001/TC_WEB_REF_001/TC_WEB_REVIEW_001/TC_WEB_HISTORY_001/TC_WEB_MISSING_001/TC_WEB_CONFLICT_001/TC_WEB_NEW_001/TC_WEB_CASE_DIFF_001 为固定编号；另有范围外 TC_WEB_OUT_001 与 TC_HTTP_ONLY_001。
+#   对应演示用例均经 cases upload 与 merge 落地；上述 WEB 场景均为 app，TC_HTTP_ONLY_001 为 api。
+#   TC_WEB_OK_001：组织 demo 有 20 名成员；打开成员页；第一页 10 行、共 2 页，首行邮箱 seed-01@example.invalid、角色 Member；禁止写入业务数据。
+#   各脚本与用例的具体变体、断言稳定标识、来源及指纹在手册定义；真实通过与审核材料不得靠写库伪造。
+#   OK、CONFLICT、OUT、CASE_DIFF 为同指纹已核实通过（CASE_DIFF 仅用例指纹不同）；REF 为旧场景指纹已核实通过；REVIEW 为已审核未通过；HISTORY 为历史导入未核实；MISSING/NEW 无库条目。
+#   support 中只放本轮演示辅助脚本，执行时会写可观察的辅助标记；默认不得执行。
+# T：实际通过运行的候选与全部依赖、scope、场景/引用用例指纹、产品快照、报告、新证据和执行者记录；用于 promote，不能借用别轮通过。
+# R0：独立演示产品的真实失败→实际修复→待复验状态，保存原修复会话与跨批次范围；不是修改本仓被测实现。
+# I0：仓库外仿 cw2 的外部目录；来源索引、来源脚本和改写后的规范脚本均为本任务合成材料。
+#   TC_IMP_PASS_001 最近通过且规范脚本已改写，TC_IMP_SAME_001 最近通过且未改写，TC_IMP_BLOCK_001 最近受阻且此前通过，TC_IMP_FAIL_001 最近失败且此前通过，TC_IMP_NONE_001 无运行，TC_IMP_STALE_001 最近通过但场景指纹旧，TC_IMP_UNKNOWN_001 无可查来源结果。
+#   除故意缺来源的分支外，来源任务/运行使用演示看板真实登记编号，场景指纹从这些结果取，不能从当前场景或外部自填字段补造。
+# P0：已登录 owner 的测试 Chrome、atlas 或 surface-map、patrol 候选/审核记录、全量业务数据只读前后核对方法。
+#   通知 notice-01 初始 unread=true；直接打开详情会发 GET /api/notices/notice-01/open 并置 unread=false、生成已读事件；巡检未获准此请求。
+#   正向巡检只用经核对无写入的成员列表请求；“只允许 GET”不能证明只读。
+# D117（2026-11-04 复核）：来源最近通过且规范版本与来源脚本相同的导入为已核实；改写过的导入为未核实，SOP-235-P01、SOP-235-N01 按此定稿。
+# Q1～Q6 均已澄清（Q1～Q5 由 Claude，Q6 由使用者复核）；剩余材料构造细节见手册本节，不自行发明行为或删去断言。
+
+metadata:
+  requirement: "sop-board：按场景版本复用已核实脚本，逐项审核断言变化，只读巡检拦截未声明副作用，历史导入留来源且不产生通过结论"
+  batch: "sop-board-23"
+  version: 1
+  owner: "blur.yin"
+  sources:
+    - ref: "docs/proposals/2026-11-04-playwright-spec-library.md 第三节 D114～D118 及补充契约（Claude，2026-11-04，回应 Q1～Q5）、第五节同一版交付、第七节使用者决定"
+      version: "方案 1（2026-11-04）"
+      confirmed_by: "blur.yin"
+    - ref: '使用者 2026-11-04 决定原话（方案状态栏）：“把 cw2 自建的验收层（断言保真检查和审核账本、改 UI 后的只读巡检、spec 复用）收进 `sop-board playwright`。”'
+      version: "2026-11-04"
+      confirmed_by: "blur.yin"
+    - ref: '使用者 2026-11-04 选项原话（状态栏与第七节）：“库放产品仓库且不计入快照”“未参与该次改写者可审核”“cw2 最近通过的直接标已核实”“三项一起做”'
+      version: "2026-11-04；D117 已复核"
+      confirmed_by: "blur.yin"
+  tags: ["sop-board", "playwright", "spec-library", "fidelity", "patrol", "import", "D114-D118"]
+
+sops:
+  - id: SOP-231
+    title: 声明规范库并在冻结范围内复用脚本
+    actor: 开发者与独立执行者
+    entry: "工作区 config.yaml；execute prepare；本机看板执行；修复复验准备；任务目录与轮次"
+    must:
+      - "D114：Web 入口声明产品仓库规范库，索引保留场景与引用用例指纹、脚本和全部依赖摘要、基线、审核、通过依据及三种状态"
+      - "执行与修复复验在范围冻结后只预置本轮批次、编号和场景指纹一致且 state=verified 的版本；仅引用用例指纹不同照常预置并注明；其余按缺失、仅参考或冲突列明"
+      - "任务使用冻结副本，不覆盖已有文件，辅助脚本默认停用；复用后仍实际运行并留新证据"
+      - "库目录不计入产品快照，产品运行代码与配置仍计入；执行记录另存本轮库版本摘要"
+    scenarios:
+      - id: SOP-231-P01
+        polarity: positive
+        title: Web 入口解析产品仓库规范库并保留完整索引依据
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["L0；独立安装与演示工作区配置合格，库路径未另加 snapshot_exclude", "已保存真实来源轮次、审核材料、用例及库文件摘要"]
+        steps:
+          - "读取 config.yaml 的 entries.app.spec_library，运行 status --json；从本机读取 INDEX.json 和 specs/<批次>/<场景>.spec.mjs、baseline/<批次>/<场景>/<版本号>/、_history/<批次>/<场景>/<版本号>/"
+          - "逐项对照 OK、REF、REVIEW、HISTORY 的来源、指纹和文件内容，重新计算脚本与全部执行依赖摘要，核对同批次同场景只有一个当前版本"
+        expected:
+          - "app 声明解析到演示 web 仓的受版本管理目录；规范工具来自同一被测安装，任务与证据仍在仓库外"
+          - "INDEX.json 顶层为 {version: 1, entries: [...]}；条目包含 batch、scenario、scenario_fingerprint、case_fingerprints（用例编号到指纹）、spec、spec_sha256、deps（相对路径到 sha256）、version、baseline、state、origin、provenance、review、run、support，脚本及全部依赖摘要与独立材料一致"
+          - "review 为 {by, kind: person|session, session, at, candidate_sha256}；run 为 {batch, round, result_id, status, product_digest}，没有运行则为 null；support 为 [{id, path, enabled: false}]；基线、审核和运行依据与实际来源对应"
+          - "state 只取 verified、reviewed-failing、unverified，origin 只取 promote、import；“已核实通过（历史导入）”为 verified/import，“历史导入、未核实”为 unverified/import；REVIEW 保留真实失败，不伪造通过依据"
+        forbidden_effects: ["使用真实 cw2 资产", "仅给主脚本算摘要而遗漏页面对象或间接执行依赖"]
+        evidence_hints: ["配置与 Git 跟踪清单", "本机索引与来源逐字段对照", "独立计算的摘要及命令输出"]
+      - id: SOP-231-P02
+        polarity: positive
+        title: 会话准备只预置冻结范围内相同编号和指纹的已核实版本
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["L0；无进行中的任务，当前自检通过", "选定范围仅 TC_WEB_OK_001、TC_WEB_REF_001、TC_WEB_REVIEW_001、TC_WEB_HISTORY_001、TC_WEB_MISSING_001、TC_HTTP_ONLY_001"]
+        steps:
+          - "execute prepare demo-web spec-demo --scope TC_WEB_OK_001 TC_WEB_REF_001 TC_WEB_REVIEW_001 TC_WEB_HISTORY_001 TC_WEB_MISSING_001 TC_HTTP_ONLY_001 --session <E>；保存范围、任务文件与 specs-manifest.json"
+          - "逐项核对预置脚本、页面对象和其他依赖的摘要及来源；读取仅参考与未预置原因"
+        expected:
+          - "seeded 集合恰为 TC_WEB_OK_001；TC_WEB_REF_001 因场景指纹不同进入 reference；TC_WEB_REVIEW_001 因 state=reviewed-failing、TC_WEB_HISTORY_001 因 state=unverified 进入 reference；TC_WEB_MISSING_001 因库无该批次与编号进入 missing"
+          - "范围外 TC_WEB_OUT_001 和非 Web 的 TC_HTTP_ONLY_001 没有被预置；TC_WEB_OK_001 放在 scenarios/TC_WEB_OK_001.spec.mjs，全部库依赖复制到 scenarios/library/，scenarios/library.mjs 只重新导出冻结副本；脚本只经同目录 ./fixtures.mjs 和 ./library.mjs 导入"
+          - "specs-manifest.json 分 seeded、missing、reference、conflict 四类，每项写明原因；本次 conflict 为空，只有 seeded 计入复用数量，未通过或未核实项不计入"
+        forbidden_effects: ["只按编号预置 REF", "把非 Web 或范围外脚本带入执行范围", "自动运行任何产品步骤"]
+        evidence_hints: ["prepare 输出和冻结 scope/pending", "清单与实际文件集合", "逐文件摘要"]
+      - id: SOP-231-P03
+        polarity: positive
+        title: 冻结副本包含间接依赖且共享库后续变化不影响本轮
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state: ["L0；TC_WEB_OK_001 已准备，保存任务脚本、页面对象、间接依赖和库版本摘要", "support 演示脚本关联 TC_WEB_OK_001，尚无辅助标记；Chrome 与账号已授权"]
+        steps:
+          - "核对辅助脚本已以 .off 后缀复制；只改共享库中的脚本、页面对象及其间接依赖，加入会使执行失败的演示变体；保持任务副本不动"
+          - "E 用任务内预置脚本连接测试 Chrome 实际执行 TC_WEB_OK_001，保存浏览器报告、加载依赖与业务数据前后对照，再提交"
+          - "核对本轮所有任务文件与执行记录，另准备下一轮观察采用的库摘要；先留证再恢复共享库；在单独授权的演示分支去掉辅助脚本 .off 后缀后运行并在结果备注说明"
+        expected:
+          - "本轮仍按 scenarios/ 内旧冻结副本执行并得出实际分页结果；不从共享路径加载改后的脚本或间接依赖"
+          - "库内容变化不是配置变化，不使本轮或现行自检因配置变化失效；本轮清单和执行记录仍指向准备时库摘要，下轮采用新内容，不能改写旧任务材料"
+          - "默认分支辅助脚本保留 .off 且未运行，辅助标记不存在，业务数据没有改变；显式启用分支去掉后缀并在结果备注说明，只产生授权的演示辅助标记"
+        forbidden_effects: ["通过绝对路径继续加载共享库", "默认执行辅助脚本", "库变动使本轮已冻结文件被替换"]
+        evidence_hints: ["共享库与任务副本前后摘要", "实际依赖加载记录", "原始报告、新证据与数据对照", "两轮库版本记录"]
+      - id: SOP-231-P04
+        polarity: positive
+        title: 看板执行在等待合并结束并冻结最终范围后才预置
+        actor: 未参与实现的看板执行者
+        priority: P0
+        verify: web
+        initial_state: ["L0；真实 Codex 可用；本批一项新增演示用例正由看板真实合并，自动执行关闭", "合并前后预定差异只有新增 TC_WEB_LATE_001；库中已有其同内容已核实脚本及来源，其他场景未变"]
+        steps:
+          - "在本机页面点击重新验证全部场景，保存真实请求及等待合并状态，核对尚未冻结执行范围或预置"
+          - "等待真实合并落地，由看板继续准备并启动真实执行会话；核对最终 scope、清单与任务脚本"
+          - "让本轮执行者经测试 Chrome 完成最终范围，保留任务时序和每条新证据"
+        expected:
+          - "执行等待同批合并，不以旧范围提前预置；合并落地后冻结范围包含 TC_WEB_LATE_001"
+          - "预置按最终范围与指纹进行，TC_WEB_LATE_001 能复用；最终范围内不合格版本仍不预置，所有结果按最终冻结范围登记"
+          - "真实 Codex、看板 HTTP、页面和浏览器执行分别有证据；复用不产生跳过真实运行的通过"
+        forbidden_effects: ["用手写模型输出或回执重放代替本场景", "漏掉合并后新增场景", "以预置代替运行"]
+        evidence_hints: ["真实 Codex 记录", "请求与等待/准备/执行时间线", "最终 scope、清单和浏览器报告"]
+      - id: SOP-231-P05
+        polarity: positive
+        title: 会话与看板修复复验都按各批次最终范围预置并实际复验
+        actor: 未参与修复的复验者
+        priority: P0
+        verify: web
+        initial_state:
+          - "R0；成员和团队两个批次均含编号 TC_WEB_OK_001，内容指纹不同；库在 specs/<成员批次>/TC_WEB_OK_001.spec.mjs 与 specs/<团队批次>/TC_WEB_OK_001.spec.mjs 各有本批同指纹 verified 当前版本及真实来源"
+          - "分别保存会话修复待复验和看板修复待复验两份独立状态；真实 Codex 与测试 Chrome 可用"
+        steps:
+          - "先从会话状态用 execute prepare demo-web --fix <修复编号> --session <E> 准备，读取按批次冻结的范围、清单与副本，再逐条真实运行并提交"
+          - "保存首分支现场，恢复看板修复状态；从本机看板启动独立复验，等待真实会话准备并完成浏览器运行"
+          - "分别按批次核对两份 TC_WEB_OK_001 的库路径、清单、任务脚本内容、依赖、新证据、实际复验者和原修复者"
+        expected:
+          - "两种复验都在范围冻结后预置，只处理各自 Web 范围中批次、编号、场景指纹一致且 state=verified 的版本"
+          - "成员与团队各自 TC_WEB_OK_001 均预置到本批任务目录的 scenarios/TC_WEB_OK_001.spec.mjs；库中两条同编号当前版本同时存在，各取自己的批次，内容与依赖分别匹配"
+          - "跨批次同编号的内容、依赖、证据与结果各归原批次，不互相覆盖或混用；两分支实际执行全部复验范围"
+          - "复验者为实际未参与修复者，实现者仍为原修复会话；没有沿用原通过或原执行者身份"
+        forbidden_effects: ["把脚本审核者自动填成本轮复验者", "通过复用绕过复验独立性或完整范围"]
+        evidence_hints: ["两分支来源修复、范围和清单", "真实原生会话与浏览器证据", "按批次轮次与身份"]
+      - id: SOP-231-P06
+        polarity: positive
+        title: 复用版本重新运行后登记新证据和本轮实际执行者
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state: ["L0；TC_WEB_OK_001 历史通过者与本轮 E 不同；产品实现者已知且不是 E", "本轮通过 --scope all 准备，范围中各场景的实际可执行脚本已补齐，证据开关已冻结"]
+        steps:
+          - "记录旧轮次与证据摘要；E 经测试 Chrome 实际运行复用脚本及本轮其他脚本，保存 global-setup.mjs 在运行开始时生成的 spec-runs/<运行编号>.json，再用 convert 转换并 execute submit"
+          - "用真实轮次 HTTP、本机及非回环页面、报告核对新结果、时间、证据、库版本摘要与独立性，并逐条比对转换结果与对应运行摘要"
+        expected:
+          - "本轮有新的真实运行、报告和证据，原历史通过保留；全量范围逐条实际执行，不出现沿用旧结果"
+          - "执行者为实际 E，产品实现者按事实记录；库作者、历史执行者或审核者不被替填为本轮执行者"
+          - "每次运行开始在任务目录 spec-runs/<运行编号>.json 保存本次脚本与全部依赖摘要；convert 把对应摘要关联到结果行，与实际运行文件一致；执行记录另可追溯本次库版本摘要，完整材料仅本机"
+        forbidden_effects: ["复制旧证据冒充新运行", "把复用数量计成沿用结果数量", "仅改会话标签制造独立性"]
+        evidence_hints: ["旧新轮次与证据摘要", "原始报告及真实时间线", "轮次响应、页面截图与报告"]
+      - id: SOP-231-P07
+        polarity: positive
+        title: 只修改声明库目录不会让已有通过进入产品变化待判定
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["L0；当前产品的 TC_WEB_OK_001 已真实通过，库目录没有手工加入 snapshot_exclude", "记录产品内容摘要、队列、库摘要及原通过依据；库目录为受版本管理目录"]
+        steps:
+          - "分别在独立恢复分支中修改已跟踪库脚本/账本、新增未跟踪库文件、移走已跟踪库文件并留存；每次读取 status、产品快照和队列"
+          - "在允许 Git 写入的演示环境提交一项纯库改动，再核对内容摘要和队列；保留提交号与库摘要变化"
+        expected:
+          - "上述纯库变化均被自动排除，产品内容摘要与原通过时一致，TC_WEB_OK_001 不进入 source-changed；不要求用户另配排除项"
+          - "产品快照的未提交产品文件清单不含这些库路径，库维护不会被当成未提交产品改动；Git工作树原始状态仍按事实保留"
+          - "库版本摘要反映资产变化，产品提交号仍如实记录；原通过结论没有被改写或新增"
+        forbidden_effects: ["让纯库维护触发产品变化待判定", "为避免判定而排除整个 web 仓"]
+        evidence_hints: ["四类改动与 Git 记录", "前后产品摘要、库摘要及队列", "原轮次对照"]
+      - id: SOP-231-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 未通过未核实或编号指纹不匹配的库条目不能自动预置
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "L0；REF 同批次同编号旧指纹，REVIEW/HISTORY 同批次同编号同指纹，OUT 不在本轮范围"
+          - "另准备与 TC_WEB_MISSING_001 内容相同但编号不同的条目，以及只在其他批次存在的 TC_WEB_MISSING_001 同编号条目，保留各自真实来源"
+        steps:
+          - "准备 REF、REVIEW、HISTORY、MISSING 的执行任务，逐项读取清单、未预置原因及任务实际文件"
+          - "核对看板轮次与复用计数；先留证再取消本次仅准备任务"
+        expected:
+          - "本批 REF 进入 reference，原因为场景指纹不同；REVIEW/HISTORY 进入 reference，原因为状态不是 verified；其他编号或其他批次的条目不能充当本批 TC_WEB_MISSING_001，后者进入 missing"
+          - "没有自动执行或通过结论；所有未预置项写明各自原因，复用数量为 0"
+        forbidden_effects: ["把已审核等同已通过", "以相同脚本内容代替场景编号匹配", "篡改指纹使旧脚本合格"]
+        evidence_hints: ["输入指纹与来源", "清单、任务文件和退出码", "前后轮次与计数"]
+      - id: SOP-231-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 预置遇到任务内已有脚本或依赖时保留原文件并列冲突
+        actor: 独立执行者
+        priority: P0
+        verify: api
+        initial_state:
+          - "L0；看板暂停；经真实 HTTP 创建尚未开始准备的 TC_WEB_CONFLICT_001 与 TC_WEB_OK_001 执行任务，两场景共享一个库依赖"
+          - "分开保存脚本冲突与依赖冲突初态：前者预存 scenarios/TC_WEB_CONFLICT_001.spec.mjs，后者仅在 scenarios/library/ 的实际依赖目标放不同内容文件；保存原字节与摘要"
+        steps:
+          - "分别恢复两个初态后恢复看板准备，读取 specs-manifest.json 和目标文件；读取产物后正常取消本次任务，如已开始运行则先保存实际行为与现场"
+          - "对会话已准备任务另写本轮候选文件，再以原 E 重复 execute prepare，比较原候选、依赖与冻结清单"
+        expected:
+          - "脚本冲突将 TC_WEB_CONFLICT_001 单列 conflict 并说明目标文件已存在；依赖冲突将每个受影响场景 TC_WEB_CONFLICT_001、TC_WEB_OK_001 各列一项 conflict 并说明依赖路径；两种分支均不覆盖原文件或计为 seeded"
+          - "重复会话准备保持已有候选与冻结材料，不以共享库版本覆盖用户本轮文件"
+        forbidden_effects: ["静默覆盖", "把冲突文件与库依赖混装后声明为已核实复用"]
+        evidence_hints: ["真实创建请求与任务号", "准备前后原字节、摘要、清单", "重复 prepare 输出"]
+      - id: SOP-231-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 声明规范库不会排除产品运行代码和配置的变化
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-231-P07 的原通过状态；库路径为 acceptance/spec-library", "已冻结产品运行文件清单，acceptance/spec-library-extra 不是库目录且有产品实际使用文件"]
+        steps:
+          - "分别恢复原状态，改 web 运行页面、api 运行配置以及相似前缀目录中产品实际使用的文件；逐次读取快照、changes 和队列"
+        expected:
+          - "每一类运行文件变化都改变对应产品内容摘要，TC_WEB_OK_001 的原通过进入产品变化待判定"
+          - "变化路径如实保留，后续按真实影响重跑或沿用；库排除不扩大到相似前缀目录或其他仓库"
+        forbidden_effects: ["纯库排除吞掉产品代码或配置", "用库中脚本通过当作新产品已通过"]
+        evidence_hints: ["三个独立分支的差异", "前后快照、队列与 changes"]
+      - id: SOP-231-P08
+        polarity: "positive"
+        title: "仅引用用例指纹不同而场景指纹相同仍预置并注明"
+        actor: "独立执行者"
+        priority: "P0"
+        verify: "cli"
+        initial_state:
+          - "L0；TC_WEB_CASE_DIFF_001 有同批次同编号同场景指纹的 verified 库版；通过已确认用例改动形成引用用例指纹不同但场景正文指纹相同的状态，保存变更依据"
+        steps:
+          - "execute prepare 只选择 TC_WEB_CASE_DIFF_001，保存当前场景/用例指纹、索引、specs-manifest.json 和任务脚本"
+        expected:
+          - "TC_WEB_CASE_DIFF_001 仍进入 seeded，文件为 scenarios/TC_WEB_CASE_DIFF_001.spec.mjs 且依赖齐全；清单明确注明引用用例指纹不同，不能因此降为 reference"
+          - "本次没有自动运行或产生通过；后续在途场景/用例变化仍按原有作废规则处理"
+        forbidden_effects:
+          - "将引用用例指纹不同擅自增加为预置门槛"
+          - "用当前输出反填场景预期"
+        evidence_hints:
+          - "用例变更依据和前后指纹"
+          - "prepare 输出、清单与实际文件"
+      - id: SOP-231-N04
+        polarity: "negative"
+        negative_type: "stale-input"
+        title: "新增或更换库绑定须重新自检并作废已准备任务"
+        actor: "独立执行者"
+        priority: "P0"
+        verify: "cli"
+        initial_state:
+          - "两份独立初态分别为尚未声明库、已声明库 L0，业务配置自检已通过且有已准备任务和已有真实通过；保存配置、产品摘要、任务和队列"
+        steps:
+          - "分别新增 entries.app.spec_library、将其改绑到另一合格演示库；读取配置摘要、最近自检、已准备任务和已有通过的队列，再尝试继续原任务"
+          - "恢复各分支配置后留证；后续真实自检只在允许 Git 工作树写入的环境进行，本场景编写会话不运行"
+        expected:
+          - "两类绑定改动均为业务配置变化，原自检不再满足当前配置，须重新自检；已准备任务按现行配置变化规则作废，不能继续登记为有效结果"
+          - "绑定使产品快照排除范围改变时，已有通过可能一次性进入产品变化待判定，按实际内容摘要比较留证；完成绑定后仅库内容变化不再作为配置变化"
+        forbidden_effects:
+          - "把 spec_library 归为运行配置而继续原任务"
+          - "把可能待判定写成所有旧通过必然失效"
+        evidence_hints:
+          - "两种绑定前后配置和摘要"
+          - "自检状态、作废原因、提交拒绝和队列"
+
+  - id: SOP-232
+    title: 收入经过真实运行和独立审核的具体版本
+    actor: 脚本改写者与未参与改写的审核者
+    entry: "命令行 sop-board playwright specs promote；本机差异、断言去向、运行与审核材料；规范库"
+    must:
+      - "D114：收入候选及其执行依赖与该场景最近一次真实运行摘要一致，审核绑定候选摘要与时间；verified 须已登记通过，reviewed-failing 须失败且有发现说明"
+      - "审核会话不能是任务执行或实现会话，也须未参与该次改写；收入后旧版进入 _history，新版成为下一版保真基线，首次新写也建立基线"
+    scenarios:
+      - id: SOP-232-P01
+        polarity: positive
+        title: 未参与本次改写者审核后收入并推进基线和历史
+        actor: 实际审核者 R
+        priority: P0
+        verify: cli
+        initial_state:
+          - "L0 后经 cases put 和合并确认 TC_WEB_OK_001 新增要求“第一页10名成员角色均为 Member”，A 增加对应断言，E 实际运行通过得到 T 并登记轮次，check 无违规且没有撤销既有预期"
+          - "R 未参与本次脚本改写，且与任务执行/实现会话不同；保存其真实参与关系、原库版和基线"
+        steps:
+          - "运行 playwright specs review --task <任务编号> --scenario spec-demo#TC_WEB_OK_001 --out <审核材料文件>；A 提供候选，R 实际读取差异、每条断言去向及运行依据"
+          - "R 核对 T 与候选及全部依赖摘要后，运行 playwright specs promote --task <任务编号> --scenario spec-demo#TC_WEB_OK_001 --reviewed-by <实际审核姓名> --reviewer-session <R> --state verified；读取索引、历史与新基线"
+          - "从新收入版派生下一候选，只删除本次新增的全部行角色断言，再运行 playwright specs check --task <下一任务编号> --scenario spec-demo#TC_WEB_OK_001"
+        expected:
+          - "review 输出候选摘要、基线版本、check 结果、待审核项及对应账本条目、运行依据，全部断言去向可追溯；review 生成材料不等于已完成审核"
+          - "实际审核后收入成功，review 绑定姓名、kind=session、R、时间与候选摘要，state=verified、origin=promote；run 指向本场景已登记通过结果；旧版进入 _history/spec-demo/TC_WEB_OK_001/<旧版本>/，新版在 specs/spec-demo/TC_WEB_OK_001.spec.mjs，基线在 baseline/spec-demo/TC_WEB_OK_001/<新版本>/"
+          - "下一候选删除新增断言为违规，check 非零退出，证明检查基线已经推进"
+        forbidden_effects: ["一直对比最初来源而漏掉后来新增断言", "归档覆盖旧版", "审核姓名代替实际会话独立性"]
+        evidence_hints: ["候选、T、完整审核材料", "真实审核输入与会话记录", "收入前后目录及摘要", "下一次 check 原始输出"]
+      - id: SOP-232-P02
+        polarity: positive
+        title: 首次新写脚本真实通过并审核后建立首版基线
+        actor: "实际改写者 A 与未参与改写的人工审核者"
+        priority: P0
+        verify: cli
+        initial_state:
+          - "L0；TC_WEB_NEW_001 无库脚本也无基线；演示要求及用例已确认"
+          - "A 新写完整脚本，E 已经真实浏览器运行通过、保存 T 并登记轮次；人工审核者未参与脚本编写"
+        steps:
+          - "运行 playwright specs check --task <任务编号> --scenario spec-demo#TC_WEB_NEW_001，再运行 playwright specs review --task <任务编号> --scenario spec-demo#TC_WEB_NEW_001 --out <审核材料文件>；人工审核者对照已确认要求、真实证据和全部断言实际审核"
+          - "人工审核者只用 playwright specs promote --task <任务编号> --scenario spec-demo#TC_WEB_NEW_001 --reviewed-by <本人姓名> --state verified，不填 --reviewer-session；从收入首版复制候选删除一个预期断言，再 check"
+        expected:
+          - "首次 check 对全部断言报无基线，审核材料逐条列出，不能伪造相同；没有基线本身不阻止真实通过并人工审核后的首次收入"
+          - "人工审核只填写姓名即可，不要求会话标识；收入后 review.kind=person、记录姓名、时间和候选摘要，建立首版基线"
+          - "第二次检查删除断言为违规且非零退出，不能以首次新写为由永久免检"
+        forbidden_effects:
+          - "无基线直接当保真通过"
+          - "首次收入后仍无可比较基线"
+          - "人工审核被强制要求 AI 会话标识"
+        evidence_hints: ["首版无基线输出", "真实 T 与审核", "首次基线及删断言检查"]
+      - id: SOP-232-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 通过后改动候选脚本或执行依赖都不能借原运行收入
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["T；候选已独立审核但尚未收入；库、基线、历史与账本已留存"]
+        steps:
+          - "仅改候选脚本一处内容，仍引用 T 尝试 promote，保留拒收输出"
+          - "恢复脚本为 T 原文，仅改页面对象的间接执行依赖，再引用 T 尝试收入"
+          - "逐次核对库、基线、历史、审核绑定及看板轮次"
+        expected:
+          - "两次均非零退出并拒收，指出当前候选或依赖与该场景最近一次运行摘要不一致；即使另写审核姓名也不能替代新运行"
+          - "库当前版、基线和历史均未收入这两份变体，既有轮次与结论不变"
+        forbidden_effects: ["用运行前后不同的文件冒领通过", "只比较主脚本漏掉依赖变化"]
+        evidence_hints: ["T、两份变体与摘要", "完整命令及非零退出码", "收入前后库和轮次对照"]
+      - id: SOP-232-N02
+        polarity: negative
+        negative_type: permission
+        title: "审核会话等于任务执行或实现会话时改姓名仍拒收"
+        actor: "实际执行/实现会话与独立审核者 R"
+        priority: P0
+        verify: cli
+        initial_state:
+          - "T；本任务实现会话 A 和执行会话 E 如实登记；候选尚未独立审核，库未收入"
+          - "记录 A、E 的实际会话标识，R 未参与本次改写且与两者都不同；每次使用未变候选与同一运行依据"
+        steps:
+          - "分别用 --reviewer-session <A>、--reviewer-session <E> 及不同 --reviewed-by 姓名运行 playwright specs promote --task <任务编号> --scenario spec-demo#TC_WEB_OK_001 --state verified，核对两次拒收原因及库摘要"
+          - "把同一候选交实际 R 阅读 review 材料，保留真实交接和审核，再用 --reviewed-by <审核姓名> --reviewer-session <R> 收入"
+        expected:
+          - "审核会话等于实现会话 A 或执行会话 E 均被拒收且非零退出；变更姓名不能绕过，两次都没有收入"
+          - "R 真实未参与该次改写且不同于任务执行/实现会话，绑定同一候选摘要后允许收入；人工审核只填姓名的合法分支由 SOP-232-P02 单独核对"
+        forbidden_effects: ["只比较姓名", "伪造新会话标签冒充 R", "把脚本审核自动视作产品独立验收"]
+        evidence_hints: ["真实会话参与关系与审核输入", "两次命令输出及库摘要", "候选交接记录"]
+      - id: SOP-232-P03
+        polarity: "positive"
+        title: "真实失败且有发现说明的候选可收入为已审核未通过"
+        actor: "独立执行者"
+        priority: "P0"
+        verify: "cli"
+        initial_state:
+          - "独立演示状态中 TC_WEB_REVIEW_001 已落地、库中尚无其版本和基线；候选在长名称缺陷下真实运行失败，轮次已登记且有具体发现说明；候选及全部依赖与最近运行摘要相同，check 对全部断言报无基线，R 满足审核独立性并逐条审核"
+        steps:
+          - "运行 playwright specs review --task <任务编号> --scenario spec-demo#TC_WEB_REVIEW_001 --out <审核材料文件>；R 实际审核，再以 --reviewed-by <姓名> --reviewer-session <R> --state reviewed-failing 运行同条目的 specs promote"
+          - "核对索引、基线和原失败，再准备该场景的下一轮执行"
+        expected:
+          - "收入成功，state=reviewed-failing、origin=promote，run 对应已登记失败且发现说明可追溯；保留审核摘要并建立基线，不产生通过"
+          - "下一轮该场景进入 reference 并注明状态不是 verified，不自动预置；看板原失败不变"
+        forbidden_effects:
+          - "为了建库把失败改为通过"
+          - "将 reviewed-failing 计入 seeded"
+        evidence_hints:
+          - "真实失败及发现说明"
+          - "review、promote 输出和索引/基线"
+          - "下一轮清单和原结果"
+      - id: SOP-232-N03
+        polarity: "negative"
+        negative_type: "incomplete-input"
+        title: "收入状态与已登记运行结论或发现说明不符时拒收"
+        actor: "独立执行者"
+        priority: "P0"
+        verify: "cli"
+        initial_state:
+          - "分别保存四个候选摘要、独立审核及无违规账本前提都满足的状态：真实通过报告尚未登记轮次、已登记失败、已登记通过、真实失败但未填发现说明；不伪写数据库或更改原场景预期"
+        steps:
+          - "对未登记通过和已登记失败两分支，以 specs promote --task <任务编号> --scenario <批次>#<场景> --reviewed-by <姓名> --reviewer-session <R> --state verified 尝试收入"
+          - "对已登记通过和失败但无发现说明两分支，用相同命令但 --state reviewed-failing 尝试收入；逐次核对库、基线、历史与原结论"
+        expected:
+          - "verified 仅接受本场景在已登记轮次中的通过；仅有通过报告或已登记失败均拒收且非零退出"
+          - "reviewed-failing 要求失败且有发现说明；通过结果或失败缺说明均拒收且非零退出；四分支不收入任何版本或改写原结果"
+        forbidden_effects:
+          - "静态检查或浏览器报告代替已登记通过"
+          - "空发现说明被工具编造"
+          - "错误状态被自动改成可收入状态"
+        evidence_hints:
+          - "四份独立输入、真实运行与登记状态"
+          - "拒收命令/退出码/原因"
+          - "库与原结论前后对照"
+
+  - id: SOP-233
+    title: 比较断言与数据核对并审核每处预期变化
+    actor: 脚本改写者、审核者与业务确认人
+    entry: "sop-board playwright specs check/promote；文字与结构账本；cases put、decision list 和决定页面"
+    must:
+      - "D115：输出相同、待审核、违规、无基线四类；比较断言标识、匹配器/参数、对象、步骤与条件，SQL 和数据核对同样处理"
+      - "文字替换只绑定具体断言和文字节点，结构改写保留 old/new，每项保留改写者、审核者、时间、候选摘要"
+      - "扩大正向可接受文字须写审核理由；预期撤销绑定用例前后指纹和 cases put 决定，缺记录违规；有违规或未审核项不得收入"
+    scenarios:
+      - id: SOP-233-P01
+        polarity: positive
+        title: 同次检查区分相同待审核违规和无基线
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["L0；四份独立候选分别为原样 TC_WEB_OK_001、只改变断言对象、删除一个未记账断言、全新 TC_WEB_NEW_001", "基线含界面断言及成员数量/角色的只读 SQL 数据核对，事先保存每条稳定标识与四类预期"]
+        steps:
+          - "先用 playwright specs check --library <库目录> 保存库检查，再分别用 playwright specs check --task <任务编号> --scenario spec-demo#<场景> 检查四份独立候选；另在单一任务用 --scenario <批次>#<场景> ... 选择多条，保存实际范围"
+          - "逐项对照稳定标识、匹配器参数、被断言对象、所在步骤及 SQL/数据核对，记录候选、基线、账本与命令退出码"
+        expected:
+          - "原样为相同，对象改变为待审核，未记账删除为违规，新写全部断言为无基线；只检查所选场景，不能合并成笼统的通过"
+          - "存在违规的检查非零退出；界面及 SQL 核对条目都在报告中，静态相同不产生真实运行通过；check 为只读，库、候选、账本和看板结论均不被改写"
+        forbidden_effects: ["忽略被断言对象或 SQL", "运行 check 改写库或看板结论"]
+        evidence_hints: ["四份独立变体", "稳定标识对照与完整 check 输出", "库和结论前后摘要"]
+      - id: SOP-233-P02
+        polarity: positive
+        title: 文字账本只作用于指定断言的指定文字节点
+        actor: 实际改写者 A 与审核者 R
+        priority: P0
+        verify: cli
+        initial_state: ["基线 spec 有 A_ROLE/A_BADGE 两个断言都含文字 Member，A_ROLE 另一个文字节点也含 Member", "本次已确认界面文案只改 A_ROLE 的目标节点为 成员，其他节点仍为 Member；演示页面满足该要求"]
+        steps:
+          - "A 只改 A_ROLE 目标文字节点，在任务 spec-ledger.json 写 {id, batch, scenario, assertion_id, node_path, old, new, reason, ref} 条目；R 对照 review 输出中的具体断言和节点实际审核，并真实运行未变候选"
+          - "promote 时将该条目连同审核信息并入 text-ledger.json；另从未收入分支复制候选，额外改 A_BADGE 及 A_ROLE 其他同文案节点，沿用原账本再次 check/review"
+        expected:
+          - "任务账本只绑定本批本场景的 assertion_id 与 node_path，old/new、reason/ref 完整；第一份变更可逐项审核，收入的库内账本另保存改写者、审核者、时间和候选摘要，其他同文案节点保持原样"
+          - "第二份候选额外替换仍为待审核，原条目不能顺带批准；摘要变化后不能沿用旧候选审核收入"
+        forbidden_effects: ["按整份 spec 子串替换", "一条文字记录放行所有同文案断言"]
+        evidence_hints: ["带稳定标识的基线与两份差异", "精确节点账本和真实审核", "两次 check 与真实运行"]
+      - id: SOP-233-P03
+        polarity: positive
+        title: 结构改写逐条保存 old 和 new 并经审核后收入
+        actor: 实际审核者 R
+        priority: P0
+        verify: cli
+        initial_state: ["L0；A 把成员列表的直接断言改为调用页面对象，业务预期和适用条件不变", "结构改写前后脚本及 SQL 数据核对原文已独立保存，初次 check 为待审核"]
+        steps:
+          - "A 在任务 spec-ledger.json 为每处改写写 {id, batch, scenario, assertion_id, kind: rewrite, old, new, reason, ref, sop_change}；R 对照 review 材料中的对象、步骤、条件及 SQL 核对实际审核"
+          - "E 真实运行同一候选通过并登记轮次；check 无违规后 promote，将条目及审核信息并入 assertion-ledger.json，核对新基线和历史"
+        expected:
+          - "每处结构改写可由 old 追溯 new，并绑定批次、场景和断言；收入的库内条目另保留改写者、审核者、时间、本次候选摘要，不能只写“结构调整”"
+          - "全部待审核项均有对应账本并经实际审核、且无违规才可收入；运行依据与当前候选一致，新基线包含改写后的完整预期"
+        forbidden_effects: ["静态检查替代真实执行", "只留新结构而丢失旧断言去向"]
+        evidence_hints: ["初次与审核后 check", "逐项 old/new 和真实审核", "浏览器 T、收入记录及基线"]
+      - id: SOP-233-P04
+        polarity: positive
+        title: 撤销预期绑定真实业务决定及用例前后指纹
+        actor: 业务确认人和实际审核者 R
+        priority: P0
+        verify: cli
+        initial_state: ["L0；业务确认人已明确同意取消 TC_WEB_OK_001 用例中“角色必须为 Member”的要求，保留原话与姓名", "旧用例、旧场景及基线指纹已保存；其他分页与邮箱预期不变"]
+        steps:
+          - "用 cases put --dry-run 预览只移除该用例预期，再以真实姓名和决定原话正式 put；完成合并落地，保存决定编号及用例前后指纹"
+          - "从旧基线移除对应角色断言；任务 spec-ledger.json 写 {id, batch, scenario, assertion_id, kind: withdraw, old, new, reason, ref, sop_change}，sop_change 为 {case, before_fingerprint, after_fingerprint, decision_id}，decision_id 指本次 cases put 决定；R 实际审核"
+          - "check，按新 scope 真实运行未改变摘要的候选并登记，再 promote；核对库 assertion-ledger.json 中的条目和审核信息，在本机决定页核对来源"
+        expected:
+          - "业务决定可在看板追溯到这次 cases put、实际确认人、原话与相关用例，前后指纹与撤销账本一致"
+          - "合法撤销被识别为有业务依据的已审核变更，保留其余断言；实际通过后可收入新场景版本并建立新基线"
+        forbidden_effects: ["审核者替业务方凭空撤销", "只有自由文本理由而没有看板决定关联", "顺带取消分页或邮箱预期"]
+        evidence_hints: ["业务原话、预览与正式 put 输出", "决定页面、指纹和合并配对", "撤销账本、check、运行与 promote"]
+      - id: SOP-233-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 无账本删除界面断言或 SQL 核对均为违规且拒绝收入
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["L0；原基线完整，无撤销或结构改写账本；原业务要求和场景文件始终保留"]
+        steps:
+          - "分别复制基线，删除第一页行数界面断言、删除成员总数 SQL 核对；每个变体独立 check，保留违规报告"
+          - "每个候选另经真实浏览器运行并完整人工核对原业务要求，取得与该候选摘要一致的本轮运行依据；不批准删除项，在其他收入前提满足后尝试 promote"
+          - "逐次核对库、基线和历史摘要；保留第一份失败输出"
+        expected:
+          - "两种删除都定位到缺失断言或数据核对，分类为违规且 check 非零退出；promote 也非零拒绝，不收入任何变体"
+          - "现有库、基线与历史不变；静态违规不能因页面仍显示正常或旧轮通过而被消除"
+        forbidden_effects: ["只查语法或匹配器集合", "忽略 SQL/数据核对丢失", "删断言取得通过"]
+        evidence_hints: ["两份单一删改的差异", "check 与 promote 非零退出码及原因", "库前后摘要"]
+      - id: SOP-233-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 更换被断言对象或把断言移入条件分支必须待审核
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["L0；没有相关账本或审核；保存原断言对象、步骤、条件与 SQL 查询对象；另一演示组织同样有20名成员"]
+        steps:
+          - "分别构造四份候选：保持匹配器和参数只换被断言对象；把原无条件断言放入 if 分支；把断言移到其他步骤；SQL数量断言保持匹配器/参数，只把查询对象从组织demo改为另一个演示组织"
+          - "对每份运行 check；另取得该候选摘要对应的本轮真实运行依据并完整人工核对原业务要求，在其他收入前提满足、变更项仍未审核时尝试 promote；不提交虚构通过"
+        expected:
+          - "四份均被列为待审核，指出对象、条件或步骤变化；SQL数据对象变化同样处理，不因断言数量和匹配器相同就归相同"
+          - "待审核项没有对应 spec-ledger.json 记录、实际审核未完成时均非零拒绝 promote，库与基线保持原样"
+        forbidden_effects: ["用条件永不成立让断言失效而静态通过", "未审核项被默认接受"]
+        evidence_hints: ["原对象/步骤/条件/SQL与四份变体", "逐项 check 与真实运行及完整业务核对", "拒收原因、其他前提及库摘要"]
+      - id: SOP-233-N03
+        polarity: negative
+        negative_type: tampered-input
+        title: 正向文字断言增加可接受分支没有审核理由时不能收入
+        actor: 实际改写者 A 与审核者 R
+        priority: P0
+        verify: cli
+        initial_state: ["L0；正向角色断言只接受 Member，本次变体改为正则 Member 或 Admin", "已保存独立业务依据；测试目标是检测预期放宽，不把当前页面输出当理由"]
+        steps:
+          - "check 该变体，取得与该候选摘要一致的本轮真实运行依据并完整核对原业务要求；在其他收入前提满足时先保持无审核，再提交只有姓名和时间但没有放宽理由的审核并尝试 promote"
+          - "由 R 阅读本次扩大接受集合的实际差异，记录缺少具体放宽理由，保持未批准；核对库和基线未变"
+        expected:
+          - "增加可接受文字被视为放宽预期，须审核；无对应账本或缺具体放宽理由时 promote 非零拒收，不能作为普通文字替换自动判相同"
+          - "review 材料逐项列出扩大接受集合、对应账本和运行依据；本次缺理由保持未批准，不因只填审核姓名和时间就收入，库与基线不变"
+        forbidden_effects: ["正则加分支被当等价", "只写“跟随 UI”而没有具体放宽理由", "把当前失败输出改成预期以通过"]
+        evidence_hints: ["原正向断言与扩大的接受集合", "check、无审核/空理由拒收", "实际审核材料与库前后摘要"]
+      - id: SOP-233-N04
+        polarity: negative
+        negative_type: incomplete-input
+        title: 撤销缺少正确 cases put 决定或前后指纹时仍为违规
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["SOP-233-P04 的真实决定、用例前后版本与候选已保存，尚未收入；分别复制独立分支"]
+        steps:
+          - "分别构造：无看板决定只有本机理由；引用别的用例决定；引用正确决定但旧指纹错误；引用正确决定但新指纹错误"
+          - "每个分支运行 check 并尝试 promote；核对库与看板原决定未被改写"
+        expected:
+          - "四个分支均无法证明对应预期已获业务确认，withdraw 被判违规，check 非零且 promote 非零拒收；不能仅凭已签名账本免检"
+          - "原决定及用例历史保留，任何变体没有收入或修改已登记结论"
+        forbidden_effects: ["复用其他用例或旧版本的批准", "工具补造业务确认", "忽略前后任一指纹"]
+        evidence_hints: ["四份账本输入与正确对照", "check、拒收输出", "决定和库前后摘要"]
+
+  - id: SOP-234
+    title: 仅按已审核安全路径巡检定位并阻止业务写入
+    actor: 巡检编写者、审核者与实际执行者
+    entry: "sop-board playwright patrol plan/run；测试 Chrome；patrol.json；atlas-feedback.jsonl；只读数据库或业务接口"
+    must:
+      - "D116：巡检条目声明入口/身份、地图页面/控件、到达步骤、检查目标/数量、按业务用途允许的请求、禁止动作、审核者/时间及未覆盖范围"
+      - "由 atlas 或 surface-map 生成候选，未审核不执行；只连接已有登录态，按 pages 路径模式和 allow_requests 识别页面/请求；未声明非静态请求发出前中止，越界导航停止，任一失败非零退出，定位缺口写地图反馈"
+      - "巡检不得改变业务数据，不登记场景结论，不作为沿用旧通过的理由"
+    scenarios:
+      - id: SOP-234-P01
+        polarity: positive
+        title: 从 atlas 和备用界面地图生成有完整安全声明的候选
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["P0；两份隔离状态分别有已登记 atlas 和仅有 surface-map.md，映射相同成员页面", "记录业务数据、浏览器请求数、现有巡检计划与轮次"]
+        steps:
+          - "分别从两种地图运行 patrol plan，逐项读取候选 patrol.json 与来源；不审核、不运行"
+          - "核对候选条目全部声明及已知未覆盖范围，对未确定的请求业务用途保留待审核"
+        expected:
+          - "两种地图均可提供候选页面、控件和到达步骤并保留来源；条目覆盖 must 中声明，pages 为允许到达的 URL 路径模式，allow_requests 为 [{method, path, purpose}]，path 按路径模式匹配；未审核不能伪填审核人或时间"
+          - "计划生成没有实际访问或点击产品、没有业务数据或场景结果；未知请求用途不自动判安全，不能仅按 GET 放行"
+        forbidden_effects: ["生成计划即自动执行", "自动把 GET 全部放行", "以空泛的只读声明替代请求用途"]
+        evidence_hints: ["两份地图和 plan 输出", "候选字段逐项对照", "请求、数据和轮次前后对照"]
+      - id: SOP-234-P02
+        polarity: positive
+        title: 已审核安全成员路径复用登录态巡检且业务数据完全不变
+        actor: 实际巡检执行者
+        priority: P0
+        verify: web
+        initial_state: ["P0；审核者已实际确认成员列表条目，身份为已有 owner 登录态，允许请求仅为已核对无写入的成员列表读取", "成员20条、目标表格1个、Email/Role列各1个、第一页10行；完整业务数据快照已保存"]
+        steps:
+          - "读取已审核条目的 pages 与 allow_requests；patrol run 连接已有测试 Chrome 登录态，按声明路径核对目标和数量，保存网络、当前证据设置和巡检报告"
+          - "逐项核对 document、script、stylesheet、image、font、media 类静态资源与 xhr/fetch/websocket 等其他请求的放行依据，再只读逐值比较所有业务数据"
+        expected:
+          - "只执行已审核条目，定位与数量符合时退出 0；document、script、stylesheet、image、font、media 类静态资源直接放行，其他请求仅当 method/path 匹配 allow_requests 才放行；导航地址仍必须符合 pages"
+          - "身份保持 owner，无新登录、验证码或额外业务动作；演示业务数据全部前后逐值一致，无新增已读事件/邀请/成员/团队，报告列出已知未覆盖范围"
+        forbidden_effects: ["巡检自动登录或改变设置", "只凭未点保存判断只读", "只对比行数忽略字段变化"]
+        evidence_hints: ["真实 Chrome 连接与既有身份", "审核计划、网络与巡检原始输出", "数据逐值差异为空的对照及查询"]
+      - id: SOP-234-N01
+        polarity: negative
+        negative_type: permission
+        title: 生成但未审核的巡检条目不执行
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state: ["P0；计划含一个已审核成员条目和一个未审核通知条目，通知 unread=true", "保存各条目请求计数与业务全量快照"]
+        steps:
+          - "运行 patrol run，逐项核对实际执行列表、停止或未执行说明、网络及业务数据"
+        expected:
+          - "只执行已审核成员条目，通知条目明确未审核且没有执行；没有发出通知详情请求"
+          - "通知仍未读且其他业务数据完全不变；未执行项不能被记为巡检成功或场景通过"
+        forbidden_effects: ["空审核人/时间被当已审核", "为补覆盖自动访问未审核路径"]
+        evidence_hints: ["候选与审核差异", "每条实际运行记录和网络", "数据前后对照"]
+      - id: SOP-234-N02
+        polarity: negative
+        negative_type: permission
+        title: 打开即标记已读的未声明 GET 在写入前被停止
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state:
+          - "P0；通知演示对象已另行证明打开会置已读并产生事件，随后恢复 unread=true/事件0；无常开详情页或自动刷新"
+          - "已审核条目 pages 允许通知容器页面，到达会触发 fetch GET /api/notices/notice-01/open，但 allow_requests 未声明此请求；同样保留一份已审核的未声明 xhr 请求变体"
+        steps:
+          - "保存全量业务前值与服务端请求审计起点，运行会触发详情加载的巡检条目，保留首次停止现场"
+          - "读取退出码、条目原因、浏览器网络与服务端审计，再只读对照全部业务数据"
+        expected:
+          - "未声明的 fetch/xhr 请求在发出前被 Playwright 中止，立即停止本条目并记录 method、path 及原因，进程非零退出"
+          - "该请求没有到达服务端，notice-01 仍 unread=true、已读事件仍0，其他业务数据逐值不变；不是写入后回滚"
+        forbidden_effects: ["只按 GET 放行", "写入后再发现并回滚冒充只读", "继续执行该条目后续动作"]
+        evidence_hints: ["独立对象副作用证明及恢复记录", "停止原因、非零退出码、网络与服务端审计", "业务前后逐值对照"]
+      - id: SOP-234-N03
+        polarity: negative
+        negative_type: permission
+        title: "导航到 pages 未声明地址立即停止该条目"
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state:
+          - "P0；审核计划 pages 只允许 /members，页面提供到 /notices 的导航，后者不在允许路径模式内"
+          - "到达步骤会导航到 /notices；该演示页面本身无自动业务请求或写入，单独验证页面边界，业务初值已保存"
+        steps:
+          - "运行该已审核条目并触发 /notices 导航，保存实际 URL、pages 模式、首次停止原因和现场"
+          - "核对本条目没有继续检查或操作通知页面，逐值比较业务数据并记录退出码"
+        expected:
+          - "导航地址不匹配 pages 时立即停止当前条目并记录地址和原因，进程非零退出；document 类资源放行不免除页面边界检查"
+          - "识别粒度为页面地址与请求，不按同页新增控件或业务对象实例判越界；本条目不继续后续动作，业务数据逐值不变"
+        forbidden_effects:
+          - "用同页控件或业务对象实例识别替代 pages 契约"
+          - "自行补批准后继续原条目"
+        evidence_hints:
+          - "pages 与实际导航地址"
+          - "停止原因、非零退出码与网络"
+          - "失败截图和数据对照"
+      - id: SOP-234-N04
+        polarity: negative
+        negative_type: not-found
+        title: 定位缺失或数量不符保留失败和地图反馈并非零退出
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state: ["P0；计划含一个能成功的已审核条目，另一个要求1个控件的已审核条目", "分别恢复两份演示页面变体：目标控件不存在、目标出现2个；业务数据初态相同"]
+        steps:
+          - "对每份变体实际运行巡检，保留成功项与失败项原始输出、退出码、截图和 atlas-feedback.jsonl"
+          - "核对反馈的入口、页面/控件、缺口种类、具体说明与证据，比较前后业务数据"
+        expected:
+          - "缺失与数量不符均不能判成功，两次进程均非零退出；其他成功项不能把整次退出改为 0"
+          - "定位缺口写 atlas-feedback.jsonl，可追溯具体页面/控件和现场；失败截图始终保存，即使当前 video/trace 关闭；业务数据不变"
+        forbidden_effects: ["用 first 取一个掩盖数量不符", "巡检失败仍退出0", "吞掉失败不留反馈"]
+        evidence_hints: ["两个页面变体与预先数量要求", "完整输出及退出码", "地图反馈、截图和数据对照"]
+      - id: SOP-234-N05
+        polarity: negative
+        negative_type: stale-input
+        title: 巡检成功不会登记场景通过或清除产品变化待判定
+        actor: 独立执行者
+        priority: P0
+        verify: web
+        initial_state: ["P0；TC_WEB_OK_001 原真实通过后产品成员页已改，现为 source-changed；另有 TC_WEB_NEW_001 尚未执行", "记录轮次数、结果、队列和证据，巡检只覆盖定位不验证全部业务预期"]
+        steps:
+          - "实际完成相关已审核条目的成功巡检，再读取 status、轮次接口、场景页及报告"
+          - "准备后续业务执行，核对仍待执行/待判定范围；按完整产品改动独立判断影响，不以巡检成功作为沿用理由"
+        expected:
+          - "巡检不新增或改写场景轮次与结论；TC_WEB_NEW_001 仍待执行、TC_WEB_OK_001 仍待判定，原业务证据没有被巡检材料替换"
+          - "定位成功不能证明业务不受影响；全量和修复复验仍须实际运行，其他沿用仍须标准第5节的独立影响依据"
+        forbidden_effects: ["巡检成功自动变场景通过", "把巡检当产品新版本通过或沿用理由"]
+        evidence_hints: ["巡检原始成功记录", "前后轮次、队列、场景页与报告", "后续冻结范围和影响依据"]
+      - id: SOP-234-P03
+        polarity: "positive"
+        title: "巡检开跑读取当前证据开关且失败始终保存截图"
+        actor: "独立执行者"
+        priority: "P0"
+        verify: "web"
+        initial_state:
+          - "P0；已审核的成功条目和必定定位失败条目分别保存独立状态；测试 Chrome 与录制依赖就绪；巡检不是看板任务"
+        steps:
+          - "分别以 web_evidence 未声明、video=true/trace=false、video=false/trace=true、两项false 开始 patrol run；每次真实运行成功与失败条目并保存报告/录制行为"
+          - "在其中一轮开跑后更改入口设置，比较报告内开跑值、本轮录制行为与下一次运行读取的新值"
+        expected:
+          - "每次开跑读取该入口当前 web_evidence 并写入巡检报告；未声明时按现行默认开启 video/trace，各显式开关分别决定本次录屏和 trace，不借执行任务的 scope 或旧轮设置"
+          - "开跑后修改配置不改写本次已记录值，下一次读取新值；每次失败始终保存可查看的失败截图，关闭 video/trace 也如此；存在失败的运行非零退出且不登记场景结果"
+        forbidden_effects:
+          - "虚构巡检任务或旧 scope 作为证据来源"
+          - "关闭录制时丢弃失败截图"
+        evidence_hints:
+          - "四种配置及开跑时间"
+          - "巡检报告、录屏、trace 和失败截图"
+          - "配置切换与数据前后对照"
+
+  - id: SOP-235
+    title: 从合成外部目录导入历史材料并保留来源
+    actor: 独立导入执行者
+    entry: "sop-board playwright specs import；合成外部目录 I0；库索引；execute prepare；看板轮次"
+    must:
+      - "D117（2026-11-04 复核）：来源最近结果通过且规范版本与来源脚本相同的标已核实通过（历史导入）；规范相对来源改写过的及其余来源为历史导入未核实；记录规范版本是否相对来源改写"
+      - "命令 import --from <目录> --batch <批次> [--data <目录>] 绑定目标批次；指纹取该批次/场景在看板来源运行登记的结果，查不到为未知只参考；导入账本标“历史导入，未经本包审核”；保留来源任务、运行编号、来源脚本摘要；场景指纹不同只参考，导入不产生通过结果或修改已登记结论"
+    scenarios:
+      - id: SOP-235-P01
+        polarity: positive
+        title: 最近通过的历史版本按是否改写分别导入为已核实或未核实
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "I0；TC_IMP_PASS_001 来源最近通过，规范脚本相对来源已改写且未在新版界面运行；TC_IMP_SAME_001 最近通过且规范未改写；两者来源任务/运行均为本轮演示看板 spec-demo 批次真实登记编号"
+          - "两条来源登记结果所含场景指纹与当前场景相同；外部文件为本任务合成迁移材料，不冒充真实 cw2 历史；来源两份账本含合成记录"
+        steps:
+          - "运行 playwright specs import --from <本轮external-demo/accept-run绝对路径> --batch spec-demo --data <本轮data绝对路径>，读取 INDEX.json、来源/规范脚本摘要及导入账本"
+          - "execute prepare 只选 TC_IMP_PASS_001、TC_IMP_SAME_001，核对预置清单；不执行，留证后正常取消该准备任务"
+        expected:
+          - "TC_IMP_SAME_001 为 state=verified、origin=import；TC_IMP_PASS_001 因规范相对来源改写过，为 state=unverified、origin=import，provenance 标明已改写、未在新版界面真实运行；不伪造新运行"
+          - "目标均归 spec-demo，脚本位于 specs/spec-demo/<场景>.spec.mjs；scenario_fingerprint 取该批次/场景来源登记结果而非当前场景，provenance 保留来源任务、运行编号、来源脚本摘要和是否改写；来源与规范摘要可区分"
+          - "两份导入账本的每条记录标“历史导入，未经本包审核”，不能补成本包独立审核"
+          - "同批次同编号同指纹下只有 TC_IMP_SAME_001 进入 seeded；TC_IMP_PASS_001 列 reference，原因为状态未核实；TC_IMP_SAME_001 仍须实际运行留新证据，导入/准备本身不构成新通过"
+        forbidden_effects: ["把合成材料说成 cw2 实际历史", "把规范摘要冒充来源摘要", "抹去改写事实"]
+        evidence_hints: ["合成索引、两种脚本及摘要", "import 输出、索引及预置清单", "待复核决定标注"]
+      - id: SOP-235-P02
+        polarity: positive
+        title: 导入资产不会生成看板通过或改变已登记失败受阻结论
+        actor: 独立执行者
+        priority: P0
+        verify: api
+        initial_state: ["I0；演示看板已有通过、真实失败、真实受阻与未执行四种场景，原轮次和证据已保存", "导入目录只在本轮隔离根目录，不读取任何真实 cw2 路径"]
+        steps:
+          - "经 CLI import 完成导入；分别从回环与实际非回环 HTTP、页面及导出报告读取看板结果"
+          - "比较轮次数、每条结果/指纹/产品快照/证据及业务队列；核对导入只保存资产与来源"
+        expected:
+          - "轮次数与已有通过、失败、受阻结论和证据逐项不变，未执行仍未执行；导入不制造 Agent 通过或独立验收记录"
+          - "索引历史来源可追溯，但不能替代本轮真实运行和影响判定；页面与接口的业务统计一致"
+        forbidden_effects: ["批量将已登记失败或受阻改通过", "导入自动登记新的看板轮次"]
+        evidence_hints: ["import 命令与输入范围", "前后 HTTP、截图及报告", "轮次与证据逐项对照"]
+      - id: SOP-235-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 历史导入已核实但当前场景指纹不同仍只列参考
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["I0；TC_IMP_STALE_001 最近来源通过且规范版本与来源脚本相同（未改写），当前场景比来源多一个明确预期，前后指纹不同"]
+        steps:
+          - "用 playwright specs import --from <外部目录> --batch spec-demo --data <本轮数据目录> 导入 TC_IMP_STALE_001，对照看板该批次/场景来源运行的登记结果与当前指纹"
+          - "为当前 TC_IMP_STALE_001 准备执行，核对清单及任务文件，不改写来源指纹"
+        expected:
+          - "TC_IMP_STALE_001 为 state=verified、origin=import；旧 scenario_fingerprint 必须来自该批次场景的来源登记结果，不静默替换为当前指纹"
+          - "specs-manifest.json 中只列 reference，原因是场景指纹不同，不预置且不计入复用数量，不遗漏当前新增预期后宣称可直接验证"
+        forbidden_effects: ["已核实状态绕过指纹核对", "给旧脚本套新 scope 冒充适配完成"]
+        evidence_hints: ["旧新场景与指纹", "导入记录和当前 scope", "清单与实际文件"]
+      - id: SOP-235-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 最近受阻失败或没有运行的来源不能因更早通过而标已核实
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "I0；TC_IMP_BLOCK_001/TC_IMP_FAIL_001 有较早通过与较新受阻/失败，来源均为 spec-demo 看板实际登记结果；TC_IMP_NONE_001 无运行"
+          - "TC_IMP_UNKNOWN_001 外部索引声称最近通过，但其来源运行在看板该批次/场景查不到；另有其他批次同编号已登记通过结果，仅用于证明不得串批次取指纹"
+        steps:
+          - "用 playwright specs import --from <外部目录> --batch spec-demo --data <本轮数据目录> 导入四条，再为其准备执行；核对选取来源、状态、指纹、清单及实际文件"
+        expected:
+          - "TC_IMP_BLOCK_001/TC_IMP_FAIL_001/TC_IMP_NONE_001 均为 state=unverified、origin=import；前两条按最近结果而非任意较早通过判定，NONE 不伪造运行编号或依据"
+          - "TC_IMP_BLOCK_001/TC_IMP_FAIL_001 即使指纹相同也因未核实只列 reference；TC_IMP_NONE_001 与 TC_IMP_UNKNOWN_001 查不到来源登记结果时场景指纹为未知、只列 reference，不能用当前场景、外部自填指纹或其他批次同编号结果补齐；均不产生看板通过"
+        forbidden_effects: ["从历史挑一次通过覆盖最近失败或受阻", "无运行标为已核实"]
+        evidence_hints: ["合成时间顺序和结果", "索引来源、清单及文件", "轮次前后对照"]
+
+  - id: SOP-236
+    title: 同版文档安装、材料可见边界与冻结证据和格式兼容
+    actor: 独立执行者与内网测试同事
+    entry: "独立安装后的 guide/skills install/playwright 帮助；本机及 --lan 实际地址页面、HTTP、附件；scope；演示数据库"
+    must:
+      - "D118：文档允许经审核且受版本管理的产品库，任务副本与过程证据仍在仓库外；库原文、账本、巡检材料仅本机"
+      - "内网新增业务摘要只展示复用数量、审核结论及审核人姓名，不含路径、任务会话或命令；保持既有轮次身份规则"
+      - "执行/复验的录屏和 trace 服从冻结 web_evidence，巡检开跑读取入口当前值写报告，失败截图始终保存；两项缺省开启；资产以文件保存，数据库格式保持5"
+    scenarios:
+      - id: SOP-236-P01
+        polarity: positive
+        title: 安装后文档和技能采用新存放约定且四类命令同版可用
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["冻结的最终被测源码已独立安装，两个客户端技能目录均指向本轮隔离位置；没有外部同名技能覆盖"]
+        steps:
+          - "使用独立安装运行 skills install、playwright guide 与帮助，从两个客户端实际解析位置读取 SKILL.md、references/workflow.md，读取交付的 docs/playwright-acceptance.md"
+          - "核对 specs check/review/promote/import、patrol plan/run 均可从同一安装发现并执行本批场景；specs 参数与方案补充契约一致，记录安装来源和包摘要"
+        expected:
+          - "两处指定文档已明确允许经审核、受版本管理的规范执行资产进入产品仓库，任务冻结副本和过程证据继续放仓库外，回归沉淀职责保持原约定"
+          - "实际安装技能与文档无旧约定冲突；复用、保真检查、巡检及 import 在同一版交付，不能以只安装源码文本代替命令运行证据"
+        forbidden_effects: ["依赖另一个 playwright-acceptance 检出目录", "改用户全局技能", "把过程证据移进产品仓库"]
+        evidence_hints: ["安装来源和两客户端实际解析路径", "相关正文行号与摘要", "帮助及本批各真实命令运行索引"]
+      - id: SOP-236-P02
+        polarity: positive
+        title: 本机能核对完整材料且内网只显示允许的业务摘要
+        actor: 本机审核者与内网测试同事
+        priority: P0
+        verify: web
+        initial_state: ["本批已有真实复用、审核与巡检记录，复用数量、审核结论与实际审核姓名已独立保存", "私有材料中置入本轮无敏感值的路径/会话/命令识别标记；看板 --lan 实际地址已记录"]
+        steps:
+          - "本机经真实入口读取库脚本、索引、基线、账本、候选差异、审核、清单与巡检计划/报告/地图反馈，保存可核对原文"
+          - "从另一浏览器或设备连接实际非回环地址，读取同一任务/批次/场景页面、HTTP、报告和链接，核对业务摘要与字段全文"
+        expected:
+          - "本机可以核对完整原始材料及来源；内网所显示的新能力摘要限复用数量、审核结论、审核人姓名，值与实际记录一致"
+          - "内网页面、接口和生成报告没有库/账本/巡检原文、路径、任务会话标识或命令；既有轮次业务身份仍按标准展示"
+        forbidden_effects: ["只靠前端隐藏而接口泄漏", "只替换已知路径字符串而泄漏嵌套字段", "把任务会话隐私与轮次业务身份混为一谈"]
+        evidence_hints: ["本机完整原文及摘要", "非回环实际连接信息", "两种地址 HTTP/HTML、浏览器截图和字段对照"]
+      - id: SOP-236-P03
+        polarity: positive
+        title: 复用脚本按默认开启的录屏和轨迹留下新证据
+        actor: 本轮实际执行者 E
+        priority: P0
+        verify: web
+        initial_state: ["L0；app 未声明 web_evidence，准备 TC_WEB_OK_001 后 scope 中 video/trace 均为 true", "所需录制依赖和测试 Chrome 就绪，任务内有合格复用脚本"]
+        steps:
+          - "E 实际运行该脚本，按入口声明另附截图和只读数据核对；转换并经 execute submit 提交"
+          - "打开本轮录屏核对业务步骤，打开 trace 核对同次操作，对照 scope、报告、附件与时间"
+          - "另从独立初态分别以 video=true/trace=false、video=false/trace=true 准备并真实运行同一场景，核对两项开关各自的录制行为"
+        expected:
+          - "使用库脚本仍实际启动录屏与 trace，生成对应本轮可读附件，不照搬历史关闭录制的做法"
+          - "新证据对应本轮场景指纹与产品快照，截图及业务数据核对完整；有旧库证据不能免除新证据"
+          - "两个混合配置分别只启动开启的录制项，关闭项不启动也不要求对应附件，两项开关互不代替"
+        forbidden_effects: ["只打印录制警告就关闭", "拿旧录像当新运行", "静态存在空附件即判留证合格"]
+        evidence_hints: ["冻结 scope、报告与转换输出", "可播放新录像、可读 trace", "截图与只读查询"]
+      - id: SOP-236-P04
+        polarity: positive
+        title: 原格式5数据在全部新能力操作后保持格式与历史结论
+        actor: 独立执行者
+        priority: P0
+        verify: cli
+        initial_state: ["来自新增能力前实际安装的隔离格式5数据备份，含已登记轮次、决定与证据；不把新版数据库改版本号冒充旧库", "已保留升级前 schema、PRAGMA user_version 和业务记录对照"]
+        steps:
+          - "用最终独立安装打开原数据，执行本批 import、prepare、check、审核、promote 与 patrol 的真实流程，记录各文件位置"
+          - "只读核对 PRAGMA user_version、旧表结构与既有结论，检查新库、账本、清单和巡检材料的文件存放"
+        expected:
+          - "原格式5可用，user_version 仍为5；旧表列与旧轮次/结论/证据不被改写，新操作产生的业务记录有独立来源"
+          - "资产保存在文件，确需跨任务查询时可新增侧表；不能把新资产塞入旧轮次并伪造过去的审核或通过"
+        forbidden_effects: ["强制升数据库格式", "用新版空库冒充兼容验证", "迁移篡改原验收结论"]
+        evidence_hints: ["旧安装来源、数据备份摘要与只读查询", "升级前后 schema/版本/记录对照", "各操作真实输出与资产文件清单"]
+      - id: SOP-236-N01
+        polarity: negative
+        negative_type: permission
+        title: 非回环地址不能下载私有原文或用参数伪装本机
+        actor: 内网测试同事
+        priority: P0
+        verify: api
+        initial_state: ["SOP-236-P02 的材料齐全，已从本机真实读取结果收集材料位置、实际存在的HTTP/附件链接及任务标识", "浏览器与 HTTP 客户端确实经实际非回环地址连接，没有回环代理"]
+        steps:
+          - "把本机实际存在的材料链接主机换成实际内网地址，逐项请求；只在本机文件系统可读的库原文、索引/基线、账本、候选/审核材料、清单和巡检材料，逐项核对没有被公开页面/接口/报告打包返回，不要求新增HTTP读取路由"
+          - "分别增加 local=1、伪造本机 Host 或转发头重试；从非回环页面实际检查是否有私有下载入口"
+        expected:
+          - "私有任务附件按既有边界返回403，其他私有读取入口也不得返回材料正文；响应不含私有标记，页面无私有下载入口"
+          - "参数、Host 和转发头不能把实际非回环连接变成本机；业务摘要仍可读，没有任何业务记录或文件变化"
+        forbidden_effects: ["把库物理位置在产品仓库误认为可公开", "绕过服务端可见性", "失败响应回显私有路径或命令"]
+        evidence_hints: ["本机可读链接及状态", "每类非回环原始请求/响应/状态码", "浏览器截图与私有标记全文核对"]
+      - id: SOP-236-N02
+        polarity: negative
+        negative_type: stale-input
+        title: 在途切换证据开关不能改变本轮冻结设置
+        actor: 本轮实际执行者 E
+        priority: P0
+        verify: web
+        initial_state: ["L0；保存开关均缺省的状态和均显式false的状态；每分支都有复用脚本与测试 Chrome"]
+        steps:
+          - "从默认状态准备 TC_WEB_OK_001 后，把配置改为 video=false、trace=false，实际运行并提交；另准备下一轮并真实运行"
+          - "恢复独立初态，先以两项false准备，再将两项设true，分别真实运行本轮和下一轮；对每轮比较 scope、实际录制行为和业务附件"
+        expected:
+          - "第一分支本轮仍有录屏与trace，下一轮两者不启动也不要求对应附件；第二分支本轮不录制，下一轮开启两项"
+          - "仅运行配置变化不作废本轮；四轮始终按各自冻结开关及入口 evidence 保存实际业务证据，不因关闭录制就免除全部证据"
+        forbidden_effects: ["复用脚本读取当前共享配置覆盖冻结 scope", "关闭录制仍启动对应录制器", "以无录像为由拒绝已声明关闭的合格结果"]
+        evidence_hints: ["四轮配置与冻结 scope", "真实浏览器报告和录制行为", "业务附件、提交与 status"]
