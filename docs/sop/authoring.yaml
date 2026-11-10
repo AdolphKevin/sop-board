@@ -5,7 +5,7 @@
 
 metadata:
   requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，sop submit 校验结构并写入确认人；草稿是 status: draft 的场景文件，不进入执行，测试同学在看板批注，会话修订后 draft resolve，draft confirm 改为 confirmed 并写入确认人"
-  version: 1
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -13,6 +13,9 @@ metadata:
       version: "2026-11-10"
       confirmed_by: "blur.yin"
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对工作台试用的反馈"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["authoring", "sop", "draft"]
@@ -95,3 +98,40 @@ sops:
         expected: ["命令以业务失败退出（退出码 1），error_code 为 draft-not-runnable", "没有生成包含该草稿场景的 prepared 运行"]
         forbidden_effects: ["草稿场景得到执行结果"]
         refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+
+  - id: AUT-03
+    title: 看板展示业务 SOP 与待确认问题
+    actor: 测试同学
+    entry: "看板 SOP 原文页（业务 SOP 与“待确认问题”文档）"
+    negative_exempt: "只读展示；不存在应被拒绝的操作"
+    must:
+      - "页面不出现字面的 \\n；原文中的换行按换行显示"
+      - "“待确认问题”文档像工作台那样按场景树的方式展示：每个 ### 标题是一个问题"
+    scenarios:
+      - id: AUT-03-P01
+        polarity: positive
+        title: 业务 SOP 中的换行按换行显示，不出现字面的 \\n
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["场景目录下有一份业务 SOP Markdown，源文件使用普通换行，不含反斜杠加 n 两个字符；多处正文有段落内换行，例如“业务目标：退款”下一行紧接“范围：签收 7 天内”"]
+        steps: ["内网打开看板 SOP 原文页，选择这份业务 SOP", "在页面文本中搜索字符 \\n，并查看含它的位置"]
+        expected: ["页面文本中不出现字面的 \\n", "源文件中的段落内换行在页面上显示为换行，换行前后的文字分行显示"]
+        forbidden_effects: ["页面显示反斜杠加 n 两个字符"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["SOP 原文页截图与页面文本"]
+      - id: AUT-03-P02
+        polarity: positive
+        title: 待确认问题按问题树展示，点击一个问题查看其正文、答复与答复人
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["场景目录下有一份“待确认问题”Markdown，源文件使用普通换行，不含反斜杠加 n 两个字符：Q1、Q2、Q3 三个 ### 标题，每个问题用 **场景**、**目前的写法**、**请确认**、**答复**、**答复人** 作小标题，小标题下一行紧接正文（段落内换行）"]
+        steps: ["内网打开看板 SOP 原文页，选择这份待确认问题文档", "点击 Q2", "点击 Q3，再点击回 Q2"]
+        expected:
+          - "页面以树或列表的方式列出 Q1、Q2、Q3 三个问题的标题，每个 ### 标题对应一项，而不是整份文档作为一整块文本"
+          - "点击一个问题后显示该问题的正文，含“答复”“答复人”小节的内容；页面文本中不出现字面的 \\n，源文件中的段落内换行按换行显示"
+          - "点击问题时，已有的问题列表不整体重排，列表滚动位置保持不变"
+        forbidden_effects: ["整份文档显示为一块未分段的文本", "页面显示反斜杠加 n 两个字符"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["SOP 原文页截图与页面文本"]

@@ -7,11 +7,14 @@
 
 metadata:
   requirement: "sop-board v10：测试同学在三栏场景工作台按场景找到、查看四要素与证据、复测标注并查看历史，内网全程可用；内网只显示业务字段，不能发起 AI 重跑"
-  version: 1
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
     - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对工作台试用的反馈"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["workbench", "web", "lan", "annotation"]
@@ -46,13 +49,35 @@ sops:
         refs: ["docs/design.md#看板：三栏场景工作台（问题 2）"]
         evidence_hints: ["工作台截图与页面文本", "status --json 输出"]
 
+      - id: WB-01-P02
+        polarity: positive
+        title: 点击场景只切换右栏详情，左栏树的展开状态与滚动位置保持不变
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "浏览器窗口高度已缩小到左栏树出现纵向滚动条", "左栏树中至少有一个节点被折叠"]
+        steps:
+          - "本机浏览器打开 /p/demo，手动折叠一个节点并把左栏树向下滚动一段，记录各节点展开或折叠的状态与滚动位置"
+          - "点击树中靠下的一条场景"
+          - "再点击另一条场景，并回到上一条"
+        expected:
+          - "每次点击后右栏显示被点击场景的详情，地址带该场景的 #<场景键>"
+          - "点击前后左栏树各节点的展开或折叠状态不变，先前折叠的节点仍然折叠"
+          - "点击前后左栏树的滚动位置不变，没有回到最上面"
+        forbidden_effects: ["点击场景后所有节点被展开", "点击场景后左栏树滚动回到最上面"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["点击前后的截图与页面文本", "左栏树滚动位置的读数"]
+
   - id: WB-02
     title: 测试同学从内网复测并标注
     actor: 测试同学
     entry: "内网地址上的工作台场景详情"
+    negative_exempt: "缺陷链接与姓名均不必填，原有的“缺链接被拒绝”分支已取消；复测通过、不通过、阻塞、需求变更四种状态没有对应的业务拒绝；跨源或非 JSON 的标注请求被拒见 WB-03-N01"
     must:
       - "右栏顺序固定：标题与徽标、当前状态与原因、四要素（预期与禁止逐条并附守护覆盖标记）、最新结果与证据、复测标注、本机按钮、历史"
-      - "不通过时缺陷链接必填；姓名填一次后存在浏览器 localStorage"
+      - "复测状态可选 通过、不通过、阻塞、需求变更；缺陷链接和复测人姓名都不必填"
+      - "复测人姓名在页面上填一次，所有场景共用，不需要再填第二次，除非使用者主动修改；姓名存在浏览器 localStorage"
+      - "复测标注表单中每个输入框独占一行，不与其他输入框并排"
     scenarios:
       - id: WB-02-P01
         polarity: positive
@@ -69,26 +94,70 @@ sops:
           - "打开 shop#W，播放录像、打开 trace，选“通过”提交"
         expected:
           - "右栏依次为：标题与 P 级、入口、正反向徽标；当前状态与原因；起点、步骤、预期、禁止（预期与禁止逐条列出）；最新结果与证据画廊；复测标注表单；历史（折叠）"
+          - "复测标注表单的状态选项包含 通过、不通过、阻塞、需求变更"
           - "shop#X 的证据画廊显示请求与响应"
           - "提交后 shop#X 显示失败并附缺陷链接 https://issues.example/DEMO-2；历史中有 张测 的不通过标注与时间，原 Agent 结果仍在"
           - "shop#W 的录像在页面内播放、可拖动进度（视频请求返回 206 分段响应），trace 可打开"
-          - "标注 shop#W 时姓名已预填为 张测，提交后历史中有 张测 的通过标注"
+          - "标注 shop#W 时没有再输入姓名，提交后历史中有 张测 的通过标注"
           - "results 表中两条标注为 kind=manual 的新行"
-        forbidden_effects: ["要求填写姓名以外的身份信息", "标注改写或删除原 Agent 结果", "第二次标注仍要求重新输入姓名"]
+        forbidden_effects: ["要求填写姓名以外的身份信息", "标注改写或删除原 Agent 结果", "第二个场景的标注仍要求重新输入姓名"]
         refs: ["docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#署名"]
         evidence_hints: ["内网设备截图与页面文本", "视频请求的响应头", "results 表只读查询"]
-      - id: WB-02-N01
-        polarity: negative
-        negative_type: incomplete-input
-        title: 标注不通过时不填缺陷链接被拒绝
+      - id: WB-02-P02
+        polarity: positive
+        title: 不填缺陷链接和姓名也能标注不通过
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "内网浏览器的 localStorage 为空，没有填过姓名"]
+        steps: ["内网打开 shop#W，选“不通过”，缺陷链接与姓名都留空，提交", "刷新页面，展开历史"]
+        expected: ["提交成功，没有要求填写缺陷链接或姓名的提示", "shop#W 显示失败，历史中新增一条不通过标注及时间，原 Agent 结果仍在", "results 表新增一条 kind=manual 的行"]
+        forbidden_effects: ["因缺陷链接为空而拒绝提交", "因姓名为空而拒绝提交"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈", "docs/design.md#场景状态（按检出推导，不存储）"]
+        evidence_hints: ["内网设备截图与页面文本", "results 表只读查询"]
+      - id: WB-02-P03
+        polarity: positive
+        title: 把场景标注为阻塞或需求变更
         actor: 测试同学
         priority: P1
         verify: web
         initial_state: ["演示项目处于“已有结果”", "内网浏览器已存有姓名 张测"]
-        steps: ["内网打开 shop#W，选“不通过”，缺陷链接留空，提交"]
-        expected: ["提交被拒绝并提示缺陷链接必填", "场景状态与历史不变"]
-        forbidden_effects: ["写入没有缺陷链接的不通过标注"]
-        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）"]
+        steps: ["内网打开 shop#B，选“阻塞”，缺陷链接留空，提交", "打开 shop#W，选“需求变更”，缺陷链接留空，提交", "刷新页面，分别展开两个场景的历史"]
+        expected: ["两次提交都成功，没有要求填写缺陷链接", "shop#B 的历史中有 张测 的“阻塞”标注，shop#W 的历史中有 张测 的“需求变更”标注，各带时间，原 Agent 结果仍在", "results 表新增两条 kind=manual 的行"]
+        forbidden_effects: ["提交被拒绝", "标注改写或删除原 Agent 结果"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["内网设备截图与页面文本", "results 表只读查询"]
+      - id: WB-02-P04
+        polarity: positive
+        title: 姓名只填一次，使用者主动修改后新标注用新姓名
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "内网浏览器的 localStorage 为空"]
+        steps:
+          - "内网打开 shop#W，填姓名 张测，选“通过”，提交"
+          - "打开 shop#B，不输入姓名，选“通过”，提交"
+          - "刷新页面后打开 shop#X，不输入姓名，选“阻塞”，提交"
+          - "把姓名改为 李测，打开 shop#A，选“通过”，提交"
+          - "分别查看四个场景的历史"
+        expected:
+          - "shop#B 与刷新后的 shop#X 提交时都没有被要求再填姓名，历史中的标注署名为 张测"
+          - "改名后 shop#A 的标注署名为 李测，前三条标注仍署名 张测"
+        forbidden_effects: ["换一个场景后要求重新输入姓名", "改名前已有的标注被改写为 李测"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈", "docs/design.md#署名"]
+        evidence_hints: ["内网设备截图与页面文本", "results 表只读查询"]
+      - id: WB-02-P05
+        polarity: positive
+        title: 复测标注表单中每个输入框独占一行
+        actor: 测试同学
+        priority: P2
+        verify: web
+        initial_state: ["演示项目处于“已有结果”"]
+        steps: ["在内网设备桌面宽度的浏览器中打开 shop#W 详情，滚动到复测标注表单", "读取表单中各输入框的位置并截图"]
+        expected: ["表单中每个输入框（含姓名、缺陷链接等文本输入）各占独立的一行，任意两个输入框的纵向位置不同，没有并排的输入框"]
+        forbidden_effects: ["两个或更多输入框并排在同一行"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["表单截图", "各输入框的位置读数"]
 
   - id: WB-03
     title: 本机才能发起运行，内网只显示业务字段

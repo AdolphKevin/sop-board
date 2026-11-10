@@ -5,7 +5,7 @@
 
 metadata:
   requirement: "sop-board v10：失败场景由会话在当前检出修复，另一会话以 run prepare --fix 独立复验（实现者自动取修复会话），提交后 fix close 关闭；测试同学标注不通过的场景在修复关闭后回到待复测"
-  version: 1
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -13,6 +13,9 @@ metadata:
       version: "2026-11-10"
       confirmed_by: "blur.yin"
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对工作台试用的反馈"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["fix", "retest", "independence"]
@@ -86,7 +89,7 @@ sops:
     title: 测试同学标注不通过后修复关闭，场景回到待复测
     actor: 测试同学
     entry: "内网工作台复测标注，sop-board fix 系列命令"
-    negative_exempt: "修复流程的反向情况见 FIX-01-N01；标注缺链接的拒绝见 WB-02-N01"
+    negative_exempt: "修复流程的反向情况见 FIX-01-N01"
     scenarios:
       - id: FIX-02-P01
         polarity: positive
