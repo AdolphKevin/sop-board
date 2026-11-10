@@ -1,7 +1,7 @@
 [project]
 name = "sop-board"
 version = "0.1.0"
-description = "Flow Board — 流程验收看板"
+description = "Flow Board — SOP 场景验收：真实入口执行、按场景复测、守护测试"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["PyYAML>=6.0"]

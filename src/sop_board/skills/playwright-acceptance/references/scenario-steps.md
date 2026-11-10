@@ -1,6 +1,6 @@
 # 场景写法要求
 
-本技能按场景文件逐步执行，不补全业务含义。场景格式（`id`、`polarity`、`initial_state`、`steps`、`expected`、`forbidden_effects` 等）由本技能 [contracts.md](contracts.md) 与 sop-board 场景文件校验器规定；下面是让步骤可以直接翻译成 Playwright 操作的补充要求。执行者可补充技术定位；业务目标、前置分支或预期缺失时，列出具体问题退回场景作者，暂停该场景。其他已明确且互不依赖的场景可继续，最终如实列出缺口。
+本技能按场景文件逐步执行，不补全业务含义。场景格式（`id`、`polarity`、`initial_state`、`steps`、`expected`、`forbidden_effects` 等）见 [contracts.md](contracts.md)，由 sop-board 场景校验器规定；下面是让步骤可以直接翻译成 Playwright 操作的补充要求。执行者可补充技术定位；业务目标、前置分支或预期缺失时，列出具体问题退回场景作者，暂停该场景。其他已明确且互不依赖的场景可继续，最终如实列出缺口；退回的场景写 `blocked` 或 `not-executed` 并写明 `finding`。
 
 ## 四项要求
 
@@ -22,7 +22,7 @@
   priority: P0
   verify: shopify-admin
   initial_state:
-    - 已在 Chrome 测试 profile 中登录开发店铺 lw-wzp-test-1，后台语言为英文
+    - 身份 merchant 的浏览器 profile 已登录开发店铺 lw-wzp-test-1，后台语言为英文
     - 应用首页 "Escalated Tickets" 卡片可见
     - 会话列表第一项由 AI 处理（显示 "Assistant"），客户在线
   steps:
@@ -48,10 +48,10 @@
 - `initial_state` 无法确定该步会走哪个分支？
 - 某条 `expected` 不能在页面或声明的观察点上看到？
 - 场景会对真实客户、真实店铺或外部系统产生影响，而 `forbidden_effects` 没有覆盖？
-- 场景引用的 `verify` 入口在工作区 `config.yaml` 的 entries中没有声明？
+- 场景引用的 `verify` 入口在工作区 `config.yaml` 的 `entries` 中没有声明？
 
 代理推断出来的预期不能直接写进脚本：先记入方案问题清单，确认后由场景作者补进场景并写明 `confirmed_by`。
 
 ## 定位映射的边界
 
-执行者记录“原场景步骤 → 实际控件/iframe/定位器 → 源码或探测依据”，保留原场景编号与业务预期。可以把同一步拆成多个技术操作，但不能新增业务预期、修改角色/订单选择规则、用其他对象替代目标、生成新编号或另建批次来绕过原场景。发现这些需求时退回上游确认。
+执行者记录“原场景步骤 → 实际控件/iframe/定位器 → 源码或探测依据”，保留原场景编号与业务预期。可以把同一步拆成多个技术操作，但不能新增业务预期、修改角色/订单选择规则、用其他对象替代目标、生成新编号来绕过原场景。发现这些需求时退回上游确认。

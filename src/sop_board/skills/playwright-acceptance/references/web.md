@@ -2,20 +2,47 @@
 
 ## 浏览器与连接
 
-夹具通过 CDP 接管已打开的 Chrome。连接地址按以下顺序确定：
+看板守护进程（`sop-board serve`）为每个 检出×身份 启动一个 Chrome for Testing（运行时由 `sop-board browser install` 固定版本安装，默认 `--headless=new`），持久 profile 保存登录态。`run prepare` 租用这些浏览器并把地址写进运行目录：
 
-1. 环境变量 `PW_CDP_ENDPOINT`（`ws://…` 或 `http://127.0.0.1:9222`）。
-2. Chrome 用户目录下的 `DevToolsActivePort` 文件（macOS `~/Library/Application Support/Google/Chrome`，Windows `%LOCALAPPDATA%\Google\Chrome\User Data`，Linux `~/.config/google-chrome`；用 `PW_CHROME_USER_DATA` 指定其他目录）。该文件在 Chrome 打开远程调试后才存在：地址栏打开 `chrome://inspect/#remote-debugging`，启用 "Allow remote debugging for this browser instance"。
+- `PW_CDP_ENDPOINT`：默认身份浏览器的调试地址，`connection.mjs` 只读它；缺失时报错并记 blocked。
+- `PW_IDENTITIES`：`identities.json`，列出每个入口的身份及各自的 `endpoint`；`identity.mjs` 的 `as(身份)` 据此连接。
+- `PW_TAB`（可选）：目标标签页 URL 的子串；匹配到一个则复用，零个则新开一页，多个则报错。`PW_FRAME`（可选）是 surface-map 已确认的唯一 iframe 选择器。`PW_CONNECT_TIMEOUT_MS` 缺省 30000。
 
-连上之后，脚本能看到这个 Chrome 里的全部标签页，启用 trace 时也会录到其他标签页的网络请求。因此：
+浏览器状态用 `sop-board browser status` 查看。brief.md 的"浏览器问题"一节列出启动失败的身份，用该身份的 Web 场景直接记 blocked，finding 照抄。
 
-- 用测试专用的 Chrome profile（Chrome 的"添加个人资料"），只在其中登录测试账号，并在该 profile 打开远程调试。
-- `PW_TAB` 填目标标签页 URL 的子串，夹具只操作匹配的那一个标签页；匹配到零个或多个都报错。
-- 运行期间不要操作该窗口；测试仅在场景需要时导航目标页，已满足前置条件的视图直接复用。
+`global-setup.mjs` 在开跑前检查 Playwright 版本、scope、调试端口与（仅本轮需要录屏时）ffmpeg，不另开 CDP 会话；唯一目标页与 `PW_FRAME` 在 worker 首次连接时核对。任何一项失败，整轮不执行业务步骤。
 
-预检先确认调试端口可达，再验证 CDP 初始化、唯一目标页和可选 `PW_FRAME`。端口不可达先核对进程、地址、沙箱权限；端口可达但初始化超时可能是授权等待、兼容性或其他标签页未响应，不能直接断定用户未同意。用户已确认授权时不反复要求同意。连接失败、连接断开或出现新的授权等待时停止本轮，保存诊断；经原因排查并确认恢复后才另开一轮，不让后续用例自动触发新的连接。
+### 真实账号登录
 
-大量休眠标签页时可设置 `PW_CDP_MODE=target`（Node >=22），使用公开 CDP transport 只向 Playwright 暴露唯一匹配页及它打开的弹窗/子 frame；不关闭其他标签页，也不绕过 Chrome 授权。默认 `browser` 模式保持兼容。`PW_CONNECT_TIMEOUT_MS` 默认 60000，`PW_FRAME` 为已确认的 iframe 选择器；预检不导航或点击。
+人在有界面的窗口登录一次：
+
+```bash
+sop-board browser open --identity <身份> --headed   # 窗口里由人登录
+sop-board browser close
+```
+
+之后的无头运行沿用同一 profile。人持有租约期间 `run prepare` 返回 `browser-busy`。真实账号登录、人机验证、二次验证由人完成；遇到 "browser may not be secure" 或登录过期，停止并记 blocked，写明哪个身份需要重新登录。合成账号登录须有用户本次明确授权。
+
+### 崩溃
+
+- 浏览器进程在运行中退出：`run submit` 把该身份相关且未通过的 Web 场景记为 blocked（已写出的 pass 保留），finding 含信号与 chrome.log 路径，并登记待人处理。
+- 渲染进程崩溃（`page.on('crash')`、错误含 `Target crashed`）：夹具按 blocked 处理并停止本轮。
+- 30 分钟内异常退出两次，该身份进入 `browser-crashed`，须人检查后用 `sop-board browser open --identity <身份> --reset-crash` 重置，再用最小范围另开一次运行确认。
+- 租约持有期间看板不自动重启浏览器；执行者也不在用例中重连，不自行启动浏览器。
+
+### 多身份与使用次数
+
+每个身份是独立的浏览器与 profile，切换身份就是换浏览器：`const page = await as('<身份>')`，结束时 `release()`。每次真实登录或请求验证码之前先登记：
+
+```bash
+sop-board identity record --identity <身份> --kind login|code --run <N>
+```
+
+超限时被拒绝并登记到待人处理；停下，把该身份的场景记 blocked。
+
+### 连接共用
+
+连接是 worker 级资源：`workers: 1`、`retries: 0` 时整轮共用一个 CDP 连接，最后释放，不在每条用例后 `browser.close()`，也不在断开时静默重连。每条用例按入口开关独立启动、停止和保存录屏与 trace，并逐项核对自己的前置条件；共享连接不等于重置业务状态。模板把业务失败标为预期失败（worker 不重启、连接保留），`maxFailures: 1` 在首个意外失败后停止，避免连续重连。连接问题经排查并确认恢复后，用最小范围确认，再另开一次运行。
 
 ## 界面层次
 
@@ -31,7 +58,7 @@
 | 已知且与业务无关的遮挡（引导、Cookie 提示） | 项目在界面地图中声明 | `page.addLocatorHandler(定位器, 关闭动作)`，由 Playwright 在需要时触发 |
 | 人机验证、登录过期、未知遮挡 | 页面文字 | 抛出 `受阻：` 错误，等人处理 |
 
-接管已有页面时，跨域 iframe 要过一两秒才出现在 frame 树里；配置里的 `expect.timeout` 已放宽到 15 秒，不要再写轮询。
+连接后，跨域 iframe 要过一两秒才出现在 frame 树里；配置里的 `expect.timeout` 已放宽到 15 秒，不要再写轮询。
 
 ## 当前状态与必要导航
 
@@ -47,7 +74,7 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 
 ## 只读探测
 
-黑盒验收方常常没有产品源码。此时界面结构只能从真实页面取，用临时脚本（放仓库外，用完删除）连上同一个 Chrome 做以下几件事，把结果写进界面地图：
+黑盒验收方常常没有产品源码。此时界面结构只能从真实页面取，用临时脚本（放仓库外，用完删除）连上同一个运行目录浏览器做以下几件事，把结果写进界面地图：
 
 - 列出 `context.pages()` 的 URL 和目标页的 `page.frames()`（name、url），确认 iframe 层次与预加载副本。
 - 对页面和每个相关 frame 取 `locator('body').ariaSnapshot()`，从中抄下按钮、标题、占位文字的准确文案；没有多语言文件时，脚本里的文字以快照为准。
@@ -74,17 +101,17 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 
 ## 前置数据
 
-无关前置数据指 initial_state 中不由本场景步骤产生、也不验证其产生过程的对象或状态。需要准备时先读本轮 fixtures.json，优先用 sop-board fixtures run；没有合适配方且 adhoc 为 true 时，才在声明环境与 scope 内用 fixtures exec --reason <说明> 临时写入。两种命令都带 --task <本任务编号>、--scenario <场景编号> 留痕；跨批次复验用 --scenario <批次>#<场景编号>。real_only 对象与被验收流程应产生的对象只能经真实入口产生，不能写库代替；禁止 DROP、TRUNCATE、无条件 DELETE/UPDATE 及范围外写入。无法准备时记 blocked，finding 写明缺什么配方、范围或真实流程。准备记录只说明数据来源，预期来自场景，结论来自真实入口的观察。
+无关前置数据指 initial_state 中不由本场景步骤产生、也不验证其产生过程的对象或状态。brief.md 的"前置数据"一节说明本项目是否声明了配方：有配方时用 `sop-board fixtures run <配方> --run <N> --scenario <场景key>`；没有合适配方且 adhoc 为 true 时，才在声明环境内用 `fixtures exec --reason <说明> -- <命令>` 临时写入，两者都留痕。项目没有声明配方时，前置不满足就记 blocked，不自行写库。
 
-凭据只经环境变量传入，不写入脚本或证据。任务配置在准备时固定；运行中修改工作区的配方或辅助配置，下一轮才采用。
+被验收流程应产生的对象与 `real_only` 对象只能经真实入口产生；禁止 DROP、TRUNCATE、无条件 DELETE/UPDATE 及范围外写入。无法准备时记 blocked，finding 写明缺什么。准备记录只说明数据来源，预期来自场景，结论来自真实入口的观察。凭据只经环境变量传入，不写入脚本或证据。
 
 ## 副作用与重试
 
-发送、保存、接管、支付这类动作只做一次。交互式 Chrome 配置保持 `workers: 1`、`retries: 0`、`maxFailures: 1`。失败后由人决定：恢复数据后重跑，还是记为失败。前一轮残留（草稿、已接管状态）会改变前置条件，重跑前先核对 `initial_state`。
+发送、保存、接管、支付这类动作只做一次。运行器配置保持 `workers: 1`、`retries: 0`、`maxFailures: 1`。失败后由人决定：恢复数据后重跑，还是记为失败。上一次运行的残留（草稿、已接管状态）会改变前置条件，重跑前先核对 `initial_state`。
 
 ## 证据与隐私
 
-- `PW_OUT` 指向仓库外目录：`results/`（原始产物）、`html/`（report）、`report.json`、`junit.xml`。
+- `PW_OUT`（run.env 已设为运行目录内的 `playwright/`）：`results/`（原始产物）、`html/`（report）、`report.json`、`junit.xml`。
 - 录制开关取本轮 scope 中按入口固定的 `web_evidence`，缺省均开启，关闭项不启动、不保存。开启时，录屏用 `page.screencast`，只录指定标签页；trace 录整个 context。证据里会有 cookie、令牌与客户数据，不要贴进 PR 或聊天，只在验收记录中引用。
 - 单个文件超过 64 MiB 时看板拒绝接收，`to_scenarios.py` 会列出并停止；trace 过大时关闭 `snapshots` 或缩短场景。
 
@@ -92,13 +119,8 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 
 在 surface-map 中记录与本轮有关的业务写入口、只读查询入口及依据；按入口的业务语义核对禁止副作用。不能用“所有 POST 都是写入”或“所有 GET 都没有副作用”代替接口核对。网络记录仅辅助判定；业务通过仍以场景指定的可见结果为准。
 
-依赖预检使用当前项目已安装的 @playwright/test 和同包 CLI，不调用 npx 自动下载另一个版本。连接、录屏、trace 初始化中途失败也逐项停止录制并断开本轮 CDP 连接；业务失败与清理错误分别保留。
+依赖预检使用运行目录 `node_modules` 中看板运行时的 @playwright/test 与同包 CLI，不用 npx 另行下载。连接、录屏、trace 初始化中途失败也逐项停止录制并断开连接；业务失败与清理错误分别保留。
 
+## 报告口径
 
-## 同一轮复用 CDP 授权
-
-连接是 worker 级资源：`workers: 1`、`retries: 0` 时，正常执行的一轮共用一个 CDP 连接，最后释放。global setup 只做依赖、scope 和 TCP 端口检查，不为预检另开 CDP 会话；唯一目标页和 iframe 的实际检查在 worker 首次连接时完成。每条用例按入口开关独立启动、停止和保存录屏与 trace，且逐项核对自己的前置条件，共享连接不等于重置业务状态。
-
-不要在每条用例后 `browser.close()`，也不要在连接断开时静默重连。Playwright 在失败后可能重启 worker；即使 `workers: 1`、`retries: 0`，新的 worker 仍可能重新建立 CDP 连接并触发授权。模板把业务断言失败标为预期失败（worker 不重启、连接保留，后续场景照常执行），并用 `maxFailures: 1` 在首个意外失败（受阻、连接断开、目标页关闭）后停止本轮，避免连续重连。连接或授权问题按此边界停止，不能不断重启 worker 或单独重跑每条用例。
-
-业务失败、执行受阻和未执行分别报告。提前停止不代表剩余场景已运行；保留原始报告，通过部分转换及 coverage 清单说明实际范围。排查定位或连接后，先用最小相关范围确认恢复，再显式组织后续一轮；不在旧轮次悄悄恢复执行，不跨轮次保证永久免授权，也不修改 Chrome 安全设置来消除提示。
+业务失败、执行受阻和未执行分别报告。提前停止不代表剩余场景已运行；保留原始报告，通过部分转换及 `coverage.json` 说明实际范围。

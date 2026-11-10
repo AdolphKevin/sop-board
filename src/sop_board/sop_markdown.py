@@ -1,6 +1,8 @@
 """只生成允许的 Markdown 元素；原文的所有普通文字先转义。
 
 有意只支持 SOP 页面约定的子集，不解释原生 HTML、图片或其他嵌入内容。
+段落内的换行按原文保留（SOP 与待确认问题里“**场景**”这类小标题后面紧跟正文）；
+下划线只在词边界处表示强调，TC_PLAN_002 这类编号保持原样。
 """
 
 import hashlib
@@ -70,8 +72,12 @@ def inline(raw, depth=0):
                 index = end + 1
                 continue
         marker = next((m for m in ('**', '__', '*', '_') if raw.startswith(m, index)), None)
+        if marker and marker[0] == '_' and index > 0 and _word(raw[index - 1]):
+            marker = None
         if marker:
             end = raw.find(marker, index + len(marker))
+            while marker[0] == '_' and end >= 0 and end + len(marker) < len(raw) and _word(raw[end + len(marker)]):
+                end = raw.find(marker, end + 1)
             if end > index + len(marker):
                 rendered, label = inline(raw[index + len(marker):end], depth + 1)
                 tag = 'strong' if len(marker) == 2 else 'em'
@@ -85,6 +91,10 @@ def inline(raw, depth=0):
     return ''.join(html), ''.join(plain)
 
 
+def _word(char):
+    return char.isalnum() or char == '_'
+
+
 def cells(line):
     return re.split(r'(?<!\\)\|', line.strip().strip('|'))
 
@@ -95,9 +105,11 @@ def table_start(lines, index):
             len(cells(lines[index])) == len(cells(lines[index + 1])))
 
 
-def render(raw, path):
+def render(raw, path, used=None):
+    """返回 (HTML, 标题列表)。used 为同一文档已用的锚点，分段渲染时传入以保持锚点唯一。"""
     lines = raw.splitlines()
-    output, headings, used = [], [], set()
+    output, headings = [], []
+    used = set() if used is None else used
     prefix = 'sop-' + hashlib.sha256(path.encode()).hexdigest()[:12] + '-'
     index = 0
     while index < len(lines):
@@ -130,7 +142,7 @@ def render(raw, path):
                 anchor = prefix + slug + f'-{suffix}'
                 suffix += 1
             used.add(anchor)
-            headings.append(dict(title=title, anchor=anchor))
+            headings.append(dict(title=title, anchor=anchor, level=len(heading[1])))
             level = len(heading[1])
             output.append(f'<h{level} id="{escape(anchor)}">{rendered}</h{level}>')
             index += 1
@@ -163,5 +175,59 @@ def render(raw, path):
                 FENCE.match(lines[index]) or LIST.match(lines[index]) or table_start(lines, index)):
             paragraph.append(lines[index])
             index += 1
-        output.append('<p>' + inline('\n'.join(paragraph))[0] + '</p>')
+        output.append('<p>' + '<br>\n'.join(inline(part)[0] for part in paragraph) + '</p>')
     return '\n'.join(output), headings
+
+
+ANSWER = re.compile(r'^\s*(?:\*\*答复\*\*|#{4,6}\s*答复)\s*[:：]?\s*(.*)$')
+ANSWERER = re.compile(r'^\s*(?:\*\*答复人\*\*|#{4,6}\s*答复人)')
+UNANSWERED = {'', '-', '—', '无', '待答复', '（待答复）', '(待答复)', '待填写', '（待填写）', 'TODO', 'TBD'}
+
+
+def answer_status(lines):
+    """待确认问题的一节：有“答复”小节时返回 answered / open，没有时返回 None。"""
+    for index, line in enumerate(lines):
+        found = ANSWER.match(line)
+        if not found:
+            continue
+        text = [found[1]]
+        for rest in lines[index + 1:]:
+            if ANSWERER.match(rest) or HEADING.match(rest):
+                break
+            text.append(rest)
+        value = '\n'.join(text).strip()
+        return 'open' if value in UNANSWERED else 'answered'
+    return None
+
+
+def sections(raw, path):
+    """按 1～3 级标题把文档切成节（代码块内的 # 不算标题），每节各自渲染。
+
+    返回 [{anchor, level, title, html, answer}]；文档开头没有标题的文字归入 level 0 的一节。
+    """
+    lines = raw.splitlines()
+    chunks, current, fence = [], [], None
+    for line in lines:
+        opening = FENCE.match(line)
+        if fence:
+            if re.fullmatch(r' {0,3}' + re.escape(fence[0]) + '{' + str(len(fence)) + r',}\s*', line):
+                fence = None
+        elif opening:
+            fence = opening[1]
+        elif (heading := HEADING.match(line)) and len(heading[1]) <= 3 and current:
+            chunks.append(current)
+            current = []
+        current.append(line)
+    if current:
+        chunks.append(current)
+    used, result = set(), []
+    for chunk in chunks:
+        html, headings = render('\n'.join(chunk), path, used)
+        first = HEADING.match(chunk[0])
+        level = len(first[1]) if first and len(first[1]) <= 3 else 0
+        title = headings[0]['title'] if level else ''
+        anchor = headings[0]['anchor'] if level else 'sop-' + hashlib.sha256(path.encode()).hexdigest()[:12] + '-intro'
+        if not html.strip():
+            continue
+        result.append(dict(anchor=anchor, level=level, title=title, html=html, answer=answer_status(chunk[1:] if level else chunk)))
+    return result

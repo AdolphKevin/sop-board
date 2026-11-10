@@ -1,0 +1,300 @@
+# v10 现行场景：三栏场景工作台（场景树、筛选、详情、证据、复测标注、待人工复核与人工确认率、内网范围、本机 AI 重跑）
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 3 按 docs/design.md 已定决策 13（补回人工复核，2026-11-10 blur.yin 批准）与 docs/reference.md 的统计口径，由未参与实现的审核方在实现前修订。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo 是数据目录 $D 中唯一的项目）；看板已以 sop-board serve demo --data $D --lan 启动。
+#   “内网”指另一台设备用 --lan 打印的实际非回环地址访问；“本机”指回环地址。
+#   “已有结果”：main 上 shop#X 为失败（Agent 结果，附请求响应证据），shop#W 为通过（附截图、录像与 trace），shop#A 曾在旧快照上通过且没有守护，
+#   shop#B 未执行；另有一份草稿文件 draft-a；wt1 检出已建立并有一条 shop#B 的通过结果。
+#   其中 shop#W 的通过（当前快照）与 shop#A 的通过（旧快照）都是 Agent 经演示项目入口的独立验收通过（执行者 T1、实现者 I1），执行期间产品无变化，
+#   都不是保留通过；wt1 中 shop#B 的通过是实现者自检；main 与 wt1 都还没有任何人工标注。由此 main 的确认率样本恰为这 2 条通过。
+#   “复核样本”：重新生成的演示项目，main 上依次有：快照 S0 上运行 R0（执行者 T0、实现者 I1）对 shop#W 的 Agent 独立通过；
+#   在 app 的 README.md 加一行并提交得到快照 S1 后，运行 R1（执行者 T1、实现者 I1）实际执行 shop#A 并通过、按 impact.json 对 shop#W 保留通过（kept），
+#   运行 R2（执行者 T2，--implementer T2）执行 shop#B 并通过（实现者自检）。三次执行期间产品都无变化；shop#X 未执行；没有守护，也没有任何人工标注。
+#   由此 main 的确认率样本恰为 R0 的 shop#W 与 R1 的 shop#A 两条。
+#   比率写作“分子/分母（百分比）”，只核对分子与分母的数值，不限定排版。
+
+metadata:
+  requirement: "sop-board v10：测试同学在三栏场景工作台按场景找到、查看四要素与证据、复测标注并查看历史，按“待人工复核”找到待复核的 Agent 独立通过并看到人工确认率与复核覆盖，内网全程可用；内网只显示业务字段，不能发起 AI 重跑"
+  version: 3
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对工作台试用的反馈"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 13：补回人工复核（待人工复核徽标与筛选、Agent 独立通过的人工确认率与复核覆盖）"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["workbench", "web", "lan", "annotation", "review"]
+
+sops:
+  - id: WB-01
+    title: 在场景树中按状态、搜索和检出找到场景
+    actor: 测试同学
+    entry: "看板 / 与 /p/demo?checkout=<名称>"
+    negative_exempt: "只读浏览；内网访问范围的拒绝分支见 WB-03-N01"
+    scenarios:
+      - id: WB-01-P01
+        polarity: positive
+        title: 状态筛选（含待人工复核）计数与命令行一致，概况显示复核统计，检出切换与分享链接可用
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”"]
+        steps:
+          - "本机浏览器打开 /"
+          - "查看左栏 文件→节点→场景 树与顶部各状态筛选的计数，并与 sop-board status 和 sop-board status --json 对照"
+          - "点筛选“失败”，再点筛选“待人工复核”，再清除筛选并搜索 shop#W 的标题中的一个词"
+          - "打开工作台概况，查看待人工复核数、Agent 独立通过的人工确认率与复核覆盖"
+          - "用检出切换选 wt1，查看“待人工复核”筛选计数与概况"
+          - "复制 shop#W 详情页的地址，在新标签页打开"
+        expected:
+          - "/ 直接进入 /p/demo 工作台"
+          - "树按 文件→节点→场景 排列，每条场景带状态点；筛选项为 待复测、失败、待人工复核、待沉淀、通过、守护通过、未执行、草稿，各带计数，与命令行一致（shop#A 计入待复测，draft-a 的场景计入草稿）"
+          - "“失败”筛选只列 shop#X；“待人工复核”筛选计数为 1、只列 shop#W；搜索结果包含 shop#W"
+          - "树中 shop#W 显示通过并带“待人工复核”标记；shop#A（独立通过发生在旧快照上，现为待复测）不带该标记"
+          - "status 文字输出含“待人工复核 1”；status --json 的 review 为 1，review_queue 只含 shop#W"
+          - "main 的概况显示待人工复核 1；复核覆盖为 0/2（0%），人工确认率还没有人工结论的样本（分母为 0）"
+          - "切换后地址带 checkout=wt1，shop#B 显示为通过且不带“待人工复核”（它是实现者自检通过），“待人工复核”计数为 0，概况的复核覆盖分母为 0；shop#X 显示为未执行"
+          - "分享地址带 #shop#W，在新标签页直接打开 shop#W 详情"
+        forbidden_effects:
+          - "页面出现 批次、轮次、待同步、已作废、沿用、执行入口、任务状态 等术语"
+          - "切换检出后仍显示 main 的结果或 main 的待人工复核与复核统计"
+          - "“待人工复核”标记取代或隐藏“通过”状态"
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/reference.md#场景状态", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["工作台截图与页面文本", "status 与 status --json 输出"]
+
+      - id: WB-01-P02
+        polarity: positive
+        title: 点击场景只切换右栏详情，左栏树的展开状态与滚动位置保持不变
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "浏览器窗口高度已缩小到左栏树出现纵向滚动条", "左栏树中至少有一个节点被折叠"]
+        steps:
+          - "本机浏览器打开 /p/demo，手动折叠一个节点并把左栏树向下滚动一段，记录各节点展开或折叠的状态与滚动位置"
+          - "点击树中靠下的一条场景"
+          - "再点击另一条场景，并回到上一条"
+        expected:
+          - "每次点击后右栏显示被点击场景的详情，地址带该场景的 #<场景键>"
+          - "点击前后左栏树各节点的展开或折叠状态不变，先前折叠的节点仍然折叠"
+          - "点击前后左栏树的滚动位置不变，没有回到最上面"
+        forbidden_effects: ["点击场景后所有节点被展开", "点击场景后左栏树滚动回到最上面"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["点击前后的截图与页面文本", "左栏树滚动位置的读数"]
+
+  - id: WB-02
+    title: 测试同学从内网复测并标注
+    actor: 测试同学
+    entry: "内网地址上的工作台场景详情"
+    negative_exempt: "缺陷链接与姓名均不必填，原有的“缺链接被拒绝”分支已取消；复测通过、不通过、阻塞、需求变更四种状态没有对应的业务拒绝；跨源或非 JSON 的标注请求被拒见 WB-03-N01"
+    must:
+      - "右栏顺序固定：标题与徽标、当前状态与原因、四要素（预期与禁止逐条并附守护覆盖标记）、最新结果与证据、复测标注、本机按钮、历史"
+      - "复测状态可选 通过、不通过、阻塞、需求变更；缺陷链接和复测人姓名都不必填"
+      - "复测人姓名在页面上填一次，所有场景共用，不需要再填第二次，除非使用者主动修改；姓名存在浏览器 localStorage"
+      - "复测标注表单中每个输入框独占一行，不与其他输入框并排"
+      - "Agent 独立真实入口通过、尚无人工标注的通过场景带“待人工复核”；任一人工标注后消失；人工标注不通过时场景直接显示为失败"
+      - "Agent 独立通过的人工确认率与复核覆盖内网与本机显示相同的数值"
+    scenarios:
+      - id: WB-02-P01
+        polarity: positive
+        title: 内网找到失败场景，看完证据标注不通过，再标注另一条通过并查看历史
+        actor: 测试同学
+        priority: P0
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "测试同学的浏览器从未打开过本看板（localStorage 为空）"]
+        steps:
+          - "在另一台设备打开内网地址，点筛选“失败”，打开 shop#X"
+          - "从上到下阅读右栏：标题徽标、状态原因、起点、步骤、预期、禁止、最新结果与证据"
+          - "在复测标注表单选“不通过”，填缺陷链接 https://issues.example/DEMO-2 和姓名 张测，提交"
+          - "刷新页面，展开历史"
+          - "打开 shop#W，查看状态栏与“待人工复核”筛选计数，播放录像、打开 trace，选“通过”提交"
+          - "刷新页面，查看 shop#W 的状态栏、“待人工复核”筛选计数与工作台概况；本机同时打开概况对照"
+        expected:
+          - "右栏依次为：标题与 P 级、入口、正反向徽标；当前状态与原因；起点、步骤、预期、禁止（预期与禁止逐条列出）；最新结果与证据画廊；复测标注表单；历史（折叠）"
+          - "复测标注表单的状态选项包含 通过、不通过、阻塞、需求变更"
+          - "shop#X 的证据画廊显示请求与响应"
+          - "提交后 shop#X 显示失败并附缺陷链接 https://issues.example/DEMO-2；历史中有 张测 的不通过标注与时间，原 Agent 结果仍在"
+          - "shop#W 的录像在页面内播放、可拖动进度（视频请求返回 206 分段响应），trace 可打开"
+          - "标注 shop#W 时没有再输入姓名，提交后历史中有 张测 的通过标注"
+          - "标注前内网 shop#W 显示通过并带“待人工复核”，“待人工复核”计数为 1；标注后 shop#W 仍为通过，“待人工复核”标记消失，计数为 0"
+          - "内网概况的 Agent 独立通过的人工确认率为 1/1（100%）、复核覆盖为 1/2（50%），与本机概况数值相同；shop#X 的不通过标注不计入（它的 Agent 结果是失败）"
+          - "results 表中两条标注为 kind=manual 的新行"
+        forbidden_effects: ["要求填写姓名以外的身份信息", "标注改写或删除原 Agent 结果", "第二个场景的标注仍要求重新输入姓名", "标注后 shop#W 仍显示“待人工复核”"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#署名", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["内网设备截图与页面文本", "视频请求的响应头", "results 表只读查询"]
+      - id: WB-02-P02
+        polarity: positive
+        title: 不填缺陷链接和姓名也能对待人工复核的 Agent 通过标注不通过，场景直接显示失败
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "内网浏览器的 localStorage 为空，没有填过姓名"]
+        steps: ["内网打开 shop#W（通过，带“待人工复核”），选“不通过”，缺陷链接与姓名都留空，提交", "刷新页面，展开历史，查看“待人工复核”与“失败”筛选计数和工作台概况"]
+        expected:
+          - "提交成功，没有要求填写缺陷链接或姓名的提示"
+          - "shop#W 直接显示失败，不再带“待人工复核”；历史中新增一条不通过标注及时间，原 Agent 结果仍在"
+          - "“待人工复核”计数为 0；“失败”筛选列出 shop#X 与 shop#W"
+          - "概况的人工确认率为 0/1（0%），复核覆盖为 1/2（50%）"
+          - "results 表新增一条 kind=manual 的行"
+        forbidden_effects: ["因缺陷链接为空而拒绝提交", "因姓名为空而拒绝提交", "人工不通过后 shop#W 仍显示通过或待人工复核"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["内网设备截图与页面文本", "results 表只读查询"]
+      - id: WB-02-P03
+        polarity: positive
+        title: 把场景标注为阻塞或需求变更
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "内网浏览器已存有姓名 张测"]
+        steps:
+          - "内网打开 shop#B，选“阻塞”，缺陷链接留空，提交"
+          - "打开 shop#W（通过，带“待人工复核”），选“需求变更”，缺陷链接留空，提交"
+          - "刷新页面，分别展开两个场景的历史，查看“待人工复核”筛选计数与工作台概况"
+          - "本机 GET /api/board，查看 counts.review 与 stats"
+        expected:
+          - "两次提交都成功，没有要求填写缺陷链接"
+          - "shop#B 的历史中有 张测 的“阻塞”标注，shop#W 的历史中有 张测 的“需求变更”标注，各带时间，原 Agent 结果仍在"
+          - "shop#W 显示需求变更，不再带“待人工复核”；“待人工复核”计数为 0，/api/board 的 counts.review 为 0"
+          - "需求变更不算人工结论：概况与 /api/board 的人工确认率分母仍为 0（stats.agent_confirm_rate 的 denominator 为 0），复核覆盖仍为 0/2（agent_review_coverage 的 numerator 0、denominator 2）"
+          - "results 表新增两条 kind=manual 的行"
+        forbidden_effects: ["提交被拒绝", "标注改写或删除原 Agent 结果", "阻塞或需求变更标注计入人工确认率的分子或分母"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈", "docs/design.md#场景状态（按检出推导，不存储）", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["内网设备截图与页面文本", "/api/board 响应原文", "results 表只读查询"]
+      - id: WB-02-P04
+        polarity: positive
+        title: 姓名只填一次，使用者主动修改后新标注用新姓名
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "内网浏览器的 localStorage 为空"]
+        steps:
+          - "内网打开 shop#W，填姓名 张测，选“通过”，提交"
+          - "打开 shop#B，不输入姓名，选“通过”，提交"
+          - "刷新页面后打开 shop#X，不输入姓名，选“阻塞”，提交"
+          - "把姓名改为 李测，打开 shop#A，选“通过”，提交"
+          - "分别查看四个场景的历史"
+        expected:
+          - "shop#B 与刷新后的 shop#X 提交时都没有被要求再填姓名，历史中的标注署名为 张测"
+          - "改名后 shop#A 的标注署名为 李测，前三条标注仍署名 张测"
+        forbidden_effects: ["换一个场景后要求重新输入姓名", "改名前已有的标注被改写为 李测"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈", "docs/design.md#署名"]
+        evidence_hints: ["内网设备截图与页面文本", "results 表只读查询"]
+      - id: WB-02-P05
+        polarity: positive
+        title: 复测标注表单中每个输入框独占一行
+        actor: 测试同学
+        priority: P2
+        verify: web
+        initial_state: ["演示项目处于“已有结果”"]
+        steps: ["在内网设备桌面宽度的浏览器中打开 shop#W 详情，滚动到复测标注表单", "读取表单中各输入框的位置并截图"]
+        expected: ["表单中每个输入框（含姓名、缺陷链接等文本输入）各占独立的一行，任意两个输入框的纵向位置不同，没有并排的输入框"]
+        forbidden_effects: ["两个或更多输入框并排在同一行"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["表单截图", "各输入框的位置读数"]
+
+  - id: WB-03
+    title: 本机才能发起运行，内网只显示业务字段
+    actor: 开发者
+    entry: "工作台“AI 重跑此场景”“运行守护”“沉淀”按钮；内网与本机的 HTTP 接口"
+    must:
+      - "三个按钮仅本机可用；AI 重跑用同一份 sop-board 技能在检出目录启动无头会话，只记录进程号、日志和退出码"
+      - "内网写入只限复测标注、答复问题、批注草稿、上传用例或 SOP；不显示本机路径、会话编号、命令和凭据变量名"
+    scenarios:
+      - id: WB-03-P01
+        polarity: positive
+        title: 本机点“AI 重跑此场景”，结果回到工作台
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "config.yaml 的 agents 指定 claude", "main 没有运行中的启动"]
+        steps:
+          - "本机打开 shop#X 详情，确认三个按钮可见，点“AI 重跑此场景”"
+          - "打开运行记录页查看该次启动，等待其结束"
+          - "回到 shop#X 详情查看最新结果与历史"
+        expected:
+          - "launches 表新增一条 running 记录（进程号、日志路径），会话工作目录是 main 的检出目录"
+          - "运行记录页在本机能查看日志，结束后显示退出码"
+          - "shop#X 出现该会话登记的新结果，历史中显示其独立性"
+        forbidden_effects: ["在 main 以外的检出目录运行", "无头会话打开有界面浏览器窗口"]
+        refs: ["docs/design.md#进程与入口", "docs/design.md#看板：三栏场景工作台（问题 2）"]
+        evidence_hints: ["页面截图", "launches 表只读查询", "会话日志"]
+      - id: WB-03-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网看不到本机信息，也不能发起 AI 重跑、守护或沉淀
+        actor: 测试同学
+        priority: P0
+        verify: api
+        initial_state: ["演示项目处于“已有结果”，并已有一条本机启动的运行记录"]
+        steps:
+          - "内网浏览器依次打开工作台 shop#X 详情、运行记录页与报告导出页，保存页面文本；从内网与本机分别 GET /api/board 保存响应"
+          - "从内网地址用 curl 以同源 JSON POST 调用本机页面上 AI 重跑、运行守护、沉淀所用的接口"
+          - "从内网地址用跨源 Origin 或非 JSON 内容类型 POST 一条复测标注"
+          - "只读查询 launches、guard_runs、work 与 results 表"
+        expected:
+          - "内网页面没有“AI 重跑此场景”“运行守护”“沉淀”按钮，页面文本中没有本机路径、会话编号、命令和凭据变量名"
+          - "内网 /api/board 的 counts.review、stats.agent_confirm_rate 与 stats.agent_review_coverage 与本机响应数值相同，但不含执行者 T1、实现者 I1 或其他会话编号"
+          - "三个 POST 都被拒绝，表中没有新增启动、守护运行或沉淀记录"
+          - "跨源或非 JSON 的标注请求被拒绝，没有新增标注"
+        forbidden_effects: ["从内网启动任何无头会话、守护运行或沉淀", "内网页面泄露本机路径、会话编号、命令或凭据变量名"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["内网页面文本", "curl 请求与响应原文", "表的只读查询"]
+
+  - id: WB-04
+    title: 待人工复核只跟随同一产品快照上的 Agent 独立通过
+    actor: 测试同学
+    entry: "工作台树、“待人工复核”筛选、详情状态栏与概况；sop-board status [--json]；GET /api/board"
+    must:
+      - "待人工复核：状态为通过，且当前指纹最新一条结果是 Agent 独立真实入口通过（kind=agent、独立验收、不是保留通过、执行期间产品无变化）；可与待沉淀并存；之后有任一人工标注，或产品变化使状态离开通过时消失"
+      - "确认率样本是当前检出全部结果记录中的每条 Agent 独立真实入口通过；样本的人工结论只取关联该结果、产品快照与它相同的最近一条人工通过或不通过；人工确认率 = 人工结论为通过的样本 / 有人工结论的样本，复核覆盖 = 有人工结论的样本 / 全部样本"
+    scenarios:
+      - id: WB-04-P01
+        polarity: positive
+        title: 只有同快照的 Agent 独立通过显示待人工复核，实现者自检与按影响判定保留的通过不显示
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“复核样本”"]
+        steps:
+          - "本机打开 /p/demo，查看树中 shop#A、shop#B、shop#W 的状态与标记，点筛选“待人工复核”"
+          - "打开 shop#A 详情查看状态栏；打开 shop#W 详情展开历史"
+          - "打开工作台概况，查看待人工复核数、Agent 独立通过的人工确认率与复核覆盖"
+          - "运行 sop-board status 与 sop-board status --json，GET /api/board"
+        expected:
+          - "shop#A、shop#B、shop#W 状态都是通过；只有 shop#A 带“待人工复核”标记；shop#A 与 shop#W 带“待沉淀”，shop#B 不带"
+          - "“待人工复核”筛选计数为 1，只列 shop#A"
+          - "shop#A 详情的状态栏显示通过，并同时带“待人工复核”与“待沉淀”"
+          - "shop#W 的历史中 R1 的一条标为“按影响判定保留通过”，R0 的独立通过与证据仍在"
+          - "概况显示待人工复核 1；复核覆盖为 0/2（0%），人工确认率还没有人工结论的样本（分母为 0）"
+          - "status 文字输出含“待人工复核 1”；status --json 的 review 为 1，review_queue 只含 shop#A"
+          - "/api/board 中 shop#A 的 review 徽标为真，shop#B、shop#W 为假；counts.review 为 1；stats.agent_review_coverage 的 numerator 0、denominator 2，stats.agent_confirm_rate 的 denominator 0"
+        forbidden_effects:
+          - "实现者自检的通过（shop#B）或按影响判定保留的通过（shop#W）显示待人工复核"
+          - "保留通过或实现者自检通过计入确认率样本"
+          - "“待人工复核”取代或隐藏“通过”或“待沉淀”"
+        refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#看板：三栏场景工作台（问题 2）", "docs/reference.md#场景状态", "docs/reference.md#4. 命令一览", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["工作台截图与页面文本", "status 与 status --json 输出", "/api/board 响应原文", "results 表只读查询（kind、独立性、kept、product_changed）"]
+      - id: WB-04-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 产品变化后待人工复核消失，之后的人工标注不算该次 Agent 通过的复核
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“复核样本”，shop#A 带“待人工复核”", "内网浏览器已存有姓名 张测"]
+        steps:
+          - "在 app 的 README.md 再加一行并提交（当前快照由 S1 变为 S2）"
+          - "本机查看 shop#A 的状态、原因与“待人工复核”筛选计数，运行 sop-board status --json"
+          - "测试同学在内网打开 shop#A，选“通过”提交"
+          - "本机查看工作台概况，GET /api/board；只读查询 results 表中这条标注与 R1 中 shop#A 结果的产品快照"
+        expected:
+          - "产品变化后 shop#A 为待复测，原因写明产品已变化、守护未覆盖，不再带“待人工复核”；“待人工复核”计数为 0；status --json 的 review 为 0，review_queue 为空"
+          - "内网标注提交成功，shop#A 仍不带“待人工复核”"
+          - "这条标注的产品快照是 S2，与 R1 的 S1 不同，不作为 R1 的人工结论：概况与 /api/board 的人工确认率分母仍为 0，复核覆盖仍为 0/2"
+        forbidden_effects: ["产品变化后 shop#A 仍显示待人工复核", "S2 上的人工通过被计为对 R1 那次 Agent 通过的人工确认"]
+        refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/standard.md#首次执行与人工复核", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["提交前后的工作台截图", "status --json 输出", "/api/board 响应原文", "results 表只读查询"]

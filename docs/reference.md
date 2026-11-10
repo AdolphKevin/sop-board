@@ -1,806 +1,516 @@
 # Flow Board 参考手册
 
-在开发者本机运行的流程验收看板。工作区由名称和多个 Git 仓库组成，仓库可以分散在任意位置；测试同事上传用例、查看结果与证据并复核，开发者通过本机页面发起执行和处理修复。项目怎样准备依赖、启动整套服务，由数据目录中的适配定义。
+Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验收工具。场景写在产品仓库的 YAML 文件里，Agent 会话经 CLI 准备、执行、提交；看板守护进程负责网页、按检出启停产品环境、Chrome for Testing 浏览器代理和本机无头会话。本手册只描述现行行为。验收口径以 [业务验收与质量改进标准](standard.md) 为准，搭建步骤见 `sop-board guide`，Web 驱动见 [playwright-acceptance.md](playwright-acceptance.md)。
 
-安装包及命令名仍为 `sop-board`。
+## 1. 概念
 
-状态：开发中。已接入工作区、适配、自检、执行及跨仓修复；真实模型修复与独立复测的验收记录单独保留。
-
-## 给代理
-
-在开发者打开的会话中，先询问工作区名称和全部仓库目录，再安装当前交付版本并完整读取随包指引：
-
-```sh
-uv tool install <本地看板检出路径>
-sop-board guide
-```
-
-按指引运行 `sop-board init <名称> <仓库目录>...`，核对输出的别名与仓库身份。安装与 init 需要目标目录写权限；已在本次授权范围内时直接执行，权限不足时由开发者在可写环境完成或授予相应目录权限。涉及 Git 工作树写入的 check 由使用者在沙箱外运行。先完成 init；Codex 当前会话不能写数据目录时，再请开发者用 init 打印的 `codex -C <数据目录> "按 sop-board guide 继续为工作区 <名称> 搭建"` 新开会话；Claude Code 执行 `/add-dir <数据目录>` 后继续。配置与适配会话以数据目录为工作目录，只读产品源码；真实验证手册按[业务验收标准](standard.md)在具备对应写权限的产品仓库会话中编写或补齐。
-
-调查实际服务与依赖、确认范围，并与开发者确认正确的工作树建立/删除方法：已有仓库脚本、团队工具、个人习惯，以及被忽略配置和生成代码怎样带过去。确认后把配置、适配和项目验证技能写入数据目录，再运行 `sop-board check <名称>`。报告单独列出产品手册位置、独立确认状态、本任务授权记录位置和技能摘要，请开发者确认。向开发者报告已验证的事实、推断及依据、待回答的问题，并列出适配依赖的外部工具及其来源（仓库内、团队共用或仅本机）；团队成员共用适配前须各自具备。开发者确认后启动。Codex 与 Claude Code 使用同一份指引；搭建产物按上述位置保存，凭据仅经环境变量传递，验证按场景执行。
-
-## 内置 Web 验收
-
-Web 技能、模板和转换器随包发行，统一维护于 `src/sop_board/skills/playwright-acceptance/`。`sop-board guide` 保留工作区搭建全文并提供 Web 入口；`sop-board playwright guide` 查看 Web 专用操作，`scope`、`convert`、`tags` 为本地命令，`submit` 将手工试跑结果登记到原工作区和批次。自动任务只写 results.jsonl，由看板登记。详见 [Web 验收集成](playwright-acceptance.md)。
-
-## 安装和启动
-
-`sop-board skills install` 把随包 `sop-board`、`regression-distill`、`playwright-acceptance` 链接到当前 `HOME` 下的 `~/.agents/skills/` 和 `~/.claude/skills/`。输出各客户端实际解析的路径与 sop-board 包版本；重复安装不产生重复链接，升级后再运行会更新本包拥有的链接（包括旧安装路径已移除的链接）。其他来源的同名目录或链接列出并跳过，保持原样。每个技能目录中的 `.sop-board-links.json` 仅记录本安装器拥有的链接来源。
-
-需要 Python 3.10 以上、uv、Git，以及支持 POSIX 进程组的本机环境。定位占用端口的进程使用 `lsof`。仓库内开发可运行：
-
-```sh
-uv sync
-uv run sop-board guide
-uv run sop-board init demo /absolute/app /another/location/lib --data /absolute/board-data
-# 按 guide 在数据目录完成配置、适配与验证技能后：
-uv run sop-board check --data /absolute/board-data
-uv run sop-board --data /absolute/board-data --port 8787
-```
-
-已安装命令的使用方式：
-
-```sh
-sop-board init <名称> <仓库目录>... [--data <目录>]
-sop-board [名称]
-sop-board [名称] --lan --port 8787
-sop-board check [名称]
-sop-board guide
-```
-
-名称以字母或数字开头，只含字母、数字、点、下划线和连字符，最长 64 字符。数据缺省放在 `~/.sop-board/<名称>/`；`--data` 指定其他目录时读取其中登记的名称，目录不能位于仓库内。init 逐个核对仓库根目录、origin 与重复目录，任一不符都不创建文件，已有数据目录也不覆盖。
-
-省略名称且无 --data 时，按当前目录所在 Git 仓库查找 `~/.sop-board/*/config.yaml` 中的 repos；唯一匹配时使用，没有则提示 init，多个则列出名称请开发者指定。默认仅监听 `127.0.0.1`，`--lan` 开放内网并打印实际 IPv4 地址。`--paused` 在派发任何任务前暂停自动任务，验收或排查时避免一启动就调用执行代理，之后在页面上恢复。
-
-工作区名称就是页面与接口中的键，数据目录的 `workspace.json` 只登记 format（sop-board-workspace-v10）与 name。数据库为 `workspace.sqlite3`；v9 或其他旧格式拒绝读取，提示用 `sop-board init` 新建，不迁移。开发者指定旧适配脚本时可经确认在新目录重写，旧库用例和轮次不带入。配置缺失或不合格时看板仍可启动，显示“尚未搭建”与搭建做法，执行和修复停用。
-
-停止看板会终止其环境进程组。命令行自检在看板停止后运行；看板已运行时使用本机页面的“自检”按钮。
-
-<a id="session-entry"></a>
-
-## 开发会话入口（阶段 1～4）
-
-这些命令直接访问本机工作区数据，不经 HTTP，看板运行或停止时都可用。所有命令都接受 `--data <目录>`；下表的工作区可省略，依次按数据目录登记、当前产品仓库查找。仅按名称时使用缺省数据目录。找不到已登记工作区退出 1，提示按 `sop-board guide` 运行 `init`，不会隐式新建数据。确认人、参数、资料、配置或登记格式等其他错误只报告对应原因，不附加初始化指引；当前目录不能识别为产品仓库时提示指定名称或数据目录。入口技能为随包 `sop-board`；写业务 SOP 见下方“编写业务 SOP”，阶段 5 见“会话修复与独立复验”。阶段 1～3 只需配置合格，执行与修复还要求当前自检通过。
-
-下表及阶段 5 表中的命令均以 `sop-board` 开头；方括号表示可选参数，尖括号或中文名称须替换为实际值，不把这些符号直接交给 shell。
-
-| 命令 | 参数与作用 |
-| --- | --- |
-| `status [工作区] [--json]` | 工作区、批次概况、与 attention 接口相同的待处理事项；无 `--json` 时打印简要文字 |
-| `task list [工作区] [--batch 批次]` | 列出本工作区任务；可限定批次 |
-| `task show [工作区] --task 编号` | 读取任务、进度、认领和本机材料；编号也可写在最后一个位置参数 |
-| `task cancel [工作区] --task 编号` | 取消任务；运行中的看板任务须等进程退出及环境恢复后才能重新认领 |
-| `sop upload [工作区] 批次 文件 --uploaded-by 姓名 --confirmed-by 姓名 --session 标识 [--replace-queued]` | 与 POST sop 共用原文校验；登记已有原文，新版本触发的草稿任务直接由会话认领 |
-| `sop prepare [工作区] 批次 --source 文件... --session 标识 [--replace-queued]` | 复制资料、认领编写任务、返回提示词；--source 可重复 |
-| `sop answer [工作区] --task 编号 --question Q编号 --text 原话 --author 姓名 [--session 标识]` | 记录本问题的真人答复；也可省略 --task，改用工作区与批次定位唯一正在编写的任务 |
-| `sop submit [工作区] --task 编号 --confirmed-by 姓名 [--session 标识] [--replace-queued]` | 全部问题已答且正文更新后确认登记，随后草稿归原会话；替换选项只针对阶段 2 的同类排队任务 |
-| `draft prepare [工作区] 批次 --session 标识 [--replace-queued]` | 从已上传的业务 SOP 生成草稿，或按已登记批注修订 |
-| `draft submit [工作区] --task 编号 [--session 标识]` | 校验并登记草稿输出 |
-| `draft annotate [工作区] 批次 --version 版本 --target 目标 --kind 类型 --text 原文 --author 姓名` | 登记使用者批注或业务答复；目标与类型沿用草稿接口约定 |
-| `draft confirm [工作区] 批次 --version 版本 --confirmed-by 姓名` | 确认指定草稿并上传用例；可加 `--session 标识` 认领随后触发的合并 |
-| `cases upload [工作区] 批次 文件 --uploaded-by 姓名 --session 标识 [--replace-queued]` | 使用与看板相同的用例校验，触发的合并直接记为会话认领；记录原文件路径，供回写 |
-| `cases put [工作区] 批次 --from 文件 [--case 编号 ...] [--by 姓名] --reason 依据原文 [--session 标识] [--replace-queued]` | 按条新增或改写用例；片段可继承最近非合并澄清上传的 metadata，只登记选中且变化的条目。署名省略时只用默认业务确认人；登记一次上传与一条“按条增改”决定，并触发合并。全部未变化时不登记任何记录，不记录原文件路径 |
-| `cases export [工作区] 批次 [--upload 编号] (--out 文件 \| --write-back)` | 按某次上传（缺省为最近一次非“合并澄清”的上传）的用例与顺序导出答复改写后的最新用例，`changed` 列出改写过的编号。SOP 草稿确认生成的用例是另一次上传，用 `--upload` 单独导出。`--out` 不覆盖已有文件；`--write-back` 写回会话上传时记录的原文件，要求文件自上传或上次回写后未改动，且不计入产品快照（在 `snapshot_exclude` 或场景目录内、被 Git 忽略或不在任何仓库内），否则拒绝并给出声明方法。重新排版输出，不保留注释 |
-| `confirmer [工作区] [--set 姓名 \| --clear]` | 由使用者设置一次默认业务确认人（D99）；不带参数时查看。`status` 同时显示 |
-| `cases export [工作区] 批次 --case 编号 [--case 编号 ...] --out 文件` | 按给出顺序导出并集中用例的当前内容，含澄清改写；metadata 取最近非合并澄清上传。与 --upload、--write-back 互斥，不覆盖已有文件 |
-| `merge prepare [工作区] 批次 --session 标识 [--replace-queued] [--full]` | 准备用例、对话历史与当前场景；输出 mode、mode_reason、baseline、changed_cases。已有同一会话任务继续使用；--full 将尚未落地的任务按当前输入重新冻结为全量，保留任务编号，归档已有失败输出并撤下增量材料 |
-| `merge submit [工作区] --task 编号 [--session 标识]` | 整体校验后落地可确定场景、用例更新和回复采纳记录 |
-| `merge reply [工作区] 批次 --gap 任务:缺口或none --text 原文 --author 姓名` | 按缺口或通用说明保存使用者答复，来源为“会话” |
-| `merge exclude [工作区] 批次 --gap 任务:缺口 --author 姓名 --reason 理由` | 将缺口关联用例记为本批不纳入 |
-| `merge include [工作区] 批次 --case 用例编号 --author 姓名 --reason 理由` | 重新纳入一条用例，并保存决定理由 |
-| `execute prepare [工作区] 批次 --session 标识 [--scope pending或all或场景编号列表] [--replace-queued]` | 缺省 pending 仅准备待执行范围；all 全量，或空格分隔的明确场景编号。明确编号与看板相同：处于待执行的场景保留原因（产品变化待判定项按影响判定可沿用），其余记为 rerun |
-| `execute submit [工作区] --task 编号 [--implementer 实现者] [--session 标识]` | 核对范围、证据和输入后登记轮次；未给实现者则独立性为“未声明” |
-
-**署名**（D99）：`--uploaded-by`、`--confirmed-by`、`--author`，以及问题台账、决定记录、界面对照决定和待人处理的 `--by`，都须为使用者给出的姓名。省略时，同一命令里人给出的其他姓名补齐其余署名（例如 `sop upload` 只写 `--confirmed-by` 时上传人也用它），再没有时用默认业务确认人；都没有时拒绝。命令不替人推断姓名，会话标识与 agent 名称仍被拒绝。看板网页的表单仍逐次填写姓名。
-
-**多会话提示**（D99）：prepare 与 submit 成功时，若同一工作区还有其他会话认领、处于会话处理中、待验证或待提交的任务，输出 `other_sessions`（任务、类型、批次、状态、会话）与 `concurrency_notice`，提醒留意 `product_changed`、`voided_scenarios`，不替对方提交或取消任务。
-
-confirm、reply、exclude、include 可加 `--session 标识`，将随后合并也交给该会话；涉及已排队任务时可加 `--replace-queued`。不带 `--session` 时保留看板后续调度：没有进行中的合并时，不带 `--session` 的本机 reply 与看板答复一样会触发派发，有等待中的会话归属时记为该会话认领，否则由看板排队。会话已认领、尚未 prepare 的合并在 prepare 时纳入此前收到的全部答复与决定（含 exclude、include），计为已派发，本轮结束后不再为它们另派一轮；这期间 reply 与看板答复提示“已保存，将在会话准备当前合并时一并纳入”，exclude、include 的提示仍为“已保存，将按本次决定重新合并”。prepare 之后收到的答复留到下一轮，继承当前或明确指定的会话归属：看板派发这一轮并记为该会话认领，任务原因写明等待认领会话 prepare，不准备材料、不启动模型；看板未运行时由会话再次 prepare 开始下一轮。status 与 attention 以 `merge-followup` 列出已由会话认领、尚未 prepare 的合并（内网不显示会话标识与命令），会话 prepare 后不再列出；会话取消这样的合并时，其中的答复留待下一次合并（本机重新合并交给看板，或由会话 merge prepare），看板不自动另派。取消已 prepare 的会话轮次时，prepare 之后收到的答复仍按上述规则由看板派给同一会话。
-
-除 status 的缺省文字外，操作都输出 JSON。成功退出 0；业务或输出校验失败退出 1，包含 `ok: false` 及 `problems`，命令前置错误还包含 `error_code`。参数语法错误由命令解析器输出帮助并退出 2。prepare 示例：
-
-```json
-{
-  "ok": true,
-  "task": 42,
-  "kind": "execute",
-  "status": "会话处理中",
-  "workspace": "demo",
-  "batch": "refunds",
-  "directory": "/absolute/board-data/tasks/42",
-  "prompt": "/absolute/board-data/tasks/42/prompt.md",
-  "outputs": {
-    "results.jsonl": "/absolute/board-data/tasks/42/results.jsonl",
-    "impact.json": "/absolute/board-data/tasks/42/impact.json"
-  },
-  "session": "Codex-20261023-验收替代标签"
-}
-```
-
-草稿、合并的输出文件为 `final.json`。任务目录中的提示词是操作契约；prepare 重复调用保留已冻结的输入。submit 成功返回完整 `task`，重复提交已登记任务返回 `duplicate: true`，不新增版本或轮次。不合格输出可在同目录修正后再次提交，任务保持“会话处理中”；错误输出归档到 attempts 下。业务输入变化使任务“已作废”，原因写在 `void_reason`，必须按最新输入重新准备。执行期间只有部分场景的内容或用例变化时（D96），只作废这些场景：不登记它们的结果，提交输出与任务结果列出 `voided_scenarios`，这些场景回到待执行，本轮其他场景照常登记；全部所选场景都变化或验证技能变化时仍整轮作废。修复与复验还核对产品内容，批次执行开始后的产品变化不作废（见下文）。
-
-status 的 `problems` 列出当前配置不合格的字段与原因（合格时为空数组），只在本机命令行输出；`setup_check.ok`、时间与 report 指向最近已完成且仍适用的自检结论；`latest_attempt` 另列最近尝试的 ok、completed、时间、报告和说明。completed=false 表示当前环境未能完成，不替换原有效结论。Codex 沙箱中只读取这些记录，不运行涉及 Git 工作树写入的 check。没有有效通过记录或配置变化时，由使用者在沙箱外运行 check。CLI 中的任务与材料链接使用看板上次启动记录的完整本机地址；尚无地址时写为“看板地址/w/…”或“看板地址/api/v1/…”，不输出容易误解的裸相对路径。记录的地址不表示看板当前正在运行。
-
-`status` 的文字输出每批次一行为“批次 <名称>：N 条场景；待执行 A；产品变化待判定 B”。`--json` 的每个批次包含 `queue_counts`（各队列条数）与 `queues`（各队列的场景编号），键为 `pending`、`source-changed`、`issues`、`retest`、`waiting-change`，与批次摘要接口使用同一口径；`statistics` 的比率口径保持不变。队列定义见“接口与页面”。
-
-同类看板任务运行时返回 `task-running` 和任务编号；仍在清理环境时也不能认领。排队时返回 `task-queued`，使用者同意取消后加 `--replace-queued`；成功输出包含被替换的 `replaced_tasks`。不同会话已经认领时返回 `task-owned`。会话只等待实际运行或恢复产品环境的任务，返回 `task-blocked`；不同类任务仅排队或等待时不阻挡会话准备，看板自己的队列依赖保持不变。会话修复只改当前工作区的产品代码，处于会话处理中时与批次执行（看板或会话）互不阻挡；修复复验和看板修复仍与执行互斥，会话修复复验通过后等待 fix land 期间，看板执行仍按队列依赖等待它。已中断、已放弃、已作废的任务保留原状态，重新准备会新建任务，不复活旧任务；唯一例外是已放弃的会话修复可按 D102 由 fix land 关闭为已处理。确认、答复、上传与排除都使用使用者给出的姓名，不把会话标识当成人；命令不能替 agent 推断业务答复或人的授权。
-
-会话执行允许未提交内容。快照保存每仓提交、未提交文件清单、内容摘要与 `dirty`；看板自动执行继续等待提交后才开始。开始执行后产品代码可继续修改和提交，本轮不作废：结果按准备时的快照登记。准备时的产品文件清单存为任务目录的 product-files.json，登记时逐文件比较，执行期间变化的路径（别名/相对路径；更早版本准备的任务没有清单时按仓库记为“别名/”）写入轮次的 `product.changed` 与任务结果的 `product_changed`，场景页、任务页和报告“执行期间产品变化”一节显示。这些通过即使产品之后回到开始时的内容也一直为 source-changed 待判定，previous-results.json 带出所列路径，依赖它们的场景须重跑；也不能作为回归沉淀的通过依据。在未提交内容上执行时，轮次的 `product.uncommitted` 另记开始时未提交的文件及当时的内容摘要；之后准备执行时，内容已与当时不同的文件写入 changes.json 对应仓库的 `previous_uncommitted`，与提交差异一起判定影响。会话负责按项目技能启动正确入口并留证，prepare 不替会话启动或切换环境。会话提交与看板执行共用消费、快照复核、范围和证据校验及轮次登记。
-
-执行任务的 input.json 与 origin.json 记录 `execution_origin`。execute.md 仅按入口区分环境准备、环境来源和启停约束：看板入口沿用原说明，会话入口自行按项目技能和手册准备入口、隔离数据并在结束后清理。预期、影响判断与证据等其他条款保持一致。blocked/skip 可以使用空 evidence 数组，但必须有 finding；实际 pass/fail 仍须真实证据。
-
-会话执行和 --fix 复验都从任务目录 repos.json 按仓库别名读取路径，不依赖客户端不存在的仓库路径环境变量；看板入口的变量与提示词保持原约定。会话结束前只停止本轮自己按手册启动的服务，核对退出，在结果 note 列出服务名称、PID 或进程组及停止结果；无启动则写明，清理失败列出仍运行的进程与原因。不要停止使用者已有服务或浏览器，沿用结果的 note 仍保留原判定理由。
-
-轮次的 `execution_origin` 为 `board`（看板）或 `session`（会话），旧轮次没有来源时显示“历史记录未注明”。结果的 `independence` 为 `independent`、`self-check`、`undeclared`；声明实现者且与执行者相同为自检，不同为独立验收，未声明实现者则为未声明。身份必须反映实际角色，不得仅换标签制造独立性。批次页、场景详情、报告显示这些字段；`statistics.independence_counts` 按当前未排除场景的最新 Agent 结果分别计数，各轮次也保留自身计数。内网保留作为验收记录的执行者、实现者、提交者；任务认领会话、原始 session 字段、本机路径和代理材料仍仅本机可见。
-
-执行中途停止时，results.jsonl 中未执行的场景写成 `{"scenario", "status": "not-executed", "finding": 原因}` 标记行（`playwright convert --allow-partial` 自动生成），不附证据。execute submit 不登记这些场景，它们留在待执行范围，输出与任务结果列出 `not_executed`；全部场景都是标记行且没有入口检查受阻时拒绝登记。`--fix` 复验须完整执行，不接受标记行。
-
-`sop-board playwright submit` 保留原参数，并可加 `--implementer`，通过同一轮次登记入口记录为会话执行。已有 execute prepare 任务时只用 Web 驱动生成结果，再 execute submit，不另行登记第二轮。原生会话编号与独立交接方法见随包 `sop-board/references/sessions.md`；默认由未参与实现的新会话执行，使用者明确要求当前实现会话执行时如实登记自检。
-
-## 编写业务 SOP
-
-编写任务类型为 `author-sop`，共用任务认领、进度、取消、归档与内网白名单；本段没有看板上传需求资料或调度编写的入口。prepare 使用 D83 规则：其他仅排队的任务不阻挡，实际环境占用及同批次同类活动任务仍核对，已结束任务重新建立。
-
-资料最多 32 份，每份不超过 20 MiB；复制为任务目录 `sources/S编号/文件名`，同名文件不互相覆盖。sources.json 固定原路径、文件名、SHA-256 与大小；原路径及副本仅本机可见。任务使用复制时的版本，外部文件后来变化不会暗改副本；重新 prepare 提供不同资料会使原任务作废，须再次准备。配置、目标 SOP 原文或任务内资料副本变化也作废，不覆盖新原文。
-
-提示词与完整模式为 `prompts/author-sop.md`、`prompts/author-sop.schema.json`。编写规则随包资源为 `prompts/author-sop-guide.md`，与人工指南“业务 SOP 怎样写”的公共规则保持一致；prepare 复制为任务目录的 sop-guide.md，prompt.md 给出该文件的实际路径，普通 wheel 安装也可读取。final.json 含 `sop_markdown`、逐规则的来源 `rules`、D66 格式的 `questions`、`answers_sha256` 和 `applied_answers`。正文使用提示词规定的六个二级标题、R编号规则小节与 mermaid 流程图。每条规则与问题引用资料编号和原文；UTF-8 资料核对摘录确在副本内，二进制资料原样保存，其摘录真实性由独立审阅核对。
-
-再次 prepare、answer 或 submit 会核对输出并记录问题，生成只读预览 sop.md。已记录的问题不能删除或换义，补充追问用新编号；答复按任务与问题保存，重复相同答复不重复登记，更正答复追加历史。answers.json 由命令维护，含完整答复与摘要。模型须按最新答复修订正文，把摘要写入 final.json，并在 applied_answers 对每个已答问题引用一段修订后的正文；未答或摘要过期不能登记。机械核对不代替真人判断答复是否真正解决问题。
-
-submit 要求使用者在本次请求中明确给出确认人，不能用 agent 或会话编号。确认人同时记为本次原文登记人。经与 POST sop 相同的校验后，SOP 原文、资料摘要、答复与确认记录在同一数据库事务登记；成功返回编写 `task` 及认领后的 `draft_task`。再次提交返回 duplicate，不新增 SOP 版本或问题答复。后续草稿复用 sop upload 的规则，仍归同一会话；已有明确授权可继续 draft prepare。
-
-SOP 页只读展示各版本的文件名、摘要、答复人与原话、确认人。sop.md 中的答复时间按与页面相同的显示时区格式化；数据库与 answers.json 的原始时间不变。最终正文清理过程状态，确认信息由命令附加，历史问题与答复保留原文；问题直接询问业务决定，未覆盖范围只记业务边界。登记成功报告 CLI 返回的位置或已有看板链接，看板未运行时无需为寻找链接额外运行命令。编写任务附件全部仅本机，不给内网公开原始资料、路径、会话身份或输出文件；登记的业务 SOP 按既有页面规则共享。新增三张记录表，数据库格式保持 5，旧表列不变。
-
-## 会话修复与独立复验（阶段 5）
-
-工作区须已登记并通过当前配置的 check。所有命令可省略工作区并按当前仓库查找，或指定 `--data <目录>`；看板可以不运行。修复在开发者当前工作区进行，保留准备前的未提交内容，不建立工作树、不自动提交、合入或清理仓库。
-
-| 命令 | 作用 |
-| --- | --- |
-| `fix prepare [工作区] [--scenario 批次#场景 ...] [--issues 问题编号 ...] --session 标识` | 使用与看板 discover 相同的已放行问题来源；不传 --scenario 与 --issues 则认领当前可处理问题；`--issues` 认领这些问题当前可认领的失败场景，并把修复关联到问题台账。已在其他修复任务中的场景返回 409 并列任务编号，不支持替换排队修复任务；只进过已放弃修复任务的失败可再次认领（看板自动建任务仍不重复纳入） |
-| `fix submit [工作区] --task 编号 [--session 标识]` | 消费 final.json，与看板共用根因模式、问题覆盖和 root_repo 校验；保存真实改动清单。产品问题进入待验证，非产品问题交使用者处理 |
-| `execute prepare [工作区] --fix 修复编号 --session 复验标识` | 从问题与改动仓库确定跨批次复验范围，不另填批次或 --scope；输出新的执行任务编号和目录，提示词要求逐条实际执行，不能沿用旧结果 |
-| `execute submit [工作区] --task 复验编号 [--session 复验标识]` | 读取 results.jsonl，校验范围、证据、身份及输入；实现者自动绑定原修复会话，执行者绑定复验认领。不能改填实现者以规避独立性要求 |
-| `fix land [工作区] --task 修复编号` | 开发者审核并自行提交后，核对修复改动的文件已提交、且与独立通过快照一致；一致才关闭并按现有方式回写 Jira。其他文件的变化记入关闭记录，不挡住关闭；已放弃的会话修复也可关闭（D102）。命令本身不进行 Git 写入 |
-
-准备结果沿用会话入口的 JSON：`task`、`directory`、`prompt`、`outputs`。修复输出为 final.json；复验输出只需 results.jsonl，每条带 batch 与 scenario，跨批次同编号不得合并。修复目录保留 problems.json、entries.json、snapshot.json、cases.json、feedback.json 和 schema.json；复验目录使用 retest.json、entries.json、repos.json、snapshot.json 及按批次提供的 Web 材料。复验 snapshot.json 的 session_files 是修复输出登记后、复验准备时的文件清单，session_files_stage 标明含义；原修复任务仍保留修复前清单用于计算改动。提示词来自同一份 fix.md / fix-verify.md，目录和环境说明按入口切换。
-
-修复提交拒绝准备后对各仓 docs/sop/ 与工作区场景目录的改动，错误列出受保护文件或变化原因。会话修复的输入只看本修复的问题场景（D101）：准备与提交时看全部问题，登记后只看产品问题；这些场景须仍在当前版本、内容指纹与认领时相同、引用的来源用例的前置条件、步骤与预期与修复准备时相同（依据说明、标签等修订不算），否则返回 `session-command-invalid` 并列出变化的场景（批次#编号）。其他场景、其他批次、无关用例与工作区配置的变化不使再次准备、fix submit 与 fix land 被拒。准备前已存在的未提交材料留在原处。根因输出不合格可在同任务修正重交；已登记的输出重复提交不重复计尝试。需要继续修复时由原会话重新 fix prepare，保留旧尝试后再提交。环境、场景写法、需求变化、执行问题或无法修复的问题不由自动产品修补代替；全部为非产品问题时不创建复验。
-
-复验默认交未参与实现的新会话，身份规则与入口技能 sessions.md 相同；准备时即拒绝修复会话自己的标识，不创建或认领复验任务，提交时仍保留同会话拒收；以认领会话以外的标识（如修复会话）提交复验任务返回 `task-owned`，提示会话标识与任务认领不一致，并说明复验须由未参与修复的新会话准备并提交。复验准备须工作区自检通过。复验所选场景或其引用用例的前置条件、步骤、预期变化、复验准备后的业务配置或自检状态变化、复验期间产品内容变化、验证技能变化时，旧复验作废，不计为一次未通过；复验范围外的场景与无关用例变化，以及修复输出登记后使用者登记的新版 SOP（只改动范围外场景时），不使复验作废。各批次分别登记轮次与该批次涉及仓库的内容摘要，入口为会话，原修复会话为实现者、复验者为执行者。只有全部范围实际通过才进入等待开发者提交；失败或受阻保留结果与未完成范围。
-
-按 D83，会话复验不被仅排队或等待中的看板修复阻挡；实际运行、尚未恢复环境的任务及其他活动会话仍按环境互斥等待。认领同一问题的规则不变，不能接管已有看板修复中的场景。
-
-**并存规则**（D98）：其他会话的修复只阻止认领重叠的场景（`fix-already-owned`）。会话修复共用当前工作区，两个修复不能同时处于“会话处理中”（同时改代码会让各自的改动混在一起），后来者返回 `task-blocked`，等对方提交修复输出、进入待验证后即可准备。已在待验证、待提交的修复不再挡住新的会话修复。
-
-**关闭条件**：fix land 接受两种独立通过依据，内容核对与“须已提交”对两者相同（只看修复改动的文件，都排除场景目录与 `snapshot_exclude`）：
-
-- 当前这次专门复验的通过快照；
-- 没有专门复验时，修复中每个产品问题场景的最近一条 Agent 结果都为通过，登记于修复输出之后，执行者与提交者都不是修复会话、独立性不是自检，验证技能摘要与现在相同，且那一轮准备时修复改动文件的内容与现在一致。关闭说明写明“与独立执行（批次 第 N 轮）内容一致”。有未结束的专门复验时返回 `fix-validation-running`。不满足时 `fix-validation-required` 逐个列出问题场景与原因：没有结果、最近结果不是通过、通过在修复输出登记之前、由修复会话执行或为自检、验证技能已变化、那一轮没有产品文件清单、通过之后修复改动的文件又有变化（写明文件数与一例）；照此在当前产品上由修复会话以外的执行者补跑通过后再关闭。
-
-fix land 只认上述独立通过快照，只核对修复改动的文件（修复输出登记时记下的 changes，D100）：内容与快照不同返回 `fix-content-changed`，只列这些文件，要求重新复验；内容相同但未提交返回 `fix-commit-required`，只列这些文件。修复改动的文件即使落在 `local_only` 声明里也照常核对。其他文件（已提交或未提交）的变化不挡住关闭：关闭成功时输出 `local_only` 列出已声明的本机保留文件，`other_changes` 列出其余修复以外的变化（超过 100 处另记 `other_changes_count`），每项写明 `uncommitted`（当前是否未提交）与 `same_as_verified`（内容是否与验证时相同）；关闭说明写明带有几个本机保留文件、验证后另有几处修复以外的变化，尝试记录同样保存（内网只见通过状态）。这些变化按产品变化规则使相关通过进入影响判定，不随修复关闭被认可。工作区里“已跟踪但已删除”与提交后“不存在”视为同一状态。fix land 不再核对受保护文件与工作区配置，问题场景的核对同上。已放弃的会话修复（D102）在最后一次尝试已登记产品修复输出、产品问题没有被其他未放弃的修复认领时，也可按上述依据关闭为已处理，关闭说明写明此前放弃的时间；否则分别返回 `fix-not-ready`、`fix-problem-reclaimed`。其他操作仍不复活已放弃的修复。仅提交号改变而内容相同不使通过证据失效。关闭后显示“已处理（会话修复已关闭）”，重复 land 不增加轮次或重复缺陷单评论。Jira 沿用启动命令环境配置，未配置或回写失败如实保留处理结果；修复关闭不等于已部署。
-
-修复页和场景详情显示会话入口、根因、真实改动、复验轮次和关闭状态；批次统计另列会话修复已关闭数，不算作看板的自动合入。内网只保留业务白名单，任务会话、输入与本机路径仍隐藏，轮次中的执行者/实现者按 D79 保留。会话任务不接受看板的批准、自动重试或合入；用会话命令继续，放弃仍保留用户文件。
-
-取消会话复验时，同一事务将子任务记为已放弃并更新父修复的等待说明，不继续等待已取消编号；其他尝试或后续新复验不受影响。放弃会话修复只保留当前工作区改动，不声称保留不存在的工作树；尚未提交输出的尝试记为已放弃，已登记的尝试保持原结论；待处理事项没有可用续接命令时省略 resume。放弃与提交交错时以登记事务内的状态为准：修复已不在会话处理中时 fix submit 返回 ok 为 false，problems 说明任务当前状态不能提交、本次输出未登记；复验任务已取消时 execute submit 同样如此，原修复已不在待验证或待提交时本次复验作废；都不登记尝试结论或轮次，也不改回会话处理中（提交前的状态检查仍返回 409 `task-state-invalid`）。
-
-## 配置与环境
-
-数据目录的 `config.yaml` 是唯一配置入口：
-
-- `repos`：仓库别名到工作树根目录的绝对路径或 `~/` 路径；身份从各仓库 origin 规范化得到，并在页面显示。
-- `scenarios`：`{repo: <已声明别名>, path: <仓内相对目录>}`，path 不含 `..` 且不能等于仓库根目录。每批次保存为 `<批次>.yaml`。来源 ref 路径相对该仓库，也可用 `<别名>:<仓内路径>` 引用其他仓库；批次、版本和问题的路径按此形式显示。
-- `snapshot_exclude`：可选的仓库别名到仓内相对路径数组，例如 `{app: [docs/test-cases/]}`。默认 `{}`，只额外排除明确声明的文件或目录；目录包含全部后代，按完整路径匹配，不支持通配符。路径不能为空、为绝对路径、含 `..`、指向仓外或等于仓库根目录，仓库别名必须已登记。与场景目录一样，同时从已提交内容和工作区内容（含未跟踪、修改、删除）中排除；相似前缀路径及其他仓库不受影响。只声明不参与产品运行的材料，运行配置、代码及影响业务行为的文档应继续计入快照。
-- `local_only`：可选的仓库别名到仓内相对路径数组，写法与校验同 `snapshot_exclude`（D100）。声明本机专用、永不提交的文件，例如本机环境补丁、运维产物与个人草稿。只影响会话修复的 fix land 记录：这些文件单独列为本机保留文件，不混在 `other_changes` 里；修复自己改动的文件照常核对。执行快照照常包含它们，内容变化后已有通过仍按产品变化判定影响。属于运行配置，改动不作废在途任务、不要求重新自检。格式不合格时 `sop-board status --json` 的 `problems` 列出 `local_only.<别名>` 与原因。
-- `skill`：必填项目验证技能目录名，文件为数据目录 `skills/<skill>/SKILL.md`。须有 YAML 文件头且 name、description 为非空文字，每个入口须有含其名称的二级标题；技能目录内不允许符号链接。
-- `entries`：验收入口，包含 `surface`、`operate`、`observe`、`evidence`、`isolation`，可选 `address_env`、`credential_env`、`driver`、`web_evidence`、`atlas`。driver 是辅助技能目录名，先找数据目录 skills，再找 SOP_BOARD_SKILLS_DIR（缺省 `~/.agents/skills`）；Web 入口未声明 driver 或声明 `playwright-acceptance` 时使用随包 Web 技能（SOP_BOARD_SKILLS_DIR 中的同名技能可覆盖）；其他入口未声明时只按项目验证技能执行，不按 surface 使用缺省技能。
-- `entries.<入口>.web_evidence`：仅用于 `surface: web`，可选对象，内含 `video`（录屏）与 `trace`（操作轨迹）布尔开关；每项省略时为 `true`，`false` 时模板不启动该录制，也不要求该附件。`evidence` 继续是非空文字数组，用来声明截图、只读查询等业务证据。任务的 `entries.json` 保留声明，`scope.json.web_evidence` 按场景编号固定补齐默认值后的开关；执行、会话执行及修复复验共用。转换和提交仍要求实际 pass/fail 至少一份真实证据，不按扩展名强制录屏或 trace；声明中的具体业务证据由执行者和复核者逐项核对。
-- `entries.<入口>.atlas`：仅用于 Web 入口，含非空 `repos` 仓库别名数组，别名须已登记；可选 `languages` 为不重复的非空文字数组。声明后可梳理该入口的交互地图，见下文“交互地图”。
-- `entries.<入口>.credential_env`：不重复的环境变量名数组，例如 `[DEMO_BUYER_PASSWORD]`；名称以字母或下划线开头，后续只含字母、数字、下划线。看板执行、修复与复测会话从看板启动环境取得声明变量；开发会话入口从会话自身环境取得，适配返回值不能替换这些凭据。配置与任务材料只写名称，取值只经环境传递；使用仍需遵守本任务授权记录。地址变量同时声明为凭据时也不写入任务地址表，由会话从环境读取。
-- `adapter.worktree`：可选命令数组，按开发者确认的方式建立工作树；最后一个非空输出行返回 `{"repos": {别名: 路径}, "env": {...}}`。
-- `adapter.cleanup`：可选命令数组，删除这些工作树；缺省分别使用 Git 建立和删除命令。
-- `adapter.env`：启动整套服务并保持前台的命令数组；就绪时输出并刷新 `sop-board: ready`。
-- `adapter.ports`、`adapter.ready_timeout`：环境端口与就绪时限，时限缺省 180 秒。
-- `adapter.mode`：`managed`（缺省，看板用上述命令启停环境）或 `external`（服务由使用者或其脚本启停，看板只探测，D97）。`external` 只接受 `mode`、`health`、`heal`、`ready_timeout`，不接受 `env`、`worktree`、`cleanup`、`ports`。
-- `adapter.health`：`external` 必填的探测项数组。每项有不重复的 `name`，以及 `url`、`port`、`command` 三者之一：
-  - `url`：http 或 https 地址，收到小于 500 的状态即通过（401、404 也说明服务在线）；自签名证书请改用 `command`。
-  - `port`：可选 `host`（缺省 127.0.0.1），能建立 TCP 连接即通过。
-  - `command`：只读检查命令数组，退出码 0 即通过。
-  - `timeout`：可选，1～120 秒，缺省 10 秒。
-- `adapter.heal`：可选，使用者已授权的自愈命令数组的数组（例如重连端口转发），按顺序执行，时限为 `ready_timeout`。命令须在完成后退出，需要常驻的进程由脚本自行放到后台。
-
-**使用者维护的环境（`adapter.mode: external`）**：
-
-- **探测时机**：自检、看板每轮执行开始前、会话 `execute prepare`（新建或继续准备执行任务时）和 `execute prepare --fix` 复验准备前。探测命令与自愈命令的输出都不保存，只记录是否通过与退出码。
-- **失败处理**：先执行 `heal`，再探测一次；仍未通过时登记一条“环境问题”待人处理（同一说明未处理前不重复登记），本轮不开始。会话准备返回说明，已认领的执行任务保留，环境恢复后重新运行同一 prepare 即可继续。
-- **自检**：依次为“配置与仓库”“外部环境探测”“验证技能”，不运行端口、基线环境与临时工作树步骤。
-- **看板**：环境栏列出各探测项是否通过（本机另显示状态码或说明），“重启环境”改为“重新探测”，仍仅限本机。看板修复、修复复测与需要服务的回归沉淀都要求看板另起修复环境，此模式下不运行，修复改用会话修复（`fix prepare`）。
-
-入口操作正文写在产品手册，配置保存本机绑定和简短章节引用，见[分工与字段类型](standard.md#手册配置与验证技能的分工)。配置示例（路径、端口及引用按项目实际填写）：
-
-```yaml
-repos:
-  app: /absolute/app
-  lib: /another/location/lib
-scenarios: {repo: app, path: docs/sop}
-skill: project-verification
-entries:
-  api:
-    surface: http
-    address_env: APP_URL
-    operate: "按 app 仓库 docs/operations/verification.md 第 2 节 api 入口操作"
-    observe: ["按同手册第 3 节核对响应、数据和禁止副作用"]
-    evidence: ["按同手册第 3 节保存原始输出和数据查询"]
-    isolation: "按同手册第 4 节准备隔离数据、留证后清理"
-adapter:
-  env: [python3, env.py]
-  ports: [8000]
-```
-
-例如某工作区仅保存截图和一条关键只读查询，并把用例原文排除出产品快照，可在现有配置中合并以下片段（`app` 和 `web` 替换为现有仓库别名、入口名，保留其他字段）：
-
-```yaml
-snapshot_exclude:
-  app: [docs/test-cases/]
-entries:
-  web:
-    surface: web
-    evidence: ["每条场景保存截图", "每条场景保存一条关键只读查询及其结果"]
-    web_evidence: {video: false, trace: false}
-```
-
-配置分为两级（D89、D96）：
-
-| 级别 | 字段 | 改动后 |
+| 概念 | 含义 | 存放 |
 | --- | --- | --- |
-| 业务配置 | `repos`、`scenarios`、`skill`、`snapshot_exclude`，入口的 `surface`、`operate`、`observe`、`evidence`、`isolation`、`address_env`、`credential_env`、`driver`，`adapter` 的 `mode`、`env`、`worktree`、`cleanup`、`ports`、`ready_timeout` 及数据目录中的适配脚本 | 须重新自检；准备后的任务按现行规则作废 |
-| 运行配置 | 入口的 `web_evidence`、`atlas`、`identities`，顶层 `fixtures`、`agents`、`run`、`local_only`，`adapter.health`、`adapter.heal`，以及地图、绑定、配方文件 | 格式合格时不作废进行中的执行或复验，不要求重跑全量自检 |
+| 项目 | 名称 + 若干 Git 仓库。仓库身份是规范化后的 origin（`host/path`，去掉 `.git`） | `~/.sop-board/<名称>/`（`project.json`、`config.yaml`、`board.sqlite3`） |
+| 检出 | 项目各仓库的一套工作副本。`main` 是 config.yaml 登记的路径，槽位固定为 0；worktree 检出各有槽位 ≥1 | `checkouts` 表 |
+| 场景文件 | 产品仓库 `scenarios.path` 下的 `*.yaml`，是场景的唯一真相。看板从检出目录现读（按 mtime 与大小缓存），从不回写 | 产品仓库 |
+| 场景键 | `<文件名去掉 .yaml>#<场景编号>`。场景编号在全部文件中唯一时，命令可只写编号 | 计算得出 |
+| 指纹 | `initial_state`、`steps`、`expected`、`forbidden_effects` 四要素的 sha256（换行统一为 `\n`）。改标题、优先级等不改变指纹 | 计算得出 |
+| 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
+| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者 | `work` 表（kind=run）+ `runs/<编号>/` |
+| 结果 | 运行中某场景的结论与证据，绑定 指纹 + 快照；证据按 sha256 存储 | `results`（kind=agent）、`evidence/` |
+| 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人） | `results`（kind=manual） |
+| 守护 | 场景到低成本测试的关联，绑定场景指纹与测试文件摘要 | 产品仓库 `<scenarios.path>/regression.yaml` |
+| 守护运行 | 一次在某快照上运行守护命令的结果 | `guard_runs` 表 + 输出证据 |
+| 修复 | 失败场景 → 会话改产品 → 另一会话独立复验 → 提交后关闭 | `fixes` 表 + `fixes/<编号>/` |
 
-只改运行配置时，格式合格即不作废进行中的执行或复验，不要求重跑全量自检。已准备任务使用冻结的 `scope.json`、入口与配方设置，下一轮采用新值。其他配置值或适配脚本变化仍须重新自检并重新准备任务。配置摘要按去除辅助字段的配置内容与适配脚本计算，字段顺序、注释与排版不影响摘要。`config-digests/` 仅保存业务内容摘要到兼容摘要的对应：首次读取未改动的配置沿用旧原文摘要，使已有自检和任务继续有效；若升级后在首次读取前已改动配置，无法证明它对应旧自检，须重新自检。产品快照中的提交号仍原样记录；执行开始后的产品变化不使本轮作废。场景原文、用例并集和配置仍单独核对，排除产品摘要不绕过这些校验。
+### 场景状态
 
-命令工作目录和相对参数均相对数据目录。建立命令接收 `SOP_TASK_DIR`、`SOP_FIX_BRANCH`、逗号分隔的 `SOP_REPOS` 与 `SOP_BASE_<别名>`；清理另接收 JSON 格式的 `SOP_WORKTREES`。环境启动使用 `SOP_REPO_<别名>` 和 `SOP_ENV_LOG_DIR`，变量后缀将别名转大写、连字符改下划线。返回路径须为对应仓库的工作树根目录、共用同一 git common dir 并检出指定分支。返回的 env 只在内存中传递，不写入日志或报告。
+状态按检出推导，不存储。只看当前指纹的结果，从新到旧。
 
-同一用户按声明端口互斥，端口不重叠的工作区可同时运行；同一工作区的基线与修复目录轮流使用相同端口。端口锁记录持有者名称与数据目录，冲突时环境栏显示“等待端口 <端口>（工作区 <名称>）”；看板每 10 秒重试，获得锁后自动启动基线环境。adapter.ports 须包含环境中所有服务监听端口，包括内部互调端口；共享外部数据库、缓存等端口不填入，须在搭建报告说明。停止先发 SIGTERM，十秒后仍未退出则发 SIGKILL；适配前台进程必须管理并等待自己的服务进程。标准输出和错误输出写入 `env/<序号>.log`。
+| 状态 | 键 | 条件 |
+| --- | --- | --- |
+| 草稿 | `draft` | 文件 `metadata.status: draft`；不进入执行与复测 |
+| 未执行 | `not-run` | 当前指纹没有结果 |
+| 通过 | `pass` | 最新结果为通过，其快照等于当前快照，且执行期间产品没有变化（含按影响判定保留的通过） |
+| 守护通过 | `guarded` | 最新结果为通过但快照已变化；守护有效，且当前快照上最近一次守护运行通过 |
+| 待复测 | `retest` | 通过发生在旧快照或执行期间产品有变化，且没有守护通过；或最新为失败/受阻、之后修复已关闭；或人工不通过后修复已关闭、尚无新的人工通过 |
+| 失败 / 受阻 / 跳过 | `fail` / `blocked` / `skip` | 最新结果如此；人工标注不通过按失败、阻塞按受阻显示 |
+| 需求变更 | `changed` | 最新结果是人工标注的需求变更；场景文件按新需求修改后指纹变化，回到未执行 |
 
-自检依次核对配置与仓库、端口占用、基线环境、临时工作树环境和验证技能。第 5 步核对技能文件头、每个入口标题、符号链接和辅助技能，并列出项目技能路径、各入口及辅助技能。临时工作树也走同一建立、核对和清理入口；第 4 步列出建立、环境及清理日志。结果保存到 `checks/<时间>.json`，全部通过退出 0，否则退出 1。业务配置或数据目录中的适配脚本变化后须重新自检。自检通过且配置未变，启动看板即运行基线环境。权限拒绝、命令在当前环境不可用、检查器占用或主动中断等无法完成的尝试，标 completed=false，保存在 checks/unavailable/，提示“自检未能在当前环境运行”及原因、沙箱外重试方法。它们不替换 checks/ 中已完成的结果，不因本次尝试作废任务；配置不匹配或从未通过仍不能放行。实际端口占用、规定时限内未就绪及配置/身份/技能/地址或适配返回契约问题照旧保存正式未通过结果。旧报告不追溯改写。
+**待沉淀**是徽标，可与其他状态并存：非草稿，同一指纹上有独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化），且没有有效守护。
 
-自检第 1 步逐仓核对 Git 实际生效的 `user.name`、`user.email`，仓库级与全局均可；缺失会给出设置方法。第 3、4 步环境就绪后核对入口 `address_env` 指定的变量非空，来自看板进程环境或工作树适配返回的 env，失败指出入口和变量名。搭建报告按 `sop-board guide` 的七节模板同时写入数据目录 `setup-report.md` 与会话最终回复。
+**待人工复核**也是徽标，可与待沉淀并存：状态为通过，且当前指纹最新一条结果是 Agent 独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化）。之后有任一人工标注即消失；产品变化使状态离开通过时也消失。
 
-`sop-board check` 另逐个报告声明凭据变量“已设置／未设置”，不显示取值；变量名格式不合格时配置检查失败。缺凭据不使其他入口停用，执行或修复复测时由看板将涉及场景记为 `blocked`，`finding` 写缺少的变量名，相关场景不交会话操作。本机可见变量名，内网页面、接口、任务文本附件与报告隐藏名称。会话日志在收集时脱敏，任务证据按提示词先脱敏。
+待复测的原因写在状态旁，例如“产品已变化，守护未覆盖”“产品已变化，守护无效：<原因>”“守护测试未通过：<原因>”“执行期间产品有变化（…）”“修复已关闭，等待复测”。
 
-有凭据声明的会话按 [Codex 命令环境规则](https://learn.chatgpt.com/docs/config-file/config-advanced#shell-environment-policy) 显式继承看板已经筛选的环境，并保留名称含 KEY、SECRET、TOKEN 的声明变量；取值不进入命令参数。客户端额外配置的变量过滤仍然生效，若执行命令无法取得变量，按缺变量记受阻并交开发者核对配置。
+## 2. 安装与搭建
 
-端口核对与启动前探测均对 IPv4、IPv6 开启地址复用，已关闭连接留下的 TIME_WAIT 不算占用；绑定仍失败时使用 lsof 列出实际监听进程，不终止占用者。
+```sh
+uv tool install <sop-board 检出或包地址>
+sop-board skills install          # 把 sop-board、regression-distill、playwright-acceptance 链接到 ~/.agents/skills 与 ~/.claude/skills
+sop-board init <名称> <仓库目录>...
+sop-board serve <名称>            # 另开终端或在会话中启动守护进程
+sop-board browser install         # 有 Web 入口时
+sop-board check
+```
 
-页面环境栏显示最近自检与环境状态；本机页面还显示最近 50 行日志、目录与提交号，并提供自检和重启按钮。本机的 latest_check 保留最近已完成结果，latest_check_attempt 显示最近尝试；check_notice 提示无法运行，内网仅显示通用说明，不显示原因中的本机路径。本机另显示“Jira 读取：已配置 / 未配置”，仅按启动进程的两个 Jira 变量是否都非空判断，不展示其值，不代表认证或单据读取成功；内网页面和环境接口不返回这项状态。
+- `skills install` 只更新本安装器拥有的链接（记录在各目录 `.sop-board-links.json`），其他来源的同名目录列出并跳过。
+- `init`：每个目录须是 Git 工作树根目录、有可规范化的 origin、不能重复；数据目录 `<根目录>/<名称>` 不能已存在，也不能位于仓库内。名称以字母或数字开头，只含字母、数字、`.`、`_`、`-`，最长 64。别名取目录名小写化（不以字母开头时加 `r-`，重复时加 `-2`…）。写出 `project.json`（`{"format": "sop-board-project-6", "name": …}`）与只含 `repos` 的 `config.yaml`。
+- 运行时根目录是 `SOP_BOARD_HOME`（缺省 `~/.sop-board`）；`--data` 指定项目所在的根目录。本机操作者文件 `~/.sop-board/operator` 与浏览器运行时 `~/.sop-board/runtime/` 也在这里。
+- 旧格式数据目录（含 `workspace.json` / `workspace.sqlite3`、`project.json` 格式不符、数据库 `user_version` 不是 6）一律返回 `project-format`，不读取、不迁移。
 
-工作区未就绪时，内网环境栏及接口的搭建说明只返回“尚未搭建，请开发者在本机处理”，不返回命令、日志、本机路径或完整搭建报告。内网工作区、批次和入口读取中的配置问题及执行停用原因只保留不含路径的问题类别；本机保留详情。来源判断只用实际连接地址，不接受 `local=1` 或转发头的覆盖。内网访问分两级保证。看板生成的内容（页面字段、接口、报告）不含本机路径、测试命令与凭据变量名，本机字段只在本机显示；代理材料（提示词、会话记录、快照与任务证据）仅限本机。上传的证据内容中，已知本机目录（数据目录、仓库目录、用户目录、临时目录）与常见用户及临时路径在原文、任意层反斜杠转义、URL 编码与大小写变体下替换为 `<本机路径>`，已声明的凭据变量名在原文与 `\u` 转义写法下替换为 `[credential variable]`；其他任意绝对路径不在保证范围内，执行会话按提示词在证据中只写相对路径。任务附件只开放测试同事协作所需的材料（SOP 原文、草稿与批注、用例、场景文件、结果、配对），提示词、会话记录、快照与任务证据仅限本机，内网请求返回 403 `local-only`。截图、录屏等二进制证据按原文件提供，保证可查看与校验。完整契约见 `sop-board guide`。
+### 项目与检出的识别
 
-## 前置数据配方
+- 项目：显式 `--project/-p` 或位置参数优先；否则当前目录在某个项目数据目录内（例如运行目录）时用该项目；再否则按当前仓库根目录或 git common dir 匹配已登记仓库。匹配多个项目时报错，要求写名称。
+- 检出：`--checkout/-c` 优先；否则对当前目录运行 `git rev-parse`，若是已登记仓库的 worktree，则该仓库取当前路径；同一父目录下的兄弟目录若是其他已登记仓库的 worktree（共用 common dir），一并归入；其余仓库回落到 main。第一次见到时登记，名称取父目录名（有兄弟仓库时）或仓库目录名，清理成 `[A-Za-z0-9._-]`、最长 48，重名加 `-2`…；槽位取最小空闲正整数。不在项目仓库内时为 main。
 
-可选顶层声明：
+### config.yaml
+
+严格 YAML：不接受锚点、别名、显式标签和重复键；出现格式外字段即不合格。配置不合格时 `status` 仍可用，其余需要配置的命令报错。
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `repos` | 是 | 别名 → 绝对路径（可 `~/`）。别名 `[a-z][a-z0-9-]*`；路径须是 Git 根目录、有 origin，数据目录不能在其中 |
+| `identities` | 是 | 别名 → 登记时规范化的 origin 身份（`init` 写入）。仓库的 origin 与登记不一致时配置不合格，防止路径指向了别的仓库 |
+| `scenarios` | 是 | `{repo: <别名>, path: <仓内相对目录>}`，不含 `..`，不能是仓库根 |
+| `skill` | 是 | 项目验证技能目录名，位于 `<数据目录>/skills/<名称>/SKILL.md`；须有含非空 `name`、`description` 的 YAML 文件头，每个入口名须出现在某个 `## ` 二级标题中；技能目录内不能有符号链接 |
+| `entries` | 是 | 入口名 → 入口声明，至少一个（见下表） |
+| `adapter` | 是 | 见下文；至少要有 `env` |
+| `snapshot_exclude` | 否 | 别名 → 仓内相对路径数组，不计入产品快照 |
+| `fixtures` | 否 | 前置数据配方（见 §9） |
+| `agents` | 否 | 工作类型 → `{runner: codex\|claude, model?, effort?, args?}`。类型：`default`、`run`、`fix`、`distill`、`merge`、`author`、`draft`、`atlas`；`effort` 取 `low/medium/high/xhigh/max`。启动器只用 `run`、`distill`，缺省回落 `default`，再回落 codex |
+
+入口字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `surface`、`operate`、`isolation` | 必填，非空文字。`surface: web` 走浏览器代理 |
+| `observe`、`evidence` | 必填，非空文字数组 |
+| `address_env` | 入口地址的环境变量名，值来自 adapter 的 ready 行 |
+| `credential_env` | 凭据变量名数组。只写名称，取值从守护进程/会话环境读，输出与日志按取值脱敏 |
+| `driver` | 辅助技能目录名。Web 入口缺省为随包 `playwright-acceptance`（`SOP_BOARD_SKILLS_DIR` 下同名技能可覆盖）；其他技能在 `<数据目录>/skills/` 或 `SOP_BOARD_SKILLS_DIR`（缺省 `~/.agents/skills`）中查找 |
+| `web_evidence` | 仅 Web，`{video: bool, trace: bool}`，缺省都开 |
+| `identities` | 仅 Web，身份数组：`id`（小写编号，不能是 `default`）、`label`（对应场景 actor）、`account_env?`、`code?`（`mailbox/backend/manual`，缺省 manual）、`limits?`（`logins_per_day`、`codes_per_hour`、`codes_per_day` 正整数）、`real?`（真实账号，只由人登录）。未声明时只有 `default` |
+| `spec_library` | 仅 Web，`<别名>:<仓内目录>`，不能是仓库根或符号链接；交互地图放在其下 `atlas/` |
+| `atlas` | 仅 Web，`{repos: [别名…], languages?: [..]}`：地图可引用的前端仓库 |
+
+### adapter 契约
+
+| 字段 | 说明 |
+| --- | --- |
+| `env` | 必填，argv 数组，不经 shell。`argv[0]` 若是数据目录下的文件则按该路径执行；工作目录为数据目录 |
+| `worktree`、`cleanup` | 可选，须同时声明；用于 `checkout create/remove` |
+| `ports` | 基础端口数组（1–65535，不重复） |
+| `port_step` | 0～10000，缺省 0。实际端口 = `ports[i] + slot × port_step`；为 0 时各检出共用端口、轮流使用 |
+| `ready_timeout` | 正整数秒，缺省 180；也是 worktree/cleanup 的超时 |
+
+**adapter.env**：前台运行，就绪时输出一行 `sop-board: ready`，可在同一行后附 JSON 对象给出变量，例如 `sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`（变量名须合法且不以 `SOP_` 开头）。输入变量：
+
+| 变量 | 值 |
+| --- | --- |
+| `SOP_CHECKOUT` | 检出名称 |
+| `SOP_REPO_<别名>` | 本检出该仓库路径（别名大写，`-` 换 `_`） |
+| `SOP_BASE_<别名>` | 登记（main）仓库路径 |
+| `SOP_PORT_OFFSET` | `slot × port_step` |
+| `SOP_PORTS` | 实际端口 JSON 数组 |
+| `SOP_ENV_LOG_DIR` | `<数据目录>/env/<检出>/`，输出写入其中 `<序号>.log`（按凭据取值脱敏） |
+
+另外注入 `adapter.worktree` 为该检出返回的 `env`，以及守护进程环境中的凭据变量；继承环境里其他 `SOP_*` 变量被去掉。
+
+**adapter.worktree**：输入 `SOP_TASK_DIR`（`<数据目录>/checkouts/<名称>`）、`SOP_FIX_BRANCH`（`sop-board/<名称>`）、`SOP_REPOS`（逗号分隔别名）、`SOP_BASE_<别名>`、有 `--from` 时 `SOP_BASE_COMMITS`（别名 → ref 的 JSON）。stdout 最后一行须为 `{"repos": {别名: 路径}, "env": {变量: 文字}}`，覆盖全部请求的仓库，env 不能用 `SOP_` 前缀。每个返回路径须通过三项核对：是工作树根目录且与登记仓库共用 common dir、检出了 `sop-board/<名称>` 分支、出现在 `git worktree list` 中。没有声明 worktree 时直接 `git worktree add -b sop-board/<名称> <数据目录>/checkouts/<名称>/<别名> <from 或 HEAD>`。
+
+**adapter.cleanup**：输入同上，另有 `SOP_WORKTREES`（别名 → 路径 JSON，只含本检出自有的 worktree）。没有声明时逐个 `git worktree remove`。清理后目录仍存在则报错并保留检出记录。
+
+### check
+
+`sop-board check` 输出 `steps`，三项全部合格才退出 0：
+
+1. **配置**：config.yaml、技能与入口校验。
+2. **环境**：守护进程须在运行；在当前检出拉起 adapter.env 并等就绪，且每个入口的 `address_env` 都在 ready 变量里。
+3. **浏览器运行时**：`~/.sop-board/runtime/runtime.json` 存在且可执行文件在。
+
+## 3. 守护进程与访问范围
+
+`sop-board serve [项目] [--port 8787] [--lan]` 在前台运行一个项目的守护进程，可在终端或 agent 会话中启动。它负责网页、各检出的 adapter 环境、浏览器代理、守护测试运行与无头会话启动器。启动时写 `<数据目录>/daemon.json`（pid、端口、URL、内网地址）与 `daemon.token`（权限 0600），清理上次遗留的环境进程组与浏览器、把遗留的运行中启动记为 failed；收到 SIGINT/SIGTERM 时停掉全部环境、浏览器和启动后删除状态文件。同一项目已在运行时拒绝再启动。
+
+CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回环 HTTP 调用守护进程；守护进程没运行时返回 `daemon-not-running`，并给出 `sop-board serve <名称>` 命令。`status` 也显示守护进程是否运行。
+
+| 访问级别 | 谁可以调用 | 用于 |
+| --- | --- | --- |
+| `lan` | 任何连接（`--lan` 时监听 0.0.0.0） | 查看工作台与页面、人工复测标注、答复问题、批注草稿、上传用例或 SOP |
+| `local` | 只接受实际回环连接 | 工作台的“AI 重跑”“运行守护”“沉淀”按钮、启动日志 |
+| `token` | 回环连接 + `Authorization: Bearer <daemon.token>` | `/local/*`：CLI 调用的环境、浏览器、retest、distill submit、launch |
+
+写入（POST/PUT/DELETE）有 `Origin` 头时须与 Host 同源；有正文时须为 `application/json`，正文上限 64 MiB。非回环访问返回 `403 local-only`。
+
+**内网遮蔽**：对非回环连接，除 `/assets/` 外的所有响应（含 zip 证据内的文本文件与响应头）都把凭据取值替换掉、隐藏凭据变量名，并把数据目录、登记仓库与各检出路径替换为 `<本机路径>`。接口本身也不向内网返回会话编号、执行者/实现者、运行目录、启动日志与命令；报告里执行者显示为“Agent 会话”；未预期错误只返回异常类型。
+
+## 4. 命令一览
+
+通用约定：
+
+- 除 `status`（缺省文字，`--json` 输出 JSON）、`guide`、`playwright guide` 外，所有命令都输出 JSON，`--json` 可省。
+- 退出码：0 成功；1 业务失败（`{"ok": false, "error_code", "problems": [{field, problem}]}`）；2 参数错误；`run wait` 超时为 3。
+- 大多数命令接受 `--project/-p`、`--data`、`--checkout/-c`。
+- 署名：登记自动用本机操作者（`~/.sop-board/operator`，否则 `git config user.name`）；别人确认或上传时用 `--as <姓名>`。没有操作者时要求先 `operator set`。
+
+| 分组 | 命令 | 要点 |
+| --- | --- | --- |
+| 搭建 | `init <名称> <仓库>... [--data]` | 见 §2 |
+| | `guide` | 打印完整搭建指引 |
+| | `operator [show\|set <姓名>]` | 查看来源或设置本机操作者（单行，最长 64） |
+| | `skills install` | 安装随包技能链接 |
+| | `serve [项目] [--port] [--lan]` | 见 §3 |
+| | `status [项目] [--json]` | 检出、操作者、快照、各状态计数、待沉淀数（顶层 `distill`）、待人工复核数（顶层 `review`）、`queues`（retest/fail/blocked/not-run）、`distill_queue`、`review_queue`、不合格场景文件、守护进程、待人处理；文字输出的场景行末尾总是列出“待沉淀 N；待人工复核 N” |
+| | `check` | 见 §2 |
+| 检出 | `checkout list` | 全部检出及槽位、偏移、路径 |
+| | `checkout show [名称]` | 含场景目录与各仓分支 |
+| | `checkout create <名称> [--repo 别名]... [--from ref]` | 名称规则同检出名、不能是 main；`--repo` 只为这些仓库建 worktree；日志 `<数据目录>/checkouts/<名称>.log` |
+| | `checkout remove <名称>` | 环境须先停；main 不能移除；记录标为已移除，槽位释放 |
+| 环境 | `env up\|down\|restart\|status [--all]` | 经守护进程启停或重启当前检出环境；`status --all` 列出全部检出 |
+| 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
+| | `browser status [--identity]` | 守护进程未运行时只给运行时信息 |
+| | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
+| | `browser close [--identity]` | 停浏览器并释放真人租约 |
+| 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
+| | `run submit --run N [--implementer X]` | 见 §5 |
+| | `run abandon --run N` | 放弃并释放浏览器租约 |
+| | `run launch [--scope …] [--fix N] [--implementer X]` | 由守护进程启动无头执行会话；`pending` 在 CLI 侧展开为具体场景；`--fix` 启动修复的独立复验 |
+| | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
+| | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
+| | `mark <键> pass\|fail\|blocked\|changed [--defect 链接] [--note 说明] [--as 姓名]` | 人工复测：通过、不通过、阻塞、需求变更；缺陷链接与说明可选；草稿拒绝 |
+| | `launch status` / `launch stop --launch N` | 最近 20 次启动；停止发 SIGTERM 给进程组 |
+| 修复 | `fix prepare [键…] [--session]`、`fix submit\|close\|abandon [--fix N]` | 见 §8；省略 `--fix` 时取本检出最近一个状态相符的修复 |
+| 沉淀 | `distill prepare [键…] [--session]`、`distill submit [--report guard.json] [--work N]` | 见 §7 |
+| 编写 | `inbox add <文件> [--kind cases\|sop] [--as]`、`inbox list [--all]`、`inbox show\|done\|reject <编号> [--note]` | 见 §9 |
+| | `merge prepare [--inbox N]...`、`merge submit [--work N]` | |
+| | `ask --about <inbox:N\|键\|文件名> --text … [--work] [--as]`、`answers [--about] [--unanswered]` | |
+| | `sop prepare --source 文件...`、`sop submit --file <md> [--work] [--as]` | |
+| | `draft annotations [文件] [--all]`、`draft resolve <批注编号> [--reject] [--note]`、`draft confirm <文件> [--as]` | |
+| 其他 | `atlas prepare --entry E [--mode full\|stale]`、`atlas submit --entry E [--work]`、`atlas stale [--entry]` | |
+| | `specs check --repo 别名 <路径> [--ledger 账本.json]` | spec 断言保真检查，违规退出 1 |
+| | `fixtures run <配方> [--param 名=值]... [--run N] [--scenario]`、`fixtures exec --reason … [--run] -- <命令>` | |
+| | `identity status`、`identity record --identity I --kind login\|code [--run N]` | |
+| | `attention list`、`attention add --kind K --text … [--scenario]... [--run]`、`attention resolve <编号> [--note]` | |
+| | `report [--file 文件] [--zip] [--out 目录]` | 见 §10 |
+| | `playwright guide\|convert\|tags` | Web 指引、Playwright JSON 报告转 results.jsonl、配对标签 |
+
+## 5. 运行
+
+### 准备
+
+`run prepare` 的执行者取 `--session`，其次 `SOP_BOARD_SESSION`（启动器注入），再次 `CODEX_THREAD_ID` 或 `CLAUDE_CODE_SESSION_ID`；都取不到返回 `session-required`。范围与原因：
+
+| `--scope` | 包含 | 原因 |
+| --- | --- | --- |
+| `pending`（缺省） | 未执行、待复测、失败、受阻、跳过的非草稿场景 | 未执行 `new`；待复测 `source-changed`（修复关闭导致的为 `rerun`）；失败/受阻/跳过 `failed` |
+| `all` | 全部非草稿场景 | `rerun` |
+| 键或编号 | 指定场景；含草稿则 `draft-not-runnable` | 同 pending 的映射，其余 `rerun` |
+| `--fix N` | 修复的问题场景 | `rerun` |
+
+同一检出同时只能有一个 prepared 的运行（`run-prepared`，提示 `run abandon`）。准备时经守护进程拉起本检出环境（快照与环境启动时不同则重启；`port_step: 0` 且别的检出环境在运行时返回 `env-busy`），为本轮 Web 入口的全部身份取得浏览器租约，再写出运行目录 `<数据目录>/runs/<编号>/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `prompt.md` | 执行提示词（随包 `run.md`，修复复验附“逐条实际执行，不能保留旧通过”） |
+| `brief.md` | 速查卡：范围计数、入口证据与录制开关、浏览器问题、前置数据规则、时间上限 |
+| `scenarios.yaml`、`pending.json` | 本轮场景（带 key、reason）与范围 |
+| `entries.json`、`repos.json` | 用到的入口与地址；检出仓库路径 |
+| `snapshot.json`、`product-files.json` | 准备时的快照与逐文件清单 |
+| `previous-results.json`、`changes.json` | `source-changed` 场景上次通过的结果、证据与提交；各仓自那次提交以来的改动与当前未提交改动 |
+| `run.env` | 入口地址变量、`SOP_BOARD_RUN`、`SOP_BOARD_CHECKOUT`；有 Web 场景时另有 `PW_CDP_ENDPOINT`（default 身份或第一个身份）、`PW_IDENTITIES`、`PW_SCOPE`、`PW_SCENARIO_FILE`、`PW_OUT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT` |
+| `scope.json`、`identities.json`、`node_modules`（链接到运行时） | 仅 Web：Playwright 范围；各身份及其 CDP endpoint |
+| `evidence/` | 证据放这里 |
+| `fixtures/` | `fixtures run/exec --run N` 的留痕 |
+
+会话写出 `results.jsonl` 与（需要时）`impact.json` 后提交。
+
+### results.jsonl
+
+每个范围内场景恰好一行（字段不能重复，不接受 NaN/Infinity），`scenario` 写场景键，或在本轮唯一的编号。
+
+| 字段 | 规则 |
+| --- | --- |
+| `status` | `pass`、`fail`、`blocked`、`skip`、`not-executed` |
+| `actual` | 非空（not-executed 除外） |
+| `executed_at` | 带时区的 ISO 8601，不能晚于现在 5 分钟 |
+| `evidence` | `evidence/` 下的相对路径数组，普通文件，单个不超过 64 MiB；实际执行的 pass/fail 至少一份 |
+| `finding` | blocked、skip、not-executed 必填 |
+| `kept` | 布尔。为 true 表示按影响判定保留通过：只用于 `source-changed`、同指纹此前有通过、`status: pass`，`note` 写明改动范围、依赖与不受影响的理由（至少 4 字）；证据可空，看板复制原证据并记 `reused_from` |
+| `note` | 可选说明 |
+
+`not-executed` 行写 finding、不附证据，不登记结果，场景留在待执行。独立复验（`--fix`）不接受 `not-executed`；`rerun` 场景不能 `kept`。
+
+### impact.json
+
+本轮有 `source-changed` 且有上次通过的场景时必填：数组，恰好覆盖这些场景（已作废的除外），每项 `{"scenario", "affected": bool, "reason": 非空}`。`affected: false` 必须对应 `kept: true`，`true` 必须实际执行。
+
+### 提交规则
+
+`run submit --run N`（可在任意目录运行，检出取运行登记的检出）：
+
+1. 运行须为 prepared，否则 `run-not-prepared`。
+2. **作废**：准备后场景被删除或指纹变化的，只作废这些场景（`voided`），不登记。
+3. **浏览器崩溃**：租约期间该运行持有的身份浏览器异常退出时，用到该身份的 Web 场景若没有 pass 行，记为 `blocked`，finding 为“浏览器进程 <时间> 因 <信号或退出码> 退出，日志 <路径>[，崩溃报告 <路径>]”。
+4. 其余场景逐行校验（缺行即失败）。
+5. **product_changed**：比较准备时与提交时的逐文件清单，执行期间变化的路径记在每条结果上；有变化的通过显示为待复测，也不算独立通过。
+6. 登记结果、证据入库；某场景上次是守护通过而本次失败时记漏检（§7）；释放浏览器租约；修复复验时更新修复状态（§8）。
+
+输出 `recorded`、`voided`、`not_executed`、`product_changed`、`browser_crashes`、`independence`。
+
+### 独立性
+
+实现者依次取：修复复验时的修复会话；`run submit --implementer`；`SOP_BOARD_IMPLEMENTER`（`run launch --implementer` 注入）。没有实现者记 `undeclared`（独立性未声明）；执行者等于实现者记 `self-check`（实现者自检）；否则 `independent`（独立验收）。只有 `independent` 的真实入口通过能作为沉淀与守护的依据。
+
+### launch / wait
+
+`run launch` 与工作台“AI 重跑”“沉淀”按钮都由守护进程启动无头会话：
+
+- 同一检出同时只有一个 running 的启动（`launch-running`）。类型 `run` 或 `distill`，须有具体场景。
+- 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>.prompt.md`（随包 `launch.md`：先运行 `sop-board run prepare --scope …` 或 `distill prepare …`，按 prompt.md 执行并提交，需要人时 `attention add` 后结束），日志 `<编号>.jsonl`。
+- 注入 `SOP_BOARD_LAUNCH`、`SOP_BOARD_CHECKOUT`、`SOP_BOARD_IMPLEMENTER?`。Claude：启动器生成 UUID 作为 `--session-id` 并注入 `SOP_BOARD_SESSION`，缺省参数 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。Codex：`codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check -C <目录>`，会话编号取日志中的 `thread.started`。两者都 `--add-dir` 数据目录与浏览器运行时目录。
+- 状态 `running` → `exited`（退出码 0）/`failed`/`stopped`。启动记录与其会话编号就是独立执行的证据；运行通过 `SOP_BOARD_LAUNCH` 关联启动。
+- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。
+
+## 6. 浏览器代理
+
+- **运行时**：`browser install` 把随包 `package.json`/`package-lock.json`（固定 `@playwright/test` 1.64.1）复制到 `~/.sop-board/runtime/`，`npm ci` 后以 `PLAYWRIGHT_BROWSERS_PATH=<runtime>/browsers` 执行 `playwright install --no-shell chromium ffmpeg`，把 Playwright 版本、CfT 修订号与版本、可执行文件路径写入 `runtime.json`。需要 Node ≥ 20 与 npm。不读写共享的 ms-playwright 缓存，不安装 WebKit/Firefox/headless shell。
+- **启动**：只有守护进程启动浏览器，执行者只经 CDP 连接，不自己启动或安装。每个 检出×身份 一个 CfT：`--user-data-dir=<数据目录>/browsers/<检出>/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`，缺省加 `--headless=new`，不加 `--enable-automation`；输出写同目录 `chrome.log`。`/json/version` 15 秒内有应答才算就绪。
+- **端口**：`9400 + slot × 20 + 身份序号`。序号：`default` 为 0，其后按各 Web 入口声明顺序；超过 20 个身份报错。端口已被占用时直接报错，不换随机端口。
+- **租约**（`browser_instances.holder`）：持有者 `run:<编号>`、`retest:<检出>`、`distill:<检出>` 或 `human`。别的持有者占用时返回 `browser-busy`；状态 crashed 时返回 `browser-crashed`；启动即退出不抛错，问题写进 brief.md，相关场景应记受阻。运行提交或放弃时释放。
+- **真人登录**：`browser open --identity X --headed` 以有界面窗口打开（缺省地址为该检出第一个 Web 入口的地址），并持有 `human` 租约。用户自己输入密码、完成二次验证，登录态保存在 profile；完成后 `browser close --identity X` 释放，之后无头运行沿用登录态。出现 “browser may not be secure” 时停止，该身份的场景记受阻；不回退到日常 Chrome，不改 UA 或参数绕过。
+- **崩溃**：监视线程等待进程退出。非主动停止的退出记录退出码、信号名、日志路径与启动后写出的 `~/Library/Logs/DiagnosticReports/Google Chrome for Testing*.ips`，并登记一条“浏览器崩溃”待人处理。租约期间不自动重启，下次取得租约时再启动。30 分钟内异常退出两次进入 `crashed`，须人运行 `browser open --identity X --reset-crash`。
+- **身份计数**：真实登录或请求验证码前，执行者运行 `identity record --identity X --kind login|code`；达到 `limits` 上限时拒绝（`identity-limit`）并登记待人处理。
+
+## 7. 守护与沉淀
+
+### regression.yaml
+
+位于 `<scenarios.path>/regression.yaml`（不被当作场景文件），随检出走，严格 YAML。
+
+```yaml
+version: 1
+commands:
+  unit: {repo: app, cwd: ., argv: [uv, run, --group, dev, pytest, -q, "--junitxml={junit}"], timeout: 900}
+  web:  {repo: app, cwd: acceptance/specs, argv: [node, "{playwright}", test, --reporter=junit], timeout: 1800, browser: merchant}
+guards:
+  "orders#SOP-12-P01":
+    fingerprint: <场景指纹>
+    acceptance: {result: <结果编号>, executor: <会话>, product_digest: <摘要>}
+    tests: [{id: t1, repo: app, path: tests/test_orders.py, sha256: <摘要>, name: "test_orders::test_rename", layer: unit, command: unit}]
+    coverage:
+      expected: [{index: 0, text: "…", tests: [t1]}]
+      forbidden_effects: [{index: 0, text: "…", tests: [t1]}]
+    detection: {method: mutation, assertion: "…", evidence: <证据 sha256>}
+    ledger: []
+```
+
+- `commands.<编号>`：`repo`、`cwd`（仓内相对，缺省 `.`）、`argv`（不经 shell）、`timeout`（1～7200，缺省 900）、`browser?`（身份编号）、`env?`（大写变量名，不能 `SOP_` 开头）。`{junit}` 替换为 junit 输出路径，`{playwright}` 替换为运行时的 Playwright CLI。
+- `tests[].layer`：`unit`、`api`、`component`、`browser`；`detection.method`：`mutation` 或 `known-defect`。
+
+**守护有效**，缺一不可：
+
+1. 场景存在且当前指纹等于 `fingerprint`；
+2. 引用的命令存在、仓库在检出中；每个测试文件是仓库内普通文件且 sha256 一致；
+3. `coverage` 按顺序逐条覆盖当前全部 `expected` 与 `forbidden_effects`，`index`、`text` 与当前一致；
+4. 检出能力证据（`detection.evidence`）在证据库中；
+5. `acceptance.result` 是同文件、同场景、同指纹的独立真实入口通过；
+6. 该指纹与测试摘要没有登记过漏检。
+
+索引结构不合格时全部守护无效，原因显示在场景状态里。
+
+### retest
+
+`sop-board retest` 交给守护进程执行，不启动 AI：
+
+1. 缺省取当前检出全部待复测场景（`--scenario` 可指定），只运行守护有效的，其余列在 `not_guarded` 并附原因；`--dry-run` 只输出场景与将运行的命令。
+2. 每条引用到的命令只运行一次：工作目录为检出对应仓库下的 `cwd`，`start_new_session`，超时结束整个进程组。环境为守护进程环境去掉 `SOP_*`，加上该检出环境运行中时的入口地址变量、命令 `env`、`PLAYWRIGHT_JUNIT_OUTPUT_NAME`、`PYTHONDONTWRITEBYTECODE=1`；声明了 `browser` 的命令先拉起环境、取得浏览器租约，再注入 `PW_CDP_ENDPOINT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT`。日志与 junit 写在 `<数据目录>/retests/<时间>-<检出>/`，并作为证据入库。
+3. 场景记“守护通过”须同时满足：相关命令退出码 0、没超时；每个声明的测试名都出现在 junit 中且为通过（跳过、缺失都不算；匹配完整名、以其结尾或测试标题相同）；运行前后产品快照不变。
+4. 每个场景写一条 `guard_runs`（pass/fail + 原因）；未通过的留在待复测并显示原因。
+
+### 漏检
+
+某场景在同一指纹上最近一次守护运行通过，之后真实入口结果或人工复测为失败（且其间没有更晚的通过）时，按 场景 + 指纹 + 测试摘要 记一条 `guard_misses`。该守护随即失效。重新沉淀时，`acceptance` 须是漏检之后的新独立通过，且测试摘要须与漏检时不同。
+
+### 沉淀
+
+- `distill prepare [键…]`：缺省为全部待沉淀场景；指定的场景须为待沉淀（`not-distillable`）。同一检出只能有一个进行中的沉淀（`distill-prepared`）。工作目录 `<数据目录>/distills/<编号>/` 含 `prompt.md`、`scenarios.yaml`、`acceptance.json`（独立通过的结果编号、执行者、运行目录）、`repos.json`。会话按随包 regression-distill 技能在当前检出写测试（不提交），写出 `guard.json`。
+- `distill submit`：给出 `--work` 时须是进行中的沉淀（`work-state-invalid`）；缺省读进行中沉淀目录里的 `guard.json`（YAML 或 JSON，结构同 regression.yaml 的 `commands` 与 `guards`；`detection.evidence` 写证据文件路径，相对 guard.json 目录）。守护进程逐条核对：acceptance 为同指纹独立通过、测试文件存在并重新计算 sha256、逐条覆盖、detection 完整、漏检后的条件；同名命令与已有定义不同则 `report-invalid`；`layer: browser` 的测试另做 spec 保真检查（基线为 `git show HEAD:<路径>`；HEAD 还没有该文件时，以产生独立通过的那次运行目录中的同名 spec 为基线，都没有时只做静态检查）。不合格返回 `distill-invalid`。全部合格后按 retest 规则实际运行一次，未通过返回 `distill-tests-failed`；通过后合并写入 regression.yaml、记录守护运行，测试与索引留作未提交改动供开发者审核。
+- 工作台“沉淀”按钮仅本机可用，作用是启动一个无头沉淀会话。
+
+## 8. 修复
+
+| 步骤 | 命令 | 规则 |
+| --- | --- | --- |
+| 认领 | `fix prepare [键…] [--session]` | 缺省为当前检出全部失败或受阻场景；指定的须为失败/受阻（`fix-scenario-invalid`）。同一检出只能有一个 open 的修复（`fix-open`）；场景已在已提交/已复验修复中时 `fix-already-owned`。目录 `<数据目录>/fixes/<编号>/`：`prompt.md`、`problems.json`（最近 5 条结果与证据路径）、`scenarios.yaml`、`repos.json`、`scenario-files.json`；记录准备时的产品文件清单 |
+| 提交 | `fix submit [--fix N]` | 读 `fix.json`：`{"root_cause": 非空, "product_problem": bool}`。场景文件被改动则 `scenario-file-protected`（修复只改产品代码）。判定为产品问题却没有产品改动则 `fix-no-changes`。`product_problem: false` 时修复记为 abandoned 并登记待人处理；否则为 submitted，记下改动文件 |
+| 独立复验 | 另一会话 `run prepare --fix N` | 修复须为 submitted/verified，且在同一检出。实现者自动为修复会话；不接受 not-executed，不能保留旧通过。全部问题场景都实际通过、且执行者不是修复会话时，修复进入 verified，并记下复验时各改动文件的内容摘要 |
+| 关闭 | `fix close [--fix N]` | 须为 verified（`fix-validation-required`）；改动文件须已提交且工作区与 HEAD 一致（`fix-commit-required`）；提交内容须与复验时一致（`fix-content-changed`）。关闭后之前失败/受阻（及人工不通过）的问题场景显示为待复测 |
+| 放弃 | `fix abandon --fix N` | open/submitted/verified 可放弃 |
+
+修复状态：`open` → `submitted` → `verified` → `closed`，或 `abandoned`。
+
+## 9. 编写
+
+所有编写都直接改产品仓库里的文件，开发者审核提交；看板不存场景版本，也不回写场景内容。
+
+### 场景文件格式
+
+```yaml
+metadata:
+  requirement: …
+  version: 3            # 文字或数字
+  owner: …
+  status: draft         # 可选，draft 或 confirmed，缺省 confirmed
+  sources: [{ref: …, version: …, confirmed_by: …}]   # 非空
+  tags: [..]            # 可选
+sops:
+  - id: N1
+    title: …
+    actor: …
+    entry: …
+    must: [..]               # 可选
+    negative_exempt: …       # 可选，没有反向场景时的理由
+    scenarios:
+      - {id: P01, polarity: positive, title, actor, priority, verify: <入口名>,
+         initial_state: [..], steps: [..], expected: [..], forbidden_effects: [..],
+         negative_type?, refs?, evidence_hints?, tags?}
+```
+
+只接受 JSON 数据类型的 YAML（无锚点、别名、标签、重复键，数字有限）。节点编号与场景编号各自唯一，场景编号不含 `#`；`initial_state`、`steps`、`expected` 非空。每个节点至少一个正向场景，并有反向场景或 `negative_exempt`。反向场景的 `negative_type` 取：`empty-input`、`over-length`、`not-found`、`permission`、`cross-tenant`、`duplicate`、`concurrency`、`disconnect`、`timeout`、`archived`、`invalid-input`、`incomplete-input`、`interrupted`、`stale-input`、`tampered-input`、`other`。`verify` 须为已声明的入口。问题带行号返回（`scenario-file-invalid`）。
+
+### 收件箱、合并与问答
+
+- **上传**：内网页面或 `inbox add` 上传 UTF-8 文本（≤2 MiB）。`cases` 按用例格式校验：`metadata{module, feature, owner, last_reviewed: YYYY-MM-DD, tags?}`，`test_cases[]{id: TC_<大写>_<三位数字>, title, priority: P0\|P1\|P2, type: functional\|ui\|security\|performance\|accessibility, steps, expected_results, tags, description?, preconditions?, auto?}`；`sop` 须含六个标题（见下）。状态 pending → merged / rejected（`inbox done|reject`）。
+- **合并**：`merge prepare [--inbox N]` 取待合并用例（缺省全部），当前场景文件须先合格；目录 `<数据目录>/merges/<编号>/` 含 `inbox/` 原文、`answers.json`、`before.json`、`prompt.md`。会话直接编辑场景与用例文件，有疑问在对话里问或用 `ask`。`merge submit` 校验全部场景文件，输出场景差异（新增、移除、内容改动，以及 actor/verify/polarity 变化），把收件箱条目标为已合并。
+- **问答**：`ask --about inbox:N|<键>|<文件名> --text …` 挂到看板“待答复”；测试同学在内网答复（须填姓名）；会话用 `answers [--about] [--unanswered]` 读取。确认人取操作者或答复人，记在场景 `refs` 与 `metadata.sources`。
+
+### 业务 SOP
+
+- `sop prepare --source <资料>...`（最多 32 份、每份 ≤20 MiB）把资料复制到 `<数据目录>/authoring/<编号>/sources/S<n>/`，写 `sources.json` 与 `prompt.md`。
+- 会话在场景目录写 SOP Markdown，二级标题须有：业务目标与范围、角色、业务规则（其下 `###`/`####` 的 `R<n>` 规则小节）、流程图、禁止的副作用、未覆盖范围。
+- `sop submit --file <场景目录下的 .md>` 校验后在文末追加 `## 确认记录`（确认人、时间、各资料摘要）；正文不能自带该节。
+
+### 草稿
+
+带 `metadata.status: draft` 的场景文件就是草稿，不进入执行与复测。测试同学在内网批注（目标为整个文件或某个场景，≤4000 字，须填姓名），批注存数据库。会话按批注修订后 `draft resolve <编号> [--reject]`。`draft confirm <文件>` 要求没有未处理批注、metadata 中有单独一行 `status: draft` 与块格式 `sources:`，把状态改为 `confirmed` 并在 sources 首项插入 `{ref: "sop-board draft confirm", version: <日期>, confirmed_by: <确认人>}`。
+
+### 交互地图
+
+Web 入口须声明 `atlas` 与 `spec_library`。地图在 `<spec_library>/atlas/<入口>.json`（结构见随包 `prompts/atlas.schema.json`），只描述页面、控件、文案与定位方式，不提供预期。源码位置写成 `<别名>:<路径>[:<行>]`，别名限于 `atlas.repos`，文件须存在。`atlas prepare --entry E [--mode stale]` 写提示词（stale 模式只更新过期页面）；`atlas submit` 校验后写 `<入口>.digests.json` 记录引用源码的 sha256；`atlas stale` 列出源码摘要变化的页面，地图不存在时为 null。
+
+### 前置数据
 
 ```yaml
 fixtures:
-  environment: "本机隔离演示库"
-  scope: ["只写本轮 demo 组织的成员和团队，不删除"]
-  credential_env: [DEMO_WRITE_TOKEN]
+  environment: 测试环境说明
+  scope: [可写入的数据范围]
+  credential_env: [DB_URL]
   adhoc: false
+  real_only: [被验收流程应产生的对象]
+  recipes:
+    - {name: seed-order, title: …, params: {ORDER_STATE: 说明}, creates: [..], run: [./fixtures/seed.py], check: [./fixtures/check.py]}
 ```
 
-`environment` 是非空说明，`scope` 是非空文字数组；`credential_env` 是不重复的环境变量名数组，缺省为空，`adhoc` 是布尔值，缺省 false。`check` 和搭建指引核对声明及配方格式；凭据只报告名称与是否设置。没有声明时不提供数据准备能力，不改变原工作区执行方式。
+`fixtures run <配方> --param 名=值` 以数据目录为工作目录执行 `run`（参数名转大写注入环境，另注入 `SOP_CHECKOUT`、`SOP_REPO_<别名>`，超时 600 秒），成功后执行 `check`。`fixtures exec --reason … -- <命令>` 只在 `adhoc: true` 时可用。输出按凭据取值脱敏，留痕写 `fixture_runs`，带 `--run` 时同时写 `runs/<编号>/fixtures/<n>.json`；非零退出返回 `fixture-failed`。`real_only` 对象不得写库代替。
 
-配方位于工作区数据目录的 `fixtures/recipes.yaml`，同目录可放脚本；文件缺失表示没有配方：
+### 待人处理
 
-```yaml
-real_only: ["经邀请链接加入的成员"]
-recipes:
-  - name: seed-members
-    title: 准备分页所需成员
-    params: {count: 新增成员数量}
-    creates: [成员]
-    run: [python3, seed.py, "{count}"]
-    check: [python3, count.py]
-```
+`attention add --kind K --text …`，种类：人机验证、OAuth 授权、账号登录、第三方后台设置、权限放行、邮箱验证、环境问题、前置数据、浏览器崩溃、其他。看板“待人处理”页只读，解决用 `attention resolve <编号>`。浏览器崩溃、身份计数超限与非产品问题的修复会自动登记。
 
-配方 `name` 在工作区内唯一，只含小写字母、数字和连字符，以字母或数字开头；`title` 为非空说明；`params` 是参数名到说明的对象，可为空，参数名须为合法环境变量后缀且转大写后不冲突；`creates`、`real_only` 是文字数组。`run` 必填、`check` 可选，均为非空命令参数数组。`check` 由作者保证只读。命令在数据目录的 `fixtures/` 下运行，参数按 `{名称}` 替换并作为 `FIXTURE_<大写名称>` 环境变量传入，不经 shell 拼接；显式写 `sh -c` 的语义由配方作者负责。仓库路径也可从 `SOP_REPO_<别名大写且连字符改下划线>` 取得。
+## 10. 报告与看板页面
 
-以下命令均接受 `--data <工作区数据目录>`，工作区可省略：
+`report` 导出当前检出的 `report.md`（缺省目录 `<数据目录>/reports/<检出>-<时间>/`，不写进产品仓库）：快照与各仓提交、各状态计数、Agent 通过率与一次通过率、人工复测覆盖与通过率、Agent 独立通过的人工确认率与复核覆盖、独立性计数；每个场景的状态与原因、守护通过（注明不是真实入口执行）、最近 5 条结果（保留通过、独立性、finding、证据 sha256）和人工复测；然后是误判明细与待人工复核；最后列出未执行范围（未执行、待复测、草稿）。`--zip` 另写 `evidence.zip`（含报告与所引证据原文）。正文按凭据取值脱敏。
 
-| 命令 | 作用 |
+统计口径（全部取当前检出的结果记录，不限当前场景文件）：
+
+| 指标 | 分子 / 分母 |
 | --- | --- |
-| `sop-board fixtures list [工作区]` | 环境、范围、配方摘要、real_only、是否允许临时写入 |
-| `sop-board fixtures run [工作区] 配方 (--task 编号 或 --batch 批次 --session 标识) [--scenario 编号] [--param 名=值 …]` | 使用配方；参数必须齐全 |
-| `sop-board fixtures exec [工作区] (--task 编号 或 --batch 批次 --session 标识) --reason 说明 [--scenario 编号] -- 命令…` | adhoc 为 true 时在声明范围内临时写入 |
-| `sop-board fixtures mark [工作区] --run 编号 (--promoted 配方 或 --dismiss) --by 姓名` | 仅标记临时写入的整理结果，不自动创建配方 |
+| Agent 通过率 | 各指纹最新 Agent 结果中的通过 / 其中通过与失败 |
+| 一次通过率 | 各指纹首条 Agent 结果中的通过 / 其中通过与失败 |
+| 人工复测覆盖 | 有 Agent 结果且有人工标注的指纹 / 有 Agent 结果的指纹 |
+| 人工复测通过率 | 各指纹最新人工标注中的通过 / 全部最新人工标注 |
+| Agent 独立通过的人工确认率 | 样本中人工结论为通过的 / 有人工结论的样本 |
+| 复核覆盖 | 有人工结论的样本 / 全部样本 |
 
-任务必须属于工作区、为执行或正在复验的任务，且仍可写结果；`--task` 使用实际认领会话或运行中代理会话。跨批次复验中同编号有歧义时，用 `--scenario 批次#场景` 指定；批次准备必须给出会话标识。前置校验不通过时不运行任何命令，不产生准备记录。任务内运行采用准备时冻结的配方与范围；批次准备使用当前声明。
+样本是每一条 Agent 独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化）。人工标注登记时，`of_result` 记当时该场景当前指纹最新一条 Agent 结果（不论其间是否已有别的人工标注），`product_digest` 记标注时的产品快照。样本的人工结论取 `of_result` 指向它、且 `product_digest` 与它相同的最近一条人工“通过”或“不通过”；只有阻塞或需求变更的样本不计入分子分母，按最近一条的结论计入“未决”，报告总是写出“未决：阻塞 N，需求变更 M”。分母为 0 的比率在报告与概况中显示为“—”。`report --file` 只筛选场景各节、待人工复核与未执行范围，概况中的统计与误判明细仍按整个检出。人工结论为不通过的样本列为误判明细：场景键、运行编号、Agent 执行时间、复测时间、复测人、缺陷链接、说明；执行者只在本机报告中显示。
 
-有 check 时按“核对前态 → run → 核对后态”执行，三个退出码和输出分别保留；任一步非零时记录失败，CLI 返回非零。命令无法启动也记失败。记录位于任务目录 `evidence/fixtures/<编号>-<名称>.json`，原始标准输出与错误输出分别保存为同前缀文件，所有内容在落盘前脱敏；批次准备位于数据目录 `fixtures/runs/`。`fixture_runs` 侧表登记运行，数据库格式仍为 5。凭据取值（含 JSON 转义形式）从配方与入口声明的环境变量取得，命令、参数、输出、页面及记录均打码。
-
-执行与修复复验任务的 `fixtures.json` 提供环境、范围、adhoc、real_only、无命令的配方摘要与此前批次准备摘要；私有 `fixtures-state.json` 保存本轮完整配方。`--task` 加 `--scenario` 的记录在结果登记时关联到同场景，准备不提供业务预期或通过依据。场景详情和轮次接口返回 `fixtures`；内网仅投影打码后的配方名或临时说明、参数、时间，不提供本机路径、完整命令或会话编号。
-
-本机首页工作区卡片进入「数据配方」页 `/w/<工作区>/fixtures`，查看环境、范围、配方、real_only、最近运行与全部待整理临时写入；填姓名后可标记“已整理为配方 / 无需整理”。只在本机开放 `GET /api/v1/workspaces/<工作区>/fixtures` 与 `POST /api/v1/workspaces/<工作区>/fixtures/<运行编号>/mark`（正文 `by` 加 `promoted` 或 `dismiss: true`）。内网不生成页面入口，访问页面及接口均返回 403；页面不执行数据命令。
-
-环境、写入范围和真实流程对象属于业务边界，配方作者及执行者须按[标准第 5 节](standard.md#首次执行与人工复核)核对，数据库账号应限制权限；工具不解析任意脚本来推断写入对象。
-
-## 交互地图
-
-声明了 `entries.<入口>.atlas` 的 Web 入口可以梳理交互地图（D84）。
-
-**地图记录什么**：页面、导航、控件、弹窗、表格、各语言文案、推荐定位器、点击后打开的对象、发出的请求和源码位置，只说明“在哪、叫什么、怎么定位、点了打开什么”。
-
-**地图不记录什么**：可见性或权限、校验规则、默认值、业务结果与副作用。这些是场景预期；输出结构拒收未声明的字段，常见的预期类字段名会给出说明。
-
-**作用范围**：地图属于工作区，跨批次、跨轮次复用，不参与执行作废判断（D89）。
-
-**命令**：均接受 `--data <工作区数据目录>`，工作区可省略。
-
-| 命令 | 作用 |
-| --- | --- |
-| `sop-board atlas prepare [工作区] --entry 入口 --session 标识 [--stale \| --pages 编号,…] [--browser] [--replace-queued]` | 认领一次梳理：全量、只更新过期页面或只更新指定页面；`--browser` 允许只读浏览器核对 |
-| `sop-board atlas submit [工作区] --task 编号 [--session 标识]` | 校验 `final.json` 并登记新版本；不合格时逐条列出问题，任务保持会话处理中，可修正后重交 |
-| `sop-board atlas show [工作区] [--entry 入口] [--page 编号] [--json]` | 当前版本、过期页面（含变化文件与多语言键）和待处理反馈 |
-
-**任务与调度**：
-
-- 任务类型 `atlas`，中文名“梳理交互”，看板与会话共用提示词 `prompts/atlas.md`、结构 `prompts/atlas.schema.json` 和同一套登记规则。
-- 看板侧在「交互地图」页本机点击“梳理交互（全量）”或“只更新过期页面”后排队，由看板的代理运行；同一入口已有进行中的梳理时拒绝。
-- 梳理只读前端源码，不占用产品环境，与执行、修复、合并互不阻挡。
-- 会话用 `--browser` 时，准备阶段核对没有正在运行或会话处理中的执行与修复；核对期间不要另行开始执行。
-
-**任务目录**：
-
-| 文件 | 内容 |
-| --- | --- |
-| `prompt.md`、`schema.json` | 提示词与输出结构 |
-| `entry.json` | 入口声明与语言 |
-| `repos.json` | `atlas.repos` 的路径 |
-| `previous/atlas.json` | 当前版本，有则提供 |
-| `feedback.json` | 未处理的执行者反馈 |
-| `stale.json` | 只更新过期页面时提供 |
-| `pages.json` | 只更新指定页面时提供 |
-| `final.json` | 输出 |
-
-**输出结构**（严格结构，全部字段必填，可空的写 null）：
-
-- **顶层**：`pages`、`removed_pages`、`feedback_handled`（`{id, adopted, note}`）、`notes`。
-- **页面**：`id`、`title`、`route`、`container`、`reach`（`{from, via, note}`）、`ready`、`controls`、`dialogs`、`tables`、`sources`、`verified_browser`。
-- **控件**：`id`、`role`、`name`、`i18n`、`locator`、`testid`、`opens`（`page:<编号>`、`dialog:<编号>`、`menu` 或 null）、`requests`（`{method, path}`）、`sources`。
-- **弹窗**：`id`、`title`、`locator`、`fields`、`actions`、`sources`。
-- **表格**：`id`、`locator`、`columns`、`row_actions`、`empty`、`sources`。
-- **写法约定**：
-  - 各语言文案写成 `[{"lang", "text"}]`；
-  - 控件引用写成 `<页面>/<控件>` 或 `<页面>/<弹窗或表格>/<操作>`；
-  - 源码位置写成 `<仓库别名>:<仓内路径>[:<行>]`。
-
-**登记时的校验**：
-
-- 编号格式与唯一（弹窗在整份地图内唯一）；
-- 到达路径与 `opens` 的引用存在；
-- 语言属于声明的 `languages`；
-- 源码文件存在于 `atlas.repos`，行号落在文件内；
-- 只更新过期或指定页面时，只能改写这些页面并新增页面，其余页面原样沿用。
-
-**版本**：
-
-- 每次登记生成新版本，写到 `<数据目录>/<工作区>/atlas/<入口>/v<版本>/`：`atlas.json` 加人读的 `atlas.md`；`--browser` 时另有 `evidence/`。
-- 侧表 `atlas_versions` 登记版本、来源任务、时间、页面与控件数，以及源码摘要。
-- `glossary` 由看板按页面上的多语言键汇总生成。
-
-**过期**：
-
-- 按页面比较登记时与当前的源码文件摘要，包括工作区未提交的内容。
-- JSON 多语言文件逐键记录摘要，文件变化时只把用到变化键的页面判为过期，并列出这些键；其他文件变化，引用它的页面即过期。
-- 过期页面仍可使用，执行以实际页面为准。
-
-**执行者反馈**：
-
-- 执行者可在执行或复验任务目录写 `atlas-feedback.jsonl`。每行字段为 `page`、`kind`（`missing`、`locator`、`name`、`reach`、`other`）和 `detail`；可选 `entry`（只有一个地图入口时可省略）、`control`、`scenario`、`evidence`。
-- 登记执行结果时一并收下：合格的行进入待处理；不合格的行只在任务结果的 `atlas_feedback.rejected` 中说明行号与原因，不影响结果登记。
-- 下一次梳理的 `feedback.json` 列出待处理反馈，`feedback_handled` 写明采纳与否后标为已处理。
-
-### 场景绑定与界面对照
-
-有地图后，可以按批次把场景对应到地图（D85）。
-
-**做法**：
-
-- 每一步对应到页面和控件，并记录操作身份（场景 actor）与是否改动数据。
-- 场景中用「」或“”括起的文字，逐条与前端文案对照。
-
-**命令与入口**：
-
-| 命令或入口 | 作用 |
-| --- | --- |
-| `sop-board atlas bind [工作区] 批次 --session 标识 [--entry 入口] [--stale] [--replace-queued]` | 认领一次对照（任务类型 `atlas`，模式 `bind`，任务的批次为该批次）。`--entry` 在批次只用到一个地图入口时可省略；`--stale` 只对照没有当前内容绑定的场景，以及绑定页面在地图新版本中有变化的场景 |
-| 看板批次页“对照全部场景”“只对照有变化的场景” | 本机发起，同一批次已有进行中的对照时拒绝 |
-| `sop-board atlas submit [工作区] --task 编号` | 登记对照结果 |
-| `sop-board atlas decide [工作区] 批次 --item 场景#条目 --decision sop\|change --by 姓名 [--note 说明]` | 决定一条界面对照 |
-
-**输出**（`prompts/atlas-bind.schema.json`）：
-
-- `scenarios` 恰好覆盖本次场景，每项为 `scenario`、`identity`、`mutates`、`steps`（`{step, page, controls, note}`）、`texts`（`{text, at, status, ref, note}`）；另有顶层 `notes`。
-- `status` 的取值：
-
-| 状态 | 含义 | `ref` |
+| 路由 | 级别 | 内容 |
 | --- | --- | --- |
-| `match` | 与引用元素在某种声明语言里的文案完全相同 | 必须写 |
-| `translation` | 场景语言不在声明语言中，是等义译文 | 必须写 |
-| `mismatch` | 元素存在但文案在所有声明语言里都不同 | 必须写 |
-| `absent` | 找不到对应元素或功能，包括无法对应的界面步骤 | null |
-| `data` | 输入值、数据值等非界面文案 | null |
+| `GET /` | lan | 跳转到 `/p/<项目>` |
+| `GET /p/<项目>?checkout=<名称>#<场景键>` | lan | 场景工作台：左侧检出切换、搜索、状态筛选（含待沉淀、待人工复核与计数；待复测、失败、待人工复核、未执行、通过在计数为 0 时也显示）与 文件→节点→场景 树；不带 `#场景键` 时右栏是概况，显示各状态与徽标计数、Agent 独立通过的人工确认率与复核覆盖；右侧标题与徽标、状态与原因、四要素（附守护覆盖）、最新结果与证据（截图、视频、trace、文本）、复测标注、本机按钮、历史 |
+| `GET /p/<项目>/runs` | lan | 启动记录与运行记录 |
+| `GET /p/<项目>/report[?file=&download=1]` | lan | 报告预览与 Markdown 下载 |
+| `GET /p/<项目>/attention` | lan | 待人处理 |
+| `GET /p/<项目>/inbox` | lan | 上传用例/SOP、待答复问题 |
+| `GET /p/<项目>/drafts` | lan | 草稿与批注 |
+| `GET /p/<项目>/sop` | lan | 场景目录下的 SOP 原文渲染 |
+| `GET /p/<项目>/atlas` | lan | 交互地图与过期页面 |
+| `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据；`/api/board` 的每个场景带 `distill`、`review` 徽标，`counts` 含 `distill`、`review`，`stats` 含 `agent_confirm_rate`、`agent_review_coverage`（numerator、denominator、value） |
+| `GET /evidence/<sha256>/<文件名>` | lan | 证据下载；视频支持 Range；trace zip 允许 trace.playwright.dev 跨域读取 |
+| `POST /api/mark` | lan | 复测标注：`verdict` 取 pass/fail/blocked/changed，`defect`、`note`、`by` 都可不填（本机缺省为操作者，内网不填记为未署名） |
+| `POST /api/inbox`、`/api/answer`、`/api/annotate` | lan | 上传、答复、批注；须有姓名（顶栏署名填一次，浏览器 localStorage 记住，各页面共用） |
+| `GET /p/<项目>/sop`、`GET /api/sop?checkout=<名称>` | lan | 业务 SOP：场景目录下的 Markdown 按 1～3 级标题分节，左树右文；含“答复”小节的节标出已答复 / 待答复 |
+| `POST /api/launch`、`/api/retest`、`/api/distill` | local | AI 重跑此场景、运行守护、沉淀 |
+| `GET /api/launches/<编号>/log` | local | 启动日志末尾 512 KiB |
+| `/local/health`、`/local/env/{up,down,status}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
 
-**登记时的校验**：
+## 11. 错误码
 
-- 场景中每个加引号的文字都要对照；文字必须出现在场景原文中；
-- 页面与控件引用存在；
-- `match` 的文字必须确实存在于引用元素上，`mismatch` 的文字不得与之相同，不能靠误判“一致”漏报。
-
-**登记内容**：
-
-- 绑定按场景内容指纹写入 `atlas_bindings`。
-- `mismatch` 与 `absent` 写入界面对照条目（`atlas_checks`，场景内条目编号 `T1`…）。同一内容重新对照时，按文字与位置保留已有决定。
-
-**决定与执行**（使用者 2026-10-30 的决定：执行前列清单由人逐条定）：
-
-| 决定 | 执行时的处理 |
+| 错误码 | 含义 / 处理 |
 | --- | --- |
-| 按 SOP | 照常执行，实际文案不符时判失败 |
-| 改 SOP | 该场景退出待执行范围（统计里计为“等待修改场景”，不算受阻、跳过或暂缓），明确指定编号的执行也会被拒绝；场景内容变化后条目显示“场景已改”而关闭，场景按 changed 回到待执行，需要重新对照 |
-| 未定 | 照常执行，按 SOP 判 |
+| `project-not-found` | 找不到项目或当前仓库未登记；`init` 或写 `--project` |
+| `project-format` | 旧格式数据目录或数据库；用 `init` 新建项目，不迁移 |
+| `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …` |
+| `invalid` | 其他参数或配置问题（含配置不合格、检出不存在等），见 problems |
+| `env-busy` | 端口被其他检出或项目的环境租用（`port_step: 0` 时写明占用的检出、正在使用的运行编号与 `env down` 命令），或端口已被其他进程监听（附 lsof 信息） |
+| `browser-busy` | 该身份浏览器被真人登录或其他运行占用 |
+| `browser-crashed` | 30 分钟内两次异常退出；`browser open --reset-crash` |
+| `browser-runtime-missing` | 未安装运行时；`browser install` |
+| `session-required` | 取不到执行者会话编号；加 `--session` |
+| `run-prepared` | 本检出已有准备好的运行；提交或 `run abandon` |
+| `run-not-prepared` / `run-not-found` | 运行不是 prepared / 不存在 |
+| `nothing-to-run` | 范围为空 |
+| `scenario-not-found` | 场景键或编号不存在或不唯一 |
+| `draft-not-runnable` | 草稿场景不能执行或复测 |
+| `scope-invalid` | `--fix` 与 `--scope` 同用 |
+| `launch-running` | 本检出已有运行中的启动；等待或 `launch stop` |
+| `launch-not-found` | 启动不存在 |
+| `not-distillable` / `nothing-to-distill` / `distill-prepared` | 场景不是待沉淀 / 没有待沉淀 / 已有进行中的沉淀 |
+| `report-invalid` | guard.json 无法读取、缺 guards 或命令定义冲突 |
+| `distill-invalid` | 沉淀核对未通过（独立通过、覆盖、检出能力、漏检、保真检查） |
+| `distill-tests-failed` | 守护命令实际运行未通过 |
+| `fix-open` / `fix-already-owned` / `fix-scenario-invalid` / `nothing-to-fix` | 修复认领冲突或范围不对 |
+| `fix-answer-invalid` / `fix-no-changes` | fix.json 不合格 / 产品问题但无改动 |
+| `scenario-file-protected` | 修复期间场景文件被改动 |
+| `fix-state-invalid` / `fix-checkout-mismatch` / `fix-scenario-missing` | 修复状态、检出或问题场景不符合复验条件 |
+| `fix-validation-required` | 关闭前须独立复验通过 |
+| `fix-commit-required` | 修复改动文件未提交 |
+| `fix-content-changed` | 提交内容与复验时不一致，须重新复验 |
+| `scenario-file-invalid` | 场景文件不合格（带行号） |
+| `cases-invalid` / `sop-invalid` / `upload-invalid` / `upload-too-large` | 上传或提交内容不合格 |
+| `nothing-to-merge` / `inbox-invalid` / `inbox-state-invalid` | 合并范围不对 |
+| `work-not-found` / `work-state-invalid` | 没有进行中的 merge/author/atlas 工作 |
+| `draft-not-found` / `draft-annotations-open` / `draft-format` | 草稿确认条件不满足 |
+| `atlas-not-declared` / `atlas-invalid` | 入口未声明 atlas/spec_library / 地图不合格 |
+| `fixtures-not-declared` / `recipe-not-found` / `adhoc-not-allowed` / `fixture-failed` | 前置数据问题 |
+| `identity-not-found` / `identity-limit` | 身份未声明 / 计数达上限（已登记待人处理） |
+| `local-only` / `token-required` / `cross-origin` / `json-required` | 访问级别或请求格式不符 |
+| `internal-error` | 守护进程未预期错误（HTTP 500） |
 
-**页面与接口**：
+### 数据库表
 
-- 批次页「界面对照」列出进行中的条目（场景写法、位置、前端各语言文案、引用元素与依据）以及已关闭的条目。
-- 本机与内网都可以决定，须填决定人姓名，不接受会话标识或 agent。
-- 接口：
-  - `POST /api/v1/workspaces/<工作区>/batches/<批次>/atlas-checks/<编号>/decision`，正文 `{"decision": "sop" | "change", "by": "<姓名>", "note": "<说明>"}`，本机与内网可用；
-  - `POST /api/v1/workspaces/<工作区>/batches/<批次>/atlas-bind`，正文 `{"stale": true | false}`，仅本机。
+`board.sqlite3`，格式 6（`PRAGMA user_version=6`），共 18 张表，没有任务状态机：
 
-**页面与接口**：
-
-| 页面或接口 | 本机 | 内网 |
-| --- | --- | --- |
-| 工作区「交互地图」页 `/w/<工作区>/atlas` | 版本、过期页面、待处理反馈与页面清单，另有两个梳理按钮 | 只读，不显示按钮 |
-| 页面详情 `/w/<工作区>/atlas/<入口>/<页面>` | 控件、弹窗、表格、各语言文案、多语言键、定位器、请求与源码位置 | 只读 |
-| `GET /api/v1/workspaces/<工作区>/atlas` | 返回摘要 | 可用 |
-| `GET /api/v1/workspaces/<工作区>/atlas/<入口>` | 返回当前地图 | 可用 |
-| `POST /api/v1/workspaces/<工作区>/atlas/<入口>/tasks`（`{"mode": "full" \| "stale"}`） | 发起梳理 | 不可用 |
-
-## 访问范围
-
-无需看板令牌。页面只填写标记人，保存在浏览器的 `sop-board.marker`。内网同事可查看、上传和复核；开发者操作只接受实际连接来自回环地址，支持 IPv4、IPv6 及映射地址，其他来源返回 403 `local-only`。内网页面不生成开发者按钮。
-
-POST、PUT 带 Origin 时必须与请求 Host 的 HTTP 来源一致，否则返回 403 `cross-origin`；不带 Origin 的命令行请求正常处理。JSON 接口必须声明 `Content-Type: application/json`，否则返回 415 `json-required`。仅 `POST /api/v1/evidence` 的二进制上传豁免 JSON 类型要求。
-
-转发头不参与来源判断；开发者自己建立的本机反向代理或端口转发视为开发者操作。服务使用 HTTP，供可信本机和内网使用。
-
-## 用例、合并与执行
-
-按条增改用 `cases put`：文件可以是完整用例文件，也可以只有 `test_cases`。片段继承最近非“合并澄清”上传的 `metadata`，去掉 `sop-draft` 标签；文件自带文件头时使用其原值。没有上传可继承时须补文件头或使用 `cases upload`。`--case` 可重复，选取文件中的指定编号，其余条目保持原状；重复或不存在的编号、缺署名、空依据和格式问题均在写入前拒绝，问题行号对应原文件。
-
-每条输出 `added`、`updated` 或 `unchanged`，列出变化字段、被替换版本的上传序号、文件名和上传人。覆盖合并澄清版本时标出 `overrides_clarification`，下一轮仍按已采纳答复核对。有变化时只登记新增、改写用例，文件名为“按条增改：原文件名”；决定记录保留 `--reason` 原文、署名、上传序号及编号。全部未变化时不登记上传、决定或任务。此类上传不记录文件路径，`export --write-back` 按“没有记录原文件路径”拒绝；可直接修改仓库用例文件后用 `put --from 该文件 --case …` 登记，也可先 `export --case … --out 新文件` 取当前内容再修改和登记。
-
-合并按输入决定全量或增量：最近已落地任务有完整判断，且当前场景内容仍是该任务落地的结果；业务 SOP、入口声明、独立场景选择和本批排除范围均未变化；没有待处理回复，并且确有新增或变化的用例时使用增量。用例内容或草稿确认人不同均算变化。缺条件时全量并说明原因。看板开发者“重新合并”与会话 `merge prepare --full` 明确要求全量；其他触发名称不决定模式。
-
-增量任务的 `delta.json` 保存基线任务、新增与变化编号及变化前内容、可沿用判断；只在增量时给原提示词追加说明。输出 `cases` 必须覆盖全部变化编号；其余可省略，输出出现的条目完整覆盖旧判断。节点及反向豁免按 section、原有非用例场景的 kept 去向按场景编号补齐，且须仍适用；`relocate` 不沿用。只沿用关联用例全部未变化的缺口，并重新分配本轮编号；变化用例的旧缺口由本轮重新判断。补齐后仍走原有完整核对与组装，沿用细节目标失效时拒收，补上受波及判断后可在同一任务重交，或使用 `--full` 重新准备。
-
-落地的完整判断和落地后的用例存于任务目录 `judgment.json`，升级前任务从 `final.json` 和已登记的澄清改写恢复。两者都不可读时全量。数据库格式保持 5，任务结果只增加模式、原因、基线编号与计数；完整判断和增量材料仅本机下载。合并页每 3 秒刷新，显示“增量合并：判断 N 条变化用例，沿用 M 条”或全量原因；M 只计由基线补齐的用例判断，不含本轮明确给出的条目。本机与内网均展示模式，内网保留现有路径与会话遮蔽。
-
-首页填写标记人和批次名称，上传用例 YAML。用例格式保留 `metadata` 与 `test_cases`；合并会调用启动者本机已登录的 Codex，依据用例与既有场景生成新版本，核对磁盘文件未变化后写入配置的场景目录。执行者不可把 Codex 启动失败或空输出当作场景通过。
-
-合并为每条用例给出 `kind`（flow/detail）、`kind_reason`；detail 的 `merged_into` 必须指向本次生成的流程场景。只有 flow 生成同编号场景；detail 的全部预期以 `[用例 编号]` 标注后加入目标 expected，refs 和配对文件保留来源。执行会话同时读取来源用例的前置条件、步骤和预期，在所属流程内核对细节。
-
-合并页按流程场景列出细节归属与理由。本机开发者可点“改为单独成场景”，选择持久保存在数据目录，并进入之后每次合并的 `case_choices.json`。若模型仍把该用例作为 detail，核对拒绝写入；内网不能执行此操作。用例、场景或选择在合并期间变化时，旧输出转“待同步”。上传用例或场景文件变化触发合并时，若输入与本批次已完成、待同步、待补充、排队中、运行中或会话处理中的合并相同则不再建任务；与失败、已中断、Codex 不可用或已放弃的任务输入相同时照常新建（SOP-BOARD-3）。看板启动与工作区配置变化都不触发合并（D106）。合并只把入口声明当作输入，不依赖整个工作区配置：改 `snapshot_exclude`、适配等其他配置不使进行中或已落地的合并失效，也不使下一次合并改为全量；入口声明变化后，进行中的合并落地时转待同步，由开发者在合并页重新合并或由会话 `merge prepare`。开发者发起的重新合并在相同输入已有排队中或运行中的合并时复用该任务，否则新建。
-
-缺口按 `{id, kind, title, scenario, current, missing, question, known, options, cases}` 保存：`business` 为待确认的业务规则，`entry` 为看板尚不能完成的验收操作，由开发者处理。问题单面向测试同事与业务方，按标题、具体场景、目前写法或现状、缺什么、已知口径、请确认、涉及用例展示；每项只问一件事，回答选项至多 3 项，不作为已确认预期。`known` 无内容时为 null。缺口涉及的用例、所属流程暂缓的细节用例、正常流程全部暂缓的分组用例单独列为“待补充”。其余流程照常写入场景；全部暂缓时不写文件。合并任务的 `result.gaps` 保留问题，`result.held` 保存用例、缺口编号、原因与沿用的场景编号。
-
-暂缓流程用例已有场景时沿用原内容、执行历史、回归声明及原配对依据，标明“用例已更新，新内容待补充”，整条暂缓场景不计入当前执行范围、执行进度和通过率。细节用例暂缓时，所属流程仍按新内容重建：此前已经并入的，原样保留上一版 `[用例 编号]` 预期、来源引用及原配对摘要；此前未并入的，不加入其预期。更新后的流程照常计入执行，暂缓细节的新内容不参与本次验证。`held.retention` 区分整条场景沿用（`scenario`）、仅沿用旧细节（`detail`）与无旧内容（`none`）；`scenarios` 记录原有归属。报告列出暂缓原因及旧内容的沿用说明，历史轮次保持原记录。
-
-合并对话保存回复人、时间、问题快照、原文、处理状态、处理任务与来源（看板或会话）。没有进行中的合并时以“补充澄清”入队；否则当前轮完成后入队，当前轮不处理后来收到的回复。入队、会话 prepare 或重试冻结快照时已收到的回复都计为已派发，本轮结束后不再为它们另派一轮，等待中的会话归属也随之结束。每轮的 `clarifications.json` 含全部历史并计入输入摘要，仅本机下载；对话接口提供业务记录并沿用响应遮蔽。上传、重新合并和场景变化都优先续接批次最近的合并会话；续接失败保留材料并记录“会话续接失败，已用完整历史新开会话”。
-
-输出 `responses` 须恰好覆盖本轮待处理回复；`case_updates` 只引用已采纳回复，修改限定的用例字段。全部核对通过、原输入仍有效后，在一次事务内保存回复状态、一次澄清用例上传、场景版本与登记收据。失败时这些业务记录均不变；运行中的新回复留到下一轮。澄清上传保留原上传来源信息，追加回复依据；场景来源记录 `看板合并澄清 #n`。用例页可对照此前版本，后续下载采用更新后的并集。 缺口回复引用的用例须属于该回复保存的问题快照；通用说明须在更新理由中说明与该用例的直接关系。新生成的澄清依据日期、页面与报告的不纳入日期共用看板显示时区。场景来源字段顺序固定；只有字段顺序或格式变化时沿用原文，完全相同的场景不改写文件或登记新版本。推断注释的变化仍保留并登记，不当作普通格式变化。
-
-本机首页工作区卡片可切换“场景写入后自动执行”，缺省开启。关闭后，合并写入、场景推送或发现均不自动入队，新增和变化的场景保持待执行；手动“执行待执行场景”仍可用，重新开启不会补发。内网只显示状态。此开关与暂停全部自动任务相互独立，关闭自动执行不阻止合并。
-
-来自草稿确认的用例合并继续遵守 D58，不自动安排执行；无论使用看板确认还是会话确认，后续须明确发起所需执行。开关开启不取消这项例外。
-
-批次概览、场景、用例与合并页每 3 秒检查变化，显示最近合并任务及其详情链接；排队时显示按当前互斥、依赖、优先级与同时运行上限推算、预计会在它之前开始的任务数（估算假定先开始的任务先结束；待提交、待验证的任务等外部条件，排在可立即开始的任务之后）与同时运行上限 3，运行时显示开始时间、递增时长、实际超时上限与最近活动时间。本机合并页另显示最近 20 条活动摘要及可用的 `codex resume` 命令，内网不提供会话内容。
-
-覆盖率、用例页和报告共用按场景版本及用例内容保存的配对，不按编号相同推断覆盖。没有配对的外部场景文件须先完成合并。报告逐条列出细节用例的目标场景，并逐执行轮次列出沿用数量和理由；当前沿用总数与历史各轮明细分别展示。
-
-场景 `metadata.repos` 列出本批次涉及的仓库，缺省全部仓库。产品指纹覆盖这些仓库的已跟踪、未跟踪且未忽略文件，排除配置的场景目录及 `snapshot_exclude` 路径。看板执行遇到未提交产品改动时为“待提交”，列出仓库与路径；每五秒复核。开始执行前，若仓库提交号与运行环境记录不同，先重启环境。
-
-本机的首页批次条目、批次概览页和 SOP 场景页都有“执行待执行场景（N 条）”与“重新验证全部场景（M 条）”。N 按实际入队范围计算，包含新增、内容变化、失败及产品变化待判定的场景；按钮说明为“与‘待执行’队列相比，还包含失败和产品变化待判定的场景”。显示队列的拆分不改变 `pending_scope`、`--scope pending` 或执行计划的 pending 模式。M 是当前版本排除暂缓项后可执行的场景总数。全量请求把可执行场景记为 `rerun`，每条都须实际执行并保存新证据，不得沿用；同批次已有排队、待提交、等待合并或等待浏览器的任务时合并范围，`rerun` 优先保留。点击后在按钮旁显示“任务 #编号：状态”，不跳转。
-
-看板执行在同批次存在排队中或运行中的合并任务时，显示“等待合并 #编号”，不启动会话。合并结束后按最新场景版本重新确定范围并冻结快照，全量请求包含新场景；合并失败或作废时使用当前已有版本。
-
-两个按钮分别显示停用原因：尚未搭建时列出首个配置问题，配置合格但自检未通过时显示“自检未通过”，没有场景时显示“尚无场景”。N 为 0 时增量按钮显示“没有待执行场景”，全量按钮仍可用。内网页面不显示这两个按钮及原因。
-
-执行和复测会话先读取数据目录的项目验证技能，再按技能引用读取对应产品版本的真实验证手册和本任务授权记录，随后按入口声明读取辅助技能绝对路径，通过运行中的实际环境操作。技能目录全部普通文件的相对路径与内容摘要排序后组成 skill_digest；每轮报告显示前 12 位。技能内容变化不使已有结果失效，也不要求重新自检；技能不合格仍会使工作区不就绪。执行会话不增加仓库写入目录，修复会话沿用已核对的修复工作树写入范围。
-
-场景、用例、配置或本轮验证技能变化时本轮作废，不登记结果。看板执行在启动 Codex 前核对快照与刚启动的环境一致，此前的变化仍作废；Codex 启动之后的产品内容或提交号变化不作废，结果按准备时的产品快照登记，`product_changed` 只列出内容有变化的路径。产品变化后，执行会话根据改动范围判断哪些场景受影响并重跑；同一内容此前通过且能证明不受影响的必须沿用，不再实际执行，`status` 保持 `pass`，`note` 为“沿用：<改动范围、依赖关系和理由>”，保留原通过证据。会话在 `impact.json` 数组中逐条记录 source-changed 场景的 scenario、affected 布尔值和 reason；缺文件、漏场景或判定与结果不一致均整轮不合格，错误指出场景编号。页面、任务与报告分别统计沿用与重跑：重跑是实际执行并得出通过或失败的场景，受阻、跳过不计入两者；执行任务的两项计数按它登记的轮次从正式结果计算，看板、会话与旧任务一致。
-
-看板调度受全局暂停控制，同时最多运行三个任务；看板浏览器入口共用一个名额。优先级为修复、执行、合并与草稿、沉淀，只在资源可用时生效：同一工作区的执行、修复、沉淀互斥（会话处理中的会话修复与批次执行除外），修复与合并在同一工作区互斥（合并会改写修复依据的场景；不同批次的合并之间仍可并行），同一批次的合并、草稿与执行互斥，执行与沉淀等待同批次排队中的合并；修复与会话独立复验不属于单一批次，按批次互斥时与该工作区的任一批次相交；被阻挡的高优先级任务不阻止不冲突的低优先级任务开始。被阻挡的任务保留待提交、等待浏览器、待验证等具体状态，原因写明正在等待的任务编号；阻挡期间仍每五秒核对这些条件，已提交、浏览器已空出或已在新产品上通过时改为排队中（沉淀提交后仍须在新产品上通过的转为待验证并列出场景），输入变化的作废仍在开始前判断；“等待合并”只在确实等待同批次合并或草稿时显示，阻挡解除后等待原因随之清除。暂停不替代会话认领，也不会停止开发者自己的会话；会话准备仍核对实际环境占用。配置或自检不合格时执行和修复停用，返回 409 `workspace-not-ready`。Codex 不可用或会话失败保留原因及输出，由开发者处理后重试。
-
-### 执行材料与 Web 失败隔离
-
-D86、D87。
-
-**任务目录的新增文件**：执行准备（看板、会话执行，以及单批次复验）另外写入以下文件。
-
-| 文件 | 内容 |
+| 表 | 内容 |
 | --- | --- |
-| `brief.md` | 执行速查卡，不超过 5KB：本轮范围、证据、地图用法、前置数据规则、时间上限与停止条件、结果写法 |
-| `atlas.json` | 场景入口有交互地图时提供。节选包括场景绑定到的页面及到达它们实际经过的页面（能从起点直接打开的页面不带入其他到达方式；否则只沿第一条到达方式）、这些页面用到的多语言文案、全部页面的索引、版本与过期页面；有未绑定场景且地图不超过 60KB 时给全图 |
-| `bindings.json` | 待执行场景当前内容的绑定和界面对照条目（含决定），以及未绑定的场景 |
-| `atlas-versions.json` | 准备时各入口的地图版本 |
-
-**开场必读材料**：提示词、速查卡与 Web 技能正文合计不超过 15KB；技能细则在 `references/workflow.md` 等文件中，按需阅读。
-
-**轮次的地图版本**：轮次登记时把准备时的地图版本写入侧表 `round_atlas`，轮次接口返回 `atlas`（入口到版本）。执行期间地图更新不使本轮作废。
-
-**Web 模板**：
-
-| 项目 | 要求 |
-| --- | --- |
-| 失败隔离 | `maxFailures: 1`、`workers: 1`、`retries: 0` 保持不变。业务断言失败由 `page` fixture 标为预期失败：附上失败时截图和页面结构快照，关闭本场景新开的页面，worker 不重启、调试连接保留，后续场景照常执行。以“受阻：”开头的错误、连接断开或目标页关闭仍是意外失败，在首个出现时停止本轮 |
-| 时间上限 | 单场景 240000 毫秒、定位或操作 15000 毫秒、导航 30000 毫秒；可用 `PW_SCENARIO_TIMEOUT_MS`、`PW_ACTION_TIMEOUT_MS`、`PW_NAVIGATION_TIMEOUT_MS` 覆盖，记入报告 `config.metadata.limits` |
-| 逐条落盘 | `progress-reporter.mjs` 每结束一个用例，就重写一份与 JSON 报告同结构的 `report.partial.json`；执行中途退出时，用它加 `--allow-partial` 转换已完成的场景 |
-| 地图操作库 | `atlas.mjs` 按 `PW_ATLAS` 读取地图：`openPage` 按路由打开并等待就绪；`locate` 依次按 testid、角色加任一语言名称、地图记录的定位器定位；`act` 点击并等待地图记录的请求；`shot`、`note` 附加证据。地图里找不到时抛出 `AtlasGap` |
-
-### 执行代理、执行计划与连续运行
-
-D91～D95。
-
-**执行代理（`agents`，运行配置）**：
-
-```yaml
-agents:
-  default: {runner: codex}
-  execute: {runner: claude, model: claude-sonnet-5-5, effort: medium}
-  atlas: {runner: claude, model: claude-haiku-5-5, effort: low, args: ["--allowedTools", "Read", "Glob", "Grep"]}
-```
-
-- **键**：任务类型 `default`、`merge`、`generate`、`author-sop`、`atlas`、`execute`、`fix`、`distill`；修复复验沿用 `fix`。缺省为 `codex`，沿用本机 Codex 配置，不接受 `model`、`effort`、`args`。
-- **`claude` 的启动方式**：经 `python -m sop_board.claude_runner` 调用 `claude -p --output-format stream-json`。
-  - 会话编号预先生成，作为执行者身份，续接用 `--resume`。
-  - 事件转换为看板的“最近活动”。
-  - 有输出结构时用 `--json-schema`，结构化结果写成 `final.json`；有凭据时同样先脱敏再落盘。
-  - 容量满载、限流等临时错误等待后续接同一会话，最多 3 次。
-- **`claude` 的权限参数**：缺省时，只读任务为 `--allowedTools Read Glob Grep`，可写任务为 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。配置了 `args` 时只用配置的参数，看板不擅自跳过权限确认。只读任务里 Claude Code 仍可能自行放行它判定为只读的命令（如在任务目录 `ls`、`cat`），写入类命令与未放行的工具会被拒绝，并在“最近活动”记为“调用未获授权”；需要完全禁止命令时在 `args` 中加 `--disallowedTools Bash`。
-- **可用性检查**：按所选代理检查 `codex --version` 或 `claude --version`。
-
-**执行计划**：
-
-- **分组与排序**：待执行场景按“身份 → 首个页面 → 前置状态”分组。身份、页面与是否改动数据取自界面对照绑定；没有绑定时取场景 actor，并按改动数据处理。组按“失败 → 新增或内容变化 → 产品变化待判定 → 其余”和优先级排序，组内只读在前，再按轮切分。
-- **模式**：`pending`（缺省）；`failed`（最近为失败或受阻）；`regression`（产品变化待判定）。
-- **入口**：
-
-| 入口 | 作用 |
-| --- | --- |
-| `sop-board plan [工作区] 批次 [--plan 模式] [--round-size N] [--json]` | 查看计划 |
-| `sop-board execute prepare [工作区] 批次 --plan 模式 [--round-size N] --session 标识` | 按计划取第一轮，与 `--scope` 二选一 |
-| 批次页“按计划执行下一轮” | 本机发起，接口为 `POST …/batches/<批次>/plan-executions`，正文 `{"mode", "round_size"}` |
-
-**连续运行**：由运行中的看板推进，看板未启动或全局暂停时不前进。
-
-- **控制**：`sop-board run [工作区] 批次 start|pause|resume|stop|status [--plan 模式] [--round-size N] --by 姓名`；批次页的开始、暂停、继续、停止仅限本机，须填操作人姓名，接口为 `POST …/batches/<批次>/run`。状态存于 `batch_runs`。
-- **推进条件**：看板每 10 秒检查一次运行中的批次，批次没有进行中的执行时才按计划排下一轮（有未处理事项的场景跳过）。另外两项检查：
-  - 空闲内存低于 `run.min_free_memory`（缺省 0.15）时等待；
-  - 屏幕锁定时等待。
-
-  等待原因写在运行状态里。
-- **暂停**：以下情况暂停，并登记一条待人处理事项：
-  - 上一轮执行任务失败或中断，重试一次后仍未完成；
-  - 上一轮受阻结果里同一问题的场景数不少于 `run.stop_when_blocking`（缺省 5），归并规则见“问题台账与决定记录”。
-- **继续**：暂停后“继续”不再按上一轮的失败或受阻重判，从下一轮开始，并把本批次未处理的“连续运行暂停”事项标为已处理（处理人为操作人）。
-- **完成**：计划为空时，运行标为“已完成”。
-- **`run` 运行配置**：`round_size`（1～25，缺省 15）、`stop_when_blocking`、`min_free_memory`。
-
-**待人处理（`attention_items`）**：
-
-- **登记**：`sop-board attention add [工作区] --kind 类型 --text 说明 [--batch 批次] [--scenario 场景 …] [--task 编号] --session 标识`。类型有 `captcha`、`oauth`、`account`、`setting`、`permission`、`mailbox`、`environment`、`data`、`run-paused`、`other`。
-- **查看与处理**：`sop-board attention list|resolve`；处理时用 `--by` 填姓名。
-- **看板**：批次页「待人处理」列出本批次的事项，标记已处理仅限本机，接口为 `POST /api/v1/workspaces/<工作区>/attention/<编号>/resolve`。
-- **自动登记**：连续运行暂停、身份达到上限时会自动登记。
-
-**身份池（`entries.<Web 入口>.identities`，运行配置）**：
-
-- **声明内容**：每项 `id`、`label`（对应场景 actor）、可选的 `account_env`（变量名）、`cdp`（该身份独立浏览器的调试地址）、`code`（`mailbox`、`backend`、`manual`）、`limits`（`logins_per_day`、`codes_per_hour`、`codes_per_day`）、`real_once`。
-- **计数**：执行者在真实登录或请求验证码前运行 `sop-board identity record [工作区] --entry 入口 --identity 身份 --event login|code [--task 编号]`。
-  - 按最近 24 小时和 1 小时计数，达到八成时提醒。
-  - 超出上限时拒绝，并登记待人处理。
-  - `sop-board identity status` 查看计数。
-- **任务目录**：声明了身份的入口，任务目录有 `identities.json`（只含变量名与当前计数）。模板 `identity.mjs` 的 `as(身份)` 连接该身份的浏览器并返回已登录的页面，`release()` 只断开连接、不关闭浏览器。
-
-## 问题台账与决定记录
-
-D98、D99。问题台账替代各项目手写的 markdown 台账，决定记录汇总人的决定。
-
-**问题（`issues`）**：编号按工作区递增，字段有标题、类型（`product` 产品、`scenario` 场景写法、`environment` 环境、`tool` 工具）、根因、Jira、影响的场景（批次#场景）及关联的修复任务。
-
-- **状态**：人可设为 `open`（待处理）、`deferred`（暂缓）、`closed`（已关闭）。未暂缓、未关闭的问题按最近关联修复显示：会话处理中或运行中为“修复中”；待验证、待提交为“待验证”；已处理、已合入为“已关闭”；已放弃或交使用者处理回到“待处理”。已关闭的问题若仍有场景失败或受阻，批次页标出数量。
-- **来源**：
-  - 人工：`sop-board issue add [工作区] --title 标题 --kind 类型 [--scenario 批次#场景 …] [--root-cause 根因] [--note 原话] [--by 姓名]`；
-  - 执行结果：results.jsonl 的行可带 `"issue": 编号`，登记轮次时把该场景与本轮结果归入问题；编号不存在时提交被拒，须先新建；
-  - 界面对照：条目“按 SOP 判”且状态为不符或缺失时，自动新建（或归入同名未关闭的）产品问题。
-- **修改**：`sop-board issue update [工作区] --issue 编号 [--status 状态] [--title …] [--kind …] [--root-cause …] [--jira …] [--add-scenario …] [--remove-scenario …] --note 原话 [--by 姓名]`，每次修改登记一条决定记录；`issue list [--batch 批次] [--open]`、`issue show --issue 编号` 查看。
-- **与修复衔接**：`fix prepare --issues` 按问题认领；会话或看板新建的修复，只要纳入的场景属于某问题，就关联到该问题；场景加入问题时，正在处理它的未结束修复也一并关联（已结束的旧修复不关联）。
-- **与连续运行衔接**：计算 `run.stop_when_blocking` 时，结果行明确归入问题（带 `issue`）的受阻按该问题计，其余按受阻说明计；同一说明的场景全都属于同一个未关闭问题时，以该问题标注并合并。场景另属别的问题不会拆开同一原因的受阻。
-
-**决定记录（`decisions`）**：`sop-board decision add [工作区] [--batch 批次] [--issue 编号] --text 原话 [--by 姓名]` 登记人给出的决定；`decision list [--batch 批次]` 按时间倒序汇总会话登记的决定、问题台账的修改、界面对照的决定和合并答复。
-
-**批次页**：「执行计划」一栏显示环境状态（外部环境另列各探测项是否通过）；「问题台账」按状态计数并列出问题、类型、影响场景及其最近结果、关联修复；「决定记录」列出本批次最近 20 条。修改仍用命令完成，内网只读。
-
-**交给看板修复**（修复所选问题）：本机批次页中，待处理且仍有失败或受阻场景的问题显示“交给看板修复”，接口为 `POST /api/v1/workspaces/<工作区>/issues/<编号>/board-fix`（仅本机）。它把该问题关联场景中当前可交接的会话失败一并交给看板，与逐条交接共用同一修复任务规则：自动任务暂停、自检未通过或外部环境时只登记交接并说明原因；没有可交接的会话失败（例如只进过已放弃修复的失败，看板不重复纳入）返回 `nothing-to-fix`。
-
-## 跨仓修复
-
-会话入口登记的 Agent 失败不自动建立看板修复任务，而是出现在待处理事项与修复页：可继续在会话中修复，或在本机明确点击“交给看板修复”。本机 `POST /api/v1/workspaces/<工作区>/fixes/handoff` 接受 `{"result_id":失败记录编号}`，按原修复调度规则处理；暂停、环境未就绪或已有活动任务时保存选择并等待，条件满足后再建任务。选择绑定这条具体的当前失败，不迁移到后续轮次或其他场景；过期记录返回 409。重复交接不重复创建，已被会话认领的失败不可再交给看板。内网只能查看提示，不能调用交接接口。看板入口及未注明来源的旧记录按原规则自动修复，人工失败仍须复核完成。
-
-回归测试建设与本节修复流程分开，见[回归沉淀与关联](#回归沉淀与关联)。
-
-环境就绪、自动任务未暂停、工作区没有未结束的修复任务，而且全部批次都没有排队中、待提交、等待合并、等待浏览器或运行中的执行任务时，才汇总可修复的问题建立一个任务。看板入口及未注明来源的旧 Agent 失败自动纳入，已明确交接的会话失败也可纳入；人工不通过先积累，测试同事在批次总览或 SOP 场景页填写标记人后点击“复核完成，开始修复（K 条人工不通过）”，才放行该批次此前登记的人工失败。之后新增的人工失败需再次完成复核。任务建立时固定问题范围，新问题留给下一任务。
-
-K 是该批次当前未进入任何修复任务、也未被既有规则排除的人工不通过数。K 为 0 时按钮停用，提示“没有待修复的人工不通过”。本机与内网均可操作，结果在原页面显示纳入场景与开始时机。批次与修复页按当前情况显示“等待验证运行完”“等待测试同事复核完成”“等待当前修复结束”或“自动任务已暂停”；恢复自动任务后重新判断。复核完成记录随版本 5 数据库启动自动建表，不升级数据格式。
-
-看板修复任务覆盖当前已允许由看板处理的未解决问题。根据各批次 metadata.repos 的并集，调用 adapter.worktree 建立 `sop-board/fix/<编号>` 分支的工作树并核对；缺省位置为数据目录 `tasks/<任务编号>/repos/<别名>`。适配可按确认的方式返回其他路径。修复会话以任务目录为工作目录，获得各实际工作树的写入范围与返回的额外环境；环境启动使用工作树加其他仓库基线的完整映射。复测前重新核对这些路径，正常重试不重新覆盖工作树；恢复任务或扩大范围时，建立命令应能复用已有工作树。
-
-会话对每个问题给出根因仓库 `root_repo`；产品问题必须指向本任务仓库，无法定位的非产品问题填 null。只改产品代码、不写测试；被 Git 忽略的本机配置或环境问题判为 environment，写明配置项与位置后转开发者，不抄录凭据值或产生代码修补。
-
-看板先核对所有仓库都没有改动 docs/sop/ 或配置的场景文件，再对有改动的工作树分别提交，提交信息相同。基线目录不会被暂存、保存到 stash 或还原。失败的工作树与修复分支保留，证据交回同一会话；连续三次未通过转“待开发者处理”；复验前或复验期间输入（场景、用例、配置或仓库代码）变化时本次复验记为已作废、不计入三次上限（即使同时出现会话失败或结果缺失，也以输入变化为准），任务转“待开发者处理”并显示作废原因，重试时重新准备，作废原因此后只留在该次尝试记录中；统计连续未通过时跳过作废、中断等不计次的结果，不打断此前的累计。修复提交后复验开始前，工作树被再次提交或出现未提交改动、问题场景已不在固定快照中，同样记为作废；复验结果在登记事务内再核对一次输入，与登记同时到达的用例上传或场景推送会等登记结束。放弃也保留未合入的现场，不强制删除分支；放弃时进行中或已中断的尝试记为已放弃（已中断的保留中断时间），待提交、待验证及已有结论的尝试保持原状态，作为现场记录。放弃后仍在收尾的修复或复测线程出错时，任务保持已放弃，不改回待开发者处理，也不改写尝试结论；通用异常分支也不再把已合入改回待开发者处理，合入后清理失败仍按合入规则转待开发者合入。
-
-修复提交前再次整组核对 Git 提交身份；缺失时转“待开发者处理”，保留工作树及改动，不计入尝试次数。设置身份后点击“重试”，从提交步骤继续。会话判为 environment 的环境问题仍交给开发者处理，不计入连续三次失败上限。
-
-复测停止基线，使用各仓修复目录运行同一个 adapter.env，由独立新会话通过真实入口执行。范围保守覆盖问题场景，以及所有批次中声明涉及改动仓库的场景；不能沿用结果。无论通过或未通过，结束后都尝试恢复基线环境。
-
-修复已完成并已提交、复验中断后，看板重启将任务标为已中断；点击重试只重新进行复验，沿用同一次尝试和各仓修复提交，不再启动修复会话或重复提交。开始前重新核对配置、场景、用例、仓库提交和未提交改动；不一致时保留现场并交开发者处理。被中断但尚未登记的复验目录也保留，重跑使用新的目录和新的独立会话。修复会话本身被中断时，仍按原路径续接修复。
-
-本机任务进度的“继续会话”指向修复会话；最近活动仍可以显示正在进行的复验，复验会话编号另列在本机复验记录中。内网运行状态说明正在分析、修复或复验，成功状态说明已完成；仅确需处理时提示开发者查看原因。新会话和续接会话使用相同的输出模式约束。轮次中的执行者、实现者与提交者继续向测试同事展示，以便判断独立性。
-
-通过后先整组核对各仓基线分支、未提交产品改动及提交号。任一仓不满足时，所有仓库都不开始合入，逐仓说明原因，转“待开发者合入”。基线前进时只在修复工作树中合入新基线并重新复测；冲突保留现场，不自动还原。全部满足后停止环境，逐仓快进，再重启基线环境、登记独立复测结果，让场景回到人工复测队列，先调用 adapter.cleanup（缺省 Git 删除）并核对工作树已消失，再删除已合入的修复分支。Git 的逐仓操作不是跨仓事务：落地过程中若出现新的外部改动或 Git 故障，停止余下操作并保留逐仓记录，不强制回退已完成的操作。
-
-修复页和报告按仓库列出身份、改动、提交、合入状态及原因，并显示每个问题的根因仓库。修复工作树和适配生成的本机文件不进入任务下载接口。新库使用当前验证技能数据格式（版本 5，轮次及修复复测记录保存技能摘要），不读取或迁移旧库；请使用新的数据目录。
-
-## 接口与页面
-
-工作区接口前缀为 `/api/v1/workspaces/<工作区名>`；批次前缀为其下 `/batches/<批次>`。页面前缀为 `/w/<工作区名>/b/<批次>`。
-
-| 入口 | 用途 |
-| --- | --- |
-| `GET /api/v1/workspaces` | 工作区、仓库身份和批次 |
-| `GET …/entries` | 当前配置的入口与问题 |
-| `POST …/batches/<批次>/sop` | 登记已有 SOP，正文为 filename、content、uploaded_by、confirmed_by、base_sha256；无看板需求资料编写入口 |
-| `GET /w/<工作区>/b/<批次>/sop` | 原文与版本；会话编写的版本另显示资料摘要、答复与确认人 |
-| `POST …/batches/<批次>/cases` | 上传用例，正文为 filename、content、uploaded_by |
-| `POST …/batches/<批次>/cases/<用例编号>/flow` | 本机指定该细节用例单独成场景，保存选择并重新合并 |
-| `PUT …/batches/<批次>/scenario-file` | 推送场景；workspace 对象只含 name，另有 path、content、commit、dirty、product_digest、fingerprints、pushed_by |
-| `POST …/batches/<批次>/executions` | 本机发起验证：`{}` 或 `{"scope":"pending"}` 执行待执行范围；`{"scope":"all"}` 重新验证全部场景；`{"scope":["S01-P01","S02-P01"]}` 只执行所列场景，产品变化待判定项保留影响判断与有效沿用规则。已有其他范围的排队任务时返回 409 并给出编号，先处理该任务，不扩大本次指定范围 |
-| `POST …/batches/<批次>/merges` | 本机重新合并 |
-| `GET …/batches/<批次>/merge-conversation` | 读取当前缺口、暂缓用例、人的回复、每轮答复与当前合并状态；内网可读 |
-| `POST …/batches/<批次>/merge-conversation/messages` | 普通写入：`{author, messages: [{gap, text}]}`，gap 为 `任务编号:G编号` 或 null，单条 1～4000 字；校验失败 422，无用例 409，整组不保存 |
-| `POST …/batches/<批次>/merge-conversation/exclusions` | 普通写入：`{author, gap, reason}`，把当前入口缺口关联用例标为本批不纳入 |
-| `POST …/batches/<批次>/cases/<用例编号>/include` | 普通写入：`{author}`，重新纳入一条用例 |
-| `POST …/batches/<批次>/marks` | 标记，正文为 scenario、fingerprint、status、marker；不通过另有 defect_url |
-| `POST …/batches/<批次>/review-complete` | 本机或内网测试同事登记复核完成；正文只含 `{"marker":"标记人"}`，返回 scenarios 和 start |
-| `POST …/batches/<批次>/rounds` | 登记有证据的实际验收轮次 |
-| `GET /api/v1/environment` | 环境状态；仅本机含日志和自检详情 |
-| `POST /api/v1/environment/check`、`…/restart` | 本机自检与重启 |
-| `GET /api/v1/guide` | 当前发行的搭建指引 |
-| `GET /api/v1/tasks`、`…/<编号>` | 本机完整任务记录；内网按任务类型只返回业务字段白名单 |
-| `GET /w/<工作区>/tasks/<编号>` | 通用任务页，显示进度、结果与本机允许的操作；工作区不匹配时返回 404 |
-| `POST /api/v1/tasks/<编号>/retry`、`cancel`、`approve` | 本机任务操作 |
-| `POST /api/v1/automation/pause`、`resume` | 本机暂停和恢复 |
-| `POST /api/v1/automation/auto-execute` | 本机设置场景写入后自动执行，正文 `{enabled: true\|false}`；缺省开启，开启不补发 |
-| `POST /api/v1/evidence`、`GET …/<摘要>` | 上传和读取原始证据 |
-| `GET /api/v1/jira/summary?url=<编码后的缺陷链接>` | 按链接识别 Jira Cloud 并读取标题、状态 |
-
-场景、用例、轮次、证据、SOP 原文、进度与报告页保留。人工标记不改写 Agent 结果；比率与队列由服务端统一计算。批次可导出 Markdown 报告、用例/结果 YAML 和按轮次的证据 ZIP。
-
-D107 的显示队列如下，批次摘要与 `status --json` 的 `queue_counts`、`queues` 都返回这五个键：
-
-| 键 | 显示名与定义 |
-| --- | --- |
-| `pending` | 待执行：当前场景内容没有结果，包括新增、内容变化及执行中途未执行 |
-| `source-changed` | 产品变化待判定：最近 Agent 结果与最近结果都是通过，但产品内容摘要不同或执行期间产品有变化；产品内容复原后，执行期间有变化的通过仍须判定影响，不进入复测 |
-| `issues` | 问题：最近结果为失败、受阻或跳过，口径不变 |
-| `retest` | 复测：最近结果为 Agent 通过且仍代表当前产品，等待人工复核，口径不变 |
-| `waiting-change` | 等待修改场景：界面对照中决定改 SOP 且场景内容未变，口径不变 |
-
-暂缓场景继续排除在上述队列外，等待修改场景优先归入 `waiting-change`。产品变化待判定不改变已执行进度、Agent 验收通过率、一次通过率等比率；不新增“已通过”队列。
-
-首页批次条目与批次概览状态行在 A（待执行）与 B（产品变化待判定）都大于 0 时显示“有待执行 A 条，产品变化待判定 B 条”；只有 A 时显示“有待执行 A 条”，只有 B 时显示“产品变化待判定 B 条”，都为 0 时沿用“Agent 已测完……”及轮次、结果计数。执行中、等待合并和待提交等已有优先状态保持不变。
-
-概览按“待执行 → 产品变化待判定 → 问题 → 复测”排列面板，默认优先突出“问题 → 待执行 → 产品变化待判定 → 复测”中的首个非空队列；产品变化待判定的说明为“Agent 已通过，之后产品有变化；下次执行逐条判定影响，不受影响的沿用，受影响的重跑”。进度页开发侧在“待执行”之后显示“产品变化待判定”指标。内网页面按相同口径只读显示，不提供执行按钮。发现线程仍每 5 秒更新产品摘要，页面轮询沿用现有间隔，首页状态行与概览计数随刷新更新，编辑中的内容继续保留。
-
-不通过时缺陷链接必须是去掉首尾空白后仍非空的文字，否则返回 422 `defect-link-required`。保存时保留全部原文，包括空白、查询参数、裸单号或群内反馈，不补前缀或展开单号；旧工作区前缀设置接口已删除。页面仅把 http/https 链接显示为带 `rel="noopener noreferrer"` 的可点击链接，其余显示为文字。结果 YAML 沿用 `jira_issue` 字段名保存缺陷原文，导入采用同样的必填规则；Markdown 表格转义竖线与换行。
-
-Jira 仅识别 HTTPS、主机名以 `.atlassian.net` 结尾且路径为 `/browse/<大写单号>` 的链接，允许结尾斜杠，忽略查询和片段。站点取自链接，凭据仅来自 `JIRA_EMAIL`、`JIRA_API_TOKEN`；请求不跟随重定向，摘要缓存按站点与单号区分。页面显示标题、状态或读取原因；缺凭据返回 404 `jira-not-configured`，无法识别返回 422，读取失败返回 502。凭据问题不阻止保存缺陷。修复输入和合入后的评论也按该链接识别，未识别不调用 Jira；可用 `JIRA_FIXED_STATUS` 指定合入后的目标状态。认证值不进入页面、日志、报告或修复输入。
-
-搭建代理先询问团队是否使用 Jira Cloud。使用时说明 `JIRA_EMAIL` 是 Atlassian 账号邮箱、`JIRA_API_TOKEN` 是 API token，并给出 [token 创建地址](https://id.atlassian.com/manage-profile/security/api-tokens)，由开发者自己在启动看板的环境中设置。代理不索取、读取、写入或回显值，只按变量名核对是否已设置；启动后请开发者提供测试单据链接，通过本机摘要接口核对，报告仅写标题与状态或失败原因。不使用 Jira 时跳过配置，搭建和原文缺陷登记照常进行。
-
-复核完成接口拒绝空白标记人和额外字段（422）；没有待修复的人工不通过时返回 409 `nothing-to-fix`，不登记记录。成功返回纳入的场景编号，以及“立即”“等待验证运行完”“等待当前修复结束”或“自动任务已暂停”。同源和 JSON 类型检查与其他普通写入一致。
-
-执行接口只接受 `scope` 字段：文字为 pending/all，或非空、不重复的场景编号数组；其他值、额外字段或非对象正文返回 422 `invalid-scope`。工作区未就绪返回 409 `workspace-not-ready`；没有场景或没有待执行场景返回 409 `nothing-to-execute`，页面提示可改用“重新验证全部场景”。实际内网连接仍先返回 403 `local-only`，不同源 Origin 返回 403 `cross-origin`，之后才检查 JSON 类型和执行正文。
-
-SOP 图示使用随包发行的 Mermaid 12.2.0，来自 `mermaid@12.2.0` 的 `dist/mermaid.min.js`。MIT 许可在 `src/sop_board/assets/vendor/mermaid/`，页面不依赖外部 CDN。
-
-## 回归沉淀与关联
-
-安装随包技能后，在开发会话要求把已确认且经真实入口通过的场景沉淀为测试，使用 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md)。资格须有确认人，通过证据须对应沉淀开始前的当前场景指纹与产品内容。测试按成本选层，产品代码保持不变，改动留在工作区供调用方审核；独立验收未完成时在报告中明确注明。
-
-```sh
-sop-board skills install
-sop-board distill submit <工作区> --report <仓库外目录>/regression.json [--data <数据目录>]
-```
-
-登记在本机直接读取对应数据目录，不提供远程写入接口。完整字段和例子见 [报告格式](../src/sop_board/skills/regression-distill/references/report.md)。整份报告须通过场景存在与指纹、逐项覆盖、仓库 origin 身份、实际测试文件与摘要核对；任何一项不符均不写关联。未提交测试读取工作区文件，已提交读取指定提交的文件。同一测试再次登记更新原记录；提交后可提供完整提交号，或由命令核对 HEAD 中的文件与报告摘要一致后更新为“已提交”。
-
-关联保存于新增的 `regression_links` 表，现有格式 5 数据目录直接增加该表，既有记录不迁移。状态为“待提交／已提交／已放弃”，场景内容变化后显示“已过期，需重新沉淀”。场景详情、批次页和报告“回归覆盖”列出关联、部分覆盖与本机和 CI 状态；人工不通过且有关联时提示“关联测试待核查”，不自动判为漏检。本机额外可见测试文件、根目录、命令和运行证据；内网只显示业务覆盖与状态。详情接口为 `GET /api/v1/workspaces/<工作区>/batches/<批次>/scenarios/<编号>`。
-
-关联不会新增执行轮次、改变场景结论或阻止无回归测试的批次交付。产品变化后先按完整改动范围和依赖判断影响，未过期测试的通过只可作为沿用理由的补充；受影响或无法证明不受影响的场景仍经真实入口重跑。
-
-### 入口二：本机看板调度
-
-本机场景页逐条显示沉淀资格及不满足的原因。勾选后点击“沉淀为回归测试”，整组核对确认人、当前场景内容指纹、当前产品内容上的最新 Agent 通过记录及证据。任一不满足整组拒绝，不建立任务或工作树。草稿确认只跟随当前用例版本，相关规则仍有未回答问题时不满足资格。
-
-标为“用例已更新，新内容待补充”的场景不可沉淀，包括保留上一版细节预期的流程。确认资格只使用与当前用例内容相符的配对，暂缓时保留的旧配对不作为依据；显式待确认标记也不能由旧草稿确认覆盖。暂缓状态纳入输入快照，排队或运行期间出现新的暂缓会使本次任务作废。
-
-入队即固定场景原文、来源与确认、通过记录与证据、各仓提交及产品内容、配置与适配脚本摘要、项目验证技能和随包沉淀技能摘要。产品有未提交改动时可先入队，显示“待提交”及路径。提交后重新核对资格；通过证据的产品内容摘要与当前产品不同时转为“待验证”，列出需要通过的场景；仅提交号变化、内容摘要相同时直接开始，不要求重复验证。它们在新产品上取得最新 Agent 通过记录（实际执行或有影响判定依据的沿用均可）后自动开始。待验证不会自动安排执行，不受自动执行开关影响；开发者须在本机点击“执行这些场景”，仅发起说明中所列的场景。实际执行或有效沿用通过后才解除等待，打开自动执行开关也不会补发。开始前可更新内容未变的提交号，等待期间可更新对应通过证据，保留入队快照；其他输入变化使任务作废，开始前与登记前均重新核对，提交本身不代替通过记录。
-
-工作树通过现有 `adapter.worktree` 建立，分支为 `sop-board/distill/<任务编号>`，仓库、路径和分支持久保存。适配额外收到 `SOP_BASE_COMMITS`（仓库别名到快照提交的 JSON），须从这些提交建立；默认 Git 方式直接使用指定提交。字段 `SOP_FIX_BRANCH` 为兼容名称，在沉淀任务中也传入实际请求分支。已有工作树须原路径复用，基线前进时只尝试快进到已有提交，不能覆盖未提交改动；不能快进则保留现场并报告。
-
-新 Codex 会话使用 workspace-write，并取得实际工作树的写权限，读取随包技能、项目验证技能、产品手册及任务授权记录。默认使用产品自己的测试设施；需要运行中的服务时在发起时勾选“测试需要看板运行中的服务”，看板停止基线，用工作树运行 `adapter.env`，结束、失败、取消时恢复基线。修复、执行与沉淀互斥，排队优先级为修复、执行、沉淀；Web 入口沿用浏览器占用规则。
-
-会话将 `regression.json` 交回任务目录，由看板复用同一登记逻辑整份核对，按“任务、尝试序号”保存收据，关联为待提交。收据记录工作树身份和审核产出的文件摘要；不会提交或合入测试。
-
-| 状态 | 恢复与操作 |
-| --- | --- |
-| 排队中、待提交 | 重启后保持；待提交列出未提交路径，提交后重新核对资格 |
-| 待验证 | 重启后保持；仅因通过依据未对应当前产品内容而等待；不自动安排执行，不受自动执行开关影响；开发者执行所列场景，实际执行或有效沿用通过后自动开始 |
-| 沉淀中 | 重启后记已中断，保留本次尝试的会话编号；已有登记收据则直接恢复待开发者审核 |
-| 已中断、失败、已作废 | 重试重新固定输入，复用工作树与分支；先归档上次材料到 `attempts/<序号>/`；也可放弃 |
-| 待开发者审核 | 重启后从持久记录找回工作树。自行审核提交后填写各仓完整提交号并标记已处理；或标记放弃 |
-| 清理失败 | 保留现场和错误，可再次查看改动并清理 |
-| 已处理、已放弃 | 清理成功后进入终态 |
-
-标记已处理先按指定提交核对登记的测试文件及审核产出的全部改动摘要，全部一致才把关联改为已提交；放弃把关联改为已放弃并保留历史。尚未开始且未建立工作树、没有运行线程的任务直接显示已放弃；有现场的任务随后点击清理，界面先列出尚未提交的改动，确认后才调用 `adapter.cleanup`，确认后内容变化须重新确认。清理失败保留现场；任务分支保留，避免丢失尚未合入的开发者提交。
-
-任务结束时间记录沉淀尝试停止的时间，开发者审核及成功清理不重写它；“已用时长”不计审核等待。正常停止时保存会话编号和结束时间，重启保留；异常退出尚未保存身份时从本次事件回执找回。运行中的会话身份与进度区使用同一来源。清理失败提示只附一次日志路径。
-
-本机接口（内网直连均为 `403 local-only`）：
-
-- `POST /api/v1/workspaces/<工作区>/batches/<批次>/distill`：`{"scenarios":["场景编号"],"needs_environment":false}`。
-- `POST /api/v1/tasks/<编号>/retry`：重新固定输入并重试。
-- `POST /api/v1/tasks/<编号>/handled`：`{"commits":{"仓库别名":"完整提交号"}}`。
-- `POST /api/v1/tasks/<编号>/abandon`（兼容 `cancel`）：停止会话、放弃关联，等待清理确认。
-- `POST /api/v1/tasks/<编号>/cleanup`：空对象返回改动清单及 `confirmation` 摘要；用户确认后以 `{"confirmation":"返回的摘要"}` 再请求。
-
-任务列表与详情按下文的任务类型白名单返回状态、场景、时间和公共进度，不返回提示词、报告、会话编号、测试命令或工作树信息；沉淀附件直接请求返回 403，工作树文件不提供下载。所有非静态响应继续经过统一凭据与本机路径遮蔽出口。
-
-## 场景验收
-
-本仓开发与验收以 `docs/sop/` 的场景经最终交付产物的真实入口执行为准，不新增单元、接口或集成测试。产品侧另行授权的回归建设按上一节执行。工作区、适配、跨仓修复和用例分层对应 SOP-71、SOP-72、SOP-74、SOP-75；分散仓库、项目验证技能与一键验证对应 SOP-81、SOP-82、SOP-83；命令、数据核对与留证方式见 [验收操作手册](verification.md)。实现者自检与独立业务验收分别报告；未执行的真实浏览器、模型会话与跨仓流程不能写成通过。
-
-### 任务页、内网投影与历史材料
-
-任务类型为编写 SOP（author-sop）、草稿（generate）、合并（merge）、执行（execute）、修复（fix）和沉淀（distill）；修复复验是原修复尝试的独立执行阶段，会话复验另有 execute 任务。各类只使用适合自身的状态，不要求每类都经过全部状态：
-
-| 类别 | 对外状态名与含义 |
-| --- | --- |
-| 排队与条件等待 | 排队中、待提交、待验证、等待浏览器、等待合并；保持具体状态，阻挡原因另列任务编号 |
-| 运行 | 运行中；看板修复另有分析中、修复中、复测中、待合入；沉淀为沉淀中；外部认领为会话处理中 |
-| 业务补充与审核 | 待补充、待同步、待开发者审核、待开发者处理、待开发者合入、清理失败 |
-| 结束或重新发起 | 已完成、已中断、已作废、失败、Codex 不可用、已处理、已放弃、已合入；是否可重试按类型和入口判断 |
-
-看板重启不接管会话认领。未认领的草稿、合并、编写 SOP、执行，其原排队/活动项按恢复名单中断；沉淀的待提交、待验证保持，运行中沉淀中断或按收据恢复审核；修复按原尝试阶段恢复。会话任务已结束时重新准备新任务，不能用看板重试把它变成自动执行。
-
-合并页只列合并任务，缺省选最新合并，不因最新任务是沉淀而切换。批次页、场景页与任务列表中的沉淀、修复链接指向 `/w/<工作区>/tasks/<编号>`；执行与草稿也可从通用页查看进度和结果。任务页刷新会保留未提交的表单输入。
-
-任务读取在服务端按类型投影，页面和接口使用同一结果。公共字段包括编号、类型、工作区、批次、状态、触发原因、时间、尝试次数和公共进度；执行另有范围、轮次、沿用数，合并保留配对、去向、推断、缺口和暂缓，草稿保留版本结果，编写 SOP 保留登记版本、原文摘要与确认人，修复保留明确挑选的业务原因、仓库合入状态和尝试结论，沉淀保留范围与待验证场景。会话编号、续接命令、输入摘要与快照、文件清单、事件摘要和代理运行错误细节仅本机。内网的会话认领说明不含会话标识。完整字段及嵌套字段声明见 `src/sop_board/task_visibility.py`；轮次业务身份按前述独立性口径展示。
-
-共享附件也由同一声明决定：草稿可共享 SOP、业务草稿、批注与生成用例；合并可共享用例、场景、配对与 SOP；执行只共享场景和用例；修复、沉淀和编写 SOP 的任务材料仅本机。没有列入清单的附件在内网返回 403。既有本机路径、凭据变量名和上传证据的遮蔽规则继续生效，字段隐藏不依赖这些字符串替换。
-
-重试先归档到 `attempts/<序号>/`，再按当前业务输入准备下一次尝试；修复缺少提交身份时仍从原提交步骤继续，须重新核对原输入。一个尝试的多次阶段材料保存在其 `checkpoints/` 中，不覆盖已留证文件。旧 `attempt-N/`、`attempts/` 和根 `interruptions/` 材料仍可经本机任务附件读取。工作树目录不会进入归档或下载。
+| `meta` | 格式号 |
+| `checkouts` | 名称、槽位（均唯一）、kind main/worktree、路径、adapter 返回的变量、移除时间 |
+| `work` | run/fix/distill/merge/author/draft/atlas 工作：检出、会话、操作者、实现者、修复、启动、目录、范围、快照、状态 prepared/submitted/abandoned；同一检出的 run 与 distill 各只能有一个 prepared |
+| `results` | agent 与 manual 结果：文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人 |
+| `evidence`、`result_evidence` | 按 sha256 存储的证据（文件在 `evidence/<前两位>/<sha256>`）及结果引用 |
+| `guard_runs`、`guard_misses` | 守护运行（快照、测试摘要、pass/fail、原因、输出证据）与漏检 |
+| `fixes` | 修复：会话、状态、问题、基线文件清单、fix.json、改动、复验运行与文件摘要 |
+| `launches` | 无头启动：类型、runner、范围、会话、pid、日志、状态；同一检出只能有一个 running |
+| `environments` | 各检出 adapter 环境：状态 starting/ready/failed/stopped、pid、端口、ready 变量、快照、日志 |
+| `browser_instances` | 检出×身份浏览器：端口、pid、profile、有无界面、状态、租约持有者、退出码/信号、日志、崩溃报告、近期崩溃 |
+| `inbox`、`questions`、`annotations` | 上传、提问与答复、草稿批注 |
+| `attention`、`identity_events`、`fixture_runs` | 待人处理、身份登录与验证码计数、前置数据留痕 |
+
+端口租约不在数据库中：守护进程用 `/tmp/sop-board-port-<uid>-<端口>.lock` 文件锁跨项目、跨检出租用端口，并在锁文件里记录占用的项目与检出。

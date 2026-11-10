@@ -1,12 +1,11 @@
-"""缺陷文字只检查必填，始终保留提交原文。"""
+"""缺陷链接可选；填写时保留提交原文，只去掉首尾空白并限制长度。"""
 
 from .errors import reject
 
 
-ISSUE_KEY = r"[A-Z][A-Z0-9_]*-[0-9]+"
-
-
-def normalize(value, field="defect_url"):
-    if not isinstance(value, str) or not value.strip():
-        reject(422, "defect-link-required", field, "不通过时必须填写非空文字的缺陷链接")
-    return value
+def normalize(value, field="defect"):
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 2000:
+        reject(422, "defect-invalid", field, "缺陷链接须为文字，最长 2000 字")
+    return value.strip() or None

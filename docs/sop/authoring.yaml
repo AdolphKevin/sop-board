@@ -1,0 +1,137 @@
+# v10 现行场景：SOP 编写、草稿批注与确认
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D）；看板已以 sop-board serve demo --data $D --lan 启动。
+#   “演示 PRD”指 examples/demo-shop 提供的一份需求 Markdown；草稿文件 draft-a 是 app 的 scenarios.path 下 metadata.status 为 draft 的场景文件。
+
+metadata:
+  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，sop submit 校验结构并写入确认人；草稿是 status: draft 的场景文件，不进入执行，测试同学在看板批注，会话修订后 draft resolve，draft confirm 改为 confirmed 并写入确认人"
+  version: 2
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对工作台试用的反馈"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["authoring", "sop", "draft"]
+
+sops:
+  - id: AUT-01
+    title: 会话编写业务 SOP
+    actor: 开发者
+    entry: "真实会话中运行 sop-board sop prepare --source、sop submit"
+    must: ["sop submit 校验六个标题（业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围）和规则编号，并由命令追加确认信息"]
+    scenarios:
+      - id: AUT-01-P01
+        polarity: positive
+        title: 从演示 PRD 写出 SOP 并登记，确认人取操作者
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["演示 PRD 在临时目录中"]
+        steps:
+          - "在 app 目录新开 Claude Code 会话，请求“根据这份 PRD 写业务 SOP”并给出 PRD 路径"
+          - "会话运行 sop prepare --source <PRD>；会话就业务口径提问时按 PRD 原意回答"
+          - "会话在仓库中写 SOP Markdown 并运行 sop submit"
+          - "查看 SOP 文件头与看板 SOP 原文页"
+        expected:
+          - "sop prepare 复制了资料并给出提示词"
+          - "SOP 含 业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围 六个标题"
+          - "sop submit 成功，命令追加的确认信息中确认人为操作者 N"
+          - "看板 SOP 原文页显示该 SOP"
+        forbidden_effects: ["会话询问确认人是谁", "会话把未答复的业务口径按代码现状写成规则", "会话自行在正文中填写确认信息"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
+        evidence_hints: ["会话记录", "SOP 文件", "SOP 原文页截图"]
+      - id: AUT-01-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 缺少规定标题的 SOP 不能登记
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["已运行 sop prepare，仓库中的 SOP Markdown 没有“流程图”标题，其余五个标题齐全"]
+        steps: ["运行 sop-board sop submit --json"]
+        expected: ["以业务失败退出，写明缺少“流程图”", "没有追加确认信息"]
+        forbidden_effects: ["结构不合格的 SOP 被登记"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
+
+  - id: AUT-02
+    title: 草稿批注、修订与确认
+    actor: 测试同学
+    entry: "内网工作台“草稿”筛选与批注；sop-board draft annotations|resolve|confirm <文件>"
+    must: ["草稿不进入执行；批注存数据库；确认后状态为 confirmed 并写入确认人"]
+    scenarios:
+      - id: AUT-02-P01
+        polarity: positive
+        title: 测试同学批注草稿，会话修订后确认，草稿场景转为未执行
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["draft-a 有两条场景，没有批注"]
+        steps:
+          - "测试同学在内网工作台点“草稿”筛选，打开 draft-a 的一条场景，批注“预期金额应为 99.00 元”（姓名 张测）"
+          - "本机在会话中请求处理草稿批注：会话运行 draft annotations，修订文件，运行 draft resolve"
+          - "会话运行 draft confirm draft-a"
+          - "查看 draft-a 文件头、git diff、工作台与 run prepare --scope all 的范围"
+        expected:
+          - "draft annotations 输出 张测 的批注；批注不出现在 draft-a 文件中"
+          - "resolve 后该批注显示为已处理"
+          - "confirm 后 draft-a 的 metadata.status 为 confirmed，确认人为操作者 N"
+          - "工作台中 draft-a 的场景离开“草稿”筛选，显示为未执行；run prepare --scope all 的范围包含它们"
+        forbidden_effects: ["看板把批注写进场景文件", "会话询问确认人是谁"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名"]
+        evidence_hints: ["内网批注截图", "会话记录", "git diff", "run 目录范围"]
+      - id: AUT-02-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 指定草稿场景运行时不进入执行
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["draft-a 仍为 draft"]
+        steps: ["运行 sop-board run prepare --scope draft-a#<其中一条场景编号> --session S1 --json"]
+        expected: ["命令以业务失败退出（退出码 1），error_code 为 draft-not-runnable", "没有生成包含该草稿场景的 prepared 运行"]
+        forbidden_effects: ["草稿场景得到执行结果"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+
+  - id: AUT-03
+    title: 看板展示业务 SOP 与待确认问题
+    actor: 测试同学
+    entry: "看板 SOP 原文页（业务 SOP 与“待确认问题”文档）"
+    negative_exempt: "只读展示；不存在应被拒绝的操作"
+    must:
+      - "页面不出现字面的 \\n；原文中的换行按换行显示"
+      - "“待确认问题”文档像工作台那样按场景树的方式展示：每个 ### 标题是一个问题"
+    scenarios:
+      - id: AUT-03-P01
+        polarity: positive
+        title: 业务 SOP 中的换行按换行显示，不出现字面的 \\n
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["场景目录下有一份业务 SOP Markdown，源文件使用普通换行，不含反斜杠加 n 两个字符；多处正文有段落内换行，例如“业务目标：退款”下一行紧接“范围：签收 7 天内”"]
+        steps: ["内网打开看板 SOP 原文页，选择这份业务 SOP", "在页面文本中搜索字符 \\n，并查看含它的位置"]
+        expected: ["页面文本中不出现字面的 \\n", "源文件中的段落内换行在页面上显示为换行，换行前后的文字分行显示"]
+        forbidden_effects: ["页面显示反斜杠加 n 两个字符"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["SOP 原文页截图与页面文本"]
+      - id: AUT-03-P02
+        polarity: positive
+        title: 待确认问题按问题树展示，点击一个问题查看其正文、答复与答复人
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["场景目录下有一份“待确认问题”Markdown，源文件使用普通换行，不含反斜杠加 n 两个字符：Q1、Q2、Q3 三个 ### 标题，每个问题用 **场景**、**目前的写法**、**请确认**、**答复**、**答复人** 作小标题，小标题下一行紧接正文（段落内换行）"]
+        steps: ["内网打开看板 SOP 原文页，选择这份待确认问题文档", "点击 Q2", "点击 Q3，再点击回 Q2"]
+        expected:
+          - "页面以树或列表的方式列出 Q1、Q2、Q3 三个问题的标题，每个 ### 标题对应一项，而不是整份文档作为一整块文本"
+          - "点击一个问题后显示该问题的正文，含“答复”“答复人”小节的内容；页面文本中不出现字面的 \\n，源文件中的段落内换行按换行显示"
+          - "点击问题时，已有的问题列表不整体重排，列表滚动位置保持不变"
+        forbidden_effects: ["整份文档显示为一块未分段的文本", "页面显示反斜杠加 n 两个字符"]
+        refs: ["使用者 2026-11-10 对工作台试用的反馈"]
+        evidence_hints: ["SOP 原文页截图与页面文本"]

@@ -1,134 +1,127 @@
-"""将同一读取快照中的批次统计和用例呈现为稳定的 Markdown。"""
+"""检出的验收报告：Markdown 正文与所引证据的 zip。只含该检出的结果。"""
+from zipfile import ZIP_DEFLATED, ZipFile
 
-from html import escape
-
-from .regressions import RUN_STATUS, ci_label, coverage_lines
-from .time_format import local_date
-from .statistics import ORIGIN_LABELS, INDEPENDENCE_LABELS
-
-
-STATUS = {"pass": "通过", "fail": "失败", "blocked": "受阻", "skip": "跳过"}
-MANUAL = {**STATUS, "fail": "不通过（失败）", "blocked": "不通过（受阻）"}
-FIX_METRICS = [('tasks', '任务数'), ('problems', '问题数'), ('merged', '已合入数'), ('session_closed', '会话修复已关闭数'),
-               ('developer', '转开发者数'), ('first_pass', '首次尝试即通过的任务数'), ('attempts', '总尝试次数')]
+from . import status
+from .redaction import names, redact
+from .store import now
+from .time_format import local_time
 
 
-def fraction(value):
-    return f"{value['numerator']}/{value['denominator']}" if value["denominator"] else "无数据"
+def _cell(value):
+    return str(value or '').replace('|', '\\|').replace('\n', ' ')
 
 
-def cell(value):
-    return escape(str(value), quote=False).replace("|", "&#124;").replace("\r\n", "<br>").replace("\r", "<br>").replace("\n", "<br>")
+def _ratio(item):
+    if not item['denominator']:
+        return '—'
+    return f"{item['numerator']}/{item['denominator']}（{item['value']:.0%}）"
 
 
-def table(headers, rows):
-    if not rows:
-        return "无\n"
-    return ("| " + " | ".join(headers) + " |\n| " + " | ".join("---" for _ in headers) + " |\n" +
-            "".join("| " + " | ".join(cell(v) for v in row) + " |\n" for row in rows))
+def _undecided(counts):
+    return f"；未决：阻塞 {counts.get('blocked', 0)}，需求变更 {counts.get('changed', 0)}"
 
 
-def markdown(data, generated_at):
-    version = data["version"]
-    summary = data["summary"]
-    scenarios = {item["scenario"]: item for item in summary["scenarios"]}
-    workspace = data["workspace"]
-    sections = ["# 验收报告\n\n## 头部\n\n" + "\n".join("- " + label + "：" + cell(value) for label, value in [
-        ("工作区", workspace["name"]), ("仓库", "、".join(r["alias"] + "：" + r["identity"] for r in workspace["repositories"])), ("批次", data["batch"]["name"]),
-        ("场景版本", version["version"] if version else "无"), ("推送提交号", version["commit_id"] if version else "无"),
-        ("用例并集的最新上传序号", data["latest_upload"] or "无"),
-        ("批次产品指纹", data["batch"]["product_digest"] or "无"), ("沿用场景", summary["reused_count"]), ("重跑场景", summary["rerun_count"]), ("生成时间", generated_at)])]
-    matched, unmatched = [], []
-    pairings = {p["case"]: p for p in data["pairings"]}
-    holds = data.get('holds', {})
-    held = {h['case']: h for h in holds.get('held', [])}
-    for case in data["cases"]:
-        excluded = data.get('exclusions', {}).get(case['id'])
-        if excluded:
-            unmatched.append([case['id'], case['title'], f"本批不纳入：{excluded['text']}（{excluded['author']}，{local_date(excluded['created_at'])}）"])
-            continue
-        pair = pairings.get(case["id"])
-        item = scenarios.get(pair["scenarios"][0]) if pair else None
-        if item is None:
-            unmatched.append([case["id"], case["title"], '；'.join(held.get(case['id'], {}).get('reasons', [])) or '等待合并'])
-        else:
-            a, m = item["latest_agent"], item["latest_manual"]
-            matched.append([case["id"], case["title"], "细节并入" if pair["kind"] == "detail" else "流程", item["scenario"], pair["kind_reason"], STATUS[a["status"]] if a else "尚无 Agent 结果",
-                            MANUAL[m["status"]] if m else "尚无人工结果",
-                            '用例已更新，新内容待补充；' + '；'.join(held[case['id']]['reasons']) if case['id'] in held else ''])
-    sections.append("## 用例覆盖\n\n用例覆盖：" + fraction(data["coverage"]) + "\n\n" +
-                    table(["用例", "标题", "类别", "对应场景", "分类理由", "Agent 结果", "人工结果", "待补充说明"], matched) +
-                    "\n### 尚无对应场景\n\n" + table(["用例", "标题", "暂缓原因或当前状态"], unmatched))
-    if holds.get('gaps') or held:
-        sections.append(f"## 待补充\n\n待补充 {len(holds['gaps'])} 项 · 暂缓 {len(held)} 条用例。暂缓的新内容不算作已验证；整条暂缓的场景不计入当前执行进度与通过率，保留旧细节的更新流程照常计入。历史结果保留。\n\n" +
-                        table(['用例', '原因', '原有归属', '保留内容'], [[h['case'], '；'.join(h['reasons']), '、'.join(h.get('scenarios', [])) or '无',
-                            '上一版细节预期与配对' if h.get('retention') == 'detail' else '整条旧场景与历史' if h.get('scenarios') else '无旧内容'] for h in held.values()]))
-    stats = summary["statistics"]
-    sections.append("## Agent 统计\n\n当前执行进度：" + fraction(stats['executed_progress']) + "\n\nAgent 验收通过率：" + fraction(stats["agent_pass_rate"]) +
-                    "\n\n一次通过率：" + fraction(stats["first_pass_rate"]) + "\n\n" +
-                    table(["轮次", "种类", "每轮通过率", "沿用场景数", "重跑场景数", "验证技能摘要"], [[f"第 {r['number']} 轮", "Agent" if r["kind"] == "agent" else "人工",
-                                                               fraction(r["pass_rate"]), r["reused_count"], r["rerun_count"], (r["skill_digest"] or "")[:12] or "无记录"] for r in summary["rounds"]]))
-    sections.append("## 执行入口与独立性\n\n当前 Agent 结果（分别计数）：\n\n" +
-        table(['类别', '场景数'], [[INDEPENDENCE_LABELS[k], v] for k, v in stats['independence_counts'].items()]) +
-        "\n每轮身份记录：\n\n" + table(['轮次', '执行入口', '执行者', '实现者', '独立性'],
-        [[r['number'], ORIGIN_LABELS[r['execution_origin']], '、'.join(r['executors']), r['implementer'] or '未声明',
-          INDEPENDENCE_LABELS[r['independence']]] for r in summary['rounds']]))
-    sections.append("## 沿用明细\n\n按执行轮次列出沿用场景及理由。\n\n" + table(["轮次", "场景", "沿用理由"],
-        [[r["number"], item["scenario"], item["reason"]] for r in summary["rounds"] for item in r["reused_scenarios"]]))
-    changed = [r for r in summary["rounds"] if r["product_changed"]]
-    if changed:
-        sections.append("## 执行期间产品变化\n\n这些轮次的结果按开始时的产品快照登记，执行期间所列路径有变化；其中的通过须判定影响后才能沿用。\n\n" +
-            table(["轮次", "开始时产品提交", "变化路径"], [[r["number"], r["product_commit"], "、".join(r["product_changed"])] for r in changed]))
-    sections.append("## 人工复测\n\n人工复测通过率：" + fraction(stats["manual_pass_rate"]) +
-                    "\n\n复测覆盖率：" + fraction(stats["retest_coverage"]) + "\n\n### 误判明细\n\n" +
-                    table(["场景", "缺陷链接", "Agent 执行者", "标记人"], [[m["scenario"], m["defect_url"], m["agent_executor"], m["marker"]]
-                          for m in summary["misjudgments"]]))
-    sections.append("## 当前人工缺陷\n\n" + table(["场景", "缺陷链接"], [
-        [item["scenario"], item["latest_manual"]["finding"]] for item in summary["scenarios"]
-        if item["latest_manual"] and item["latest_manual"].get("finding")]))
-    fix_statistics = data.get('fix_statistics')
-    records = []
-    for task in data.get('fixes', []):
-        jira = '；'.join(f"{r['issue']}：{r['comment']} · {r['transition']} · {r['reason']}" for r in task['jira']) or '无 Jira 回写记录'
-        records.append(f"### 修复任务 #{task['id']}\n\n" + '\n'.join('- ' + label + '：' + cell(value) for label, value in [
-            ('问题场景', '、'.join(task['scenarios'])), ('问题数', task['problems']), ('根因摘要', task['root_cause'] or '尚未分析'),
-            ('尝试次数', task['attempt']), ('结果', task['status']), ('原因', task['error']), ('Jira 回写结果', jira)]) + '\n\n' +
-            table(['场景', '根因仓库'], [[r['batch'] + '/' + r['scenario'], r['root_repo'] or '未定位'] for r in task['root_repositories']]) + '\n' +
-            table(['仓库', '身份', '改动文件', '修复提交', '基线分支', '合入提交', '状态', '原因'],
-                [[r['alias'], r['identity'], '、'.join(r['changed_files']) or '无', r['repair_commit'], r['baseline_branch'],
-                  r['merged_commit'] or '未合入', r['merge_status'], r['merge_reason']] for r in task['repositories']]))
-    sections.append('## 修复记录\n\n' + ('\n\n'.join(records) + '\n\n### 自动修复统计\n\n' + '\n'.join(
-        '- ' + label + '：' + str(fix_statistics[key]) for key, label in FIX_METRICS) if records else '暂无记录'))
-    regressions = []
-    for link in data.get('regression_links', []):
-        covered, remaining = coverage_lines(link)
-        detail = ''
-        if 'command' in link:
-            detail = '\n\n' + '\n'.join('- ' + label + '：' + cell(value) for label, value in [
-                ('仓库路径', link['root']), ('测试文件', link['path']), ('测试名', link['test_name']),
-                ('运行命令', link['command']), ('本机原始输出', link['local_run']['output']),
-                ('CI 任务与命令', link['ci']['job'] + ' · ' + link['ci']['command']),
-                ('CI 运行与提交', link['ci']['run'] + ' · ' + link['ci']['commit']), ('CI 原始输出', link['ci']['output'])])
-        regressions.append('### ' + cell(link['scenario'] + ' · ' + link['test_id']) + '\n\n' +
-            table(['状态', '仓库', '提交', '本机运行', 'CI', '独立验收'], [[link['status'], link['repo'], link['commit_id'] or '尚未提交',
-                RUN_STATUS[link['local_run']['status']], ci_label(link['ci']),
-                '已完成' if link['independent_acceptance'] == 'completed' else '独立验收未完成']]) + '\n' +
-            table(['覆盖的预期', '仍需真实入口验收的部分'], [['；'.join(covered) or '无', '；'.join(remaining) or '无未覆盖项；独立验收仍须执行']]) + detail)
-    sections.append('## 回归覆盖\n\n' + ('\n\n'.join(regressions) if regressions else '暂无记录'))
-    merge = data.get('merge')
-    if not merge:
-        sections.append('## 合并记录\n\n暂无记录')
-    else:
-        removed = [[s['id'], '重复' if s['action'] == 'duplicate' else '冲突', s['target'], s['reason']]
-                   for s in merge.get('scenarios', []) if s['action'] != 'kept']
-        inferred = [[i['id'], i['content']] for i in merge.get('inferences', [])]
-        sections.append(f"## 合并记录\n\n最近完成的合并任务：#{merge['id']}\n\n" +
-                        table(['移除场景', '去向', '目标', '理由'], removed) +
-                        '\n### 待确认的推断\n\n' + table(['编号', '内容'], inferred))
-    unverified = []
-    for item in summary["scenarios"]:
-        latest = max((r for r in [item["latest_agent"], item["latest_manual"]] if r), key=lambda r: r["number"], default=None)
-        if latest and latest["status"] in ("blocked", "skip"):
-            unverified.append([item["scenario"], STATUS[latest["status"]], latest.get("finding") or latest.get("note") or "无"])
-    sections.append("## 未验证范围\n\n" + table(["场景", "结果", "缺陷链接或原因"], unverified))
-    return "\n\n".join(s.rstrip() for s in sections) + "\n"
+def build(context, *, file=None, local=True):
+    """返回 (markdown, 证据列表[(zip 内路径, sha256)])。"""
+    from .cli import scene_board
+    import os
+    project, checkout = context.project, context.checkout
+    found, snapshot, derived = scene_board(context)
+    scenes = {k: v for k, v in found['scenarios'].items() if file is None or v['file'] == file}
+    if file is not None and file not in found['files']:
+        raise ValueError(f'场景文件不存在：{file}')
+    evidence, lines = [], []
+    with context.store.connection() as db:
+        stats = status.statistics(db, checkout.id)
+        rows = {}
+        for row in db.execute('SELECT * FROM results WHERE checkout=? ORDER BY id DESC', (checkout.id,)):
+            rows.setdefault((row['file'], row['scenario'], row['fingerprint']), []).append(dict(row))
+        files_of = {}
+        for result in [r for group in rows.values() for r in group]:
+            files_of[result['id']] = [dict(item) for item in db.execute(
+                'SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (result['id'],))]
+        guards = {(r['file'], r['scenario'], r['fingerprint']): dict(r) for r in db.execute(
+            "SELECT * FROM guard_runs WHERE checkout=? AND product_digest=? AND status='pass'", (checkout.id, snapshot['product_digest']))}
+    title = f"# 验收报告：{project.name} · 检出 {checkout.name}" + (f" · 场景文件 {file}" if file else '')
+    lines += [title, '', f"- 导出时间：{local_time(now())}",
+              f"- 产品快照：{snapshot['product_digest'][:16]}（{'含未提交改动' if snapshot['dirty'] else '与提交一致'}）",
+              '- 提交：' + '，'.join(f"{alias} {info['commit'][:10] if info['commit'] else '无提交'}"
+                                  for alias, info in snapshot['repos'].items()), '']
+    counts = {}
+    for key in scenes:
+        state = derived['items'][key]['state']
+        counts[state] = counts.get(state, 0) + 1
+    lines += ['## 概况', '', '| 状态 | 场景数 |', '| --- | --- |']
+    lines += [f"| {status.LABELS[state]} | {counts[state]} |" for state in status.ORDER if counts.get(state)]
+    lines += ['', f"- Agent 通过率：{_ratio(stats['agent_pass_rate'])}；一次通过率：{_ratio(stats['first_pass_rate'])}",
+              f"- 人工复测覆盖：{_ratio(stats['manual_coverage'])}；人工复测通过率：{_ratio(stats['manual_pass_rate'])}",
+              f"- Agent 独立通过的人工确认率：{_ratio(stats['agent_confirm_rate'])}；复核覆盖：{_ratio(stats['agent_review_coverage'])}"
+              + _undecided(stats['review_undecided']) + "（同一产品快照上人工复核过的 Agent 独立真实入口通过）",
+              '- 独立性（各场景最新 Agent 结果）：' + ('，'.join(f"{status.INDEPENDENCE.get(k, k)} {v}"
+                                                       for k, v in sorted(stats['independence'].items())) or '—'), '']
+    lines += ['## 场景', '']
+    for key in sorted(scenes):
+        scene, info = scenes[key], derived['items'][key]
+        history = rows.get((scene['file'], scene['id'], scene['fingerprint']), [])
+        lines += [f"### {key} {scene['title']}", '',
+                  f"- 状态：**{info['label']}**" + (f"（{info['reason']}）" if info['reason'] else ''),
+                  f"- 入口 {scene['verify']} · {scene['priority']} · {'正向' if scene['polarity'] == 'positive' else '反向'}"]
+        guard = guards.get((scene['file'], scene['id'], scene['fingerprint']))
+        if info['state'] == 'guarded' and guard:
+            lines.append(f"- 守护通过：{local_time(guard['ran_at'])}，运行者 {guard['operator']}（守护测试，不是真实入口执行）")
+        for result in history[:5]:
+            if result['kind'] == 'manual':
+                lines.append(f"- 人工复测 {local_time(result['executed_at'])}：{status.MANUAL[result['status']]}，"
+                             f"复测人 {result['marked_by'] or '未署名'}" + (f"，缺陷 {result['defect']}" if result['defect'] else '')
+                             + (f"，说明 {result['note']}" if result['note'] else ''))
+                continue
+            label = '按影响判定保留通过' if result['reused_from'] else \
+                {'pass': '通过', 'fail': '失败', 'blocked': '受阻', 'skip': '跳过'}[result['status']]
+            executor = result['executor'] if local else 'Agent 会话'
+            lines.append(f"- 运行 #{result['work']} {local_time(result['executed_at'])}：{label}，"
+                         f"执行者 {executor}，{status.INDEPENDENCE.get(result['independence'], '独立性未声明')}"
+                         + (f"；{_cell(result['finding'])}" if result['finding'] else '')
+                         + (f"；理由：{_cell(result['note'])}" if result['reused_from'] and result['note'] else ''))
+            for item in files_of.get(result['id'], []):
+                path = f"evidence/{item['sha256'][:12]}-{item['name']}"
+                evidence.append((path, item['sha256']))
+                lines.append(f"  - 证据 [{item['name']}]({path})（sha256 {item['sha256']}）")
+        lines.append('')
+    lines += ['## 误判明细（Agent 独立通过、人工复测不通过）', '']
+    for item in stats['misjudgments'] or []:
+        executor = f"，执行者 {item['executor']}" if local else ''
+        lines.append(f"- {item['scenario']}：运行 #{item['run']} {local_time(item['agent_at'])} Agent 独立通过{executor}；"
+                     f"{local_time(item['marked_at'])} 人工复测不通过，复测人 {item['marked_by'] or '未署名'}"
+                     + (f"，缺陷 {_cell(item['defect'])}" if item['defect'] else '')
+                     + (f"，说明 {_cell(item['note'])}" if item['note'] else ''))
+    if not stats['misjudgments']:
+        lines.append('- 无')
+    review = sorted(k for k in scenes if derived['items'][k]['review'])
+    lines += ['', '## 待人工复核', '', *([f"- {k} {scenes[k]['title']}" for k in review] or ['- 无']), '']
+    unexecuted = sorted(k for k in scenes if derived['items'][k]['state'] in ('not-run', 'retest', 'draft'))
+    lines += ['## 未执行范围', '', *([f"- {k}：{derived['items'][k]['label']}" for k in unexecuted] or ['- 无']), '']
+    secrets = [os.environ[n] for n in names(project.entries) if os.environ.get(n)]
+    markdown = redact('\n'.join(lines).encode(), secrets).decode()
+    return markdown, list(dict.fromkeys(evidence))
+
+
+def export(context, *, file=None, zip_evidence=False, out=None):
+    """写出 report.md（及 evidence.zip）。缺省目录为数据目录 reports/<检出>-<时间>/，不写进产品仓库。"""
+    from datetime import datetime
+    from pathlib import Path
+    markdown, evidence = build(context, file=file)
+    directory = Path(out) if out else context.project.data / 'reports' / (
+        f"{context.checkout.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+    directory.mkdir(parents=True, exist_ok=True)
+    report = directory / 'report.md'
+    report.write_text(markdown, encoding='utf-8')
+    result = dict(ok=True, checkout=context.checkout.name, report=str(report), evidence=len(evidence))
+    if zip_evidence:
+        # 证据按登记时的原文放入 zip，sha256 与报告引用一致；执行时已按提示词脱敏。
+        archive_path = directory / 'evidence.zip'
+        with ZipFile(archive_path, 'x', ZIP_DEFLATED) as archive:
+            archive.writestr('report.md', markdown)
+            for path, sha in evidence:
+                archive.writestr(path, context.store.read_evidence(sha))
+        result['zip'] = str(archive_path)
+    return result

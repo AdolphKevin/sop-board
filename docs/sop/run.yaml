@@ -1,0 +1,193 @@
+# v10 现行场景：运行的准备与提交、影响判定、独立性三类、run launch 启动器
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W，shop#X 被预埋缺陷打败）；
+#   看板已以 sop-board serve demo --data $D --lan 启动；port_step 为 100，已有检出 wt1。
+#   “执行者”指按 run 目录提示词经演示项目真实入口执行场景、写出结果的会话或测试者。
+
+metadata:
+  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按 检出、指纹、快照 登记；产品变化后按影响判定保留通过；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["run", "impact", "independence", "launcher"]
+
+sops:
+  - id: RUN-01
+    title: 准备并提交一次运行
+    actor: 执行会话
+    entry: "sop-board run prepare --scope pending|all|F#ID… --session S、run submit --run N"
+    must:
+      - "结果绑定场景指纹与运行开始时的产品快照，按检出隔离"
+      - "同一检出同时只能有一个 prepared 的运行"
+    scenarios:
+      - id: RUN-01-P01
+        polarity: positive
+        title: 首次执行全部未执行场景，失败与通过各自登记
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state: ["main 上 shop 的场景都是未执行", "draft-a（metadata.status: draft）在仓库中"]
+        steps:
+          - "在 main 运行 sop-board run prepare --scope pending --session S1，查看 runs/<编号>/ 目录"
+          - "执行者经演示项目入口执行范围内的场景，按实际结果写出结果与证据"
+          - "运行 sop-board run submit --run <编号> --implementer I1"
+          - "运行 sop-board status --json，在工作台查看 shop#X 与 shop#A，在 main 运行 git status"
+        expected:
+          - "run 目录中的范围包含 shop 的全部场景，不含 draft-a 的场景，并记录产品快照"
+          - "提交后 shop#X 为失败、shop#A 与 shop#B 为通过，结果带指纹与快照，证据可在工作台打开"
+          - "运行状态变为 submitted"
+          - "git status 无任何由看板产生的改动"
+        forbidden_effects: ["看板改写场景文件", "登记范围以外的场景结果", "草稿场景进入执行"]
+        refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#保留能力的简化形态"]
+        evidence_hints: ["run 目录清单", "submit 输出", "results 表只读查询"]
+      - id: RUN-01-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 同一检出已有 prepared 运行时不能再准备，其他检出不受影响
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 已有 prepared 运行 R1"]
+        steps: ["在 main 运行 sop-board run prepare --scope all --session S2 --json", "在 wt1 运行 sop-board run prepare --scope all --session S3 --json"]
+        expected:
+          - "main 的命令以业务失败退出（退出码 1），error_code 为 run-prepared，写明已有运行 R1"
+          - "R1 仍为 prepared，范围与快照不变"
+          - "wt1 的 run prepare 成功"
+        forbidden_effects: ["覆盖或作废 R1", "wt1 被 main 的运行阻挡"]
+        refs: ["docs/design.md#数据库（格式 6，board.sqlite3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+
+  - id: RUN-02
+    title: 产品变化后按影响判定保留通过
+    actor: 执行会话
+    entry: "sop-board run prepare --scope pending、run submit，工作台历史"
+    must:
+      - "通过发生在旧快照上且当前快照没有守护通过时为待复测"
+      - "按影响判定保留的通过计入“通过”，历史显示为“按影响判定保留通过”"
+      - "运行中途场景文件被改时，只作废指纹变化的场景"
+    scenarios:
+      - id: RUN-02-P01
+        polarity: positive
+        title: 无关改动后判定不受影响，shop#A 回到通过并留下理由
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 上 shop#A 已通过（无守护），main 环境在运行，记录其进程号"]
+        steps:
+          - "在 app 的 README.md 加一行并提交"
+          - "在工作台查看 shop#A 的状态与原因"
+          - "运行 sop-board run prepare --scope pending --session S2，记录环境进程号"
+          - "执行者判定 README 改动不影响 shop#A，按 run.md 写出影响判定与保留通过的理由；run submit"
+          - "在工作台查看 shop#A 的状态与历史"
+        expected:
+          - "改动后 shop#A 为待复测，原因写明产品已变化、守护未覆盖"
+          - "run prepare 重启了环境（进程号变化），范围包含 shop#A"
+          - "提交后 shop#A 为通过，绑定当前快照；历史中该条标为“按影响判定保留通过”并显示理由，原证据仍可打开"
+        forbidden_effects: ["主区域出现“沿用”字样", "丢失之前的证据"]
+        refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#检出与环境（问题 3）"]
+      - id: RUN-02-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 运行中途改了一条场景，只作废这一条
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 已 run prepare，范围为 shop#A 与 shop#B"]
+        steps:
+          - "执行期间把 shop 文件中 shop#A 的一条 expected 改写并保存"
+          - "执行者写出 shop#A 与 shop#B 的通过结果并 run submit"
+          - "运行 sop-board status --json"
+        expected:
+          - "shop#B 的结果登记成功"
+          - "shop#A 的结果没有登记，提交输出列出它因指纹变化被作废"
+          - "shop#A 按新指纹显示为未执行"
+        forbidden_effects: ["shop#A 的结果被登记到新指纹上", "整轮运行被作废"]
+        refs: ["docs/design.md#实施阶段（同一分支，每个阶段结束时包都能导入，CLI 可用）", "docs/design.md#核心概念（只有这些）"]
+
+  - id: RUN-03
+    title: 独立性按执行者与实现者分三类
+    actor: 执行会话
+    entry: "sop-board run prepare [--session S]、run submit [--implementer X]，工作台历史"
+    must:
+      - "执行者取自 CODEX_THREAD_ID 或 SOP_BOARD_SESSION，取不到就要求 --session"
+      - "实现者与执行者不同为独立验收，相同为实现者自检，未声明为未声明；独立性只在历史中显示"
+    scenarios:
+      - id: RUN-03-P01
+        polarity: positive
+        title: 三次运行分别登记为独立验收、实现者自检与未声明
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 没有 prepared 运行"]
+        steps:
+          - "设置 CODEX_THREAD_ID=T1，不带 --session 运行 run prepare --scope shop#A；执行后 run submit --implementer I1"
+          - "运行 run prepare --scope shop#B --session T2；执行后 run submit --implementer T2"
+          - "运行 run prepare --scope shop#W --session T3；执行后 run submit（不带 --implementer）"
+          - "在工作台查看三条场景的详情与历史"
+        expected:
+          - "第一次运行的执行者为 T1，独立性为独立验收"
+          - "第二次为实现者自检，第三次为未声明"
+          - "独立性只出现在各场景的历史中"
+        forbidden_effects: ["未声明计为独立验收", "独立性显示在历史以外的位置"]
+        refs: ["docs/design.md#独立性（取代交接仪式）", "docs/design.md#看板：三栏场景工作台（问题 2）"]
+      - id: RUN-03-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 取不到执行者时要求 --session
+        actor: 执行会话
+        priority: P2
+        verify: cli
+        initial_state: ["环境中没有 CODEX_THREAD_ID 与 SOP_BOARD_SESSION"]
+        steps: ["运行 sop-board run prepare --scope shop#A --json（不带 --session）"]
+        expected: ["命令失败并要求提供 --session", "没有新建运行"]
+        forbidden_effects: ["以空执行者或占位名创建运行"]
+        refs: ["docs/design.md#独立性（取代交接仪式）"]
+
+  - id: RUN-04
+    title: run launch 启动独立执行会话
+    actor: 协调会话
+    entry: "sop-board run launch --scope …、run wait、launch status|stop"
+    must:
+      - "守护进程按 agents 配置启动无头 claude -p 或 codex exec，会话只拿到 prompt 文件"
+      - "会话编号由启动器取得，启动记录就是独立性的证据"
+      - "同一检出同时只运行一个启动"
+    scenarios:
+      - id: RUN-04-P01
+        polarity: positive
+        title: 协调会话用 run launch 启动 Claude 与 Codex 执行会话，结果带启动记录回到工作台
+        actor: 协调会话
+        priority: P0
+        verify: agent
+        initial_state: ["config.yaml 的 agents 先设为 claude", "main 没有运行中的启动", "shop#X、shop#A 有待执行内容"]
+        steps:
+          - "在 app 目录新开 Claude Code 会话（协调会话），请求“启动一个独立会话验收 shop#X 和 shop#A”"
+          - "协调会话运行 sop-board run launch --scope shop#X shop#A，再运行 run wait"
+          - "查看 launch status、launches 表与运行目录中的 prompt 文件，在工作台查看两条场景的历史"
+          - "把 agents 改为 codex 后重复一次"
+        expected:
+          - "Claude 启动记录有进程号、日志、退出码，会话编号与 --session-id 一致；Codex 启动记录的会话编号来自 thread.started"
+          - "新会话的输入只有 prompt 文件，结果的执行者为启动器取得的会话编号，与协调会话不同"
+          - "两条场景的历史显示该运行与启动记录，以及独立性"
+        forbidden_effects: ["协调会话自己写结果或修改执行会话的结果", "生成 handoff 交接文件", "执行会话沿用协调会话的会话编号"]
+        refs: ["docs/design.md#独立性（取代交接仪式）", "docs/design.md#进程与入口", "docs/design.md#验证"]
+        evidence_hints: ["协调会话记录", "启动日志", "launches 表只读查询", "工作台历史截图"]
+      - id: RUN-04-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 同一检出已有运行中的启动时，第二次启动被拒绝
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 有一个 running 的启动 L1"]
+        steps: ["在 main 运行 sop-board run launch --scope shop#B --json", "本机工作台对 shop#B 点“AI 重跑此场景”", "在 wt1 运行 sop-board run launch --scope shop#B --json"]
+        expected:
+          - "main 的两次请求都被拒绝，error_code 为 launch-running，写明运行中的 L1；launch status 只显示 L1"
+          - "wt1 的启动成功"
+        forbidden_effects: ["main 同时运行两个无头会话", "结束或替换 L1"]
+        refs: ["docs/design.md#进程与入口", "docs/design.md#数据库（格式 6，board.sqlite3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]

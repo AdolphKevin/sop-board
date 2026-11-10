@@ -1,0 +1,110 @@
+# v10 现行场景：修复、独立复验、fix close
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动。
+#   main 上 shop#X 已因预埋缺陷登记为失败（独立执行），app 与 lib 没有未提交改动。
+
+metadata:
+  requirement: "sop-board v10：失败场景由会话在当前检出修复，另一会话以 run prepare --fix 独立复验（实现者自动取修复会话），提交后 fix close 关闭；测试同学标注不通过的场景在修复关闭后回到待复测"
+  version: 2
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对工作台试用的反馈"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["fix", "retest", "independence"]
+
+sops:
+  - id: FIX-01
+    title: 修复失败场景并独立复验
+    actor: 开发者
+    entry: "真实会话中运行 sop-board fix prepare [F#ID…]、fix submit、run prepare --fix N、fix close"
+    must:
+      - "修复复验时实现者自动取修复会话"
+      - "复验须实际执行；执行者与修复会话相同时记为实现者自检"
+      - "fix close 要求：在包含修复改动的产品上有一次独立复验通过，且修复改动的文件已提交、内容与复验时一致；否则拒绝并列出文件"
+    scenarios:
+      - id: FIX-01-P01
+        polarity: positive
+        title: Claude 会话修复 shop#X，Codex 会话独立复验通过，提交后关闭
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["main 上 shop#X 为失败", "没有进行中的修复"]
+        steps:
+          - "在 app 目录新开 Claude Code 会话 F，请求“修复 shop#X”；会话运行 fix prepare shop#X，在 main 检出改产品代码，运行 fix submit"
+          - "新开 Codex 会话 V，请求“复验修复 N”；会话运行 run prepare --fix N，经演示项目入口执行 shop#X 并 run submit"
+          - "开发者审核并 git commit 修复改动，运行 sop-board fix close"
+          - "在工作台查看 shop#X 的状态与历史，只读查询 fixes 表"
+        expected:
+          - "复验运行的实现者自动为会话 F，执行者为会话 V，独立性为独立验收"
+          - "shop#X 的复验结果为通过，带本次执行的新证据"
+          - "提交内容与复验时一致，fix close 成功，修复记录为关闭；shop#X 为通过（待沉淀）"
+        forbidden_effects: ["复验以按影响判定保留通过代替实际执行", "复验需要手工声明实现者", "修复会话在其他检出改代码"]
+        refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#独立性（取代交接仪式）", "docs/design.md#验证", "使用者 2026-11-10 对场景集待确认问题的答复 第 9 条"]
+        evidence_hints: ["两个会话记录", "修复 diff 与提交", "fixes 表与 results 表只读查询", "工作台截图"]
+      - id: FIX-01-N01
+        polarity: negative
+        negative_type: other
+        title: 修复会话自己复验，记为实现者自检且不能关闭修复
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["会话 F 已对 shop#X fix submit，得到修复 N"]
+        steps:
+          - "仍以会话 F 运行 sop-board run prepare --fix N --session F，执行 shop#X 后 run submit"
+          - "在工作台查看 shop#X 的历史与徽标"
+          - "提交修复改动后运行 sop-board fix close --json"
+        expected:
+          - "复验结果的实现者与执行者都是 F，独立性为实现者自检"
+          - "shop#X 没有“待沉淀”徽标"
+          - "fix close 被拒绝，说明缺少独立复验通过，并列出修复改动的文件；修复记录仍未关闭"
+        forbidden_effects: ["该复验计为独立验收", "没有独立复验通过就关闭修复"]
+        refs: ["docs/design.md#独立性（取代交接仪式）", "docs/design.md#场景状态（按检出推导，不存储）", "使用者 2026-11-10 对场景集待确认问题的答复 第 9 条"]
+      - id: FIX-01-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 提交的修复内容与复验时不一致，fix close 拒绝并列出文件
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["修复 N 已由另一会话独立复验通过", "修复改动的文件为 app 中的两个文件，均未提交"]
+        steps:
+          - "只提交其中一个文件，运行 sop-board fix close --json"
+          - "对另一个文件再改一行后提交，运行 sop-board fix close --json"
+        expected:
+          - "第一次 close 被拒绝，列出未提交的那个文件"
+          - "第二次 close 被拒绝，列出内容与复验时不一致的那个文件"
+          - "修复记录仍未关闭"
+        forbidden_effects: ["用未经复验的内容关闭修复"]
+        refs: ["docs/design.md#核心概念（只有这些）", "使用者 2026-11-10 对场景集待确认问题的答复 第 9 条"]
+
+  - id: FIX-02
+    title: 测试同学标注不通过后修复关闭，场景回到待复测
+    actor: 测试同学
+    entry: "内网工作台复测标注，sop-board fix 系列命令"
+    negative_exempt: "修复流程的反向情况见 FIX-01-N01"
+    scenarios:
+      - id: FIX-02-P01
+        polarity: positive
+        title: 标注不通过 → 修复并关闭 → 待复测 → 测试同学复测通过
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["main 上 shop#W 的 Agent 结果为通过"]
+        steps:
+          - "测试同学在内网对 shop#W 标注不通过，缺陷链接 https://issues.example/DEMO-4"
+          - "开发者按 FIX-01-P01 的方式完成修复、独立复验、提交与 fix close"
+          - "测试同学刷新内网工作台查看 shop#W，再标注通过"
+        expected:
+          - "标注后 shop#W 为失败并附缺陷链接"
+          - "fix close 后 shop#W 为待复测"
+          - "测试同学标注通过后 shop#W 为通过，历史保留不通过与通过两条标注"
+        forbidden_effects: ["fix close 后 shop#W 直接显示通过而跳过测试同学复测"]
+        refs: ["docs/design.md#场景状态（按检出推导，不存储）"]

@@ -1,0 +1,241 @@
+# v10 现行场景：安装、登记、操作者、检出识别与创建、check
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置（下称“演示项目”）：
+#   - 用 examples/demo-shop 的一条生成命令在临时目录生成 app、lib 两个 Git 仓库（下称主检出），以临时数据目录 $D（所有命令带 --data $D）init 为项目 demo。
+#   - 演示场景文件 shop（app 的 scenarios.path 下）：shop#X 是会被预埋缺陷打败的 API 场景，shop#A、shop#B 是应通过的 API 场景，shop#W 是使用身份 merchant 的 Web 场景；实际编号见 docs/verification.md。
+#   - 看板守护进程已以 sop-board serve demo --data $D --lan 启动（终端或会话中均可）；“操作者 N”指在检出目录运行 git config user.name 的输出。
+
+metadata:
+  requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["setup", "operator", "checkout", "check"]
+
+sops:
+  - id: SET-01
+    title: 安装并登记项目
+    actor: 开发者
+    entry: "安装后的 sop-board 命令：skills install、init、status"
+    must:
+      - "init 生成格式 6 的项目目录：config.yaml、board.sqlite3 与项目标记 sop-board-project-6"
+      - "旧版数据目录直接拒读，不迁移，也不改动"
+    scenarios:
+      - id: SET-01-P01
+        polarity: positive
+        title: 从两个演示仓库登记新项目，场景全部显示未执行
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示仓库 app、lib 已生成，各有 origin 远端地址", "$D 是空目录", "看板未启动"]
+        steps:
+          - "用 uv tool install <本仓检出> 安装被测版本，运行 sop-board skills install"
+          - "按 sop-board guide 的指引运行 sop-board init demo --data $D，登记 app、lib 两个仓库"
+          - "运行 sop-board status demo --data $D 与 sop-board status demo --data $D --json"
+        expected:
+          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；board.sqlite3 的 meta 记录格式 6"
+          - "config.yaml 中两个仓库的身份是规范化后的 origin 地址"
+          - "status 列出 shop 文件中的全部场景，状态都是未执行；并显示守护进程未运行及启动命令"
+          - "除 status 的文字输出外，各命令输出 JSON 且退出码为 0"
+        forbidden_effects: ["产品仓库中出现 sop-board 生成或改写的文件", "status 把任何场景显示为通过或待复测"]
+        refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#CLI 一览"]
+        evidence_hints: ["命令原文与完整输出", "$D 目录清单", "board.sqlite3 meta 表只读查询"]
+      - id: SET-01-N01
+        polarity: negative
+        negative_type: archived
+        title: 旧版数据目录直接拒读，不迁移
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["$D/old 是用 tag v9-final 的 sop-board 建立的工作区目录（数据库格式 5），已记录其中全部文件的 sha256"]
+        steps: ["用 v10 运行 sop-board status old --data $D --json", "运行 sop-board serve old --data $D"]
+        expected:
+          - "两条命令都以业务失败退出（退出码 1），error_code 为 project-format"
+          - "$D/old 下全部文件的 sha256 与执行前一致"
+        forbidden_effects: ["自动迁移或改写旧数据库", "在旧目录中新建 board.sqlite3 或项目标记"]
+        refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#风险与说明", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+
+  - id: SET-02
+    title: 操作者身份按机器设一次，登记自动署名
+    actor: 开发者
+    entry: "sop-board operator show|set，及所有带登记的 CLI 命令（含 inbox add）；真实 Codex 或 Claude Code 会话"
+    must:
+      - "操作者缺省取 git config user.name，可用 operator set 修改"
+      - "所有 CLI 登记自动以操作者署名；只有别人确认时才用 --as <姓名>"
+      - "会话可以问业务内容，但不再问“是谁”"
+    negative_exempt: "--by/--author/--confirmed-by/--uploaded-by 已删除，属于确定性参数校验，验收后沉淀为单元测试；会话不问姓名由 SET-02-P02 的禁止项覆盖"
+    scenarios:
+      - id: SET-02-P01
+        polarity: positive
+        title: 未设置时取 git 用户名署名，修改后改用新名，--as 只影响本次登记
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["演示项目已登记，看板已启动", "从未运行过 operator set", "shop#A 已有一条通过结果，shop#X 已有一条失败结果"]
+        steps:
+          - "在 app 检出目录运行 sop-board operator show"
+          - "运行 sop-board mark shop#A pass（不带任何姓名参数）"
+          - "运行 sop-board operator set 王测试，再运行 operator show"
+          - "运行 sop-board mark shop#X fail --defect https://issues.example/DEMO-1 --as 李四"
+          - "运行 sop-board mark shop#B pass，然后只读查询 results 表中 kind=manual 的行"
+        expected:
+          - "第一次 operator show 输出操作者 N"
+          - "shop#A 的人工标注署名为操作者 N"
+          - "operator set 后 operator show 输出 王测试"
+          - "shop#X 的标注署名为 李四、缺陷链接为 https://issues.example/DEMO-1；之后 operator show 仍为 王测试"
+          - "shop#B 的标注署名为 王测试"
+        forbidden_effects: ["任何命令因缺少姓名参数而失败或提示输入姓名", "--as 改写本机操作者"]
+        refs: ["docs/design.md#署名"]
+        evidence_hints: ["命令原文与输出", "results 表只读查询"]
+      - id: SET-02-P02
+        polarity: positive
+        title: 真实会话上传并合并用例、确认草稿、提交运行，全程不问确认人
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state:
+          - "演示项目已登记，看板已启动，sop-board skills install 已执行"
+          - "收件箱为空；演示用例文件在临时目录中"
+          - "app 中有两份草稿场景文件 draft-a、draft-b（metadata.status: draft），没有待处理批注"
+          - "会话开始前没有向会话提供任何人名"
+        steps:
+          - "在 app 目录分别新开一个 Claude Code 会话和一个 Codex 会话（各走一遍下列请求）"
+          - "用自然语言提出：“上传这份用例文件 <路径> 并合并进场景”；会话就业务内容提问时按演示用例原文回答"
+          - "提出：“确认草稿 draft-a”"
+          - "提出：“草稿 draft-b 是产品负责人李四确认的，请确认”"
+          - "提出：“对 shop#A 做一次验收并提交结果”"
+          - "导出会话记录，查看合并后的场景文件、两份草稿文件头与运行记录"
+        expected:
+          - "会话完成 inbox add（--kind cases）、merge prepare/submit、draft confirm、run prepare/submit，各命令退出码为 0"
+          - "收件箱条目的上传人为操作者 N"
+          - "合并后场景的 refs 或 metadata.sources 记录的确认人为操作者 N"
+          - "draft-a 的 metadata.status 为 confirmed，确认人为操作者 N；draft-b 的确认人为 李四，且对应命令带 --as 李四"
+          - "运行记录的操作者为操作者 N"
+          - "会话记录中没有出现询问确认人、上传人、作者或“你是谁”的提问，也没有因等待姓名而结束一轮"
+        forbidden_effects:
+          - "会话询问“确认人是谁”或要求提供姓名"
+          - "会话使用 --by、--author、--confirmed-by 或 --uploaded-by 参数"
+          - "在用户未提及他人确认时使用 --as，或写入会话自行编造的姓名"
+        refs: ["docs/design.md#署名", "docs/design.md#七个问题：根因与新设计", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
+        evidence_hints: ["两个会话的完整记录导出", "场景文件与草稿文件的 git diff", "work 表只读查询"]
+
+  - id: SET-03
+    title: 从 worktree 目录自动识别检出
+    actor: 开发者
+    entry: "在任意检出目录运行 sop-board checkout show|list"
+    must:
+      - "按 git common dir 识别所属仓库；同一父目录下的兄弟 worktree 并入同一检出；缺的仓库回落到 main"
+      - "检出第一次被看到时登记并分配槽位，main 的槽位固定为 0"
+    scenarios:
+      - id: SET-03-P01
+        polarity: positive
+        title: 两仓 worktree 并为一个检出，只有 app 的 worktree 时 lib 回落到 main
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "演示项目已登记，看板已启动"
+          - "用 git worktree add 建立 wt-a/app（app 的 worktree）与 wt-a/lib（lib 的 worktree），二者在同一父目录 wt-a 下"
+          - "另建 wt-b/app（app 的 worktree），wt-b 下没有 lib"
+        steps:
+          - "在 app 主检出目录运行 sop-board checkout show"
+          - "分别在 wt-a/app、wt-a/lib、wt-b/app 目录运行 sop-board checkout show"
+          - "再在 wt-a/app 运行一次 checkout show，然后运行 sop-board checkout list"
+        expected:
+          - "主检出目录识别为 main，槽位 0"
+          - "wt-a/app 与 wt-a/lib 识别为同一个 worktree 检出，app 路径为 wt-a/app，lib 路径为 wt-a/lib"
+          - "wt-b/app 识别为另一个 worktree 检出，app 路径为 wt-b/app，lib 路径为 lib 主检出路径"
+          - "wt-a 下有其他已登记仓库的兄弟 worktree，检出名为父目录名 wt-a；wt-b/app 没有这样的兄弟，检出名为 worktree 目录名 app"
+          - "两个 worktree 检出各有一个互不相同的非 0 槽位；重复 show 槽位与名称不变"
+          - "checkout list 列出 main 与这两个检出，与 show 的结果一致"
+        forbidden_effects: ["worktree 目录被当作未登记仓库而报错", "两个检出共用一个槽位", "wt-a 被拆成两个检出"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 5 条"]
+        evidence_hints: ["命令原文与输出", "git worktree list 输出", "checkouts 表只读查询"]
+      - id: SET-03-N01
+        polarity: negative
+        negative_type: cross-tenant
+        title: 兄弟目录是其他项目仓库的 worktree 时不并入
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "演示项目已登记，SET-03-P01 已完成（已有名为 app 的检出 wt-b/app）"
+          - "另有一个未登记到 demo 的 Git 仓库 other；在同一父目录 wt-c 下建立 wt-c/app（app 的 worktree）与 wt-c/other（other 的 worktree）"
+        steps: ["在 wt-c/app 运行 sop-board checkout show --json"]
+        expected:
+          - "检出中 app 路径为 wt-c/app，lib 路径回落到 lib 主检出路径"
+          - "输出中不出现 wt-c/other"
+          - "wt-c 下没有其他已登记仓库的兄弟 worktree，检出按 worktree 目录名命名；因 app 已被 wt-b/app 占用，名称为 app-2"
+        forbidden_effects: ["wt-c/other 被并入 demo 的检出", "other 仓库内出现任何新文件或改动"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "docs/design.md#实施阶段（同一分支，每个阶段结束时包都能导入，CLI 可用）", "使用者 2026-11-10 对场景集待确认问题的答复 第 5 条"]
+
+  - id: SET-04
+    title: 用 adapter 创建和移除检出
+    actor: 开发者
+    entry: "sop-board checkout create <名称> [--from ref]、checkout remove <名称>"
+    negative_exempt: "返回路径的三项核对沿用 worktrees.validate_path，属于确定性校验，验收后沉淀为单元测试"
+    scenarios:
+      - id: SET-04-P01
+        polarity: positive
+        title: 创建 wt1 后可在其中识别，移除后清理干净
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示项目已登记，看板已启动", "config.yaml 的 adapter.worktree 与 cleanup 指向演示项目的 worktree.py", "还没有任何 worktree 检出"]
+        steps:
+          - "运行 sop-board checkout create wt1 --from HEAD"
+          - "运行 sop-board checkout list，并进入 wt1 的 app 目录运行 checkout show"
+          - "运行 sop-board checkout remove wt1，再运行 checkout list 与两个仓库的 git worktree list"
+        expected:
+          - "create 由 adapter 为 app 和 lib 各建一个 worktree，输出 wt1 的两个路径与一个非 0 槽位"
+          - "list 显示 main（槽位 0）与 wt1；在 wt1 的 app 目录 show 识别为 wt1"
+          - "remove 后 list 不再有 wt1，两个仓库的 git worktree list 不再有 wt1 的路径"
+          - "wt1 的槽位被释放：checkouts 表中不再有占用该槽位的检出"
+        forbidden_effects: ["remove 删除主检出、$D 或任何运行目录中的文件"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 5 条"]
+        evidence_hints: ["命令输出", "git worktree list 前后对比", "$D 目录清单"]
+
+  - id: SET-05
+    title: check 只核对配置、环境与浏览器运行时
+    actor: 开发者
+    entry: "sop-board check"
+    must: ["check 校验配置、在当前检出拉起环境并探测就绪、核对浏览器运行时；不建立或清理工作树，也不是执行门槛"]
+    scenarios:
+      - id: SET-05-P01
+        polarity: positive
+        title: 三项全部通过；从未 check 的项目也能直接准备运行
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示项目已登记，看板已启动，浏览器运行时已安装", "记录 app、lib 的 git worktree list 输出"]
+        steps:
+          - "另登记一个演示项目 demo2（不运行 check），在其主检出运行 sop-board run prepare --scope shop#A --session S0，再 run abandon"
+          - "在 demo 主检出运行 sop-board check"
+          - "再次查看 app、lib 的 git worktree list"
+        expected:
+          - "demo2 的 run prepare 成功，没有因为未运行 check 而被拒绝"
+          - "check 输出 JSON，分别给出配置校验、当前检出环境就绪、浏览器运行时（含 CfT 版本）三项结果，均通过，退出码 0"
+          - "check 后 git worktree list 与之前一致"
+        forbidden_effects: ["check 建立或删除任何工作树", "check 输出中出现第四项及以上的自检步骤"]
+        refs: ["docs/design.md#检出与环境（问题 3）"]
+      - id: SET-05-N01
+        polarity: negative
+        negative_type: not-found
+        title: 浏览器运行时未安装时 check 指出缺失
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["演示项目已登记；看板与 CLI 的 SOP_BOARD_HOME 指向一个从未运行 browser install 的临时目录（运行时属于本机级，不随 --data 变化）"]
+        steps: ["在主检出运行 sop-board check"]
+        expected:
+          - "check 以业务失败退出（退出码 1），浏览器运行时一项写明运行时缺失"
+          - "配置与环境两项照常给出结果"
+        forbidden_effects: ["check 改用共享的 ms-playwright 缓存或用户日常 Chrome 充当运行时", "check 到 $D 下寻找运行时"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 2 条"]

@@ -1,4 +1,4 @@
-"""工作区配置中的真实入口声明；不读取仓库内的旧声明。"""
+"""项目配置中的真实入口声明与项目验证技能。"""
 import hashlib
 import os
 from pathlib import Path
@@ -8,7 +8,7 @@ import stat
 import yaml
 
 
-FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence', 'atlas', 'identities'}
+FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence', 'atlas', 'identities', 'spec_library'}
 
 
 def web_evidence(entry):
@@ -71,12 +71,22 @@ def validate_entries(entries, repos=None):
             if (entry.get('surface') != 'web' or not isinstance(policy, dict)
                     or policy.keys() - {'video', 'trace'} or any(type(v) is not bool for v in policy.values())):
                 problems.append(dict(field=field + '.web_evidence', problem='仅用于 Web 入口，须为只含 video、trace 布尔开关的对象'))
+        if 'spec_library' in entry:
+            value = entry['spec_library']
+            alias, separator, relative = value.partition(':') if isinstance(value, str) else ('', '', '')
+            if (entry.get('surface') != 'web' or not separator or not alias or not relative.strip()
+                    or Path(relative).is_absolute() or '..' in Path(relative).parts or not Path(relative).parts
+                    or '\0' in relative or repos is not None and alias not in repos):
+                problems.append(dict(field=field + '.spec_library', problem='仅用于 Web，须为已登记仓库别名:仓内目录，不能是仓库根目录'))
+            elif repos is not None:
+                path = repos[alias] / relative
+                if path.is_symlink() or not path.resolve().is_relative_to(repos[alias]) or path.resolve() == repos[alias] or path.exists() and not path.is_dir():
+                    problems.append(dict(field=field + '.spec_library', problem='规范库须为仓库内普通目录，不能越界或是符号链接'))
         if 'identities' in entry:
             if entry.get('surface') != 'web':
                 problems.append(dict(field=field + '.identities', problem='identities 只用于 Web 入口'))
             else:
-                from .identities import validate
-                validate(entry['identities'], field + '.identities', problems)
+                validate_identities(entry['identities'], field + '.identities', problems)
         if 'atlas' in entry:
             atlas = entry['atlas']
             def problem(key, message):
@@ -100,6 +110,55 @@ def validate_entries(entries, repos=None):
                         or len(set(languages)) != len(languages)):
                     problem('.languages', '应为不重复的非空文字数组')
     return problems
+
+
+IDENTIFIER = re.compile(r'[a-z0-9][a-z0-9_-]*\Z')
+ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
+CODES = ('mailbox', 'backend', 'manual')
+LIMITS = ('logins_per_day', 'codes_per_hour', 'codes_per_day')
+
+
+def validate_identities(value, field, problems):
+    """Web 入口的身份：每个身份对应看板浏览器代理的一份持久 profile。
+
+    real 为真表示真实账号，只由人在有界面的 Chrome for Testing 窗口登录。"""
+    if not isinstance(value, list) or not value:
+        problems.append(dict(field=field, problem='须为非空身份数组'))
+        return
+    seen = set()
+    for index, item in enumerate(value):
+        where = f'{field}[{index}]'
+        if not isinstance(item, dict):
+            problems.append(dict(field=where, problem='身份须为对象'))
+            continue
+        for extra in item.keys() - {'id', 'label', 'account_env', 'code', 'limits', 'real'}:
+            problems.append(dict(field=f'{where}.{extra}', problem='格式外字段'))
+        if not isinstance(item.get('id'), str) or not IDENTIFIER.fullmatch(item['id']) or item['id'] in seen or item['id'] == 'default':
+            problems.append(dict(field=where + '.id', problem='须为不重复的小写编号，不能是 default'))
+        seen.add(item.get('id'))
+        if not isinstance(item.get('label'), str) or not item['label'].strip():
+            problems.append(dict(field=where + '.label', problem='须为非空文字，对应场景的 actor'))
+        if 'account_env' in item and (not isinstance(item['account_env'], str) or not ENV_NAME.fullmatch(item['account_env'])):
+            problems.append(dict(field=where + '.account_env', problem='须为环境变量名'))
+        if item.get('code', 'manual') not in CODES:
+            problems.append(dict(field=where + '.code', problem='应为 ' + '、'.join(CODES)))
+        limits = item.get('limits', {})
+        if not isinstance(limits, dict) or limits.keys() - set(LIMITS) or any(type(v) is not int or v <= 0 for v in limits.values()):
+            problems.append(dict(field=where + '.limits', problem='只接受 ' + '、'.join(LIMITS) + '，取值为正整数'))
+        if 'real' in item and type(item['real']) is not bool:
+            problems.append(dict(field=where + '.real', problem='须为布尔值'))
+
+
+def identities(entry):
+    """Web 入口的身份编号；未声明身份时只有 default。"""
+    values = entry.get('identities') if isinstance(entry, dict) else None
+    return [item['id'] for item in values] if isinstance(values, list) and values else ['default']
+
+
+def web_skill():
+    directory = os.environ.get('SOP_BOARD_SKILLS_DIR')
+    custom = Path(directory).expanduser() / 'playwright-acceptance' if directory else None
+    return custom if custom and (custom / 'SKILL.md').is_file() else Path(__file__).parent / 'skills' / 'playwright-acceptance'
 
 
 def check_references(entries, documents):
@@ -176,8 +235,7 @@ def verification_skills(data, skill, entries):
         driver = entry.get('driver')
         if driver == 'playwright-acceptance' or (driver is None and entry.get('surface') == 'web'):
             # Web 缺省与显式声明都用随包技能；SOP_BOARD_SKILLS_DIR 中的同名技能可覆盖。
-            from .playwright import driver_skill
-            candidate = driver_skill() / 'SKILL.md'
+            candidate = web_skill() / 'SKILL.md'
             if candidate.is_file():
                 drivers[name] = str(candidate.resolve())
             else:

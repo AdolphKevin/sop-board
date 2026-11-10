@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""把 Playwright JSON report 转成 sop-board 的场景结果契约（results.jsonl），并把证据复制到结果目录内。
+"""把 Playwright JSON report 转成 sop-board 的场景结果契约（results.jsonl），并把证据复制到运行目录内。
 
-用法：
-  to_scenarios.py --report <PW_OUT>/report.json --out <目录> --executor "<执行者>"
-                  [--finding SOP-02-P01=Q3 ...] [--pending pending.json] [--scope scope.json --scenario-file scenarios.yaml]
-                  [--allow-partial] [--session <会话>] [--skip-large]
+用法（在运行目录）：
+  sop-board playwright convert --report playwright/report.json --out . --executor "<执行者>"
+                  [--finding shop#X=原因 ...] [--pending pending.json] [--scope scope.json --scenario-file scenarios.yaml]
+                  [--allow-partial] [--skip-large]
 
 约定：
-- 场景编号 = 测试标题的第一个空白分隔词，例如 "SOP-02-P01 人工接管…" → SOP-02-P01。无编号的测试跳过并提示。
+- 场景键 = 测试标题的第一个空白分隔词，写成 <文件>#<编号>，例如 "shop#R1-P01 申请退款…"。无场景键的测试跳过并提示。
 - passed → pass；skipped → skip；failed / timedOut / interrupted → fail，
   但错误信息以“受阻：”开头，或模板注记了 blocked（调试连接中断、目标页关闭）时 → blocked。每个测试取最后一次结果（不建议 retries）。
 - 同一场景有多条测试时合并，状态取最差：fail > blocked > skip > pass；附件按测试隔离，避免覆盖。
 - pending/scope 默认要求结果完整；部分试跑须 --allow-partial，范围内尚无结果的场景写成 status 为 not-executed 的标记行
   （带 finding，无证据），sop-board 登记时不登记这些场景、保留在待执行范围。coverage.json 单独记录范围。
-- scope 对比报告注解与原始场景文件摘要，防止批次、编号或指纹串用。
-- blocked 与 skip 必须用 --finding 指定问题编号（sop-board 契约要求）；pass 与 fail 至少要有一份证据。
-- 证据复制到 <out>/evidence/<场景编号>/，结果文件里用相对路径引用；单个文件超过 64 MiB 会被 sop-board 拒绝，
+- scope 对比报告注解与原始场景文件摘要，防止检出、场景或指纹串用。
+- blocked 与 skip 必须用 --finding 写明原因（sop-board 契约要求）；pass 与 fail 至少要有一份证据。
+- 证据复制到 <out>/evidence/<场景键>/（# 写作 __），结果文件里用相对路径引用；单个文件超过 64 MiB 会被 sop-board 拒绝，
   默认报错，--skip-large 则跳过该文件并提示。
 - executed_at = 该测试的 startTime + duration，带 +00:00 时区，秒精度。
 只用 Python 3.9+ 标准库。
@@ -78,10 +78,13 @@ def scenario_id(title):
     if not parts:
         return None
     head = parts[0]
-    # 场景编号来自 SOP（沿用原连字符规则，如 SOP-12-P01）或用例合并（与用例编号规则相同，如 TC_ORD_005）。
-    if re.match(r'^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]+$', head) or re.fullmatch(r'TC_[A-Z0-9_]{3,}_[0-9]{3}', head):
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9_.-]*', head):
         return head
     return None
+
+
+def evidence_dir(sid):
+    return sid.replace('#', '__')
 
 
 def walk_specs(suite):
@@ -98,7 +101,7 @@ def last_result(test):
 
 
 def blocked_note(result, test):
-    """模板在调试连接中断、目标页关闭时写入的 blocked 注记（D87）；没有时返回空字符串。"""
+    """模板在调试连接中断、目标页关闭时写入的 blocked 注记；没有时返回空字符串。"""
     for item in list((test or {}).get('annotations') or []) + list(result.get('annotations') or []):
         if item.get('type') == 'blocked' and item.get('description'):
             return item['description']
@@ -257,7 +260,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         for sid, entries in grouped.items():
             if sid not in scope['scenarios']:
                 raise ConvertError('场景不在 scope 中：' + sid)
-            binding = {key: scope[key] for key in ('project', 'batch', 'scenario_file_sha256')}
+            binding = {key: scope[key] for key in ('project', 'checkout', 'scenario_file_sha256')}
             binding.update(scenario=sid, fingerprint=scope['scenarios'][sid])
             for _, test, result in entries:
                 annotations = [a.get('description') for a in test.get('annotations', []) if a.get('type') == 'sop-scope']
@@ -265,7 +268,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
                 if not annotations and result.get('status') == 'skipped' and report_scope == scope:
                     continue
                 if len(annotations) != 1 or annotations[0] != json.dumps(binding, ensure_ascii=False, sort_keys=True, separators=(',', ':')):
-                    raise ConvertError('报告的批次或场景指纹与 scope 不一致：' + sid)
+                    raise ConvertError('报告的检出或场景指纹与 scope 不一致：' + sid)
     rows = []
     problems = []
     for sid in sorted(grouped):
@@ -278,7 +281,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         latest = None
         for test_index, (item_status, title, test, result) in enumerate(statuses, 1):
             namespace = 'test-%03d' % test_index if len(statuses) > 1 else None
-            evidence.extend(copy_evidence(result, out / 'evidence' / sid, report_dir, skip_large, warnings, namespace))
+            evidence.extend(copy_evidence(result, out / 'evidence' / evidence_dir(sid), report_dir, skip_large, warnings, namespace))
             if item_status == status:
                 actuals.append(describe(result, item_status, test) if len(statuses) == 1 else '%s：%s' % (title, describe(result, item_status, test)))
             moment = executed_at(result)
@@ -296,7 +299,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         if sid in findings:
             row['finding'] = findings[sid]
         elif status in ('blocked', 'skip'):
-            problems.append('%s 为 %s，请用 --finding %s=<问题编号> 指定问题' % (sid, status, sid))
+            problems.append('%s 为 %s，请用 --finding %s=<原因> 写明原因' % (sid, status, sid))
         if status in ('pass', 'fail') and not evidence:
             problems.append('%s 为 %s 但没有任何证据附件，请按入口 evidence 声明附上真实证据' % (sid, status))
         if pending_ids is not None and sid not in pending_ids:
@@ -304,7 +307,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         rows.append(row)
     if missing:
         warnings.append('部分试跑，执行范围中尚无结果的场景：%s' % ', '.join(missing))
-        # 明确写出未执行标记行（D87）：sop-board 登记时不登记这些场景，它们留在待执行范围；不能当作结果。
+        # 明确写出未执行标记行：sop-board 登记时不登记这些场景，它们留在待执行范围；不能当作结果。
         for sid in missing:
             row = {'scenario': sid, 'status': NOT_EXECUTED, 'finding': findings.get(sid) or '本轮执行中途停止，未执行', 'evidence': []}
             if session:
@@ -319,10 +322,10 @@ def parse_findings(values):
     findings = {}
     for value in values or []:
         if '=' not in value:
-            raise ConvertError('--finding 格式为 场景编号=问题编号：%s' % value)
+            raise ConvertError('--finding 格式为 场景键=原因：%s' % value)
         sid, finding = value.split('=', 1)
         if not sid.strip() or not finding.strip():
-            raise ConvertError('--finding 格式为 场景编号=问题编号：%s' % value)
+            raise ConvertError('--finding 格式为 场景键=原因：%s' % value)
         findings[sid.strip()] = finding.strip()
     return findings
 
@@ -349,8 +352,8 @@ def load_scope(path, scenario_file):
     if not scenario_file:
         raise ConvertError('--scope 须同时指定 --scenario-file，以核对原始场景文件版本')
     scope = json.loads(Path(path).read_text(encoding='utf-8'))
-    if not isinstance(scope, dict) or not all(isinstance(scope.get(k), str) and scope[k].strip() for k in ('project', 'batch')):
-        raise ConvertError('scope 须包含非空 project、batch')
+    if not isinstance(scope, dict) or not all(isinstance(scope.get(k), str) and scope[k].strip() for k in ('project', 'checkout')):
+        raise ConvertError('scope 须包含非空 project、checkout')
     sha = scope.get('scenario_file_sha256')
     if sha != hashlib.sha256(Path(scenario_file).read_bytes()).hexdigest():
         raise ConvertError('scope 的 scenario_file_sha256 与场景文件不一致')
@@ -373,11 +376,11 @@ def main(argv=None):
     parser.add_argument('--report', required=True, help='Playwright JSON reporter 输出')
     parser.add_argument('--out', required=True, help='结果目录（仓库外），写入 results.jsonl 与 evidence/')
     parser.add_argument('--executor', required=True, help='执行者，写入每条结果')
-    parser.add_argument('--finding', action='append', default=[], help='场景编号=问题编号，可重复；blocked 与 skip 必填')
+    parser.add_argument('--finding', action='append', default=[], help='场景键=原因，可重复；blocked 与 skip 必填')
     parser.add_argument('--pending', help='看板 pending.json（数组或含 pending 数组的对象），用于核对编号')
     parser.add_argument('--session', help='可选的会话标识，写入 session 字段')
     parser.add_argument('--allow-partial', action='store_true', help='显式允许范围内部分场景尚无结果，并输出 coverage.json')
-    parser.add_argument('--scope', help='上游批次及场景指纹快照；与运行时 PW_SCOPE 使用同一文件')
+    parser.add_argument('--scope', help='运行目录的 scope.json；与运行时 PW_SCOPE 使用同一文件')
     parser.add_argument('--scenario-file', help='scope 所绑定的原始场景文件')
     parser.add_argument('--skip-large', action='store_true', help='跳过超过 64 MiB 的证据文件而不是报错')
     args = parser.parse_args(argv)
@@ -408,7 +411,7 @@ def main(argv=None):
     coverage = dict(mode=mode, scope_verified=scope is not None,
                     expected=expected, executed=executed, missing=sorted(set(expected) - set(executed)))
     if scope:
-        coverage.update({key: scope[key] for key in ('project', 'batch', 'scenario_file_sha256')})
+        coverage.update({key: scope[key] for key in ('project', 'checkout', 'scenario_file_sha256')})
     (out / 'coverage.json').write_text(json.dumps(coverage, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     if pending_ids is None and scope is None:
         warnings.append('未提供 pending/scope，仅转换报告内结果，不能证明批次覆盖完整')

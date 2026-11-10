@@ -7,102 +7,13 @@
   },
   "context": [
     "README.md",
+    "docs/design.md",
     "docs/verification.md"
   ],
   "shared": {},
-  "documents": [],
-  "checks": {},
-  "required_checks": {
-    "code": [],
-    "docs": []
-  },
-  "risk_checks": {
-    "persistence": [],
-    "public-contract": [],
-    "concurrency": [],
-    "authorization": [],
-    "cross-service": []
-  },
-  "inputs": [],
-  "external_inputs": {},
-  "environment_versions": {
-    "python": [
-      "python3",
-      "--version"
-    ],
-    "uv": [
-      "uv",
-      "--version"
-    ]
-  },
-  "acceptance_entries": {
-    "cli": {
-      "surface": "cli",
-      "operate": "在临时工作区运行 sop-board、sop-board check、sop-board guide",
-      "observe": [
-        "标准输出",
-        "错误输出",
-        "退出码",
-        "监听地址与端口",
-        "数据目录中的文件"
-      ],
-      "evidence": [
-        "命令原文",
-        "完整输出",
-        "连接测试输出",
-        "数据目录清单"
-      ],
-      "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
-    },
-    "api": {
-      "surface": "http",
-      "address_env": "SOP_BOARD_URL",
-      "operate": "用 curl 按接口发送请求，分别从本机地址与内网地址发出",
-      "observe": [
-        "状态码",
-        "响应正文",
-        "SQLite 中的相关行",
-        "证据目录中的文件"
-      ],
-      "evidence": [
-        "请求与响应原文（令牌脱敏）",
-        "SQLite 查询与输出"
-      ],
-      "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
-    },
-    "web": {
-      "surface": "web",
-      "address_env": "SOP_BOARD_URL",
-      "operate": "浏览器打开看板页面，按场景点击与填写；跨机访问用内网另一台机器的浏览器",
-      "observe": [
-        "页面显示的数值、列表与提示",
-        "浏览器发出的请求",
-        "SQLite 中的相关行"
-      ],
-      "evidence": [
-        "截图",
-        "页面文本",
-        "请求记录",
-        "SQLite 查询与输出"
-      ],
-      "isolation": "每轮使用新的临时数据目录与空闲端口，留证后停止服务并删除数据目录"
-    },
-    "agent": {
-      "surface": "agent",
-      "operate": "在临时工作区新开 Codex 或 Claude Code 会话，用自然语言请它按 sop-board 的安装说明安装并搭建，按需回答提问",
-      "observe": [
-        "会话记录",
-        "~/.sop-board/<工作区名>/ 下的文件",
-        "sop-board check 的输出与退出码",
-        "工作区仓库的 git status"
-      ],
-      "evidence": [
-        "会话记录导出",
-        "生成的配置与适配文件（凭证脱敏）",
-        "自检结果 JSON",
-        "git status 输出"
-      ],
-      "isolation": "每轮使用新的临时工作区与新的看板目录，留证后停止看板并删除两者"
-    }
-  }
+  "documents": [
+    {"id": "design", "title": "v10 设计方案（使用者 2026-11-10 批准）", "source": "self:docs/design.md"},
+    {"id": "standard", "title": "业务验收与质量改进标准", "source": "self:docs/standard.md"},
+    {"id": "verification", "title": "本仓真实验证手册", "source": "self:docs/verification.md"}
+  ]
 }

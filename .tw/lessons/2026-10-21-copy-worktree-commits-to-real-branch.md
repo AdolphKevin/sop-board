@@ -1,8 +1,10 @@
 ---
 title: "复制 git worktree 目录做测试会把提交写进真实分支"
-scope: ["self:**"]
-source: ["self:docs/designs/SOP-BOARD-10.md"]
-verified: {"self": {"commit": "7102bde", "date": "2026-10-21"}}
+scope: ["self:docs/verification.md", "self:src/sop_board/checkouts.py"]
+tags: ["worktree", "临时副本", "验收", "自检"]
+guards: ["self:docs/sop/setup.yaml#SET-04-P01"]
+source: ["https://github.com/AdolphKevin/sop-board/commit/b95ba6f3863422d200a7cec0784b75eba78ccda4"]
+verified: {"self": {"commit": "af809e9776e032770961d6e4c8d684c0bd355ead", "date": "2026-11-10"}}
 ---
 # 复制 git worktree 目录做测试会把提交写进真实分支
 

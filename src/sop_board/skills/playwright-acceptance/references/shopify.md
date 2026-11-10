@@ -1,6 +1,6 @@
 # Shopify 参考
 
-Shopify 项目与普通前端的流程相同，差别都在入口层。一个项目常有多个入口（后台内嵌应用、店面主题扩展、结账扩展、合作伙伴后台），各自在 工作区 `config.yaml` 的 `entries` 里声明，场景用 `verify` 引用。
+Shopify 项目与普通前端的流程相同，差别都在入口层。一个项目常有多个入口（后台内嵌应用、店面主题扩展、结账扩展、合作伙伴后台），各自在工作区 `config.yaml` 的 `entries` 里声明，场景用 `verify` 引用。
 
 ## 后台内嵌应用
 
@@ -24,17 +24,17 @@ Shopify 项目与普通前端的流程相同，差别都在入口层。一个项
 
 ## 人机验证与登录
 
-- 短时间内反复打开主题编辑器等页面会触发 "Your connection needs to be verified before you can proceed"。遇到即抛 `受阻：Shopify 要求人机验证`，由用户在浏览器完成后重跑；不要重试或绕过。
-- 真实账号（商家、合作伙伴、Google 登录）由用户在真实浏览器登录，脚本只复用会话。出现 "browser may not be secure" 立即停止。
-- 合成测试账号登录须有用户本次明确授权；真实账号登录仍由用户完成。
+- 短时间内反复打开主题编辑器等页面会触发 "Your connection needs to be verified before you can proceed"。遇到即抛 `受阻：Shopify 要求人机验证`，由人在 `browser open --headed` 的窗口中完成后重跑；不要重试或绕过。
+- 真实账号（商家、合作伙伴、Google 登录）由人用 `sop-board browser open --identity <身份> --headed` 登录一次，脚本只复用 profile 中的会话（见[Web 参考](web.md#真实账号登录)）。出现 "browser may not be secure" 立即停止并记 blocked。
+- 合成测试账号登录须有用户本次明确授权；真实账号登录仍由人完成。
 
 ## 数据与副作用
 
-- 只在开发店铺操作。开测前核对当前标签页 URL 中的店铺句柄与场景 `initial_state` 一致，不一致即受阻。
+- 只在开发店铺操作。开测前核对当前页面 URL 中的店铺句柄与场景 `initial_state` 一致，不一致即受阻。
 - 订单、客户、metafield、webhook 这类副作用在界面上看不全，需要业务仓库提供 Admin API 只读查询脚本作为观察点；凭证走环境变量，不写进脚本。
 - 客户在线与离线、会话由 AI 还是人工处理，都会改变同一按钮的文字与行为（例如 "Send" 与 "Send email"）。场景必须写明这些前置条件，脚本只按写明的分支执行，遇到另一分支即受阻。
 - 测试店铺里的"测试客户"若填了真实邮箱，发消息会真的发邮件。`forbidden_effects` 要覆盖对外发送。
 
 ## 回归限制
 
-依赖已登录后台的脚本只能在有人登录的本机运行。场景执行保留验收证据，不登记 checks 或场景 regression 字段；说明仅本机执行、实际运行范围和未验证范围。产品回归测试由用户另行授权 [regression-distill](../../regression-distill/SKILL.md) 按已有设施建设，不将依赖人工登录的脚本记为 CI 已运行。
+依赖已登录后台的脚本只能在有人登录过 profile 的本机运行。场景执行保留验收证据，说明仅本机执行、实际运行范围和未验证范围。产品回归测试由用户另行授权 [regression-distill](../../regression-distill/SKILL.md) 按已有设施建设，不将依赖人工登录的脚本记为 CI 已运行。

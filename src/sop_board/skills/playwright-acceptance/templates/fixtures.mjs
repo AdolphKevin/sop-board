@@ -1,22 +1,20 @@
-// 接管已打开的 Chrome 执行场景验收。复制到仓库外的本轮任务目录后按需调整。
-// 用户要求沉淀为产品回归测试时使用随包 regression-distill，由它选择层级并沿用产品已有设施。
+// 连接看板启动的 Chrome for Testing 执行场景验收。复制到运行目录后按需调整。
+// 回归测试由随包 regression-distill 在沉淀时编写，执行会话不写测试。
 //
-// 环境变量：
-//   PW_TAB               必填。目标标签页 URL 的子串，只操作匹配的那一个标签页。
-//   PW_CDP_ENDPOINT      可选。CDP 地址（ws://… 或 http://127.0.0.1:9222）；缺省读 Chrome 的 DevToolsActivePort。
-//   PW_CHROME_USER_DATA  可选。Chrome 用户数据目录；缺省按操作系统取默认目录。
+// 环境变量（运行目录的 run.env 已给出，执行前 `set -a; . ./run.env; set +a`）：
+//   PW_CDP_ENDPOINT      看板浏览器的调试地址；缺失时连接失败并记受阻。
+//   PW_IDENTITIES        各身份浏览器的地址（identity.mjs 读取）。
+//   PW_SCOPE、PW_SCENARIO_FILE  本轮范围快照与场景文件，见 references/run-scope.md。
+//   PW_OUT               输出目录（运行目录内），由 playwright.config.mjs 读取。
+//   PW_TAB               可选。复用 URL 含该子串的唯一标签页；缺省新开一页。
+//   PW_FRAME             可选。surface-map 已确认的唯一 iframe 选择器。
 //   PW_CASES             可选。scripts/case_tags.py 生成的 cases.json，用于给测试加上游用例 tag。
-//   PW_OUT               可选。输出目录（仓库外），由 playwright.config.mjs 读取。
-//   PW_CDP_MODE          browser（默认）或 target（Node >=22，仅目标页及其新弹窗）。
-//   PW_CONNECT_TIMEOUT_MS 可选。连接超时，默认 60000。
-//   PW_FRAME             可选。surface-map 已确认的唯一 iframe 选择器，预检等待 body 可见。
-//   PW_SCOPE、PW_SCENARIO_FILE 可选。上游执行范围快照及原始场景文件，见 references/run-scope.md。
+//   PW_CONNECT_TIMEOUT_MS 可选。连接超时，默认 30000。
 //
-// 依赖：@playwright/test >= 1.64（page.screencast）；录屏需先执行 npx playwright install ffmpeg
-//（ffmpeg 装在 PLAYWRIGHT_BROWSERS_PATH 或默认缓存目录，换机器、换该变量都要重装；global-setup.mjs 会在开跑前检查）。
+// 运行时由 sop-board browser install 安装（固定版本、自带 ffmpeg）；不要自行 npx 安装另一个版本。
 import { test as base, chromium } from '@playwright/test';
 import fs from 'node:fs';
-import {connectTarget, cdpEndpoint} from './connection.mjs';
+import {connectBroker, cdpEndpoint} from './connection.mjs';
 import {readScope, scopeAnnotation, webEvidence} from './scope.mjs';
 import {recording} from './recording.mjs';
 export {cdpEndpoint};
@@ -39,11 +37,10 @@ export function tags(scenarioId) {
 }
 
 export const test = base.extend({
-  // 一个 worker 仅建立一次 CDP 连接；每条场景按入口声明独立留证。
-  // worker 重启仍会重连；须保留配置模板的 maxFailures: 1，不能仅依赖 workers/retries。
+  // 一个 worker 只建立一次 CDP 连接；每条场景按入口声明独立留证。
   _acceptanceTarget: [async ({}, use) => {
     let target;
-    try { target = await connectTarget(chromium); }
+    try { target = await connectBroker(chromium); }
     catch (error) { throw blocked('浏览器连接准备失败：' + error.message); }
     const action = Number(process.env.PW_ACTION_TIMEOUT_MS) > 0 ? Number(process.env.PW_ACTION_TIMEOUT_MS) : 15000;
     const navigation = Number(process.env.PW_NAVIGATION_TIMEOUT_MS) > 0 ? Number(process.env.PW_NAVIGATION_TIMEOUT_MS) : 30000;
@@ -52,7 +49,7 @@ export const test = base.extend({
     try { await use(target); }
     finally {
       try { await target.browser.close(); }
-      catch { throw blocked('本轮 CDP 连接释放失败'); }
+      catch { /* 浏览器已断开时不改变本轮结论 */ }
     }
   }, {scope: 'worker', timeout: 120000}],
   _scope: [async ({}, use, testInfo) => {
@@ -67,12 +64,15 @@ export const test = base.extend({
     let enteredTest = false, primaryError = false;
     const target = _acceptanceTarget;
     const before = new Set(target.context.pages());
+    let crashed = false;
+    target.page.once('crash', () => { crashed = true; });
     try {
-      if (!target.browser.isConnected() || target.page.isClosed()) throw new Error('共享 CDP 连接已断开或目标页已关闭；不在用例中静默重连，请核对 Chrome 后重新开始本轮');
+      if (!target.browser.isConnected() || target.page.isClosed()) throw new Error('浏览器连接已断开或页面已关闭（可能是浏览器崩溃，见 sop-board browser status）；不在用例中重连');
       capture = recording(target.page, target.context, testInfo, webEvidence(readScope(), testInfo.title.split(/\s+/)[0]));
       await capture.start();
       enteredTest = true;
       await use(target.page);
+      if (crashed) testInfo.errors.push({message: BLOCKED_PREFIX + '页面渲染进程崩溃（Target crashed）'});
       if (testInfo.errors.length) await scenarioFailure(target, testInfo, before);
     } catch (error) {
       primaryError = true;
@@ -91,19 +91,19 @@ export const test = base.extend({
   },
 });
 
-// 业务失败只记本场景（D87）：留截图与页面结构快照，关闭本场景新开的页面，标为预期失败，
+// 业务失败只记本场景：留截图与页面结构快照，关闭本场景新开的页面，标为预期失败，
 // worker 不重启、连接保留，后续场景照常执行。受阻、连接断开、目标页关闭仍按意外失败停止本轮。
 function stopsRun(target, testInfo) {
   if (!target.browser.isConnected() || target.page.isClosed()) return true;
   return testInfo.errors.some(error => (error.message || '').includes(BLOCKED_PREFIX) ||
-    /Target page, context or browser has been closed|Browser has been closed|has been disconnected/.test(error.message || ''));
+    /Target page, context or browser has been closed|Browser has been closed|has been disconnected|Target crashed/.test(error.message || ''));
 }
 
 async function scenarioFailure(target, testInfo, before) {
   const stop = stopsRun(target, testInfo);
   if (stop && !testInfo.errors.some(error => (error.message || '').includes(BLOCKED_PREFIX))) {
-    // 连接中断或目标页关闭不是产品缺陷：注记为受阻，转换时据此输出 blocked（D87）。
-    testInfo.annotations.push({type: 'blocked', description: BLOCKED_PREFIX + '调试连接中断或目标页已关闭，本轮停止，剩余场景未执行'});
+    // 连接中断或目标页关闭不是产品缺陷：注记为受阻，转换时据此输出 blocked。
+    testInfo.annotations.push({type: 'blocked', description: BLOCKED_PREFIX + '浏览器连接中断、页面关闭或渲染进程崩溃，本轮停止，剩余场景未执行'});
   }
   if (!target.page.isClosed()) {
     try { await testInfo.attach('失败时截图', {body: await target.page.screenshot(), contentType: 'image/png'}); } catch { /* 页面不可用时只保留错误 */ }

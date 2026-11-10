@@ -1,11 +1,36 @@
-# 看板调度回归沉淀
+# 沉淀 #$work：把独立通过的场景写成守护测试
 
-本任务由开发者在本机发起。任务目录：$task_directory。按随包技能 `$distill_skill` 执行。
+工作目录：$directory（检出 $checkout）
 
-1. 完整读取 `input.json`、`snapshot.json`、`scenarios.yaml`、`pass-evidence.json`、`repos.json`。范围仅为 input.json 的 scenes；场景原文含其他场景以保留上下文。通过记录的证据原件在 evidence/，文件名为记录的 sha256。逐条核对确认依据、当前场景与通过记录；报告的 confirmed_by、pass_evidence、independent_acceptance 使用快照顶层的对应字段。queued_snapshot 仅保存提交和验证前的入队历史。
-2. 读取项目验证技能 `$skill_path`，然后按技能指向读取 repos.json 中对应产品版本的真实验证手册及本任务账号授权记录。账号使用范围以授权记录为准；授权缺失时保留受阻事实。凭据只从已传入的环境变量读取，材料只记录变量名。
-3. 只在 repos.json 中登记的工作树修改测试、夹具、测试启动脚本、最小 CI 配置及项目知识的测试引用，产品代码和场景原文保持不变。沿用已有框架，按 regression-distill 选择测试层、实际运行并保存执行清单和原始输出。若使用看板环境，已由看板切换到工作树；保持该环境运行，由看板负责恢复。
-4. 在任务目录写 `regression.json`，格式按技能的 references/report.md，逐项列全所选场景。测试 root 必须等于 repos.json 的实际路径，commit 为 null，scenario_file 使用 input.json.scenario_file。独立验收、未覆盖范围、检出能力和 CI 均按事实报告。运行日志等材料放任务目录 evidence/。
-5. 改动留在工作树供开发者审核。不得提交、合入、推送或更改基线工作目录。此入口由看板在会话退出后重新核对输入并自动登记，不运行 distill submit、不直接写看板数据库、不提交场景轮次。最终消息简述改动、实际运行结果及报告位置。
+按 regression-distill 技能执行：$skill。材料：
 
-测试与已确认预期不符时保留失败测试和证据，停止扩写该场景，报告现象、预期依据与疑似原因；不修改断言迁就实现。
+- scenarios.yaml：要沉淀的场景原文。测试断言只取自这里的 expected 与 forbidden_effects。
+- acceptance.json：每个场景独立真实入口通过的结果编号与运行目录。Web 场景的通过 spec 就在其运行目录的 scenarios/ 下。
+- repos.json：本检出各仓库的目录。测试写在这些仓库里，留作未提交改动，由开发者审核提交。
+- 守护索引：$index（只读，submit 负责合并）。
+
+## 要求
+
+1. 每条 expected 与 forbidden_effects 都要有测试覆盖，选能观察到该结果的最低成本层（unit / api / component / browser）。只覆盖部分预期的场景不要写进 guard.json。
+2. 只改测试、夹具与测试启动脚本，不改产品代码与场景文件。测试辅助文件放在不计入产品快照的目录（当前声明：$exclude）。如果放不进去，说明原因，交使用者决定是否把测试目录加入 snapshot_exclude。
+3. 本机实际运行，确认声明的测试名出现在执行清单中且通过。再做一次检出能力核对：在独立临时副本里受控改错，或复现已知缺陷，确认失败的是对应业务断言。把改错的差异、命令与失败输出存进一个文件，作为 detection 证据。
+4. 在工作目录写 guard.json：
+
+```json
+{
+  "commands": {"unit": {"repo": "app", "cwd": ".", "argv": ["uv", "run", "pytest", "-q", "--junitxml={junit}"], "timeout": 900}},
+  "guards": {
+    "<文件>#<场景编号>": {
+      "acceptance": {"result": <acceptance.json 中的结果编号>},
+      "tests": [{"id": "t1", "repo": "app", "path": "tests/test_x.py", "name": "tests/test_x.py::test_y", "layer": "unit", "command": "unit"}],
+      "coverage": {"expected": [{"index": 0, "text": "<原文>", "tests": ["t1"]}], "forbidden_effects": [{"index": 0, "text": "<原文>", "tests": ["t1"]}]},
+      "detection": {"method": "mutation", "assertion": "<改错后失败的断言>", "evidence": "detection-<场景>.txt"}
+    }
+  }
+}
+```
+
+- 命令只用 argv，不经 shell；`{junit}` 由运行器替换为 junit 输出路径，`{playwright}` 替换为看板运行时的 Playwright CLI。命令必须输出 junit。
+- 浏览器层测试的命令写 `"browser": "<身份>"`，由看板提供 PW_CDP_ENDPOINT；测试不自己启动浏览器。改写已有 spec 的断言时，在该守护的 ledger 里逐条写 `{"assertion_id", "kind": "rewrite", "reason"}`。
+
+5. 运行 `sop-board distill submit`。它会核对 acceptance、覆盖与检出能力证据，实际运行一次命令，全部合格后才写进守护索引。被拒时按输出修正后再提交。不要提交 git。

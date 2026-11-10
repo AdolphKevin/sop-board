@@ -1,9 +1,9 @@
 // 通用只读示例：将映射与步骤替换为项目 surface-map.md 中已核对的内容。
 // 此文件中的视图名和选择器只是示例，不是业务预期或跨项目默认值。
-// 验收脚本保存在仓库外；产品回归测试的建设使用 regression-distill 技能。
+// 本文件放在运行目录的 scenarios/，用例标题以场景 key（<文件>#<编号>）开头；回归沉淀由 regression-distill 负责。
 import { test, expect, step, shot, blocked, tags } from './fixtures.mjs';
 
-const SCENARIO = 'SOP-EXAMPLE-P01';
+const SCENARIO = 'example#EX-P01';
 const targetMap = {
   // 若目标在主文档中，frame 填 null；若在弹窗 frame 中，填写其已核对的唯一选择器。
   frame: null,

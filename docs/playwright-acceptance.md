@@ -1,70 +1,65 @@
-# 内置 Web 验收
+# Web 场景验收
 
-技能、模板、转换器及既有资源统一维护于 `src/sop_board/skills/playwright-acceptance/`，随包发行。业务验收遵循[统一标准](standard.md)，项目操作、账号、观察与清理按产品仓库真实验证手册执行。
+Web 场景由执行会话在运行目录里用随包技能执行。技能、模板与转换器维护在 `src/sop_board/skills/playwright-acceptance/`，随 sop-board 包发行，执行者读取的操作说明见[技能正文](../src/sop_board/skills/playwright-acceptance/SKILL.md)。业务验收标准见[统一标准](standard.md)，项目操作、账号与清理见产品仓库的真实验证手册。
 
-## 安装与入口
+## 安装运行时
 
 ```sh
 uv tool install /path/to/sop-board
-sop-board guide
-sop-board skills install
-sop-board playwright guide
+sop-board skills install        # 把 sop-board、regression-distill、playwright-acceptance 链接到两个客户端
+sop-board browser install       # 安装固定版本的 Playwright 与 Chrome for Testing
+sop-board playwright guide      # 只看 Web 操作
 ```
 
-`guide` 保留 main 的工作区搭建指引并列出 Web 入口，不启动服务。`playwright guide` 只显示 Web 操作。默认使用包内技能；显式 SOP_BOARD_SKILLS_DIR 下存在 playwright-acceptance/SKILL.md 时可覆盖。自检使用同一解析规则，其余驱动遵守工作区配置。
+运行时装在 `~/.sop-board/runtime`（可用 `SOP_BOARD_HOME` 改位置），自带 ffmpeg，不使用 `~/Library/Caches/ms-playwright` 之类的共享缓存。执行者不运行 `playwright install`。
 
-## 看板执行与修复复测
+## 一次 Web 运行
 
-看板执行任务提供 scenarios.yaml、总 pending.json、Web 专用 web-pending.json、scope.json、entries.json 及快照。看板已准备适配环境，执行者按入口操作，不自行启停服务。Web 连接在同一执行进程共用浏览器调试连接（CDP），每条实际执行场景按入口 `evidence` 声明留证；`web_evidence.video`、`web_evidence.trace` 各自缺省开启，显式 false 时不启动对应录制、不要求对应附件。任务 scope 按场景保存开关，模板读取 `PW_SCOPE`；关闭本轮全部录屏时不检查 ffmpeg。配置例子见[参考手册](reference.md#配置与环境)。交互式 Chrome 模板使用 workers: 1、retries: 0、maxFailures: 1：业务断言失败标为预期失败，只记该场景失败并留截图与页面结构快照，worker 不重启、本轮继续；受阻、连接断开等意外失败在首个出现时停止本轮，避免进程重启引发连续调试授权。缺省时间上限为单场景 4 分钟、定位或操作 15 秒、导航 30 秒（`PW_SCENARIO_TIMEOUT_MS`、`PW_ACTION_TIMEOUT_MS`、`PW_NAVIGATION_TIMEOUT_MS` 可覆盖）。模板每结束一个场景就写 `report.partial.json`，执行中途退出时据此加 --allow-partial 转换；剩余未执行范围单列。有交互地图时，任务目录另有 atlas.json、bindings.json，模板的 atlas.mjs 按地图打开页面、取控件，地图缺口写进 atlas-feedback.jsonl。
+1. 看板守护进程（`sop-board serve`）持有浏览器：为每个 检出×身份 启动一个 Google Chrome for Testing，默认无头（`--headless=new`），一份持久 profile 保存登录态。用户日常 Chrome 不受影响。
+2. `sop-board run prepare` 租用所需身份的浏览器，写出运行目录：`prompt.md`、`brief.md`、`scenarios.yaml`、`pending.json`、`entries.json`、`scope.json`、`identities.json`、`run.env`、`evidence/`，以及指向看板运行时的 `node_modules`。`run.env` 含 `PW_CDP_ENDPOINT`、`PW_IDENTITIES`、`PW_SCOPE`、`PW_SCENARIO_FILE`、`PW_OUT` 等。
+3. 执行会话把技能的模板复制到运行目录，经 `PW_CDP_ENDPOINT` 连接浏览器，用 `workers: 1`、`retries: 0`、`maxFailures: 1` 执行。用例标题以场景 key 开头（`shop#W 标题`）。
+4. 报告转换并登记：
+
+   ```sh
+   sop-board playwright convert --report playwright/report.json --out . --executor <会话> \
+     --scope scope.json --scenario-file scenarios.yaml [--allow-partial]
+   sop-board run submit --run <N>
+   ```
+
+   证据复制到 `evidence/<场景 key，# 换成 __>/`。`--allow-partial` 用于中途退出，未执行的场景写成 `not-executed` 并留在待执行范围。结果只经 `run submit` 登记一次。
+
+录屏与 trace 的开关按场景固定在 `scope.json`，取自入口的 `web_evidence`；关闭的项不启动、不要求附件，本轮全部关闭录屏时不检查 ffmpeg。缺省时间上限为单场景 4 分钟、定位或操作 15 秒、导航 30 秒。
+
+## 真实账号登录
+
+真实账号、人机验证与二次验证由人完成：
 
 ```sh
-sop-board playwright convert --report <报告.json> --out <任务目录> \
-  --scope <任务目录>/scope.json --scenario-file <任务目录>/scenarios.yaml \
-  --pending <任务目录>/web-pending.json --executor <执行会话>
+sop-board browser open --identity <身份> --headed   # 有界面的 CfT 窗口，人登录
+sop-board browser close
 ```
 
-混合入口合并各驱动结果到同一 results.jsonl，覆盖总 pending。仅 source-changed 场景可按主流程规则沿用；Web 报告只包含实际执行项时，使用实际执行编号的 pending、显式 --allow-partial，并将沿用结果与报告结果合并后交回。不得漏掉未沿用场景。自动任务由看板登记，不调用手工 submit。
+之后的无头运行沿用同一 profile。人持有窗口期间，`run prepare` 对该身份返回 `browser-busy`。看到 "browser may not be secure" 时停止，执行者把场景记为 blocked。每次真实登录或请求验证码前，执行者先运行 `sop-board identity record --identity <身份> --kind login|code --run <N>`；超限被拒绝并登记到待人处理。合成账号的登录须先取得用户授权。
 
-修复复测通过 playwright-scopes.json 按批次获取独立场景原文和 scope，分别转换后补 batch，证据路径统一相对任务目录 evidence/。修复复测不沿用原通过结果。
+## 崩溃
 
-## 开发会话执行与独立复验
+- 浏览器进程在运行中退出：`run submit` 把该身份相关且未通过的 Web 场景记为 blocked，finding 写明信号与 `chrome.log` 路径，并登记待人处理；已写出的 pass 保留。
+- 渲染进程崩溃（`Target crashed`）：夹具按 blocked 处理并停止本轮。
+- 租约持有期间不自动重启。30 分钟内异常退出两次，该身份进入 `browser-crashed`，须检查后运行 `sop-board browser open --identity <身份> --reset-crash`。
+- `sop-board browser status` 查看各身份浏览器状态。
 
-先读取 `sop-board status <工作区> --json` 的 setup_check.ok，核对最近已完成自检是否仍适用。latest_attempt.completed=false 的尝试不替换原有效结论。Codex 沙箱内不运行 check；缺少合格结果时请使用者在沙箱外完成。普通执行使用 `sop-board execute prepare <工作区> <批次> --session <执行者标识>`，默认交未参与实现的新会话；修复复验使用 `sop-board execute prepare <工作区> --fix <修复编号> --session <复验标识>`，范围由原修复记录确定。
+## 浏览器层 spec 保真
 
-会话入口从任务目录 repos.json 读取仓库路径，按项目验证技能与手册自行准备入口与隔离数据；结束前停止自己本轮启动的服务，在结果 note 中列名称、PID 或进程组及停止结果，清理失败如实列仍运行的进程，不停止使用者已有服务或浏览器；地址及声明凭据来自会话自身环境，账号授权沿用本任务记录。以 prepare 返回的提示词、origin.json 和 Web 材料为准，不能套用“看板已启动环境”的前置。写入权限包含数据目录；执行时产品代码仍只读。
-
-转换命令与上节相同。已有 prepare 任务时只向任务目录写完整结果与证据，随后 `sop-board execute submit <工作区> --task <执行任务编号> --implementer <实际实现者>`；复验的实现者已绑定原修复会话，不另填或替换。不要再用 playwright submit 登记第二个轮次。普通执行中同一实现者和执行者登记为自检，未声明实现者为未声明；独立性字段不能代替实际独立执行证据。
-
-## 手工登记
+产品仓库里的浏览器层守护 spec 由 regression-distill 沉淀，索引是场景目录下的 `regression.yaml`（`sop-board distill submit` 写入）。改写或撤销其断言时，先运行：
 
 ```sh
-sop-board playwright scope --workspace <工作区键> --scenario-file <原文.yaml> --entries /work/entries.json --out /work/scope.json
-sop-board playwright convert --report /work/report.json --out /work/round \
-  --scope /work/scope.json --scenario-file <原文.yaml> --executor <执行者>
-sop-board playwright submit --results /work/round/results.jsonl --scope /work/scope.json \
-  --scenario-file <原文.yaml> --product /work/product.json \
-  --idempotency-key <本轮唯一编号> --submitted-by <执行者> --url http://127.0.0.1:8787 \
-  --implementer <实际实现者>
+sop-board specs check --repo <仓库别名> <路径> [--ledger ledger.json]
 ```
 
-手工 scope 的 `--entries` 接受入口 JSON 对象或任务 entries.json；省略时沿用录屏、trace 均开启的默认行为。旧任务已复制的模板不会自动更新，重新准备任务后复制本版本模板。
-
-工作区键使用页面与 API 中的实际名称，不把仓库身份转换为旧项目键。scope 的既有 project 字段保存该工作区键，--project 仅为兼容参数别名。看板须先有同一场景原文；submit 使用 `/api/v1/workspaces/<键>/batches/<批次>/rounds`，无需令牌，不跟随重定向，上传证据前核对原文版本。地址也可通过 SOP_BOARD_URL 提供。product.json 包含 commit、digest（兼容 product_digest/product_fingerprint）、dirty；多仓版本取当前工作区快照，不把 HEAD 当成运行态证明。
-
-完整执行默认拒绝漏测；部分试跑显式 --allow-partial，并检查 coverage.json。保留旧数据目录：main 的 v9 版本不读取或迁移旧看板数据，不把手工登记当成迁移工具。
-
-手工 submit 保留旧参数，--implementer 可省略，省略时独立性为未声明；登记入口为会话。pass/fail 必须有真实证据，blocked/skip 可用空 evidence 数组但须说明 finding。部分试跑成功只说明所交范围已登记，不代表整批完成。配对文件转为用例标签使用 `sop-board playwright tags --pairs <pairs.json> --out <cases.json>`。
+它以 git HEAD 为基线比较断言。改写须在账本写 `{assertion_id, kind: "rewrite", reason}`，撤销须写 `{kind: "withdraw", reason, ref}`，`ref` 指向业务预期变更的确认来源；缺账本的变化为 violation 并以非零退出。细则见[spec 保真](../src/sop_board/skills/playwright-acceptance/references/spec-fidelity.md)。
 
 ## 验证与维护
 
-用户要求把已确认且经真实入口通过的场景保留为产品回归测试时，另用随包 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md) 按成本选择测试层、核对实际运行并登记关联。浏览器验收脚本与界面地图保留在仓库外的任务目录；本技能不把它们直接复制为产品回归套件，只有产品已有端到端设施且业务需要时才由 regression-distill 编写浏览器测试。
-
-遵循 main 的场景验收方式，通过实际命令、工作区 HTTP 入口与页面核对，不恢复上游删除的根 tests/。现有技能资源随包保留；发行包应包含技能、模板和转换器。提交后核对工作区、批次、编号、轮次、证据及进度，不以 Playwright 的绿色数量代替整批业务结果。
-
-## 跨项目操作映射
-
-通用技能只规定先识别状态、必要时导航、按完成信号等待和异常停止。页面名称、菜单、路由、iframe 特征、对象标识、写入口及成功信号写入项目 surface-map.md；模板不预设某个业务页面。
-
-目标视图已满足前置条件时直接复用，不再次点击外层入口。定位失效先只读核对当前文档、弹窗及 frame；正确业务操作后的结果不符仍为失败，定位和连接问题单独记为执行受阻。保存或提交前注册响应/事件等待，核对业务成功的可见结果后才刷新或导航；状态不明时不重复提交。
-
-仅更新技能说明及模板不会改写现有任务目录中的执行脚本。继续旧任务前须核对其项目映射、完成等待和停止配置；不因模板已修正就宣称旧轮次结果有效。
+- `sop-board playwright` 的子命令是 `guide`、`convert`、`tags`；`tags` 把上游配对文件转成用例 tag，不表示通过。
+- 验收以 `docs/sop/` 场景经真实入口执行为准，不新增单元、接口或集成测试。用户另行授权的回归沉淀用 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md)。
+- 仅更新技能说明与模板不会改写已准备好的运行目录里的脚本；继续旧运行目录前核对其脚本与完成等待配置。
