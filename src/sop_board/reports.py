@@ -17,7 +17,7 @@ def _ratio(item):
     return f"{item['numerator']}/{item['denominator']}（{item['value']:.0%}）"
 
 
-def build(context, *, file=None):
+def build(context, *, file=None, local=True):
     """返回 (markdown, 证据列表[(zip 内路径, sha256)])。"""
     from .cli import scene_board
     import os
@@ -70,8 +70,9 @@ def build(context, *, file=None):
                 continue
             label = '按影响判定保留通过' if result['reused_from'] else \
                 {'pass': '通过', 'fail': '失败', 'blocked': '受阻', 'skip': '跳过'}[result['status']]
+            executor = result['executor'] if local else 'Agent 会话'
             lines.append(f"- 运行 #{result['work']} {local_time(result['executed_at'])}：{label}，"
-                         f"执行者 {result['executor']}，{status.INDEPENDENCE.get(result['independence'], '独立性未声明')}"
+                         f"执行者 {executor}，{status.INDEPENDENCE.get(result['independence'], '独立性未声明')}"
                          + (f"；{_cell(result['finding'])}" if result['finding'] else '')
                          + (f"；理由：{_cell(result['note'])}" if result['reused_from'] and result['note'] else ''))
             for item in files_of.get(result['id'], []):

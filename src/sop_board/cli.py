@@ -273,6 +273,69 @@ def cmd_run(args):
         emit(runs.submit(context, args.run, implementer=args.implementer))
     elif args.action == 'abandon':
         emit(runs.abandon(context, args.run))
+    elif args.action == 'launch':
+        from . import daemon
+        scope = args.scope or ['pending']
+        if scope == ['pending']:
+            from .runs import scope_for
+            found, snapshot, derived = scene_board(context)
+            scope = [item['scenario'] for item in scope_for(context, found['scenarios'], derived, ['pending'])]
+            if not scope:
+                return fail('nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')])
+        emit(daemon.call(context.project, 'POST', '/local/launch', dict(
+            checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
+            requested_by=config.operator() or '本机')))
+    elif args.action == 'wait':
+        return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
+    return 0
+
+
+def wait(context, *, launch=None, run=None, timeout=1800):
+    """等待启动结束或运行提交；0 表示已结束（看输出中的状态），3 表示超时。"""
+    import time
+    from . import launcher
+    deadline = time.monotonic() + timeout if timeout else None
+    while True:
+        with context.store.connection() as db:
+            if launch is None and run is None:
+                row = db.execute('SELECT id FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 1', (context.checkout.id,)).fetchone()
+                if row is None:
+                    return fail('launch-not-found', [dict(field='launch', problem='这个检出还没有启动记录')])
+                launch = row['id']
+            if launch is not None:
+                row = db.execute('SELECT * FROM launches WHERE id=?', (launch,)).fetchone()
+                if row is None:
+                    return fail('launch-not-found', [dict(field='launch', problem=f'启动不存在：#{launch}')], 2)
+                runs_ = [dict(r) for r in db.execute('SELECT id, kind, status, session, result FROM work WHERE launch=?', (launch,))]
+                done = row['status'] != 'running'
+                value = dict(launch=launcher.public(row, runs_, local=True),
+                             results=[dict(run=r['id'], status=r['status'], result=json.loads(r['result']) if r['result'] else None) for r in runs_])
+            else:
+                row = db.execute('SELECT * FROM work WHERE id=?', (run,)).fetchone()
+                if row is None:
+                    return fail('run-not-found', [dict(field='run', problem=f'运行不存在：#{run}')], 2)
+                done = row['status'] != 'prepared'
+                value = dict(run=row['id'], status=row['status'], result=json.loads(row['result']) if row['result'] else None)
+        if done:
+            emit(dict(ok=True, **value))
+            return 0
+        if deadline and time.monotonic() > deadline:
+            emit(dict(ok=True, timeout=True, **value))
+            return 3
+        time.sleep(2)
+
+
+def cmd_launch(args):
+    from . import daemon, launcher
+    context = load(args)
+    if args.action == 'stop':
+        emit(daemon.call(context.project, 'POST', '/local/launch/stop', dict(launch=args.launch)))
+        return 0
+    with context.store.connection() as db:
+        rows = db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 20', (context.checkout.id,)).fetchall()
+        items = [launcher.public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM work WHERE launch=?', (row['id'],))],
+                                 local=True) for row in rows]
+    emit(dict(ok=True, checkout=context.checkout.name, launches=items))
     return 0
 
 
@@ -362,13 +425,20 @@ def parser():
     p.set_defaults(handler=cmd_check)
 
     p = common(sub.add_parser('run'))
-    p.add_argument('action', choices=('prepare', 'submit', 'abandon'))
+    p.add_argument('action', choices=('prepare', 'submit', 'abandon', 'launch', 'wait'))
     p.add_argument('--scope', nargs='+', help='prepare：pending（缺省）、all，或场景（<文件>#<编号>，编号唯一时可省文件）')
     p.add_argument('--session', help='prepare：执行者会话编号（缺省取 SOP_BOARD_SESSION 或 CODEX_THREAD_ID）')
     p.add_argument('--fix', type=int, help='prepare：修复的独立复验，范围为该修复的问题场景')
-    p.add_argument('--run', type=int, help='submit / abandon：运行编号')
-    p.add_argument('--implementer', help='submit：实现者会话编号；不填记为独立性未声明')
+    p.add_argument('--run', type=int, help='submit / abandon / wait：运行编号')
+    p.add_argument('--implementer', help='submit / launch：实现者会话编号；不填记为独立性未声明')
+    p.add_argument('--launch', type=int, help='wait：启动编号（缺省为本检出最近一次启动）')
+    p.add_argument('--timeout', type=int, default=1800, help='wait：最长等待秒数，0 不限时（缺省 1800）')
     p.set_defaults(handler=cmd_run)
+
+    p = common(sub.add_parser('launch'))
+    p.add_argument('action', choices=('status', 'stop'))
+    p.add_argument('--launch', type=int)
+    p.set_defaults(handler=cmd_launch)
 
     p = common(sub.add_parser('mark'))
     p.add_argument('scenario', help='<文件>#<编号>，编号唯一时可省文件')

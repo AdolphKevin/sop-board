@@ -236,8 +236,13 @@ def configured_repos(data):
 
 
 def locate(cwd=None, data_root=None):
-    """按当前目录所在仓库（含其 worktree）找到唯一项目的数据目录。"""
-    found = gitops.toplevel(cwd or Path.cwd())
+    """按当前目录找到唯一项目的数据目录：位于某个项目的数据目录内（如运行目录）时用该项目，
+    否则按所在仓库（含其 worktree）查找。"""
+    here = Path(cwd or Path.cwd()).resolve()
+    for data in registered_projects(data_root):
+        if here == data.resolve() or here.is_relative_to(data.resolve()):
+            return data
+    found = gitops.toplevel(here)
     if not found:
         raise ProjectNotFound('当前目录不在 Git 仓库中；用 --project <名称> 或 --data <目录> 指定项目')
     top, common = found

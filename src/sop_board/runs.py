@@ -146,6 +146,7 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
 
 def prepare(context, requested, *, session=None, fix_id=None, launch=None):
     project, checkout, store = context.project, context.checkout, context.store
+    launch = launch or (int(os.environ['SOP_BOARD_LAUNCH']) if os.environ.get('SOP_BOARD_LAUNCH', '').isdigit() else None)
     executor = session_id(session)
     operator = config.require_operator()
     from .cli import scene_board
@@ -412,7 +413,7 @@ def submit(context, run_id, *, implementer=None):
     after = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)['files']
     product_changed = gitops.changed_between(before, after)
     executor = work['session']
-    implementer = work['implementer'] or implementer
+    implementer = work['implementer'] or implementer or os.environ.get('SOP_BOARD_IMPLEMENTER') or None
     independence = status.independence(executor, implementer)
     with store.transaction() as db:
         for key, row in rows.items():

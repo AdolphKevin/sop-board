@@ -1,978 +1,266 @@
-"use strict";
+// Flow Board 工作台：左栏 文件→节点→场景 树与状态筛选，右栏场景详情、证据、复测标注与历史。
 (() => {
-  let applyCurrentFilter = () => {};
-  let pendingRefresh = false;
-  let refreshing = false;
-  let polling = false;
-  let executionPolling = false;
-  let writes = 0;
-  const executionMessages = new Map();
-  const reviewMessages = new Map();
-  const clarificationMessages = new Map();
-  const sopBases = new Map();
-  const updateMergeElapsed = () => {
-    document.querySelectorAll("[data-merge-started]").forEach(node => {
-      const started = Date.parse(node.dataset.mergeStarted);
-      if (!Number.isFinite(started)) return;
-      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
-      const minutes = Math.floor(elapsed / 60), seconds = elapsed % 60;
-      node.textContent = minutes ? `${minutes} 分钟${seconds ? ` ${seconds} 秒` : ""}` : `${seconds} 秒`;
-    });
-  };
-  const renderWaiting = (container, review) => {
-    container.replaceChildren(...review.waiting.map(reason => {
-      const message = document.createElement("p");
-      message.className = "notice";
-      message.textContent = reason;
-      return message;
-    }));
-  };
-  const updateReview = review => {
-    document.querySelectorAll("[data-review-complete]").forEach(controls => {
-      const button = controls.querySelector("[data-review-complete-button]");
-      button.disabled = !review.manual_count;
-      button.textContent = `复核完成，开始修复（${review.manual_count} 条人工不通过）`;
-      controls.querySelector("[data-review-complete-empty]").textContent =
-        review.manual_count ? "" : "没有待修复的人工不通过";
-      renderWaiting(controls.querySelector("[data-fix-waiting]"), review);
-    });
-  };
-  const defectLink = (value, isJira) => {
-    const container = document.createElement("span");
-    container.className = "defect-link";
-    let clickable = false;
-    try {clickable = ["http:", "https:"].includes(new URL(value).protocol);} catch {}
-    const content = document.createElement(clickable ? "a" : "span");
-    content.textContent = value;
-    if (clickable) {
-      content.setAttribute("href", value);
-      content.setAttribute("rel", "noopener noreferrer");
-      if (isJira) content.dataset.jiraLink = "";
+  const config = JSON.parse(document.getElementById('board-config').textContent);
+  const NAME_KEY = 'sop-board-name';
+  const FILTERS = [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['distill', '待沉淀'],
+    ['pass', '通过'], ['guarded', '守护通过'], ['not-run', '未执行'], ['draft', '草稿']];
+  const state = {board: null, filter: null, search: '', selected: null};
+
+  const el = (tag, attrs = {}, ...children) => {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === undefined || value === null || value === false) continue;
+      if (key === 'class') node.className = value;
+      else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value === true ? '' : value);
     }
-    container.appendChild(content);
-    return container;
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
   };
-  const renderExecutionMessage = controls => {
-    const saved = executionMessages.get(controls.dataset.executionUrl);
-    if (!saved) return;
-    const message = controls.querySelector("[data-execution-message]");
-    message.textContent = saved.text;
-    message.dataset.state = saved.state;
+
+  const params = () => new URLSearchParams(location.search);
+  const checkoutName = () => params().get('checkout') || '';
+  const api = async (path, options = {}) => {
+    const response = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...options});
+    const body = await response.json().catch(() => ({ok: false, problems: [{problem: `HTTP ${response.status}`}]}));
+    if (!response.ok || body.ok === false) throw new Error((body.problems || []).map(p => p.problem).join('；') || `HTTP ${response.status}`);
+    return body;
   };
-  window.addEventListener("popstate", () => applyCurrentFilter());
-  const hasDraft = () => Array.from(document.querySelectorAll(".review-form")).some(form =>
-    !form.querySelector("[data-review-fields]").hidden &&
-    ["defect_url", "note"].some(name => form.elements.namedItem(name).value.length > 0)) ||
-    Array.from(document.querySelectorAll("[data-sop-upload]")).some(form => {
-      const field = name => form.elements.namedItem(name);
-      return (!field("batch").readOnly && field("batch").value.length > 0) ||
-        field("confirmed_by").value.length > 0 || field("file").files.length > 0;
-    }) || Boolean(document.querySelector("#cases-upload input[type='file']")?.files.length) ||
-    Array.from(document.querySelectorAll("[data-draft-form] textarea")).some(field => field.value.length > 0) ||
-    Boolean(document.querySelector("#draft-confirm-dialog[open]")) ||
-    Boolean(document.querySelector("[data-distill-scenario]:checked")) ||
-    Array.from(document.querySelectorAll("[data-distill-commit]")).some(field => field.value.length > 0) ||
-    Boolean(document.getElementById('developer-note')?.value.trim()) ||
-    Array.from(document.querySelectorAll("[data-clarification-form] textarea")).some(field => field.value.length > 0);
-  const deferRefresh = () => {
-    const notice = document.getElementById("refresh-message");
-    if (notice) {
-      notice.textContent = "有新数据，提交或取消后刷新";
-      notice.hidden = false;
-    }
+  const query = (extra = {}) => {
+    const search = new URLSearchParams({checkout: checkoutName(), ...extra});
+    if (!checkoutName()) search.delete('checkout');
+    return search.toString();
   };
-  const refreshPage = async () => {
-    if (!pendingRefresh || refreshing) return;
-    if (hasDraft() || writes) {deferRefresh(); return;}
-    refreshing = true;
-    try {
-      const response = await fetch(window.location.href, {cache: "no-store"});
-      if (!response.ok) return;
-      const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
-      const next = parsed.querySelector("main");
-      if (!next || (!next.dataset.stateUrl && !next.querySelector("[data-task-state-url], [data-execution-home]"))) return;
-      if (hasDraft() || writes) {deferRefresh(); return;}
-      const disclosures = Array.from(document.querySelectorAll("details[data-disclosure][open]"), item => item.dataset.disclosure);
-      next.querySelectorAll("details[data-disclosure]").forEach(item => {item.open = disclosures.includes(item.dataset.disclosure);});
-      document.querySelector("main").replaceWith(next);
-      pendingRefresh = false;
-      initialize();
-    } catch {
-      // Keep the current page and retry on the next poll.
-    } finally {refreshing = false;}
-  };
-  const initialize = () => {
-    updateMergeElapsed();
-    applyCurrentFilter = () => {};
-    document.querySelectorAll("[data-execution-url]").forEach(renderExecutionMessage);
-    const hydrateJira = root => {
-      root.querySelectorAll("a[data-jira-link]").forEach(async link => {
-        const href = link.getAttribute("href");
-        if (link.dataset.jiraLoaded) return;
-        link.dataset.jiraLoaded = "true";
-        const summary = document.createElement("span");
-        summary.setAttribute("data-jira-summary", href);
-        summary.setAttribute("aria-live", "polite");
-        summary.dataset.state = "loading";
-        link.after(summary);
-        try {
-          const response = await fetch("/api/v1/jira/summary?url=" + encodeURIComponent(href), {headers: {Accept: "application/json"}});
-          const data = await response.json();
-          if (!response.ok || !data.ok) {
-            summary.textContent = " " + ((data.problems || []).map(p => p.problem).join("；") || "Jira 读取失败");
-            summary.dataset.state = "error";
-            return;
-          }
-          if (typeof data.summary !== "string" || typeof data.status !== "string") throw new Error();
-          summary.textContent = " " + data.summary + " · " + data.status;
-          summary.dataset.state = "success";
-        } catch {
-          summary.textContent = " Jira 读取失败";
-          summary.dataset.state = "error";
-        }
-      });
+
+  function fillCheckouts(checkouts, current) {
+    const select = document.getElementById('checkout');
+    if (!select) return;
+    select.replaceChildren(...checkouts.map(c => el('option', {value: c.name, selected: c.name === current},
+      c.name + (c.kind === 'main' ? '（登记路径）' : ''))));
+    select.onchange = () => {
+      const search = params();
+      search.set('checkout', select.value);
+      location.search = search.toString() + location.hash;
     };
-    hydrateJira(document);
-    document.querySelectorAll("[data-environment-action]").forEach(button => {
-      button.addEventListener("click", async () => {
-        const message = document.getElementById("environment-message");
-        button.disabled = true;
-        try {
-          const response = await fetch(button.dataset.environmentAction, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
-          const data = await response.json();
-          message.textContent = data.ok ? (data.checking ? "自检已开始" : "环境" + data.status) : (data.problems || []).map(p => p.problem).join("；");
-        } catch {message.textContent = "请求失败，请查看环境状态后重试。";}
-        finally {button.disabled = false;}
-      });
-    });
-    // 任务页没有身份栏，其余操作仍须绑定；需要标记人的操作沿用已保存的标记人。
-    const identity = document.getElementById("review-identity");
-    const marker = identity?.querySelector("[name='marker']") || {value: ""};
-    const identityHint = identity ? "请先在身份栏填写标记人" : "请先在批次页的身份栏填写标记人";
-    const focusIdentity = field => {
-      if (!identity) return;
-      identity.querySelector("details")?.setAttribute("open", "");
-      field?.focus();
-    };
-    const show = (element, value, state = "success") => {
-      element.textContent = value;
-      element.dataset.state = state;
-    };
-    const saveIdentity = () => {
-      if (identity) localStorage.setItem("sop-board.marker", marker.value.trim());
-    };
-    marker.value = localStorage.getItem("sop-board.marker") || "";
-    if (identity) {
-      for (const event of ["input", "change"]) {
-        marker.addEventListener(event, saveIdentity);
-      }
-      document.getElementById("save-identity").addEventListener("click", () => {
-        saveIdentity();
-        show(document.getElementById("identity-message"), "标记人已保存，可随时更换。");
-      });
-    }
-    const distillRequest = async (url, body) => {
-      const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-      const data = await response.json();
-      if (!response.ok || !data.ok) throw new Error((data.problems || []).map(p => p.field + "：" + p.problem).join("；") || "操作失败");
-      return data;
-    };
-    document.querySelectorAll("[data-distill-create]").forEach(panel => {
-      const button = panel.querySelector("[data-distill-start]");
-      const message = panel.querySelector("[data-distill-message]");
-      button.addEventListener("click", async () => {
-        const scenarios = Array.from(document.querySelectorAll("[data-distill-scenario]:checked"), input => input.dataset.distillScenario);
-        if (!scenarios.length) {show(message, "请先勾选可沉淀的场景", "error"); return;}
-        writes += 1;
-        button.disabled = true;
-        try {
-          const data = await distillRequest(panel.dataset.distillCreate, {scenarios,
-            needs_environment: panel.querySelector("[name='needs_environment']").checked});
-          window.location.assign(panel.dataset.taskUrl + data.task.id);
-        } catch (error) {show(message, error.message, "error");}
-        finally {writes -= 1; button.disabled = false;}
-      });
-    });
-    document.querySelectorAll("[data-distill-action]").forEach(button => {
-      button.addEventListener("click", async () => {
-        const panel = button.closest("[data-distill-task]");
-        const message = panel.querySelector("[data-distill-message]");
-        const action = button.dataset.distillAction;
-        if (action === "abandon" && !window.confirm("放弃本次沉淀？已有测试关联将保留为已放弃，工作树另行确认清理。")) return;
-        writes += 1;
-        button.disabled = true;
-        try {
-          const body = action === "handled" ? {commits: Object.fromEntries(Array.from(panel.querySelectorAll("[data-distill-commit]"),
-            input => [input.dataset.distillCommit, input.value.trim()]))} : {};
-          let data = await distillRequest(panel.dataset.distillTask + "/" + action, body);
-          if (action === "cleanup") {
-            const lines = Object.entries(data.cleanup.changes).flatMap(([repo, changes]) => changes.map(change => repo + ": " + change));
-            const listing = lines.length ? lines.join("\n") : "无未提交改动";
-            if (!window.confirm("即将清理本任务的工作树。尚未提交的改动：\n" + listing + "\n确认清理？")) return;
-            data = await distillRequest(panel.dataset.distillTask + "/cleanup", {confirmation: data.cleanup.confirmation});
-          }
-          panel.querySelectorAll("[data-distill-commit]").forEach(input => {input.value = "";});
-          show(message, "任务 #" + data.task.id + "：" + data.task.status);
-          pendingRefresh = true;
-        } catch (error) {show(message, error.message, "error");}
-        finally {writes -= 1; button.disabled = false; await refreshPage();}
-      });
-    });
-    document.querySelectorAll("[data-review-complete]").forEach(controls => {
-      const button = controls.querySelector("[data-review-complete-button]");
-      const message = controls.querySelector("[data-review-complete-message]");
-      const saved = reviewMessages.get(controls.dataset.reviewComplete);
-      if (saved) show(message, saved.text, saved.state);
-      button.addEventListener("click", async () => {
-        if (!marker.value.trim()) {
-          show(message, identityHint, "error");
-          focusIdentity(marker);
-          return;
-        }
-        saveIdentity();
-        writes += 1;
-        button.disabled = true;
-        try {
-          const response = await fetch(controls.dataset.reviewComplete, {method: "POST",
-            headers: {"Content-Type": "application/json"}, body: JSON.stringify({marker: marker.value.trim()})});
-          const data = await response.json();
-          if (response.ok && data.ok) {
-            updateReview(data.review);
-            show(message, "已纳入：" + data.scenarios.join("、") + "；开始时机：" + data.start);
-            pendingRefresh = true;
-          } else {
-            show(message, (data.problems || []).map(p => p.problem).join("；") || "复核完成登记失败", "error");
-            button.disabled = data.error_code === "nothing-to-fix";
-          }
-        } catch {
-          show(message, "连接失败，请核对是否已登记后重试。", "error");
-          button.disabled = false;
-        } finally {
-          reviewMessages.set(controls.dataset.reviewComplete, {text: message.textContent, state: message.dataset.state});
-          writes -= 1;
-          await refreshPage();
-        }
-      });
-    });
-    document.querySelectorAll("[data-developer-action]").forEach(button => {
-      button.addEventListener("click", async () => {
-        const controls = button.closest("[data-execution-url]");
-        const message = controls?.querySelector("[data-execution-message]") ||
-          button.closest("[data-validation-control]")?.querySelector("[data-validation-message]") || document.getElementById("developer-message");
-        if (controls) delete message.dataset.taskId;
-        saveIdentity();
-        writes += 1;
-        if (controls) controls.dataset.busy = "true";
-        button.disabled = true;
-        try {
-          const response = await fetch(button.dataset.developerAction, {
-            method: "POST", headers: {"Content-Type": "application/json"},
-            body: button.dataset.autoExecuteEnabled !== undefined ? JSON.stringify({enabled: button.dataset.autoExecuteEnabled === 'true'}) :
-              button.dataset.fixHandoff !== undefined ? JSON.stringify({result_id: Number(button.dataset.fixHandoff)}) :
-              button.dataset.executionScenarios ? JSON.stringify({scope: JSON.parse(button.dataset.executionScenarios)}) :
-              button.dataset.executionScope ? JSON.stringify({scope: button.dataset.executionScope}) :
-              button.dataset.developerNote !== undefined ? JSON.stringify({note: document.getElementById("developer-note")?.value || ""}) : "{}",
-          });
-          const data = await response.json();
-          if (!response.ok || !data.ok) {
-            const hint = response.status === 409 && data.error_code === "nothing-to-execute" ?
-              "；可改用“重新验证全部场景”。" : "";
-            show(message, (data.error_code || "操作失败") + "：" + (data.problems || []).map(p => p.problem).join("；") + hint, "error");
-          } else if (button.dataset.fixHandoff !== undefined) {
-            show(message, data.notice || "已交给看板修复");
-            button.textContent = "已交给看板修复";
-            button.dataset.choiceSaved = "true";
-            if (data.task) window.location.assign(button.dataset.fixTaskBase + String(data.task.id));
-          } else if (button.dataset.autoExecuteEnabled !== undefined && typeof data.enabled === "boolean") {
-            renderAutoExecute(button.closest('[data-auto-execute]'), data.enabled);
-            show(message, data.enabled ? "自动执行已开启；此前待执行场景不会补发" : "自动执行已关闭，场景保持待执行");
-          } else if (typeof data.paused === "boolean") {
-            const notice = document.getElementById("automation-state");
-            notice.textContent = data.paused ? "自动任务已暂停" : "";
-            notice.hidden = !data.paused;
-            button.dataset.developerAction = "/api/v1/automation/" + (data.paused ? "resume" : "pause");
-            button.textContent = data.paused ? "恢复自动任务" : "暂停自动任务";
-            [...document.querySelectorAll("[data-agent-state]"), ...document.querySelectorAll("#agent-state")].forEach(state => {
-              state.textContent = state.textContent.replace(/ · 已暂停$/, "") + (data.paused ? " · 已暂停" : "");
-            });
-            show(message, data.paused ? "自动任务已暂停" : "自动任务已恢复");
-          } else {
-            show(message, "任务 #" + data.task.id + "：" + (data.task.status === "等待合并" ? data.task.error : data.task.status));
-            if (controls) message.dataset.taskId = String(data.task.id);
-            if (button.dataset.caseFlow !== undefined) {
-              button.textContent = "已指定单独成场景";
-              button.dataset.choiceSaved = "true";
-            }
-          }
-        } catch {
-          show(message, "连接失败，请重试。", "error");
-        } finally {
-          writes -= 1;
-          if (controls) {
-            delete controls.dataset.busy;
-            executionMessages.set(controls.dataset.executionUrl, {
-              text: message.textContent, state: message.dataset.state, taskId: message.dataset.taskId,
-            });
-            button.disabled = Boolean(controls.querySelector(`[data-execution-reason="${button.dataset.executionScope}"]`).textContent);
-          } else button.disabled = button.dataset.choiceSaved === "true";
-        }
-      });
-    });
-    const filterLinks = document.querySelectorAll("[data-filter]");
-    const applyFilter = () => {
-      const requested = new URL(window.location.href).searchParams.get("filter") || "all";
-      const active = Array.from(filterLinks).some(link => link.dataset.filter === requested) ? requested : "all";
-      document.querySelectorAll(".scenario-card").forEach(card => {
-        card.hidden = active === "unreviewed" ? card.dataset.unreviewed !== "true" :
-          active === "agent-pass" ? card.dataset.agentPass !== "true" :
-          ["fail", "blocked"].includes(active) ? card.dataset.status !== active : false;
-      });
-      document.querySelectorAll(".scenario-node").forEach(node => {
-        node.hidden = !Array.from(node.querySelectorAll(".scenario-card")).some(card => !card.hidden);
-      });
-      filterLinks.forEach(link => {
-        if (link.dataset.filter === active) link.setAttribute("aria-current", "true");
-        else link.removeAttribute("aria-current");
-      });
-    };
-    if (filterLinks.length) {
-      filterLinks.forEach(link => link.addEventListener("click", event => {
-        event.preventDefault();
-        const url = new URL(window.location.href);
-        url.searchParams.set("filter", link.dataset.filter);
-        window.history.pushState(null, "", url);
-        applyFilter();
-      }));
-      applyCurrentFilter = applyFilter;
-      applyFilter();
-    }
-    const statusNames = {pass: "通过", fail: "不通过（失败）", blocked: "不通过（受阻）", skip: "跳过"};
-    const queueNames = {pending: "待执行", "source-changed": "产品变化待判定", issues: "问题", retest: "复测", reviewed: "已复核通过"};
-    const element = (tag, value) => {
-      const node = document.createElement(tag);
-      if (value !== undefined) node.textContent = value;
-      return node;
-    };
-    const uploadForm = document.getElementById("cases-upload");
-    if (uploadForm) {
-      const fileInput = uploadForm.elements.namedItem("file");
-      const message = uploadForm.querySelector("[data-cases-message]");
-      const problems = uploadForm.querySelector("[data-cases-problems]");
-      const submit = uploadForm.querySelector("button[type='submit']");
-      let pending = false;
-      uploadForm.addEventListener("submit", async event => {
-        event.preventDefault();
-        if (pending) return;
-        problems.replaceChildren();
-        if (!marker.value.trim()) {
-          show(message, identityHint, "error");
-          focusIdentity(marker);
-          return;
-        }
-        const file = fileInput.files[0];
-        if (!file) {
-          show(message, "请选择用例 YAML 文件", "error");
-          fileInput.focus();
-          return;
-        }
-        pending = true;
-        submit.disabled = true;
-        saveIdentity();
-        try {
-          let content;
-          try {
-            content = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(await file.arrayBuffer());
-          } catch {
-            show(message, "上传失败：文件读取失败，用例文件必须为 UTF-8", "error");
-            return;
-          }
-          const batch = uploadForm.elements.namedItem("batch")?.value.trim();
-          if (uploadForm.dataset.workspaceKey && !batch) {
-            show(message, "请填写批次名称", "error");
-            return;
-          }
-          const target = uploadForm.dataset.workspaceKey ? "/api/v1/workspaces/" + encodeURIComponent(uploadForm.dataset.workspaceKey) + "/batches/" + encodeURIComponent(batch) + "/cases" : uploadForm.action;
-          const response = await fetch(target, {method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({filename: file.name, content, uploaded_by: marker.value.trim()})});
-          const data = await response.json();
-          if (response.ok && data.ok) {
-            show(message, data.unchanged_upload ? "原文未变，保留已有上传。" : "用例上传成功。");
-            window.location.reload();
-          } else {
-            show(message, data.error_code || "上传失败", "error");
-            for (const problem of data.problems || []) {
-              const position = problem.line == null ? "文件" : "第 " + problem.line + " 行";
-              problems.appendChild(element("li", problem.field + " · " + position + "：" + problem.problem));
-            }
-          }
-        } catch {
-          show(message, "文件读取或网络请求失败，请核对上传记录后重试。", "error");
-        } finally {
-          pending = false;
-          submit.disabled = false;
-        }
-      });
-    }
-    document.querySelectorAll("[data-sop-upload]").forEach(form => {
-      const key = form.dataset.workspaceKey;
-      if (!sopBases.has(key)) sopBases.set(key, new Map(Object.entries(JSON.parse(form.dataset.sopHashes))));
-      const bases = sopBases.get(key);
-      const field = name => form.elements.namedItem(name);
-      const message = form.querySelector("[data-sop-message]");
-      const problems = form.querySelector("[data-sop-problems]");
-      const submit = form.querySelector("button[type='submit']");
-      let pending = false;
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        if (pending) return;
-        problems.replaceChildren();
-        if (!marker.value.trim()) {
-          show(message, identityHint, "error");
-          focusIdentity(marker);
-          return;
-        }
-        const file = field("file").files[0];
-        if (!file) {
-          show(message, "请选择 SOP Markdown 或纯文本文件", "error");
-          field("file").focus();
-          return;
-        }
-        const batch = field("batch").value.trim();
-        if (!batch || !field("confirmed_by").value.trim()) {
-          show(message, "请填写批次名称和业务确认人", "error");
-          return;
-        }
-        if (file.size > 1024 * 1024) {
-          show(message, "上传失败：SOP 原文不能超过 1 MiB", "error");
-          return;
-        }
-        pending = true;
-        writes += 1;
-        submit.disabled = true;
-        saveIdentity();
-        try {
-          let content;
-          try {
-            content = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(await file.arrayBuffer());
-          } catch {
-            show(message, "上传失败：文件读取失败，SOP 原文必须为 UTF-8", "error");
-            return;
-          }
-          const target = "/api/v1/workspaces/" + encodeURIComponent(key) + "/batches/" + encodeURIComponent(batch) + "/sop";
-          const response = await fetch(target, {method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({filename: file.name, content, uploaded_by: marker.value.trim(),
-              confirmed_by: field("confirmed_by").value.trim(), base_sha256: bases.get(batch) || ""})});
-          const data = await response.json();
-          if (response.ok && data.ok) {
-            bases.set(batch, data.sha256);
-            form.reset();
-            show(message, data.unchanged ? "原文未变，保留已有版本。" : "业务 SOP 上传成功。");
-            const link = element("a", "查看 SOP 原文与版本");
-            link.href = "/w/" + encodeURIComponent(key) + "/b/" + encodeURIComponent(batch) + "/sop";
-            message.append(" ", link);
-          } else {
-            show(message, "上传失败", "error");
-            for (const problem of data.problems || []) {
-              problems.appendChild(element("li", problem.field + "：" + problem.problem));
-            }
-          }
-        } catch {
-          show(message, "文件读取或网络请求失败，请核对上传记录后重试。", "error");
-        } finally {
-          pending = false;
-          writes -= 1;
-          submit.disabled = false;
-        }
-      });
-    });
-    const draftIdentity = message => {
-      if (marker.value.trim()) {saveIdentity(); return true;}
-      show(message, identityHint, "error");
-      focusIdentity(marker);
-      return false;
-    };
-    const submitDraft = async (url, body, message, button) => {
-      if (button.disabled) return false;
-      writes += 1;
-      button.disabled = true;
-      try {
-        const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-          show(message, (data.problems || []).map(p => p.problem).join("；") || "操作失败", "error");
-          return false;
-        }
-        show(message, data.task ? "任务 #" + data.task.id + "：" + data.task.status : "已保存");
-        pendingRefresh = true;
-        return true;
-      } catch {
-        show(message, "网络请求失败，内容已保留。请先核对是否已保存，再决定是否重试。", "error");
-        return false;
-      } finally {
-        writes -= 1;
-        button.disabled = false;
-      }
-    };
-    document.querySelectorAll("[data-plan-run]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const message = form.querySelector("[data-run-message]");
-        const button = form.querySelector("button[type='submit']");
-        if (await submitDraft(form.action, {mode: new FormData(form).get("mode")}, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-run-control]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const fields = new FormData(form);
-        const message = form.querySelector("[data-run-message]");
-        const button = event.submitter || form.querySelector("button[type='submit']");
-        const by = fields.get("by").trim();
-        if (!by) {show(message, "请填写操作人姓名", "error"); return;}
-        // 按钮名不能是 action：同名控件会遮蔽 form.action，这里统一读属性。
-        if (await submitDraft(form.getAttribute("action"), {action: button.value, mode: fields.get("mode"), by}, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-attention-resolve]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const message = form.querySelector("[data-run-message]");
-        const button = form.querySelector("button[type='submit']");
-        const by = new FormData(form).get("by").trim();
-        if (!by) {show(message, "请填写处理人姓名", "error"); return;}
-        if (await submitDraft(form.action, {by}, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-issue-fix]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const message = form.querySelector("[data-run-message]");
-        const button = form.querySelector("button[type='submit']");
-        button.disabled = true;
-        try {
-          const response = await fetch(form.action, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
-          const data = await response.json();
-          // 交接后未立即建任务（如自动任务已暂停）时保留页面，显示原因。
-          show(message, data.ok ? (data.notice || "已交给看板修复") + (data.task ? "：任务 #" + data.task.id : "") :
-            ((data.problems || []).map(p => p.problem).join("；") || "操作失败"), data.ok ? undefined : "error");
-          if (data.ok && data.task) location.reload();
-        } catch {
-          show(message, "请求失败，请稍后重试", "error");
-        } finally {
-          button.disabled = false;
-        }
-      });
-    });
-    document.querySelectorAll("[data-atlas-bind]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const message = form.querySelector("[data-atlas-message]");
-        const button = form.querySelector("button[type='submit']");
-        if (await submitDraft(form.action, {stale: new FormData(form).get("stale") === "true"}, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-atlas-decision]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const fields = new FormData(form);
-        const message = form.querySelector("[data-atlas-message]");
-        const button = form.querySelector("button[type='submit']");
-        const by = fields.get("by").trim();
-        if (!by) {show(message, "请填写决定人姓名", "error"); return;}
-        if (await submitDraft(form.action, {decision: fields.get("decision"), by, note: fields.get("note").trim()}, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-atlas-survey]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const message = form.querySelector("[data-atlas-message]");
-        const button = form.querySelector("button[type='submit']");
-        const mode = new FormData(form).get("mode");
-        if (await submitDraft(form.action, {mode}, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-fixture-mark]").forEach(form => {
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        const fields = new FormData(form);
-        const message = form.querySelector("[data-fixture-message]");
-        const button = form.querySelector("button[type='submit']");
-        const by = fields.get("by").trim();
-        const promoted = fields.get("recipe").trim();
-        if (!by) {show(message, "请填写标记人姓名", "error"); return;}
-        if (fields.get("resolution") === "promoted" && !promoted) {
-          show(message, "请填写配方名称", "error"); return;
-        }
-        const body = fields.get("resolution") === "promoted" ? {by, promoted} : {by, dismiss: true};
-        if (await submitDraft(form.action, body, message, button)) location.reload();
-      });
-    });
-    document.querySelectorAll("[data-clarification-form]").forEach(form => {
-      const message = form.querySelector("[data-clarification-message]");
-      const button = form.querySelector("button[type='submit']");
-      const messageKey = form.action + ':' + form.dataset.gap;
-      if (clarificationMessages.has(messageKey)) show(message, clarificationMessages.get(messageKey));
-      form.addEventListener("reset", () => setTimeout(() => refreshPage(), 0));
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        if (!draftIdentity(message) || button.disabled) return;
-        const operation = form.dataset.clarificationForm;
-        const body = {author: marker.value.trim()};
-        if (operation === "messages") body.messages = [{gap: form.dataset.gap || null, text: form.elements.namedItem("text").value}];
-        if (operation === "exclusions") Object.assign(body, {gap: form.dataset.gap, reason: form.elements.namedItem("reason").value});
-        writes += 1;
-        button.disabled = true;
-        try {
-          const response = await fetch(form.action, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-          const data = await response.json();
-          if (!response.ok || !data.ok) {
-            show(message, (data.problems || []).map(p => p.field + "：" + p.problem).join("；") || "保存失败", "error");
-            return;
-          }
-          form.reset();
-          show(message, data.notice || "已保存");
-          clarificationMessages.set(messageKey, data.notice || "已保存");
-          pendingRefresh = true;
-        } catch {
-          show(message, "网络请求失败，内容已保留。请先核对对话记录，再决定是否重试。", "error");
-        } finally {
-          writes -= 1;
-          button.disabled = false;
-          await refreshPage();
-        }
-      });
-    });
-    document.querySelectorAll("[data-draft-form]").forEach(form => {
-      const field = name => form.elements.namedItem(name);
-      const message = form.querySelector("[data-draft-message]");
-      const button = form.querySelector("button[type='submit']");
-      const cancel = form.querySelector("[data-draft-cancel]");
-      cancel.addEventListener("click", async () => {
-        if (button.disabled) return;
-        form.reset();
-        form.closest("details").open = false;
-        show(message, "");
-        await refreshPage();
-      });
-      form.addEventListener("submit", async event => {
-        event.preventDefault();
-        if (!draftIdentity(message)) return;
-        const rejecting = form.dataset.draftForm === "reject";
-        const input = field(rejecting ? "reason" : "text");
-        if (!input.value.trim()) {
-          show(message, rejecting ? "请填写未采纳理由" : "请填写批注内容", "error");
-          input.focus();
-          return;
-        }
-        const body = rejecting ? {reason: input.value, author: marker.value.trim()} :
-          {version: Number(field("version").value), target: field("target").value,
-            kind: field("kind").value, text: input.value, author: marker.value.trim()};
-        if (await submitDraft(form.action, body, message, button)) {
-          form.reset();
-          form.closest("details").open = false;
-        }
-        await refreshPage();
-      });
-    });
-    const draftActions = document.querySelector("[data-draft-actions]");
-    if (draftActions) {
-      const message = draftActions.querySelector("[data-draft-message]");
-      const revise = draftActions.querySelector("[data-draft-revise]");
-      revise.addEventListener("click", async () => {
-        await submitDraft(draftActions.dataset.draftActions + "/revise", {}, message, revise);
-        await refreshPage();
-      });
-      const dialog = document.getElementById("draft-confirm-dialog");
-      const confirm = dialog.querySelector("[data-draft-confirm-submit]");
-      draftActions.querySelector("[data-draft-confirm]").addEventListener("click", () => {
-        if (!draftIdentity(message)) return;
-        show(dialog.querySelector("[data-draft-message]"), "");
-        dialog.showModal();
-      });
-      dialog.querySelector("[data-draft-confirm-cancel]").addEventListener("click", () => {
-        if (!confirm.disabled) dialog.close();
-      });
-      dialog.addEventListener("cancel", event => {if (confirm.disabled) event.preventDefault();});
-      dialog.addEventListener("close", () => refreshPage());
-      confirm.addEventListener("click", async () => {
-        const message = dialog.querySelector("[data-draft-message]");
-        if (!draftIdentity(message)) return;
-        if (await submitDraft(draftActions.dataset.draftActions + "/confirm",
-          {version: Number(draftActions.dataset.version), confirmed_by: marker.value.trim()}, message, confirm)) {
-          window.location.reload();
-        }
-      });
-    }
-    const resultTime = result => {
-      const node = element("time", result.executed_at_display);
-      node.setAttribute("datetime", result.executed_at);
-      return node;
-    };
-    const manualContent = result => {
-      const container = element("div");
-      const heading = element("p", "人工 · " + statusNames[result.status] + " · 标记人：" + result.executor + " · ");
-      heading.appendChild(resultTime(result));
-      container.appendChild(heading);
-      if (result.finding) {
-        container.appendChild(defectLink(result.finding, result.jira_link));
-      }
-      if (result.note) container.appendChild(element("p", "备注：" + result.note));
-      return container;
-    };
-    const updateScenario = (card, item, filters) => {
-      card.dataset.status = item.status || "";
-      card.dataset.unreviewed = String(!item.latest_manual);
-      card.dataset.agentPass = String(!!item.latest_agent && item.latest_agent.status === "pass");
-      card.querySelector("[data-latest-manual]").replaceChildren(manualContent(item.latest_manual));
-      card.querySelector("[data-queue]").textContent = "所在队列：" + queueNames[item.queue];
-      filterLinks.forEach(link => {link.querySelector("span").textContent = String(filters[link.dataset.filter]);});
-      if (filterLinks.length) applyFilter();
-      // Only details have a result-history container; list cards keep their compact summary.
-      const group = document.querySelector("section[data-fingerprint='" + item.fingerprint + "']");
-      const history = group && group.querySelector("[data-result-history]");
-      if (history) {
-        const result = item.latest_manual;
-        const article = element("article");
-        article.className = "result";
-        article.appendChild(element("h3", "第 " + result.number + " 轮 · 人工 · " + statusNames[result.status]));
-        article.appendChild(manualContent(result));
-        article.appendChild(element("p", "实际结果：" + result.actual));
-        if (result.submitted_at_display) article.appendChild(element("p", "提交时间：" + result.submitted_at_display));
-        (result.evidence || []).forEach(evidence => {
-          const link = element("a", "下载 " + evidence.name);
-          link.setAttribute("href", "/api/v1/evidence/" + evidence.sha256);
-          link.setAttribute("download", evidence.name);
-          article.appendChild(link);
-        });
-        const empty = history.querySelector("[data-no-results]");
-        if (empty) empty.remove();
-        history.appendChild(article);
-        hydrateJira(history);
-      }
-      hydrateJira(card);
-    };
-    document.querySelectorAll(".review-form").forEach(form => {
-      const field = name => form.elements.namedItem(name);
-      const message = form.querySelector("[data-review-message]");
-      const fields = form.querySelector("[data-review-fields]");
-      const buttons = form.querySelectorAll("[data-mark-status]");
-      let selected = null;
-      let pending = false;
-      const checkIdentity = () => {
-        if (marker.value.trim()) return true;
-        show(message, identityHint, "error");
-        focusIdentity(marker);
-        return false;
-      };
-      const collapse = () => {
-        selected = null;
-        fields.hidden = true;
-        field("defect_url").value = "";
-        field("note").value = "";
-        buttons.forEach(button => button.setAttribute("aria-expanded", "false"));
-      };
-      const submitMark = async status => {
-        if (pending || !checkIdentity()) return;
-        if (["fail", "blocked"].includes(status) && !field("defect_url").value.trim()) {
-          show(message, "请填写缺陷链接", "error");
-          field("defect_url").focus();
-          return;
-        }
-        if (!["pass", "fail", "blocked"].includes(status)) return;
-        saveIdentity();
-        const payload = {scenario: field("scenario").value, fingerprint: field("fingerprint").value,
-          status, marker: marker.value.trim()};
-        if (status !== "pass") {
-          payload.defect_url = field("defect_url").value;
-          if (field("note").value) payload.note = field("note").value;
-        }
-        pending = true;
-        writes += 1;
-        const controls = form.querySelectorAll("button");
-        controls.forEach(button => {button.disabled = true;});
-        try {
-          const response = await fetch(form.action, {method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(payload)});
-          const data = await response.json();
-          if (response.ok && data.ok) {
-            updateScenario(form.closest(".scenario-card"), data.scenario, data.filters);
-            updateReview(data.review);
-            collapse();
-            show(message, "标记已保存为第 " + data.round + " 轮。");
-          } else {
-            const code = data.error_code || "";
-            const reasons = (data.problems || []).map(problem => problem.problem);
-            const explanation = [code, ...reasons].filter(Boolean).join("；");
-            show(message, explanation || "标记未保存，请核对填写内容。", "error");
-          }
-        } catch {
-          show(message, "网络请求失败，内容已保留。请先核对是否已保存，再决定是否重试。", "error");
-        } finally {
-          pending = false;
-          writes -= 1;
-          controls.forEach(button => {button.disabled = false;});
-          await refreshPage();
-        }
-      };
-      buttons.forEach(button => button.addEventListener("click", () => {
-        if (pending || !checkIdentity()) return;
-        selected = button.dataset.markStatus;
-        if (selected === "pass") return submitMark("pass");
-        if (selected !== "pass") {
-          fields.hidden = false;
-          buttons.forEach(item => item.setAttribute("aria-expanded", String(item === button)));
-          show(message, "");
-          field("defect_url").focus();
-        }
-      }));
-      form.querySelector("[data-review-cancel]").addEventListener("click", async () => {
-        collapse();
-        show(message, "");
-        await refreshPage();
-      });
-      form.addEventListener("submit", event => {
-        event.preventDefault();
-        return submitMark(selected);
-      });
-    });
-  };
-  initialize();
-  let fixPolling = false;
-  function renderAutoExecute(panel, enabled) {
-    if (!panel) return;
-    panel.querySelector('[data-auto-execute-state]').textContent = '场景写入后自动执行：' +
-      (enabled ? '已开启' : '自动执行已关闭，场景保持待执行');
-    const button = panel.querySelector('[data-auto-execute-enabled]');
-    if (button) {
-      button.dataset.autoExecuteEnabled = String(!enabled);
-      button.textContent = enabled ? '关闭自动执行' : '开启自动执行';
-    }
   }
-  setInterval(async () => {
-    const panel = document.querySelector("[data-fix-state]");
-    if (!panel || fixPolling) return;
-    fixPolling = true;
-    try {
-      const response = await fetch(panel.dataset.fixState, {cache: "no-store"});
-      const data = await response.json();
-      if (response.ok && data.ok) renderWaiting(panel.querySelector("[data-fix-waiting]"), data.review);
-    } catch { /* 下次轮询重试，保留已显示的等待原因。 */ }
-    finally {fixPolling = false;}
-  }, 3000);
-  setInterval(async () => {
-    const controls = Array.from(document.querySelectorAll("[data-execution-url]"));
-    const home = document.querySelector("[data-execution-home]");
-    if ((!controls.length && !home) || executionPolling || writes || refreshing) return;
-    executionPolling = true;
-    try {
-      const response = await fetch(home ? "/api/v1/workspaces" : controls[0].dataset.executionUrl, {cache: "no-store"});
-      if (!response.ok) return;
-      const data = await response.json();
-      if (!data.ok || writes || refreshing) return;
-      if (home) document.querySelectorAll('[data-auto-execute]').forEach((panel, index) => {
-        renderAutoExecute(panel, data.workspaces[index]?.auto_execute ?? true);
-      });
-      const batches = home ? new Map(data.workspaces.flatMap(workspace => workspace.batches.map(batch =>
-        ["/api/v1/workspaces/" + encodeURIComponent(workspace.key) + "/batches/" + encodeURIComponent(batch.name), batch]))) :
-        new Map([[controls[0].dataset.executionUrl, data]]);
-      if (home) home.querySelectorAll("[data-home-batch]").forEach(row => {
-        if (batches.get(row.dataset.homeBatch)?.etag !== row.dataset.etag) pendingRefresh = true;
-      });
-      controls.forEach(group => {
-        const batch = batches.get(group.dataset.executionUrl);
-        if (!group.isConnected || group.dataset.busy || !batch?.execution) return;
-        for (const scope of ["pending", "all"]) {
-          const button = group.querySelector(`[data-execution-scope="${scope}"]`);
-          const reason = batch.execution[scope + "_reason"];
-          button.disabled = Boolean(reason);
-          button.textContent = (scope === "pending" ? "执行待执行场景（" + batch.execution.pending_count :
-            "重新验证全部场景（" + batch.execution.total_count) + " 条）";
-          group.querySelector(`[data-execution-reason="${scope}"]`).textContent = reason;
-        }
-        const saved = executionMessages.get(group.dataset.executionUrl);
-        const task = batch.execution_tasks?.find(task => String(task.id) === saved?.taskId);
-        if (task) {
-          saved.text = "任务 #" + task.id + "：" + (task.status === "等待合并" ? task.error : task.status);
-          renderExecutionMessage(group);
-        }
-      });
-      if (home) await refreshPage();
-    } catch { /* Keep the last server-provided counts until the next successful read. */ }
-    finally {executionPolling = false;}
-  }, 3000);
-  setInterval(updateMergeElapsed, 1000);
-  if (document.querySelector("main[data-state-url]")) setInterval(async () => {
-    if (polling || refreshing) return;
-    polling = true;
-    try {
-      const main = document.querySelector("main[data-state-url]");
-      const response = await fetch(main.dataset.stateUrl, {
-        cache: "no-store", headers: {"If-None-Match": main.dataset.etag, Accept: "application/json"}});
-      if (response.status !== 304 && response.ok) {
-        const state = await response.json();
-        if (state.ok && state.etag !== main.dataset.etag) pendingRefresh = true;
+
+  // ---- 工作台 ----
+
+  async function loadBoard() {
+    state.board = await api('/api/board?' + query());
+    fillCheckouts(state.board.checkouts, state.board.checkout);
+    renderFilters();
+    renderTree();
+  }
+
+  function matches(key, item) {
+    if (state.filter === 'distill' ? !item.distill : state.filter && item.state !== state.filter) return false;
+    const text = state.search.trim().toLowerCase();
+    return !text || key.toLowerCase().includes(text) || item.title.toLowerCase().includes(text);
+  }
+
+  function renderFilters() {
+    const counts = state.board.counts;
+    const container = document.getElementById('filters');
+    container.replaceChildren(
+      el('button', {class: state.filter ? '' : 'active', onclick: () => { state.filter = null; renderFilters(); renderTree(); }},
+        `全部 ${state.board.total}`),
+      ...FILTERS.filter(([name]) => counts[name] || ['retest', 'fail', 'distill', 'pass', 'guarded', 'not-run', 'draft'].includes(name))
+        .map(([name, label]) => el('button', {class: state.filter === name ? 'active' : '', 'data-state': name,
+          onclick: () => { state.filter = state.filter === name ? null : name; renderFilters(); renderTree(); }},
+          `${label} ${counts[name] || 0}`)));
+  }
+
+  function renderTree() {
+    const tree = document.getElementById('tree');
+    const nodes = [];
+    for (const file of state.board.files) {
+      if (file.invalid) {
+        nodes.push(el('details', {class: 'file invalid', open: true}, el('summary', {}, `${file.name}（文件不合格）`),
+          el('ul', {}, (file.problems || []).map(p => el('li', {}, `${p.line ? '第 ' + p.line + ' 行 ' : ''}${p.field}：${p.problem}`)))));
+        continue;
       }
-      await refreshPage();
-    } catch {
-      // Transient network failures leave the page usable; the next poll retries.
-    } finally {polling = false;}
-  }, 3000);
-  setInterval(async () => {
-    const panel = document.getElementById("environment-panel");
-    if (!panel) return;
-    try {
-      const response = await fetch(panel.dataset.environmentUrl, {cache: "no-store"});
-      const data = await response.json();
-      document.getElementById("environment-state").textContent = "环境" + data.status;
-      const ports = document.getElementById("environment-ports");
-      if (ports) ports.textContent = "环境端口：" + (data.ports.join("、") || "未声明");
-      const probes = document.getElementById("environment-probes");
-      if (probes && data.external) probes.textContent = "外部环境（使用者维护，看板只探测）：" + (data.external.probes.map(
-        p => p.name + (p.ok ? " 通过" : " 未通过") + (p.message ? "（" + p.message + "）" : "")).join("；") || "尚未探测");
-      document.getElementById("environment-check-state").textContent = data.checking ? "自检中" : (data.check_passed ? "最近自检通过" : "尚未通过自检") + (data.checked_at ? " · " + data.checked_at : "");
-      const checkNotice = document.getElementById("environment-check-notice");
-      if (checkNotice) checkNotice.textContent = data.check_notice || "";
-      const jira = document.getElementById("environment-jira");
-      if (jira) jira.textContent = "Jira 读取：" + (data.jira_configured ? "已配置" : "未配置");
-      const setup = document.getElementById("environment-setup");
-      setup.replaceChildren(...data.setup_instructions.map(instruction => {
-        const line = document.createElement("p");
-        line.textContent = instruction;
-        return line;
-      }));
-      setup.hidden = data.setup_instructions.length === 0;
-      const steps = document.getElementById("environment-check-steps");
-      const checkAttempt = data.latest_check_attempt || data.latest_check;
-      if (steps && checkAttempt) {
-        steps.replaceChildren();
-        for (const step of checkAttempt.steps) {
-          const line = document.createElement("li");
-          line.textContent = step.name + "：" + step.status + " · " + step.message;
-          steps.appendChild(line);
-        }
-      }
-      const log = document.getElementById("environment-log");
-      if (log) log.textContent = (data.log_lines || []).join("\n");
-      document.querySelectorAll("[data-requires-ready]").forEach(button => {button.disabled = !data.enabled;});
-    } catch { /* Preserve the last visible state while reconnecting. */ }
-  }, 3000);
-  setInterval(async () => {
-    const panel = document.querySelector('[data-task-state-url]');
-    if (!panel || writes || polling) return;
-    polling = true;
-    try {
-      const response = await fetch(panel.dataset.taskStateUrl, {cache: 'no-store'});
-      const data = await response.json();
-      if (!data.ok) return;
-      const task = data.task, progress = task.progress || {};
-      const version = ['status','error','void_reason','started_at','finished_at','ownership'].map(key => task[key] ?? null);
-      version.push(progress.ahead ?? null, progress.last_activity ?? null);
-      version.push(...['mode','mode_reason','changed_count','carried_count'].map(key => task.result?.[key] ?? null));
-      if (JSON.stringify(version) !== JSON.stringify(JSON.parse(panel.dataset.taskVersion))) pendingRefresh = true;
-      await refreshPage();
-    } catch { /* Keep the last visible state until the next poll. */ }
-    finally {polling = false;}
-  }, 3000);
+      const groups = file.nodes.map(node => {
+        const rows = node.scenarios.map(id => `${file.name}#${id}`).filter(key => matches(key, state.board.items[key]));
+        if (!rows.length) return null;
+        return el('li', {class: 'node'}, el('div', {class: 'node-title'}, `${node.id} ${node.title}`),
+          el('ul', {}, rows.map(key => {
+            const item = state.board.items[key];
+            return el('li', {class: 'scenario' + (state.selected === key ? ' selected' : ''), 'data-key': key,
+              onclick: () => select(key)},
+              el('span', {class: `dot ${item.state}`, title: item.label}), el('span', {class: 'sid'}, item.id),
+              el('span', {class: 'stitle'}, item.title), item.distill ? el('span', {class: 'badge distill'}, '待沉淀') : null);
+          })));
+      }).filter(Boolean);
+      if (!groups.length) continue;
+      nodes.push(el('details', {class: 'file', open: true},
+        el('summary', {}, file.name + (file.status === 'draft' ? '（草稿）' : '')), el('ul', {}, groups)));
+    }
+    tree.replaceChildren(...(nodes.length ? nodes : [el('p', {class: 'muted'}, '没有符合条件的场景')]));
+  }
+
+  function select(key) {
+    state.selected = key;
+    if (decodeURIComponent(location.hash.slice(1)) !== key) history.replaceState(null, '', '#' + encodeURIComponent(key).replace(/%23/g, '#'));
+    renderTree();
+    loadDetail(key);
+  }
+
+  function evidenceView(item) {
+    if (item.type.startsWith('image/')) return el('a', {href: item.url, target: '_blank'}, el('img', {src: item.url, alt: item.name, loading: 'lazy'}));
+    if (item.type.startsWith('video/')) return el('video', {src: item.url, controls: true, preload: 'metadata'});
+    if (item.name.endsWith('.zip') && item.name.includes('trace')) {
+      const absolute = new URL(item.url, location.href).href;
+      return el('span', {}, el('a', {href: item.url}, `下载 ${item.name}`), ' · ',
+        el('a', {href: 'https://trace.playwright.dev/?trace=' + encodeURIComponent(absolute), target: '_blank'}, '在 Trace Viewer 中打开'));
+    }
+    const pre = el('pre', {class: 'text-evidence'}, '…');
+    fetch(item.url).then(r => r.text()).then(text => { pre.textContent = text.length > 6000 ? text.slice(0, 6000) + '\n…（已截断，下载查看全文）' : text; });
+    return el('div', {}, el('a', {href: item.url, target: '_blank'}, item.name), pre);
+  }
+
+  function gallery(items) {
+    if (!items?.length) return el('p', {class: 'muted'}, '没有证据');
+    return el('div', {class: 'gallery'}, items.map(item => el('figure', {}, evidenceView(item), el('figcaption', {}, item.name))));
+  }
+
+  function itemsList(values, part, coverage) {
+    return el('ol', {}, values.map((text, index) => {
+      const tests = coverage?.[part]?.[index];
+      return el('li', {}, text, tests ? el('span', {class: 'badge guard', title: '守护测试：' + tests.join('、')}, '已守护') : null);
+    }));
+  }
+
+  function historyRow(entry) {
+    const pieces = [el('strong', {}, entry.label), ` · ${entry.executed_at}`];
+    if (entry.kind === 'manual') pieces.push(` · 复测人 ${entry.marked_by}`);
+    else {
+      pieces.push(` · ${entry.independence}`);
+      if (entry.run) pieces.push(` · 运行 #${entry.run}`);
+      if (entry.launch) pieces.push(` · 启动 #${entry.launch}`);
+      if (entry.executor) pieces.push(` · 执行者 ${entry.executor}`);
+    }
+    if (!entry.current) pieces.push(el('span', {class: 'badge old'}, '旧内容'));
+    return el('li', {}, el('div', {}, ...pieces),
+      entry.finding ? el('div', {class: 'finding'}, entry.finding) : null,
+      entry.kept && entry.note ? el('div', {class: 'note'}, '理由：' + entry.note) : null,
+      entry.defect ? el('div', {}, '缺陷：', /^https?:/.test(entry.defect) ? el('a', {href: entry.defect, target: '_blank', rel: 'noopener'}, entry.defect) : entry.defect) : null,
+      entry.product_changed?.length ? el('div', {class: 'muted'}, '执行期间产品变化：' + entry.product_changed.slice(0, 5).join('、')) : null,
+      entry.evidence?.length ? el('details', {}, el('summary', {}, `证据 ${entry.evidence.length} 份`), gallery(entry.evidence)) : null);
+  }
+
+  function markForm(data) {
+    const name = el('input', {name: 'by', placeholder: '复测人姓名', required: true, value: localStorage.getItem(NAME_KEY) || ''});
+    const defect = el('input', {name: 'defect', placeholder: '缺陷链接或编号（不通过时必填）'});
+    const note = el('input', {name: 'note', placeholder: '备注（可选）'});
+    const message = el('span', {class: 'message'});
+    const form = el('form', {class: 'mark', onsubmit: async event => {
+      event.preventDefault();
+      const verdict = form.querySelector('input[name=verdict]:checked')?.value;
+      if (!verdict) { message.textContent = '请选择通过或不通过'; return; }
+      if (verdict === 'fail' && !defect.value.trim()) { message.textContent = '不通过时必须填写缺陷链接'; return; }
+      try {
+        await api('/api/mark', {method: 'POST', body: JSON.stringify({checkout: data.checkout, scenario: data.key, verdict,
+          by: name.value.trim(), defect: defect.value.trim() || null, note: note.value.trim() || null})});
+        localStorage.setItem(NAME_KEY, name.value.trim());
+        await loadBoard();
+        await loadDetail(data.key);
+      } catch (error) { message.textContent = '提交失败：' + error.message; }
+    }},
+      el('label', {}, el('input', {type: 'radio', name: 'verdict', value: 'pass'}), '通过'),
+      el('label', {}, el('input', {type: 'radio', name: 'verdict', value: 'fail'}), '不通过'),
+      defect, name, note, el('button', {type: 'submit'}, '提交复测结论'), message);
+    return form;
+  }
+
+  function localButtons(data) {
+    if (!config.local) return null;
+    const message = el('span', {class: 'message'});
+    const call = (path, body, done) => async () => {
+      message.textContent = '已提交…';
+      try { const result = await api(path, {method: 'POST', body: JSON.stringify(body)}); message.textContent = done(result); }
+      catch (error) { message.textContent = '失败：' + error.message; }
+    };
+    return el('div', {class: 'actions'},
+      el('button', {onclick: call('/api/launch', {checkout: data.checkout, scenario: data.key},
+        r => `已启动无头会话 #${r.launch.id}，结果会回到这里；进度见运行记录`)}, 'AI 重跑此场景'),
+      el('button', {onclick: call('/api/retest', {checkout: data.checkout, scenario: data.key},
+        r => r.summary || '守护测试已运行')}, '运行守护'),
+      el('button', {disabled: !data.state.distill, onclick: call('/api/distill', {checkout: data.checkout, scenario: data.key},
+        r => `已启动沉淀会话 #${r.launch.id}`)}, '沉淀'),
+      message);
+  }
+
+  async function loadDetail(key) {
+    const pane = document.getElementById('detail');
+    let data;
+    try { data = await api('/api/scenario?' + query({key})); }
+    catch (error) { pane.replaceChildren(el('p', {class: 'error'}, error.message)); return; }
+    const scene = data.scene;
+    const latest = data.latest;
+    const current = data.history.filter(h => h.current);
+    pane.replaceChildren(
+      el('h2', {}, `${data.key} ${scene.title}`),
+      el('div', {class: 'badges'}, el('span', {class: 'badge'}, scene.priority), el('span', {class: 'badge'}, '入口 ' + scene.verify),
+        el('span', {class: 'badge'}, scene.polarity === 'positive' ? '正向' : '反向' + (scene.negative_type ? ' · ' + scene.negative_type : '')),
+        el('span', {class: 'badge'}, '角色 ' + scene.actor), scene.draft ? el('span', {class: 'badge distill'}, '草稿') : null),
+      el('p', {class: `state ${data.state.state}`}, el('strong', {}, data.state.label), data.state.reason ? '：' + data.state.reason : '',
+        data.state.distill ? el('span', {class: 'badge distill'}, '待沉淀') : null),
+      el('section', {}, el('h3', {}, '起点'), el('ul', {}, scene.initial_state.map(t => el('li', {}, t)))),
+      el('section', {}, el('h3', {}, '步骤'), el('ol', {}, scene.steps.map(t => el('li', {}, t)))),
+      el('section', {}, el('h3', {}, '预期'), itemsList(scene.expected, 'expected', data.coverage)),
+      el('section', {}, el('h3', {}, '禁止'), itemsList(scene.forbidden_effects, 'forbidden_effects', data.coverage)),
+      el('section', {}, el('h3', {}, '最新结果与证据'),
+        latest ? el('div', {}, el('p', {}, el('strong', {}, latest.label), ` · ${latest.executed_at} · ${latest.actual || ''}`),
+          latest.finding ? el('p', {class: 'finding'}, latest.finding) : null, gallery(latest.evidence))
+          : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
+      scene.draft ? null : el('section', {}, el('h3', {}, '复测'), markForm(data)),
+      localButtons(data),
+      el('details', {class: 'history'}, el('summary', {}, `历史（${data.history.length} 条，当前内容 ${current.length} 条）`),
+        el('ul', {}, data.history.map(historyRow)),
+        data.guard_runs.length ? el('div', {}, el('h4', {}, '守护运行'), el('ul', {}, data.guard_runs.map(run =>
+          el('li', {}, `${run.status === 'pass' ? '守护通过' : '守护未通过'} · ${run.ran_at} · ${run.operator}`, run.reason ? ' · ' + run.reason : '')))) : null));
+  }
+
+  async function startWorkbench() {
+    document.getElementById('search').addEventListener('input', event => { state.search = event.target.value; renderTree(); });
+    await loadBoard();
+    const key = decodeURIComponent(location.hash.slice(1));
+    if (key && state.board.items[key]) select(key);
+    window.addEventListener('hashchange', () => {
+      const next = decodeURIComponent(location.hash.slice(1));
+      if (next && next !== state.selected && state.board.items[next]) select(next);
+    });
+    setInterval(() => loadBoard().catch(() => {}), 15000);
+  }
+
+  // ---- 运行记录 ----
+
+  async function startRuns() {
+    const data = await api('/api/runs?' + query());
+    const board = await api('/api/board?' + query());
+    fillCheckouts(board.checkouts, data.checkout);
+    const launchRows = data.launches.map(item => el('tr', {},
+      el('td', {}, '#' + item.id), el('td', {}, item.kind === 'run' ? '场景执行' : '回归沉淀'), el('td', {}, item.agent),
+      el('td', {}, item.scope.join('、')), el('td', {}, item.status + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : '')),
+      el('td', {}, item.started_at || ''), el('td', {}, item.requested_by),
+      config.local ? el('td', {}, el('a', {href: `/api/launches/${item.id}/log`, target: '_blank'}, '日志'), item.session ? ` · ${item.session}` : '') : null));
+    document.getElementById('launches').replaceChildren(el('table', {},
+      el('thead', {}, el('tr', {}, ['编号', '类型', '代理', '场景', '状态', '开始', '发起人', config.local ? '本机' : null].filter(Boolean).map(t => el('th', {}, t)))),
+      el('tbody', {}, launchRows.length ? launchRows : [el('tr', {}, el('td', {colspan: 8}, '没有启动记录'))])));
+    const runRows = data.runs.map(item => el('tr', {},
+      el('td', {}, '#' + item.id), el('td', {}, item.kind === 'run' ? (item.fix ? `修复 #${item.fix} 的复验` : '执行') : '沉淀'),
+      el('td', {}, {prepared: '进行中', submitted: '已提交', abandoned: '已放弃'}[item.status] || item.status),
+      el('td', {}, item.scope.join('、')), el('td', {}, `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : '')),
+      el('td', {}, item.created_at), config.local ? el('td', {}, item.session || '') : null));
+    document.getElementById('runs').replaceChildren(el('table', {},
+      el('thead', {}, el('tr', {}, ['编号', '类型', '状态', '场景', '结果', '开始', config.local ? '会话' : null].filter(Boolean).map(t => el('th', {}, t)))),
+      el('tbody', {}, runRows.length ? runRows : [el('tr', {}, el('td', {colspan: 7}, '没有运行'))])));
+  }
+
+  const start = {workbench: startWorkbench, runs: startRuns}[config.page];
+  if (start) start().catch(error => document.querySelector('main').prepend(el('p', {class: 'error'}, error.message)));
 })();
