@@ -1,7 +1,8 @@
 """按检出推导场景状态与统计；状态不存储，每次由结果、守护运行与修复记录算出。
 
 - not-run 未执行：当前指纹没有结果。
-- pass 通过：最新结果为通过，且产品快照等于当前快照、执行期间产品没有变化。
+- pass 通过：最新结果为通过，且产品快照等于当前快照、执行期间产品没有变化；
+  或最新结果是不绑定产品快照（product_digest 为空）的导入结果，产品变化不使它转待复测。
 - guarded 守护通过：曾经真实入口通过，当前快照上守护测试全部通过。
 - retest 待复测：通过发生在旧快照上；或不通过的场景修复已关闭。
 - fail 失败 / blocked 受阻 / skip 跳过：最新结果如此（人工不通过按失败，人工阻塞按受阻）。
@@ -16,6 +17,7 @@ LABELS = {'not-run': '未执行', 'pass': '通过', 'guarded': '守护通过', '
           'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'skip': '跳过', 'draft': '草稿'}
 ORDER = ('retest', 'fail', 'blocked', 'changed', 'not-run', 'pass', 'guarded', 'skip', 'draft')
 MANUAL = {'pass': '通过', 'fail': '不通过', 'blocked': '阻塞', 'changed': '需求变更'}
+UNBOUND = '导入的历史结果，不绑定产品快照'
 
 
 def manual_reason(row):
@@ -77,6 +79,9 @@ def derive(scene, results, product_digest, *, guard=None, guard_valid=False, gua
     if latest['status'] == 'skip':
         return dict(state='skip', reason=latest.get('finding') or '', result=latest['id'])
     changed = json.loads(latest['product_changed'] or '[]')
+    if latest['product_digest'] is None and not changed:
+        # 从旧看板导入的历史结果不绑定产品快照：保持通过，直到该场景有新的执行或人工结论。
+        return dict(state='pass', reason=UNBOUND, result=latest['id'])
     if latest['product_digest'] == product_digest and not changed:
         return dict(state='pass', reason='', result=latest['id'])
     if guard and guard_valid:
@@ -135,7 +140,7 @@ def board(db, checkout_id, scenes, product_digest, *, guard_validity=None):
 
 
 def confirmation(rows):
-    """Agent 独立通过的人工复核：样本 → 同一快照上关联它的最近一条人工通过或不通过。
+    """Agent 独立通过的人工复核：样本 → 同一快照上关联它的最近一条人工通过或不通过（不绑定快照的导入样本不限快照）。
 
     只有阻塞或需求变更的样本记为未决（取最近一条），不进分母。
     """
@@ -143,7 +148,8 @@ def confirmation(rows):
     verdicts, undecided = {}, {}
     for row in rows:
         sample = samples.get(row['of_result']) if row['kind'] == 'manual' else None
-        if sample is None or row['product_digest'] != sample['product_digest']:
+        # 不绑定快照的导入样本，任何快照上关联它的人工结论都算配对。
+        if sample is None or (sample['product_digest'] is not None and row['product_digest'] != sample['product_digest']):
             continue
         (verdicts if row['status'] in ('pass', 'fail') else undecided)[sample['id']] = row
     undecided = {k: v for k, v in undecided.items() if k not in verdicts}
