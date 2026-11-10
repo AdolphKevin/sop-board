@@ -1,8 +1,9 @@
 ---
 title: "复制 git worktree 目录做测试会把提交写进真实分支"
-scope: ["self:**"]
+scope: ["self:docs/verification.md", "self:src/sop_board/worktrees.py"]
+tags: ["worktree", "临时副本", "验收", "自检"]
 source: ["self:docs/designs/SOP-BOARD-10.md"]
-verified: {"self": {"commit": "7102bde", "date": "2026-10-21"}}
+verified: {"self": {"commit": "7102bdef7feded75b723e68eb44c3b2db155f754", "date": "2026-10-21"}}
 ---
 # 复制 git worktree 目录做测试会把提交写进真实分支
 

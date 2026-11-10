@@ -2,7 +2,7 @@
 title: "工作树建立和清理由同一适配契约管理"
 scope: ["self:src/sop_board/**"]
 source: ["self:docs/proposals/2026-10-20-v9-workspace.md", "self:docs/designs/SOP-BOARD-7.md", "self:docs/proposals/2026-10-22-integrated-rework.md"]
-verified: {"self": {"commit": "8bfb61e7636c227a58270c888eb5e5044ede7899", "date": "2026-10-20"}}
+verified: {"self": {"commit": "6a5b6a2c08ea46300cc2c457bc920f2179cd45a2", "date": "2026-11-10"}}
 guards: ["self:docs/sop/sop-board-7.yaml#SOP-71-P01", "self:docs/sop/sop-board-7.yaml#SOP-74-P01"]
 ---
 # 工作树建立和清理由同一适配契约管理
