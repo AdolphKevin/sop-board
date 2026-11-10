@@ -16,7 +16,7 @@ from .entries import validate_entries, verification_skills, skill_files
 
 FORMAT = 'sop-board-project-6'
 HOME = Path(os.environ.get('SOP_BOARD_HOME', str(Path.home() / '.sop-board'))).expanduser()
-TOP_FIELDS = {'repos', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents'}
+TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents'}
 ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout'}
 AGENT_KINDS = ('default', 'run', 'fix', 'distill', 'merge', 'author', 'draft', 'atlas')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
@@ -206,7 +206,8 @@ def initialize(name, directories, data_root=None):
         raise ValueError('\n'.join(problems))
     data.mkdir(parents=True, exist_ok=False)
     (data / 'project.json').write_text(json.dumps(dict(format=FORMAT, name=name), ensure_ascii=False) + '\n', encoding='utf-8')
-    (data / 'config.yaml').write_text(yaml.safe_dump(dict(repos=repos), allow_unicode=True, sort_keys=False), encoding='utf-8')
+    (data / 'config.yaml').write_text(yaml.safe_dump(dict(repos=repos, identities=identities), allow_unicode=True, sort_keys=False),
+                                      encoding='utf-8')
     return data, identities
 
 
@@ -330,6 +331,17 @@ class Project:
                 self.repos[alias], self.identities[alias] = path, identity
             except (OSError, ValueError) as error:
                 problem('repos.' + alias, str(error))
+        registered = config.get('identities')
+        if not isinstance(registered, dict):
+            problem('identities', '须为 别名 → 登记时规范化的 origin 身份（init 写入）')
+            registered = {}
+        for alias in registered.keys() - values.keys():
+            problem('identities.' + str(alias), '没有对应的仓库')
+        for alias, identity in self.identities.items():
+            if alias not in registered:
+                problem('identities.' + alias, '缺少登记的 origin 身份')
+            elif registered[alias] != identity:
+                problem('identities.' + alias, f'仓库的 origin 身份 {identity} 与登记的 {registered[alias]} 不一致')
         location = config.get('scenarios')
         if not isinstance(location, dict):
             problem('scenarios', '须为含 repo、path 的对象')

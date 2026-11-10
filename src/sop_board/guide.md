@@ -25,6 +25,9 @@ sop-board init <项目> <仓库目录>... [--data <根目录>]
 repos:                      # 别名 → main 检出的绝对路径（init 已写好）
   app: /absolute/app
   lib: /another/lib
+identities:                 # 别名 → 规范化的 origin 身份（init 已写好，origin 变了即不合格）
+  app: github.com/acme/app
+  lib: github.com/acme/lib
 scenarios: {repo: app, path: docs/sop}     # 场景文件、业务 SOP 与 regression.yaml 所在目录
 skill: project-verification                 # 数据目录 skills/<名称>/SKILL.md，每个入口一个二级标题
 entries:

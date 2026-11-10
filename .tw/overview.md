@@ -8,4 +8,4 @@ Flow Board（命令 `sop-board`）是运行在开发者本机的 SOP 场景验�
 
 设计见 [docs/design.md](../docs/design.md)（v10；旧实现见 tag v9-final），取舍见 decisions/2026-11-10-v10-rewrite.md。命令与文件契约见 docs/reference.md。
 
-从哪里读起：验收标准 docs/standard.md，场景写法 docs/sop-guide.md，本仓验收方法 docs/verification.md。代码在 src/sop_board/：cli.py 是全部命令，server.py 是守护进程，runs.py、guards.py、fixes.py、browsers.py 是主要流程；随包技能在 src/sop_board/skills/。
+从哪里读起：验收标准 docs/standard.md，场景写法 docs/sop-guide.md，本仓验收方法 docs/verification.md。验收用的演示项目在 examples/demo-shop/（make_demo.py 一条命令生成 app、lib 两仓并登记）。代码在 src/sop_board/：cli.py 是全部命令，server.py 是守护进程，runs.py、guards.py、fixes.py、browsers.py 是主要流程；随包技能在 src/sop_board/skills/。

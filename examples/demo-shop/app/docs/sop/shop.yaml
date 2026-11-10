@@ -1,0 +1,61 @@
+metadata:
+  requirement: "演示商城退款：签收 7 天内（含第 7 天）可申请，退款金额等于实付，每单只退一次；商家在订单页看到退款状态"
+  version: 1
+  owner: "演示负责人"
+  status: confirmed
+  sources:
+    - {ref: "docs/prd/refund.md", version: "演示 v1", confirmed_by: "演示负责人"}
+sops:
+  - id: SHOP-R1
+    title: 买家申请退款
+    actor: 买家
+    entry: 退款接口 POST /api/refunds
+    scenarios:
+      - id: SHOP-R1-P01
+        polarity: positive
+        title: 签收 3 天的订单申请退款成功，金额等于实付
+        actor: 买家
+        priority: P0
+        verify: api
+        initial_state: ["订单 A 实付 99.00 元，已签收 3 天，没有退款记录"]
+        steps: ["POST /api/refunds，order_id 为订单 A，不填金额", "GET /api/refunds?order_id=订单 A"]
+        expected: ["退款接口返回 201，金额为 99.00，状态为已退款", "查询只有一条订单 A 的退款，金额 99.00"]
+        forbidden_effects: ["退款金额超过 99.00 元"]
+      - id: SHOP-R1-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 签收 8 天的订单申请退款被拒绝
+        actor: 买家
+        priority: P0
+        verify: api
+        initial_state: ["订单 B 实付 50.00 元，已签收 8 天，没有退款记录"]
+        steps: ["POST /api/refunds，order_id 为订单 B"]
+        expected: ["退款接口返回 422，提示已超过退款申请期限"]
+        forbidden_effects: ["生成订单 B 的退款记录"]
+      - id: SHOP-R1-N02
+        polarity: negative
+        negative_type: duplicate
+        title: 已退款订单再次申请被拒绝
+        actor: 买家
+        priority: P1
+        verify: api
+        initial_state: ["订单 C 实付 30.00 元，已签收 1 天，已有一笔 30.00 元退款"]
+        steps: ["再次 POST /api/refunds，order_id 为订单 C"]
+        expected: ["退款接口返回 409，提示该订单已退款"]
+        forbidden_effects: ["订单 C 出现第二笔退款记录"]
+  - id: SHOP-W1
+    title: 商家查看退款状态
+    actor: 商家
+    entry: 订单页 /orders
+    negative_exempt: 只读页面；未登录跳转登录页由 SHOP-W1-P01 的前置覆盖
+    scenarios:
+      - id: SHOP-W1-P01
+        polarity: positive
+        title: 商家在订单页看到已退款订单的状态
+        actor: 商家
+        priority: P0
+        verify: web
+        initial_state: ["商家 merchant 已在看板浏览器中登录", "订单 D 已有一笔退款"]
+        steps: ["打开订单页 /orders", "找到订单 D 所在行"]
+        expected: ["订单 D 的退款状态显示为已退款"]
+        forbidden_effects: ["页面出现其他店铺的订单"]

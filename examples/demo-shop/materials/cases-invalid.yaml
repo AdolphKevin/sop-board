@@ -1,0 +1,17 @@
+metadata: {module: 售后, feature: 退款, owner: 演示测试, last_reviewed: "2026-11-10"}
+test_cases:
+  - id: TC_REFUND_AMOUNT_001
+    title: 退款金额保留两位小数
+    priority: P1
+    type: functional
+    preconditions: ["订单 A 实付 99.00 元，已签收 3 天"]
+    steps: ["申请退款"]
+    expected_results: ["响应中的金额为 99.00"]
+    tags: ["detail"]
+  - id: TC_REFUND_QUERY_001
+    title: 查询不存在订单的退款返回空列表
+    priority: P2
+    type: functional
+    preconditions: ["订单 Z 不存在"]
+    steps: ["GET /api/refunds?order_id=Z"]
+    tags: ["flow"]

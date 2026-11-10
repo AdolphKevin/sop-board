@@ -1,0 +1,4 @@
+version: 1
+commands:
+  unit: {repo: app, cwd: ., argv: [python3, tests/junit_runner.py, --junit, "{junit}"], timeout: 300}
+guards: {}

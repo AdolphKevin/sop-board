@@ -1,0 +1,19 @@
+metadata:
+  requirement: "部分退款（草稿 draft-a）：买家可申请不超过实付金额的部分退款"
+  version: 1
+  owner: "演示负责人"
+  status: draft
+  sources:
+    - {ref: "docs/prd/refund.md", version: "演示 v1", confirmed_by: "演示负责人"}
+sops:
+  - id: DRAFT-A-1
+    title: 部分退款
+    actor: 买家
+    entry: 退款接口 POST /api/refunds
+    scenarios:
+      - {id: DRAFT-A-1-P01, polarity: positive, title: 申请部分退款成功, actor: 买家, priority: P1, verify: api,
+         initial_state: ["订单 E 实付 99.00 元，已签收 2 天"], steps: ["POST /api/refunds，订单 E，金额 40"],
+         expected: ["返回 201，金额 40.00"], forbidden_effects: ["退款金额超过实付"]}
+      - {id: DRAFT-A-1-N01, polarity: negative, negative_type: invalid-input, title: 金额超过实付被拒绝, actor: 买家, priority: P1, verify: api,
+         initial_state: ["订单 F 实付 20.00 元，已签收 2 天"], steps: ["POST /api/refunds，订单 F，金额 25"],
+         expected: ["返回 422"], forbidden_effects: ["生成订单 F 的退款记录"]}
