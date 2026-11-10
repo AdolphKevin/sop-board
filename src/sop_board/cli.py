@@ -188,8 +188,8 @@ def cmd_status(args):
             print(f"  {item['field']}：{item['problem']}")
         return 0
     counts = result['counts']
-    print(f"场景 {result['total']} 条：" + '；'.join(f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s])
-          + f"；待沉淀 {result['distill']}")
+    parts = [f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s]] + [f"待沉淀 {result['distill']}"]
+    print(f"场景 {result['total']} 条：" + '；'.join(parts))
     for name, problems in result['invalid_files'].items():
         print(f'场景文件 {name} 不合格：' + '；'.join(p['problem'] for p in problems[:3]))
     daemon_state = result['daemon']
