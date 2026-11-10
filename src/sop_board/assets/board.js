@@ -176,6 +176,26 @@
     return form;
   }
 
+  function annotationList(items) {
+    if (!items?.length) return el('p', {class: 'muted'}, '还没有批注');
+    return el('ul', {}, items.map(a => el('li', {}, `#${a.id} ${a.text}（${a.author}，${a.created_at}，${a.status === 'open' ? '待处理' : a.status === 'adopted' ? '已采纳' : '未采纳'}）`)));
+  }
+
+  function annotationForm(data) {
+    const text = el('input', {name: 'text', placeholder: '批注内容，例如预期应如何', required: true});
+    const name = el('input', {name: 'by', placeholder: '批注人姓名', required: true, value: localStorage.getItem(NAME_KEY) || ''});
+    const message = el('span', {class: 'message'});
+    return el('form', {class: 'mark', onsubmit: async event => {
+      event.preventDefault();
+      try {
+        await api('/api/annotate', {method: 'POST', body: JSON.stringify({checkout: data.checkout, file: data.scene.file,
+          target: data.scene.id, text: text.value.trim(), by: name.value.trim()})});
+        localStorage.setItem(NAME_KEY, name.value.trim());
+        await loadDetail(data.key);
+      } catch (error) { message.textContent = '提交失败：' + error.message; }
+    }}, text, name, el('button', {type: 'submit'}, '提交批注'), message);
+  }
+
   function localButtons(data) {
     if (!config.local) return null;
     const message = el('span', {class: 'message'});
@@ -217,7 +237,7 @@
         latest ? el('div', {}, el('p', {}, el('strong', {}, latest.label), ` · ${latest.executed_at} · ${latest.actual || ''}`),
           latest.finding ? el('p', {class: 'finding'}, latest.finding) : null, gallery(latest.evidence))
           : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
-      scene.draft ? null : el('section', {}, el('h3', {}, '复测'), markForm(data)),
+      scene.draft ? el('section', {}, el('h3', {}, '草稿批注'), annotationList(data.annotations), annotationForm(data)) : el('section', {}, el('h3', {}, '复测'), markForm(data)),
       localButtons(data),
       el('details', {class: 'history'}, el('summary', {}, `历史（${data.history.length} 条，当前内容 ${current.length} 条）`),
         el('ul', {}, data.history.map(historyRow)),
@@ -261,6 +281,63 @@
       el('tbody', {}, runRows.length ? runRows : [el('tr', {}, el('td', {colspan: 7}, '没有运行'))])));
   }
 
-  const start = {workbench: startWorkbench, runs: startRuns}[config.page];
+  // ---- 收件箱与草稿批注 ----
+
+  function askName() {
+    let name = localStorage.getItem(NAME_KEY) || '';
+    if (!name) {
+      name = (prompt('请填写你的姓名（之后自动沿用）') || '').trim();
+      if (name) localStorage.setItem(NAME_KEY, name);
+    }
+    return name;
+  }
+
+  async function startInbox() {
+    const form = document.getElementById('upload');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const message = form.querySelector('.message');
+      const problems = document.getElementById('upload-problems');
+      problems.replaceChildren();
+      const file = form.querySelector('input[type=file]').files[0];
+      const by = askName();
+      if (!file || !by) { message.textContent = '请选择文件并填写姓名'; return; }
+      try {
+        const content = await file.text();
+        await api('/api/inbox', {method: 'POST', body: JSON.stringify({kind: form.elements.namedItem('kind').value, filename: file.name, content, by})});
+        location.reload();
+      } catch (error) {
+        message.textContent = '上传被拒绝';
+        problems.replaceChildren(el('ul', {}, error.message.split('；').map(text => el('li', {}, text))));
+      }
+    });
+    for (const answerForm of document.querySelectorAll('form.answer')) {
+      answerForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        const by = askName();
+        try {
+          await api('/api/answer', {method: 'POST', body: JSON.stringify({question: Number(answerForm.dataset.question),
+            answer: answerForm.elements.namedItem('answer').value.trim(), by})});
+          location.reload();
+        } catch (error) { answerForm.querySelector('.message').textContent = '提交失败：' + error.message; }
+      });
+    }
+  }
+
+  async function startDrafts() {
+    for (const form of document.querySelectorAll('form.annotate')) {
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const by = askName();
+        try {
+          await api('/api/annotate', {method: 'POST', body: JSON.stringify({checkout: config.checkout, file: form.dataset.file,
+            target: form.elements.namedItem('target').value, text: form.elements.namedItem('text').value.trim(), by})});
+          location.reload();
+        } catch (error) { form.querySelector('.message').textContent = '提交失败：' + error.message; }
+      });
+    }
+  }
+
+  const start = {workbench: startWorkbench, runs: startRuns, inbox: startInbox, drafts: startDrafts}[config.page];
   if (start) start().catch(error => document.querySelector('main').prepend(el('p', {class: 'error'}, error.message)));
 })();

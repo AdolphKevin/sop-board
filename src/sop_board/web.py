@@ -95,6 +95,11 @@ def detail(app, request):
                                           'ORDER BY id DESC LIMIT 10',
                                           (context.checkout.id, scene['file'], scene['id'], scene['fingerprint']))]
     latest = next((h for h in history if h['current'] and h['kind'] == 'agent'), None)
+    notes = []
+    if scene.get('status') == 'draft':
+        from . import authoring
+        notes = [dict(id=a['id'], text=a['text'], author=a['author'], status=a['status'], created_at=local_time(a['created_at']))
+                 for a in authoring.annotations(app.store, file=scene['file'], include_resolved=True) if a['target'] in (scene['id'], 'file')]
     fields = {name: scene.get(name, []) for name in (*scenarios.CONTENT_FIELDS, 'refs', 'evidence_hints')}
     return dict(ok=True, key=key, local=request.local, checkout=context.checkout.name,
                 scene=dict(id=scene['id'], file=scene['file'], node=scene['node'], node_title=scene['node_title'],
@@ -103,7 +108,7 @@ def detail(app, request):
                            **fields),
                 state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
                            guard=info['guard']),
-                coverage=coverage, latest=latest, history=history, guard_runs=guard_runs)
+                coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=notes)
 
 
 @route('GET', '/', 'lan')
@@ -239,3 +244,80 @@ def attention_page(app, request):
 
 def attach(app):
     pass
+
+
+# ---- 收件箱、答复、草稿批注、SOP 原文、交互地图 ----
+
+@route('GET', r'/p/([^/]+)/inbox', 'lan')
+def inbox_page(app, request):
+    from . import authoring
+    from .pages import inbox as page
+    with app.store.connection() as db:
+        items = authoring.inbox_rows(db, status='pending')
+    questions = authoring.answers(app.store)
+    return html_response(page(app.project.name, items, questions, local=request.local))
+
+
+@route('POST', '/api/inbox', 'lan')
+def inbox_api(app, request):
+    from . import authoring
+    by = request.json_field('by')
+    if not isinstance(by, str) or not by.strip() or len(by) > 64:
+        reject(422, 'uploader-required', 'by', '请填写上传人姓名')
+    return json_response(authoring.inbox_add(app.store, request.json_field('kind') or 'cases', request.json_field('filename'),
+                                             request.json_field('content'), by=by.strip()))
+
+
+@route('POST', '/api/answer', 'lan')
+def answer_api(app, request):
+    from . import authoring
+    question = request.json_field('question')
+    if type(question) is not int:
+        reject(422, 'answer-invalid', 'question', '须给出问题编号')
+    return json_response(authoring.answer(app.store, question, request.json_field('answer'), by=request.json_field('by')))
+
+
+@route('POST', '/api/annotate', 'lan')
+def annotate_api(app, request):
+    from . import authoring
+    context = context_for(app, request.json_field('checkout'))
+    return json_response(authoring.annotate(context, request.json_field('file'), request.json_field('target') or 'file',
+                                            request.json_field('text'), by=request.json_field('by')))
+
+
+@route('GET', '/api/annotations', 'lan')
+def annotations_api(app, request):
+    from . import authoring
+    items = authoring.annotations(app.store, file=request.query.get('file'), include_resolved=True)
+    target = request.query.get('target')
+    return json_response(dict(ok=True, annotations=[a for a in items if target is None or a['target'] == target]))
+
+
+@route('GET', r'/p/([^/]+)/drafts', 'lan')
+def drafts_page(app, request):
+    from . import authoring
+    from .pages import drafts as page
+    context = context_for(app, request.query.get('checkout'))
+    found = scenarios.scan(context.checkout.scenarios_dir(app.project))
+    drafts = [dict(name=name, nodes=info['nodes'], requirement=info.get('requirement'))
+              for name, info in sorted(found['files'].items()) if info.get('status') == 'draft']
+    notes = authoring.annotations(app.store, include_resolved=True)
+    return html_response(page(app.project.name, context.checkout.name, drafts, notes, local=request.local))
+
+
+@route('GET', r'/p/([^/]+)/sop', 'lan')
+def sop_page(app, request):
+    from . import authoring
+    from .pages import sop as page
+    from .sop_markdown import render
+    context = context_for(app, request.query.get('checkout'))
+    documents = [(path.name, render(path.read_text(encoding='utf-8'), path.name)) for path in authoring.sop_files(context)]
+    return html_response(page(app.project.name, context.checkout.name, documents, local=request.local))
+
+
+@route('GET', r'/p/([^/]+)/atlas', 'lan')
+def atlas_page(app, request):
+    from . import atlas
+    from .pages import atlas as page
+    context = context_for(app, request.query.get('checkout'))
+    return html_response(page(app.project.name, context.checkout.name, atlas.summary(context), local=request.local))

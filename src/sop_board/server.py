@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 import signal
 import sys
-import threading
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import checkouts, config, daemon
@@ -298,12 +297,9 @@ def serve(project, *, port=8787, lan=False):
     for recover in extensions.RECOVER:
         recover(app)
     app.token = daemon.write_state(project, os.getpid(), actual, addresses, app.started_at)
-    stop = threading.Event()
-
     def shutdown(*_):
-        if not stop.is_set():
-            stop.set()
-            threading.Thread(target=server.shutdown, daemon=True).start()
+        # serve_forever 在主线程；信号处理只抛出中断，由 finally 统一清理，避免在信号处理中等待其他线程。
+        raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     print(f'Flow Board · 项目 {project.name}', flush=True)
@@ -312,7 +308,12 @@ def serve(project, *, port=8787, lan=False):
         print(f'内网：{address}', flush=True)
     try:
         server.serve_forever(poll_interval=.5)
+    except KeyboardInterrupt:
+        pass
     finally:
+        # 清理期间不再响应重复的停止信号，保证环境、浏览器与状态文件都被收尾。
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         for close in extensions.CLOSE:
             close(app)
         app.envs.close()

@@ -65,6 +65,8 @@ def common(parser):
     parser.add_argument('--project', '-p', help='项目名称（缺省按当前目录所在仓库查找）')
     parser.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
     parser.add_argument('--checkout', '-c', help='检出名称（缺省按当前目录识别，main 为登记路径）')
+    if not any(action.dest == 'json' for action in parser._actions):
+        parser.add_argument('--json', action='store_true', help='输出 JSON（除 status 外的命令总是输出 JSON）')
     return parser
 
 
@@ -432,6 +434,132 @@ def cmd_specs(args):
     return 0 if not report['violation'] else 1
 
 
+def signer(args):
+    return getattr(args, 'as_name', None) or config.require_operator()
+
+
+def cmd_inbox(args):
+    from . import authoring
+    context = load(args, require=False)
+    if args.action == 'add':
+        if not args.file:
+            return fail('file-required', [dict(field='file', problem='请给出文件路径')], 2)
+        path = Path(args.file).expanduser()
+        try:
+            content = path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            return fail('upload-invalid', [dict(field='content', problem='文件不是 UTF-8 文本')])
+        emit(authoring.inbox_add(context.store, args.kind, path.name, content, by=signer(args)))
+    elif args.action == 'list':
+        with context.store.connection() as db:
+            emit(dict(ok=True, inbox=authoring.inbox_rows(db, status=None if args.all else 'pending')))
+    elif args.action == 'show':
+        emit(dict(ok=True, item=authoring.inbox_show(context.store, int(args.file))))
+    else:
+        emit(authoring.inbox_close(context.store, int(args.file), 'merged' if args.action == 'done' else 'rejected', args.note))
+    return 0
+
+
+def cmd_merge(args):
+    from . import authoring
+    context = load(args)
+    if args.action == 'prepare':
+        emit(authoring.merge_prepare(context, args.inbox or []))
+    else:
+        emit(authoring.merge_submit(context, args.work))
+    return 0
+
+
+def cmd_ask(args):
+    from . import authoring
+    context = load(args, require=False)
+    emit(authoring.ask(context.store, args.about, args.text, by=signer(args), work=args.work))
+    return 0
+
+
+def cmd_answers(args):
+    from . import authoring
+    context = load(args, require=False)
+    emit(dict(ok=True, answers=authoring.answers(context.store, about=args.about, unanswered=args.unanswered)))
+    return 0
+
+
+def cmd_sop(args):
+    from . import authoring
+    context = load(args)
+    if args.action == 'prepare':
+        emit(authoring.sop_prepare(context, args.source or []))
+    else:
+        if not args.file:
+            return fail('file-required', [dict(field='file', problem='请用 --file 给出 SOP 文件')], 2)
+        emit(authoring.sop_submit(context, args.file, by=signer(args), work_id=args.work))
+    return 0
+
+
+def cmd_draft(args):
+    from . import authoring
+    context = load(args)
+    if args.action == 'annotations':
+        emit(dict(ok=True, annotations=authoring.annotations(context.store, file=args.target, include_resolved=args.all)))
+    elif args.action == 'resolve':
+        emit(authoring.resolve_annotation(context.store, int(args.target), reject_it=args.reject, note=args.note))
+    else:
+        emit(authoring.draft_confirm(context, args.target, by=signer(args)))
+    return 0
+
+
+def cmd_atlas(args):
+    from . import atlas
+    context = load(args)
+    if args.action == 'prepare':
+        emit(atlas.prepare(context, args.entry, mode=args.mode))
+    elif args.action == 'submit':
+        emit(atlas.submit(context, args.entry, work_id=args.work))
+    else:
+        entries = [args.entry] if args.entry else list(atlas.web_entries(context.project))
+        emit(dict(ok=True, atlas={entry: atlas.stale(context, entry) for entry in entries}))
+    return 0
+
+
+def cmd_fixtures(args):
+    from . import ledger
+    context = load(args)
+    if args.action == 'run':
+        if len(args.rest) != 1:
+            return fail('recipe-required', [dict(field='recipe', problem='请给出一个配方名')], 2)
+        emit(ledger.fixture_run(context.project, context.store, context.checkout, recipe=args.rest[0], params=args.param or [],
+                                run=args.run, scenario=args.scenario, by=signer(args)))
+    else:
+        emit(ledger.fixture_run(context.project, context.store, context.checkout, argv=args.rest, reason=args.reason,
+                                run=args.run, scenario=args.scenario, by=signer(args)))
+    return 0
+
+
+def cmd_identity(args):
+    from . import ledger
+    context = load(args)
+    if args.action == 'record':
+        emit(ledger.identity_record(context.project, context.store, context.checkout, args.identity, args.kind,
+                                    by=signer(args), work=args.run))
+    else:
+        emit(dict(ok=True, identities=ledger.identity_status(context.project, context.store, context.checkout)))
+    return 0
+
+
+def cmd_attention(args):
+    from . import ledger
+    context = load(args, require=False)
+    if args.action == 'list':
+        with context.store.connection() as db:
+            emit(dict(ok=True, attention=ledger.open_attention(db, context.checkout.id, local=True)))
+    elif args.action == 'add':
+        emit(ledger.attention_add(context.store, context.checkout.id, args.kind, args.text, by=signer(args),
+                                  scenarios=args.scenario or [], work=args.run))
+    else:
+        emit(ledger.attention_resolve(context.store, args.id, by=signer(args), note=args.note))
+    return 0
+
+
 def cmd_skills(args):
     from .skill_install import install
     return install()
@@ -444,6 +572,7 @@ def parser():
     sub = root.add_subparsers(dest='command')
 
     p = sub.add_parser('init', help=GROUPS['搭建']['init'])
+    p.add_argument('--json', action='store_true')
     p.add_argument('name')
     p.add_argument('repos', nargs='+')
     p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board），项目建在 <根目录>/<名称>')
@@ -452,6 +581,7 @@ def parser():
     sub.add_parser('guide').set_defaults(handler=cmd_guide)
 
     p = sub.add_parser('operator')
+    p.add_argument('--json', action='store_true')
     p.add_argument('action', nargs='?', choices=('show', 'set'), default='show')
     p.add_argument('name', nargs='*')
     p.set_defaults(handler=cmd_operator)
@@ -465,10 +595,10 @@ def parser():
 
     p = common(sub.add_parser('status'))
     p.add_argument('name_or_project', nargs='?', metavar='项目')
-    p.add_argument('--json', action='store_true')
     p.set_defaults(handler=cmd_status)
 
     p = sub.add_parser('serve')
+    p.add_argument('--json', action='store_true')
     p.add_argument('name_or_project', nargs='?', metavar='项目')
     p.add_argument('--project', '-p')
     p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
@@ -548,6 +678,86 @@ def parser():
     p.add_argument('path', help='仓内相对路径')
     p.add_argument('--ledger', help='账本 JSON 数组（改写或撤销断言的理由）')
     p.set_defaults(handler=cmd_specs)
+
+    p = common(sub.add_parser('inbox'))
+    p.add_argument('action', choices=('add', 'list', 'show', 'done', 'reject'))
+    p.add_argument('file', nargs='?', help='add：文件路径；show/done/reject：收件箱编号')
+    p.add_argument('--kind', choices=('cases', 'sop'), default='cases')
+    p.add_argument('--all', action='store_true', help='list：包含已合并与已拒绝')
+    p.add_argument('--note')
+    p.add_argument('--as', dest='as_name', metavar='姓名', help='别人上传时写他的姓名')
+    p.set_defaults(handler=cmd_inbox)
+
+    p = common(sub.add_parser('merge'))
+    p.add_argument('action', choices=('prepare', 'submit'))
+    p.add_argument('--inbox', type=int, action='append', help='prepare：收件箱编号（可重复；缺省为全部待合并用例）')
+    p.add_argument('--work', type=int)
+    p.set_defaults(handler=cmd_merge)
+
+    p = common(sub.add_parser('ask'))
+    p.add_argument('--about', required=True, help='inbox:<编号>、<文件>#<场景编号> 或场景文件名')
+    p.add_argument('--text', required=True)
+    p.add_argument('--work', type=int)
+    p.add_argument('--as', dest='as_name', metavar='姓名')
+    p.set_defaults(handler=cmd_ask)
+
+    p = common(sub.add_parser('answers'))
+    p.add_argument('--about')
+    p.add_argument('--unanswered', action='store_true')
+    p.set_defaults(handler=cmd_answers)
+
+    p = common(sub.add_parser('sop'))
+    p.add_argument('action', choices=('prepare', 'submit'))
+    p.add_argument('--source', action='append', help='prepare：资料文件（可重复）')
+    p.add_argument('--file', help='submit：场景目录下的 SOP Markdown')
+    p.add_argument('--work', type=int)
+    p.add_argument('--as', dest='as_name', metavar='姓名', help='别人确认时写他的姓名')
+    p.set_defaults(handler=cmd_sop)
+
+    p = common(sub.add_parser('draft'))
+    p.add_argument('action', choices=('annotations', 'resolve', 'confirm'))
+    p.add_argument('target', nargs='?', help='annotations：场景文件名（可省）；resolve：批注编号；confirm：草稿文件名')
+    p.add_argument('--all', action='store_true', help='annotations：包含已处理的批注')
+    p.add_argument('--reject', action='store_true', help='resolve：不采纳')
+    p.add_argument('--note')
+    p.add_argument('--as', dest='as_name', metavar='姓名', help='confirm：别人确认时写他的姓名')
+    p.set_defaults(handler=cmd_draft)
+
+    p = common(sub.add_parser('atlas'))
+    p.add_argument('action', choices=('prepare', 'submit', 'stale'))
+    p.add_argument('--entry', help='Web 入口名称')
+    p.add_argument('--mode', choices=('full', 'stale'), default='full')
+    p.add_argument('--work', type=int)
+    p.set_defaults(handler=cmd_atlas)
+
+    p = common(sub.add_parser('fixtures'))
+    p.add_argument('action', choices=('run', 'exec'))
+    p.add_argument('rest', nargs='*', metavar='配方或命令', help='run：配方名；exec：-- 之后的命令')
+    p.add_argument('--param', action='append', help='run：参数 名=值（可重复）')
+    p.add_argument('--run', type=int, help='所属运行编号（留痕写进运行目录）')
+    p.add_argument('--scenario')
+    p.add_argument('--reason', help='exec：临时写入的理由')
+    p.add_argument('--as', dest='as_name', metavar='姓名')
+    p.set_defaults(handler=cmd_fixtures)
+
+    p = common(sub.add_parser('identity'))
+    p.add_argument('action', choices=('record', 'status'))
+    p.add_argument('--identity')
+    p.add_argument('--kind', choices=('login', 'code'))
+    p.add_argument('--run', type=int)
+    p.add_argument('--as', dest='as_name', metavar='姓名')
+    p.set_defaults(handler=cmd_identity)
+
+    p = common(sub.add_parser('attention'))
+    p.add_argument('action', choices=('list', 'add', 'resolve'))
+    p.add_argument('--kind', default='其他')
+    p.add_argument('--text')
+    p.add_argument('--scenario', action='append')
+    p.add_argument('--run', type=int)
+    p.add_argument('id', nargs='?', type=int, help='resolve：待人处理编号')
+    p.add_argument('--note')
+    p.add_argument('--as', dest='as_name', metavar='姓名')
+    p.set_defaults(handler=cmd_attention)
 
     p = sub.add_parser('skills')
     p.add_argument('action', choices=('install',))
