@@ -6,7 +6,9 @@
 - retest 待复测：通过发生在旧快照上；或不通过的场景修复已关闭。
 - fail 失败 / blocked 受阻 / skip 跳过：最新结果如此（人工不通过按失败，人工阻塞按受阻）。
 - changed 需求变更：测试同学复测时标为需求变更；场景文件按新需求修改后指纹变化，回到未执行。
-另有 distill（待沉淀）标记：同一指纹上已有独立真实入口通过，但没有有效守护。
+另有两个徽标，可与状态并存：
+- distill 待沉淀：同一指纹上已有独立真实入口通过，但没有有效守护。
+- review 待人工复核：状态为通过，且最新结果是 Agent 独立真实入口通过，之后还没有人工标注。
 """
 import json
 
@@ -92,13 +94,15 @@ def derive(scene, results, product_digest, *, guard=None, guard_valid=False, gua
     return dict(state='retest', reason=reason, result=latest['id'])
 
 
+def accepted(row):
+    """经真实入口的 Agent 独立通过：不是保留通过，执行期间产品无变化。"""
+    return (row['kind'] == 'agent' and row['status'] == 'pass' and row['independence'] == 'independent'
+            and not row['reused_from'] and not json.loads(row['product_changed'] or '[]'))
+
+
 def independent_pass(results):
     """同一指纹上经真实入口的独立通过（执行期间产品无变化）。"""
-    for row in results:
-        if (row['kind'] == 'agent' and row['status'] == 'pass' and row['independence'] == 'independent'
-                and not row['reused_from'] and not json.loads(row['product_changed'] or '[]')):
-            return row
-    return None
+    return next((row for row in results if accepted(row)), None)
 
 
 def board(db, checkout_id, scenes, product_digest, *, guard_validity=None):
@@ -108,7 +112,7 @@ def board(db, checkout_id, scenes, product_digest, *, guard_validity=None):
     fixes = closed_fixes(db, checkout_id)
     guard_validity = guard_validity or {}
     items, counts = {}, {state: 0 for state in ORDER}
-    distill = 0
+    distill = review = 0
     for scene_key, scene in scenes.items():
         identity = (scene['file'], scene['id'], scene['fingerprint'])
         results = grouped.get(identity, [])
@@ -120,16 +124,47 @@ def board(db, checkout_id, scenes, product_digest, *, guard_validity=None):
                       fixed_at=fixes.get((scene['file'], scene['id'])))
         info['label'] = LABELS[info['state']]
         info['distill'] = bool(scene.get('status') != 'draft' and independent_pass(results) and not valid)
+        # 人工复核须与 Agent 看同一产品快照：状态离开通过（产品变化）后不再待复核。
+        info['review'] = info['state'] == 'pass' and accepted(results[0])
         info['guard'] = dict(valid=valid, reason=guard_reason)
         counts[info['state']] += 1
         distill += info['distill']
+        review += info['review']
         items[scene_key] = info
-    return dict(items=items, counts=counts, distill=distill, total=len(scenes))
+    return dict(items=items, counts=counts, distill=distill, review=review, total=len(scenes))
+
+
+def confirmation(rows):
+    """Agent 独立通过的人工复核：样本 → 同一快照上关联它的最近一条人工通过或不通过。
+
+    只有阻塞或需求变更的样本记为未决（取最近一条），不进分母。
+    """
+    samples = {row['id']: row for row in rows if accepted(row)}
+    verdicts, undecided = {}, {}
+    for row in rows:
+        sample = samples.get(row['of_result']) if row['kind'] == 'manual' else None
+        if sample is None or row['product_digest'] != sample['product_digest']:
+            continue
+        (verdicts if row['status'] in ('pass', 'fail') else undecided)[sample['id']] = row
+    undecided = {k: v for k, v in undecided.items() if k not in verdicts}
+    misjudgments = [dict(scenario=f"{samples[k]['file']}#{samples[k]['scenario']}", fingerprint=samples[k]['fingerprint'],
+                         result=k, run=samples[k]['work'], executor=samples[k]['executor'], agent_at=samples[k]['executed_at'],
+                         mark=m['id'], marked_at=m['executed_at'], marked_by=m['marked_by'], defect=m['defect'], note=m['note'])
+                    for k, m in sorted(verdicts.items(), key=lambda item: item[1]['id']) if m['status'] == 'fail']
+    counts = {}
+    for row in undecided.values():
+        counts[row['status']] = counts.get(row['status'], 0) + 1
+    return dict(samples=len(samples), reviewed=len(verdicts),
+                confirmed=sum(m['status'] == 'pass' for m in verdicts.values()),
+                undecided=counts, misjudgments=misjudgments)
 
 
 def statistics(db, checkout_id):
-    """Agent 通过率、一次通过率、人工复测覆盖与独立性计数（按当前各场景最新结果）。"""
-    rows = list(db.execute("SELECT * FROM results WHERE checkout=? ORDER BY id", (checkout_id,)))
+    """Agent 通过率、一次通过率、人工复测覆盖、人工确认率与独立性计数。
+
+    前四项按各指纹最新结果；人工确认率按全部 Agent 独立通过样本（见 confirmation）。
+    """
+    rows = [dict(row) for row in db.execute("SELECT * FROM results WHERE checkout=? ORDER BY id", (checkout_id,))]
     first, latest_agent, manual = {}, {}, {}
     for row in rows:
         identity = (row['file'], row['scenario'], row['fingerprint'])
@@ -146,8 +181,12 @@ def statistics(db, checkout_id):
     independence_counts = {}
     for row in latest_agent.values():
         independence_counts[row['independence'] or 'undeclared'] = independence_counts.get(row['independence'] or 'undeclared', 0) + 1
+    review = confirmation(rows)
     return dict(agent_pass_rate=ratio(sum(r['status'] == 'pass' for r in decided), len(decided)),
                 first_pass_rate=ratio(sum(r['status'] == 'pass' for r in first_decided), len(first_decided)),
                 manual_coverage=ratio(sum(1 for k in latest_agent if k in manual), len(latest_agent)),
                 manual_pass_rate=ratio(sum(r['status'] == 'pass' for r in manual.values()), len(manual)),
+                agent_confirm_rate=ratio(review['confirmed'], review['reviewed']),
+                agent_review_coverage=ratio(review['reviewed'], review['samples']),
+                review_undecided=review['undecided'], misjudgments=review['misjudgments'],
                 independence=independence_counts)

@@ -130,15 +130,16 @@
 
   // ---- 工作台 ----
 
-  const LABELS = {'retest': '待复测', 'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'distill': '待沉淀',
+  const LABELS = {'retest': '待复测', 'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'distill': '待沉淀', 'review': '待人工复核',
     'not-run': '未执行', 'pass': '通过', 'guarded': '守护通过', 'skip': '跳过', 'draft': '草稿'};
   const VERDICTS = [['pass', '通过'], ['fail', '不通过'], ['blocked', '阻塞'], ['changed', '需求变更']];
+  const BADGES = ['review', 'distill'];
   const board = {data: null, signature: '', filter: null, search: '', selected: null};
 
   async function loadBoard() {
     const data = await api('/api/board?' + query());
     const signature = JSON.stringify([data.counts, data.files.map(f => [f.name, f.invalid, f.nodes]),
-      Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.title])]);
+      Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.review, v.title]), data.stats]);
     board.data = data;
     if (signature === board.signature) return;
     const first = !board.signature;
@@ -150,7 +151,8 @@
   }
 
   function matches(key, item) {
-    if (board.filter === 'distill' ? !item.distill : board.filter && item.state !== board.filter) return false;
+    const badge = BADGES.includes(board.filter);
+    if (badge ? !item[board.filter] : board.filter && item.state !== board.filter) return false;
     const text = board.search.trim().toLowerCase();
     return !text || key.toLowerCase().includes(text) || item.title.toLowerCase().includes(text);
   }
@@ -160,9 +162,9 @@
     const chip = (name, label, count) => el('button', {type: 'button', class: 'filter' + (board.filter === name ? ' active' : ''),
       onclick: () => { board.filter = board.filter === name ? null : name; renderFilters(); renderTree(); }},
       name ? el('span', {class: `dot ${name}`}) : null, label, el('span', {class: 'count'}, count));
-    const always = ['retest', 'fail', 'not-run', 'pass'];
+    const always = ['retest', 'fail', 'review', 'not-run', 'pass'];
     $('#filters').replaceChildren(chip(null, '全部', board.data.total),
-      ...config.states.concat(['distill']).filter(name => counts[name] || always.includes(name) || board.filter === name)
+      ...config.states.concat(BADGES).filter(name => counts[name] || always.includes(name) || board.filter === name)
         .map(name => chip(name, LABELS[name] || name, counts[name] || 0)));
   }
 
@@ -173,6 +175,7 @@
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); moveSelection($('#tree'), event.currentTarget, event.key === 'ArrowDown' ? 1 : -1); }
       }},
       el('span', {class: `dot ${item.state}`}), el('span', {class: 'sid'}, item.id), el('span', {class: 'stitle'}, item.title),
+      item.review ? el('span', {class: 'tag review', title: '待人工复核'}, '核') : null,
       item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null);
   }
 
@@ -378,7 +381,8 @@
         el('span', {class: 'chip'}, scene.polarity === 'positive' ? '正向' : '反向' + (scene.negative_type ? ' · ' + scene.negative_type : '')),
         el('span', {class: 'chip'}, '角色 ' + scene.actor), scene.draft ? pill('draft', '草稿') : null),
       el('div', {class: `banner ${data.state.state}`}, pill(data.state.state, data.state.label),
-        el('span', {class: 'reason'}, data.state.reason || ''), data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null),
+        el('span', {class: 'reason'}, data.state.reason || ''), data.state.review ? el('span', {class: 'tag review'}, '待人工复核') : null,
+        data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null),
       section('起点', scene.initial_state?.length ? el('ul', {class: 'plain'}, scene.initial_state.map(t => el('li', {}, t))) : el('p', {class: 'muted'}, '无')),
       section('步骤', numbered(scene.steps, null, null, 'steps')),
       section('预期', numbered(scene.expected, 'expected', data.coverage, 'expected')),
@@ -397,6 +401,10 @@
     pane.scrollTop = keep ? top : 0;
   }
 
+  // 百分比与报告一致：恰为 .5 时取偶数（同 Python 的 {:.0%}）。
+  const percent = value => { const x = value * 100, r = Math.round(x); return r - x === 0.5 && r % 2 ? r - 1 : r; };
+  const ratio = item => item.denominator ? `${item.numerator}/${item.denominator}（${percent(item.value)}%）` : '—';
+
   function renderOverview() {
     const pane = $('#detail');
     const {counts, total, items} = board.data;
@@ -407,7 +415,8 @@
       el('div', {}, el('h1', {}, `检出 ${board.data.checkout} · ${total} 条场景`),
         el('p', {class: 'muted'}, board.data.product.dirty ? '产品有未提交改动；结果按当前内容快照记录。' : '从左侧选择场景查看四要素、证据并复测。')),
       el('div', {class: 'tiles'}, [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['changed', '需求变更'],
-        ['not-run', '未执行'], ['pass', '通过'], ['guarded', '守护通过'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
+        ['not-run', '未执行'], ['pass', '通过'], ['guarded', '守护通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
+      el('p', {class: 'muted metrics'}, `Agent 独立通过的人工确认率 ${ratio(board.data.stats.agent_confirm_rate)} · 复核覆盖 ${ratio(board.data.stats.agent_review_coverage)}`),
       el('section', {class: 'block'}, el('h3', {}, `需要处理（${urgent.length}）`),
         urgent.length ? el('ul', {class: 'todo'}, urgent.map(([key, item]) => el('li', {},
           el('div', {class: 'row selectable', onclick: () => select(key, {fromHash: true})},

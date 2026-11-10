@@ -92,6 +92,7 @@ input[type=file] { font: inherit; font-size: 13px; }
 .retest { --c: var(--retest); --b: var(--retest-bg); } .guarded { --c: var(--guarded); --b: var(--guarded-bg); }
 .not-run { --c: var(--notrun); --b: var(--notrun-bg); } .draft { --c: var(--draft); --b: var(--draft-bg); }
 .skip { --c: var(--skip); --b: var(--skip-bg); } .distill { --c: var(--draft); --b: var(--draft-bg); }
+.review { --c: var(--accent); --b: var(--accent-soft); }
 .guard { --c: var(--guarded); --b: var(--guarded-bg); } .old { --c: var(--retest); --b: var(--retest-bg); }
 .dot[class*=" "] { background: var(--c, var(--notrun)); }
 .dot.hollow { background: none; }

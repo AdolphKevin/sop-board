@@ -38,3 +38,5 @@
 ## 人工复测结论
 
 使用者转述测试同学的复测结论时：`sop-board mark <场景键> pass|fail|blocked|changed [--defect <缺陷链接>] [--note <说明>]`（阻塞为 blocked、需求变更为 changed，缺陷链接与说明可选）；复测人是别人时加 `--as <姓名>`。
+
+使用者问哪些场景等测试同学复核时，看 `status --json` 的 `review_queue`：状态为通过、最新结果是 Agent 独立真实入口通过、之后还没有人工标注。Agent 独立通过的人工确认率与误判明细在 `sop-board report` 中。

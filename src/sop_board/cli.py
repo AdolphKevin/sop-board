@@ -167,10 +167,11 @@ def cmd_status(args):
         found, snapshot, derived = scene_board(context)
         result.update(snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
                                     changed=snapshot['changed'][:50]),
-                      counts=derived['counts'], distill=derived['distill'], total=derived['total'],
+                      counts=derived['counts'], distill=derived['distill'], review=derived['review'], total=derived['total'],
                       queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state)
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
+                      review_queue=sorted(k for k, v in derived['items'].items() if v['review']),
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
         from . import daemon
         result['daemon'] = dict(daemon.describe(project), command=project.serve_command())
@@ -188,7 +189,8 @@ def cmd_status(args):
             print(f"  {item['field']}：{item['problem']}")
         return 0
     counts = result['counts']
-    parts = [f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s]] + [f"待沉淀 {result['distill']}"]
+    parts = [f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s]] + [
+        f"待沉淀 {result['distill']}", f"待人工复核 {result['review']}"]
     print(f"场景 {result['total']} 条：" + '；'.join(parts))
     for name, problems in result['invalid_files'].items():
         print(f'场景文件 {name} 不合格：' + '；'.join(p['problem'] for p in problems[:3]))

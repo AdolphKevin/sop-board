@@ -42,13 +42,17 @@ def board(app, request):
     for key, scene in found['scenarios'].items():
         info = derived['items'][key]
         items[key] = dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                          id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
+                          review=info['review'], id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
     counts = dict(derived['counts'])
     counts['distill'] = derived['distill']
+    counts['review'] = derived['review']
+    with app.store.connection() as db:
+        stats = status.statistics(db, context.checkout.id)
     return dict(ok=True, project=app.project.name, local=request.local, checkout=context.checkout.name,
                 checkouts=[dict(name=c.name, kind=c.kind) for c in app.checkouts()],
                 labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items,
+                stats=dict(agent_confirm_rate=stats['agent_confirm_rate'], agent_review_coverage=stats['agent_review_coverage']),
                 product=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
                 configured=app.project.configured)
 
@@ -113,7 +117,7 @@ def detail(app, request):
                            polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
                            **fields),
                 state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                           guard=info['guard']),
+                           review=info['review'], guard=info['guard']),
                 coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=notes)
 
 

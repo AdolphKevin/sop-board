@@ -17,6 +17,10 @@ def _ratio(item):
     return f"{item['numerator']}/{item['denominator']}（{item['value']:.0%}）"
 
 
+def _undecided(counts):
+    return f"；未决：阻塞 {counts.get('blocked', 0)}，需求变更 {counts.get('changed', 0)}"
+
+
 def build(context, *, file=None, local=True):
     """返回 (markdown, 证据列表[(zip 内路径, sha256)])。"""
     from .cli import scene_board
@@ -51,6 +55,8 @@ def build(context, *, file=None, local=True):
     lines += [f"| {status.LABELS[state]} | {counts[state]} |" for state in status.ORDER if counts.get(state)]
     lines += ['', f"- Agent 通过率：{_ratio(stats['agent_pass_rate'])}；一次通过率：{_ratio(stats['first_pass_rate'])}",
               f"- 人工复测覆盖：{_ratio(stats['manual_coverage'])}；人工复测通过率：{_ratio(stats['manual_pass_rate'])}",
+              f"- Agent 独立通过的人工确认率：{_ratio(stats['agent_confirm_rate'])}；复核覆盖：{_ratio(stats['agent_review_coverage'])}"
+              + _undecided(stats['review_undecided']) + "（同一产品快照上人工复核过的 Agent 独立真实入口通过）",
               '- 独立性（各场景最新 Agent 结果）：' + ('，'.join(f"{status.INDEPENDENCE.get(k, k)} {v}"
                                                        for k, v in sorted(stats['independence'].items())) or '—'), '']
     lines += ['## 场景', '']
@@ -81,6 +87,17 @@ def build(context, *, file=None, local=True):
                 evidence.append((path, item['sha256']))
                 lines.append(f"  - 证据 [{item['name']}]({path})（sha256 {item['sha256']}）")
         lines.append('')
+    lines += ['## 误判明细（Agent 独立通过、人工复测不通过）', '']
+    for item in stats['misjudgments'] or []:
+        executor = f"，执行者 {item['executor']}" if local else ''
+        lines.append(f"- {item['scenario']}：运行 #{item['run']} {local_time(item['agent_at'])} Agent 独立通过{executor}；"
+                     f"{local_time(item['marked_at'])} 人工复测不通过，复测人 {item['marked_by'] or '未署名'}"
+                     + (f"，缺陷 {_cell(item['defect'])}" if item['defect'] else '')
+                     + (f"，说明 {_cell(item['note'])}" if item['note'] else ''))
+    if not stats['misjudgments']:
+        lines.append('- 无')
+    review = sorted(k for k in scenes if derived['items'][k]['review'])
+    lines += ['', '## 待人工复核', '', *([f"- {k} {scenes[k]['title']}" for k in review] or ['- 无']), '']
     unexecuted = sorted(k for k in scenes if derived['items'][k]['state'] in ('not-run', 'retest', 'draft'))
     lines += ['## 未执行范围', '', *([f"- {k}：{derived['items'][k]['label']}" for k in unexecuted] or ['- 无']), '']
     secrets = [os.environ[n] for n in names(project.entries) if os.environ.get(n)]
