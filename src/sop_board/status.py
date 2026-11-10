@@ -29,10 +29,10 @@ def latest_results(db, checkout_id):
     return grouped
 
 
-def guard_passes(db, checkout_id, product_digest):
+def guard_runs(db, checkout_id, product_digest):
+    """当前快照上每个场景最近一次守护运行。"""
     return {(row['file'], row['scenario'], row['fingerprint']): dict(row) for row in db.execute(
-        "SELECT * FROM guard_runs WHERE checkout=? AND product_digest=? AND status='pass' ORDER BY id",
-        (checkout_id, product_digest))}
+        'SELECT * FROM guard_runs WHERE checkout=? AND product_digest=? ORDER BY id', (checkout_id, product_digest))}
 
 
 def closed_fixes(db, checkout_id):
@@ -45,13 +45,19 @@ def closed_fixes(db, checkout_id):
     return result
 
 
-def derive(scene, results, product_digest, *, guard=None, guard_valid=False, fixed_at=None):
+def derive(scene, results, product_digest, *, guard=None, guard_valid=False, guard_reason='', guard_failure=None, fixed_at=None):
     """单个场景的状态。results 为该场景当前指纹的结果（新到旧）。"""
     if scene.get('status') == 'draft':
         return dict(state='draft', reason='草稿，确认后才进入执行')
     if not results:
         return dict(state='not-run', reason='当前内容还没有结果')
     latest = results[0]
+    if fixed_at:
+        manual = [r for r in results if r['kind'] == 'manual']
+        failed_before = any(r['status'] == 'fail' and r['executed_at'] < fixed_at for r in manual)
+        passed_after = any(r['status'] == 'pass' and r['executed_at'] > fixed_at for r in manual)
+        if failed_before and not passed_after and not (latest['kind'] == 'manual' and latest['executed_at'] > fixed_at):
+            return dict(state='retest', reason='修复已关闭，等待测试同学复测', result=latest['id'])
     if latest['status'] in ('fail', 'blocked'):
         if fixed_at and fixed_at > latest['executed_at']:
             return dict(state='retest', reason='修复已关闭，等待复测', result=latest['id'])
@@ -66,8 +72,14 @@ def derive(scene, results, product_digest, *, guard=None, guard_valid=False, fix
         return dict(state='guarded', reason='守护测试在当前产品上通过', result=latest['id'], guard_run=guard['id'])
     if changed:
         reason = '执行期间产品有变化（' + '、'.join(changed[:3]) + ('等' if len(changed) > 3 else '') + '）'
+    elif guard_failure:
+        reason = '守护测试未通过：' + (guard_failure['reason'] or '')
+    elif guard_valid:
+        reason = '产品已变化，守护测试尚未在当前产品上运行'
+    elif guard_reason and guard_reason != '没有守护':
+        reason = '产品已变化，守护无效：' + guard_reason
     else:
-        reason = '产品已变化，守护测试未覆盖' if not guard_valid else '产品已变化，守护测试尚未在当前产品上运行'
+        reason = '产品已变化，守护未覆盖'
     return dict(state='retest', reason=reason, result=latest['id'])
 
 
@@ -83,7 +95,7 @@ def independent_pass(results):
 def board(db, checkout_id, scenes, product_digest, *, guard_validity=None):
     """全部场景的状态与计数。guard_validity：场景键 → (有效, 原因)。"""
     grouped = latest_results(db, checkout_id)
-    guards = guard_passes(db, checkout_id, product_digest)
+    runs = guard_runs(db, checkout_id, product_digest)
     fixes = closed_fixes(db, checkout_id)
     guard_validity = guard_validity or {}
     items, counts = {}, {state: 0 for state in ORDER}
@@ -92,7 +104,10 @@ def board(db, checkout_id, scenes, product_digest, *, guard_validity=None):
         identity = (scene['file'], scene['id'], scene['fingerprint'])
         results = grouped.get(identity, [])
         valid, guard_reason = guard_validity.get(scene_key, (False, '没有守护'))
-        info = derive(scene, results, product_digest, guard=guards.get(identity), guard_valid=valid,
+        run = runs.get(identity)
+        info = derive(scene, results, product_digest, guard=run if run and run['status'] == 'pass' else None,
+                      guard_valid=valid, guard_reason=guard_reason,
+                      guard_failure=run if run and run['status'] == 'fail' else None,
                       fixed_at=fixes.get((scene['file'], scene['id'])))
         info['label'] = LABELS[info['state']]
         info['distill'] = bool(scene.get('status') != 'draft' and independent_pass(results) and not valid)

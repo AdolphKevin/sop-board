@@ -5,6 +5,7 @@
 没有登记过漏检。只覆盖部分预期的守护不写进索引。
 """
 import hashlib
+import json
 from pathlib import Path
 import re
 
@@ -248,3 +249,413 @@ def after_result(db, checkout, scene, verdict, result_id):
         return
     db.execute('INSERT OR IGNORE INTO guard_misses(file,scenario,fingerprint,tests_digest,result,recorded_at) VALUES (?,?,?,?,?,?)',
                (scene['file'], scene['id'], scene['fingerprint'], run['tests_digest'], result_id, now()))
+
+
+# ---- 运行守护命令（retest 与 distill submit 共用；在守护进程中执行，不启动 AI） ----
+
+import json as _json
+import os
+import signal
+import subprocess
+import xml.etree.ElementTree as ElementTree
+
+
+def _norm(name):
+    return name.replace('::', '.').replace('/', '.').replace('.py.', '.').strip('.')
+
+
+def junit_cases(path):
+    """junit XML → [(全名, 状态)]，状态为 passed/failed/skipped。"""
+    try:
+        root = ElementTree.parse(path).getroot()
+    except (OSError, ElementTree.ParseError):
+        return []
+    cases = []
+    for case in root.iter('testcase'):
+        name, classname = case.get('name', ''), case.get('classname', '')
+        status = 'passed'
+        for child in case:
+            if child.tag in ('failure', 'error'):
+                status = 'failed'
+            elif child.tag == 'skipped' and status == 'passed':
+                status = 'skipped'
+        cases.append((f'{classname}.{name}' if classname else name, name, status))
+    return cases
+
+
+def find_case(cases, declared):
+    """在执行清单中找声明的测试名：完整名相同、以它结尾（pytest 的 文件::函数 或 模块.函数），或测试标题相同。"""
+    wanted = _norm(declared)
+    for full, name, status in cases:
+        full_n = _norm(full)
+        if full_n == wanted or full_n.endswith('.' + wanted) or name == declared:
+            return status
+    return None
+
+
+def playwright_cli():
+    from .browsers import runtime_info
+    info = runtime_info()
+    return str(Path(info['node_modules']) / '@playwright' / 'test' / 'cli.js') if info else 'playwright'
+
+
+def execute(project, checkout, name, command, out, extra_env):
+    """运行一条守护命令；返回 dict(code, log, junit, timed_out)。只用 argv，不经 shell，超时结束进程组。"""
+    repo = checkout.paths.get(command['repo'])
+    if repo is None:
+        raise ValueError(f"命令 {name} 的仓库 {command['repo']} 不在检出中")
+    cwd = (repo / command.get('cwd', '.')).resolve()
+    if not (cwd == repo.resolve() or cwd.is_relative_to(repo.resolve())) or not cwd.is_dir():
+        raise ValueError(f'命令 {name} 的工作目录不在仓库内')
+    junit = out / f'{name}.junit.xml'
+    log = out / f'{name}.log'
+    argv = [part.replace('{junit}', str(junit)).replace('{playwright}', playwright_cli()) for part in command['argv']]
+    env = {k: v for k, v in os.environ.items() if not k.startswith('SOP_')}
+    env.update(command.get('env', {}))
+    env.update(extra_env)
+    env['PLAYWRIGHT_JUNIT_OUTPUT_NAME'] = str(junit)
+    # 测试运行不应改变产品快照；不让 Python 往仓库里写字节码缓存。
+    env.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+    timed_out = False
+    with log.open('wb') as stream:
+        stream.write(('$ ' + ' '.join(argv) + f'\n(cwd {cwd})\n').encode())
+        stream.flush()
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        try:
+            code = process.wait(timeout=command.get('timeout', 900))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            code = process.wait()
+    return dict(code=code, log=log, junit=junit, timed_out=timed_out)
+
+
+def run_guards(app, checkout, index, keys, *, holder):
+    """为这些场景运行守护引用的命令（每条命令一次）；返回 场景键 → (通过, 原因, 输出证据)。"""
+    from . import gitops as _gitops
+    project, store = app.project, app.store
+    commands = {}
+    for key in keys:
+        for test in index['guards'][key]['tests']:
+            commands.setdefault(test['command'], index['commands'][test['command']])
+    out = project.data / 'retests' / f"{datetime_stamp()}-{checkout.name}"
+    out.mkdir(parents=True, exist_ok=True)
+    before = _gitops.snapshot(checkout.paths, project.exclusions(test_exclusions_for(project, checkout)))['product_digest']
+    results = {}
+    try:
+        for name, command in commands.items():
+            extra = {}
+            if command.get('browser'):
+                environment = app.envs.up(checkout)
+                extra.update(environment.get('address_env', {}))
+                leased = app.browsers.lease(checkout, [command['browser']], holder)[command['browser']]
+                if 'endpoint' not in leased:
+                    results[name] = dict(code=None, problem=leased['problem'])
+                    continue
+                from .browsers import runtime_info
+                info = runtime_info()
+                extra.update(PW_CDP_ENDPOINT=leased['endpoint'], PLAYWRIGHT_BROWSERS_PATH=info['browsers'],
+                             PW_NODE_ROOT=str(Path(info['node_modules']).parent))
+            results[name] = execute(project, checkout, name, command, out, extra)
+    finally:
+        app.browsers.release(holder)
+    after = _gitops.snapshot(checkout.paths, project.exclusions(test_exclusions_for(project, checkout)))['product_digest']
+    outputs = {}
+    with store.transaction() as db:
+        for name, result in results.items():
+            items = []
+            for path in (result.get('log'), result.get('junit')):
+                if path and Path(path).is_file():
+                    items.append(dict(name=Path(path).name, sha256=store.save_evidence(db, Path(path).read_bytes(), Path(path).name)))
+            outputs[name] = items
+    verdicts = {}
+    for key in keys:
+        problems = []
+        for test in index['guards'][key]['tests']:
+            result = results[test['command']]
+            if result.get('problem'):
+                problems.append(f"命令 {test['command']} 的浏览器不可用：{result['problem']}")
+                continue
+            if result['timed_out']:
+                problems.append(f"命令 {test['command']} 超时")
+                continue
+            if result['code'] != 0:
+                problems.append(f"命令 {test['command']} 退出码 {result['code']}")
+            status = find_case(junit_cases(result['junit']), test['name'])
+            if status is None:
+                problems.append(f"测试 {test['name']} 没有出现在执行清单中")
+            elif status != 'passed':
+                problems.append(f"测试 {test['name']} {'被跳过' if status == 'skipped' else '未通过'}")
+        if before != after:
+            problems.append('运行期间产品内容发生变化')
+        evidence = [item for test in index['guards'][key]['tests'] for item in outputs.get(test['command'], [])]
+        verdicts[key] = (not problems, '；'.join(dict.fromkeys(problems)), list({e['sha256']: e for e in evidence}.values()))
+    return verdicts, before
+
+
+def datetime_stamp():
+    from datetime import datetime
+    return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
+
+
+def record_runs(store, checkout, scenes, index, verdicts, digest, operator):
+    with store.transaction() as db:
+        for key, (ok, reason, evidence) in verdicts.items():
+            scene = scenes[key]
+            db.execute('INSERT INTO guard_runs(checkout,file,scenario,fingerprint,product_digest,tests_digest,status,reason,output,operator,ran_at) '
+                       'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (checkout.id, scene['file'], scene['id'], scene['fingerprint'], digest, tests_digest(index['guards'][key]),
+                        'pass' if ok else 'fail', reason or None, _json.dumps(evidence, ensure_ascii=False), operator, now()))
+
+
+def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
+    """产品变化后运行有效守护：全部通过记为守护通过，其余留在待复测并附原因。"""
+    from .cli import Context, scene_board
+    context = Context(app.project, app.store, checkout)
+    found, snapshot, derived = scene_board(context)
+    scenes = found['scenarios']
+    index = load_index(index_path(context))
+    if scenarios_:
+        from .scenarios import resolve
+        keys = resolve(scenarios_, scenes)
+    else:
+        keys = [k for k, v in derived['items'].items() if v['state'] == 'retest']
+    runnable = [k for k in keys if derived['items'][k]['guard']['valid']]
+    skipped = {k: derived['items'][k]['guard']['reason'] for k in keys if k not in runnable}
+    plan = {}
+    for key in runnable:
+        for test in index['guards'][key]['tests']:
+            plan.setdefault(test['command'], dict(argv=index['commands'][test['command']]['argv'],
+                                                  repo=index['commands'][test['command']]['repo'], scenarios=[]))
+            if key not in plan[test['command']]['scenarios']:
+                plan[test['command']]['scenarios'].append(key)
+    result = dict(ok=True, checkout=checkout.name, dry_run=dry_run, scenarios=runnable, commands=plan,
+                  not_guarded={k: v for k, v in skipped.items()})
+    if dry_run or not runnable:
+        return result
+    verdicts, digest = run_guards(app, checkout, index, runnable, holder=f'retest:{checkout.name}')
+    record_runs(app.store, checkout, scenes, index, verdicts, digest, operator)
+    result['results'] = {k: dict(status='守护通过' if ok else '守护未通过', reason=reason) for k, (ok, reason, _) in verdicts.items()}
+    passed = sum(1 for ok, _, _ in verdicts.values() if ok)
+    result['summary'] = f'守护通过 {passed}，未通过 {len(verdicts) - passed}，没有有效守护 {len(skipped)}'
+    return result
+
+
+# ---- 沉淀 ----
+
+def distill_eligible(context):
+    from .cli import scene_board
+    found, snapshot, derived = scene_board(context)
+    return found, derived
+
+
+def distill_prepare(context, scope, *, session):
+    from importlib.resources import files
+    from string import Template
+    import yaml
+    from . import config, runs
+    from .scenarios import resolve
+    from .store import dumps
+    executor = runs.session_id(session)
+    operator = config.require_operator()
+    found, derived = distill_eligible(context)
+    scenes = found['scenarios']
+    keys = resolve(scope, scenes) if scope else sorted(k for k, v in derived['items'].items() if v['distill'])
+    not_ready = [k for k in keys if not derived['items'][k]['distill']]
+    if not_ready:
+        from .errors import reject
+        reject(409, 'not-distillable', 'scope', '这些场景没有独立真实入口通过或已有有效守护，不能沉淀：' + '、'.join(not_ready))
+    if not keys:
+        from .errors import reject
+        reject(409, 'nothing-to-distill', 'scope', '没有待沉淀的场景')
+    from .status import independent_pass, latest_results
+    with context.store.connection() as db:
+        grouped = latest_results(db, context.checkout.id)
+        acceptance = {}
+        for key in keys:
+            scene = scenes[key]
+            row = independent_pass(grouped.get((scene['file'], scene['id'], scene['fingerprint']), []))
+            work = db.execute('SELECT dir FROM work WHERE id=?', (row['work'],)).fetchone()
+            acceptance[key] = dict(result=row['id'], executor=row['executor'], executed_at=row['executed_at'],
+                                   run_dir=work['dir'] if work else None)
+        running = db.execute("SELECT id FROM work WHERE checkout=? AND kind='distill' AND status='prepared'",
+                             (context.checkout.id,)).fetchone()
+    if running:
+        from .errors import reject
+        reject(409, 'distill-prepared', 'work', f"检出 {context.checkout.name} 已有进行中的沉淀 #{running['id']}")
+    with context.store.transaction() as db:
+        cursor = db.execute("INSERT INTO work(kind,checkout,status,session,operator,dir,scope,created_at) "
+                            "VALUES ('distill',?,'prepared',?,?,'',?,?)",
+                            (context.checkout.id, executor, operator, dumps([dict(scenario=k) for k in keys]), now()))
+        work_id = cursor.lastrowid
+    directory = context.project.data / 'distills' / str(work_id)
+    directory.mkdir(parents=True)
+    (directory / 'scenarios.yaml').write_text(yaml.safe_dump([dict(scenes[k], key=k) for k in keys], allow_unicode=True,
+                                                             sort_keys=False), encoding='utf-8')
+    (directory / 'acceptance.json').write_text(dumps(acceptance), encoding='utf-8')
+    (directory / 'repos.json').write_text(dumps({a: str(p) for a, p in context.checkout.paths.items()}), encoding='utf-8')
+    skill = Path(__file__).parent / 'skills' / 'regression-distill' / 'SKILL.md'
+    prompt = Template(files('sop_board').joinpath('prompts', 'distill.md').read_text(encoding='utf-8')).substitute(
+        work=work_id, directory=directory, skill=skill, index=index_path(context), checkout=context.checkout.name,
+        exclude=json.dumps({a: [str(p) for p in ps] for a, ps in context.project.snapshot_exclude.items()}, ensure_ascii=False))
+    (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
+    with context.store.transaction() as db:
+        db.execute('UPDATE work SET dir=? WHERE id=?', (str(directory), work_id))
+    return dict(ok=True, work=work_id, directory=str(directory), prompt=str(directory / 'prompt.md'),
+                report=str(directory / 'guard.json'), scenarios=keys, acceptance={k: v['result'] for k, v in acceptance.items()})
+
+
+def distill_submit(app, checkout, report_path, *, operator, work_id=None):
+    """核对沉淀报告，按 retest 规则实际运行一次，全部合格后合并进 regression.yaml（不提交）。"""
+    import yaml
+    from .cli import Context, scene_board
+    from .errors import reject
+    from . import specs
+    context = Context(app.project, app.store, checkout)
+    report_path = Path(report_path)
+    try:
+        report = strict_yaml(report_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, yaml.YAMLError) as error:
+        reject(422, 'report-invalid', 'report', f'沉淀报告无法读取：{error}')
+    if not isinstance(report, dict) or not isinstance(report.get('guards'), dict) or not report['guards']:
+        reject(422, 'report-invalid', 'report', '沉淀报告须含 guards')
+    found, snapshot, derived = scene_board(context)
+    scenes = found['scenarios']
+    path = index_path(context)
+    index = load_index(path)
+    commands = dict(index['commands'])
+    for name, command in (report.get('commands') or {}).items():
+        if name in commands and commands[name] != command:
+            reject(422, 'report-invalid', f'commands.{name}', '与 regression.yaml 中同名命令不同；换一个命令编号')
+        commands[name] = command
+    problems, entries = [], {}
+    with app.store.connection() as db:
+        for key, guard in report['guards'].items():
+            if key not in scenes:
+                problems.append(f'{key}：场景不存在')
+                continue
+            scene = scenes[key]
+            if not isinstance(guard, dict):
+                problems.append(f'{key}：守护须为对象')
+                continue
+            result_id = (guard.get('acceptance') or {}).get('result')
+            row = db.execute('SELECT * FROM results WHERE id=?', (result_id,)).fetchone() if type(result_id) is int else None
+            if (row is None or row['kind'] != 'agent' or row['status'] != 'pass' or row['independence'] != 'independent'
+                    or row['reused_from'] or row['fingerprint'] != scene['fingerprint'] or row['file'] != scene['file']
+                    or row['scenario'] != scene['id']):
+                problems.append(f'{key}：acceptance 不是同指纹的独立真实入口通过')
+                continue
+            tests = []
+            for test in guard.get('tests') or []:
+                if not isinstance(test, dict) or test.get('repo') not in checkout.paths or not _relative(test.get('path')):
+                    problems.append(f'{key}：测试须写明检出中的仓库与仓内相对路径')
+                    continue
+                try:
+                    file = test_file(checkout, test)
+                except ValueError as error:
+                    problems.append(f'{key}：{error}')
+                    continue
+                tests.append(dict(id=test.get('id'), repo=test['repo'], path=test['path'],
+                                  sha256=hashlib.sha256(file.read_bytes()).hexdigest(), name=test.get('name'),
+                                  layer=test.get('layer'), command=test.get('command')))
+            entry = dict(fingerprint=scene['fingerprint'],
+                         acceptance=dict(result=row['id'], executor=row['executor'], product_digest=row['product_digest']),
+                         tests=tests, coverage=guard.get('coverage'), detection=None, ledger=guard.get('ledger', []))
+            misses = db.execute('SELECT * FROM guard_misses WHERE file=? AND scenario=? AND fingerprint=?',
+                                (scene['file'], scene['id'], scene['fingerprint'])).fetchall()
+            if misses and tests:
+                latest_miss = max(m['recorded_at'] for m in misses)
+                if row['executed_at'] <= latest_miss:
+                    problems.append(f'{key}：曾经漏检，acceptance 不是漏检之后的独立通过')
+                    continue
+                if tests_digest(entry) in {m['tests_digest'] for m in misses}:
+                    problems.append(f'{key}：曾经漏检，测试摘要未变化；先补上能发现该问题的断言')
+                    continue
+            coverage = guard.get('coverage') if isinstance(guard.get('coverage'), dict) else {}
+            for part in ('expected', 'forbidden_effects'):
+                given = {item.get('index'): item for item in coverage.get(part) or [] if isinstance(item, dict)}
+                for position, text in enumerate(scene[part]):
+                    item = given.get(position)
+                    if item is None or item.get('text') != text or not item.get('tests'):
+                        problems.append(f'{key}：未覆盖 {part} 第 {position} 条（{text}）')
+            detection = guard.get('detection') or {}
+            evidence = detection.get('evidence')
+            evidence_file = (report_path.parent / evidence) if isinstance(evidence, str) and not Path(evidence).is_absolute() else Path(str(evidence))
+            if detection.get('method') not in ('mutation', 'known-defect') or not detection.get('assertion') or not evidence_file.is_file():
+                problems.append(f'{key}：detection 须写明 method、assertion 与检出能力证据文件')
+            else:
+                with app.store.transaction() as tx:
+                    sha = app.store.save_evidence(tx, evidence_file.read_bytes(), evidence_file.name)
+                entry['detection'] = dict(method=detection['method'], assertion=detection['assertion'], evidence=sha)
+            for test in tests:
+                if test['layer'] == 'browser':
+                    try:
+                        specs.qualified(specs.check_file(checkout.paths[test['repo']], test['path'], ledger=entry['ledger']))
+                    except ValueError as error:
+                        problems.append(f"{key}：{test['path']} {error}")
+            entries[key] = entry
+    if problems:
+        reject(422, 'distill-invalid', 'report', '；'.join(problems))
+    merged = dict(version=1, commands=commands, guards=dict(index['guards'], **entries))
+    structure = validate_index(merged)
+    if structure:
+        reject(422, 'distill-invalid', 'report', '；'.join(f"{p['field']} {p['problem']}" for p in structure[:8]))
+    verdicts, digest = run_guards(app, checkout, merged, list(entries), holder=f'distill:{checkout.name}')
+    failed = {k: v[1] for k, v in verdicts.items() if not v[0]}
+    if failed:
+        reject(422, 'distill-tests-failed', 'tests', '守护命令实际运行未通过：' + '；'.join(f'{k} {r}' for k, r in failed.items()))
+    path.write_text(yaml.safe_dump(merged, allow_unicode=True, sort_keys=False), encoding='utf-8')
+    record_runs(app.store, checkout, scenes, merged, verdicts, digest, operator)
+    if work_id:
+        from .store import dumps
+        with app.store.transaction() as db:
+            db.execute("UPDATE work SET status='submitted', ended_at=?, result=? WHERE id=? AND kind='distill'",
+                       (now(), dumps(dict(guards=sorted(entries))), work_id))
+    return dict(ok=True, checkout=checkout.name, index=str(path), guards=sorted(entries),
+                runs={k: '实际运行通过' for k in verdicts}, next='测试文件与 regression.yaml 为未提交改动，请审核后提交')
+
+
+# ---- 守护进程挂载与接口 ----
+
+def attach(app):
+    pass
+
+
+def _register():
+    from .server import json_response, route
+
+    @route('POST', '/local/retest', 'token')
+    def retest_route(app, request):
+        checkout = app.checkout(request.json_field('checkout'))
+        return json_response(retest(app, checkout, scenarios_=request.json_field('scenarios'),
+                                    dry_run=bool(request.json_field('dry_run')),
+                                    operator=request.json_field('operator') or '本机'))
+
+    @route('POST', '/local/distill/submit', 'token')
+    def distill_route(app, request):
+        checkout = app.checkout(request.json_field('checkout'))
+        return json_response(distill_submit(app, checkout, request.json_field('report'),
+                                            operator=request.json_field('operator') or '本机', work_id=request.json_field('work')))
+
+    @route('POST', '/api/retest', 'local')
+    def retest_button(app, request):
+        from . import config
+        checkout = app.checkout(request.json_field('checkout'))
+        key = request.json_field('scenario')
+        return json_response(retest(app, checkout, scenarios_=[key] if key else None,
+                                    operator=(config.operator() or '本机') + '（工作台）'))
+
+    @route('POST', '/api/distill', 'local')
+    def distill_button(app, request):
+        from . import config
+        checkout = app.checkout(request.json_field('checkout'))
+        key = request.json_field('scenario')
+        return json_response(dict(ok=True, launch=app.launcher.start(
+            checkout, 'distill', [key], requested_by=(config.operator() or '本机') + '（工作台）')))
+
+
+_register()

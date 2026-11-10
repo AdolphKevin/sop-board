@@ -372,6 +372,66 @@ def cmd_report(args):
     return 0
 
 
+def cmd_retest(args):
+    from . import daemon
+    context = load(args)
+    emit(daemon.call(context.project, 'POST', '/local/retest', dict(
+        checkout=context.checkout.name, scenarios=args.scenario or None, dry_run=args.dry_run,
+        operator=config.operator() or '本机'), timeout=7200))
+    return 0
+
+
+def cmd_distill(args):
+    from . import daemon, guards
+    context = load(args)
+    if args.action == 'prepare':
+        emit(guards.distill_prepare(context, args.scenario, session=args.session))
+        return 0
+    report = args.report
+    work = args.work
+    if work is None:
+        with context.store.connection() as db:
+            row = db.execute("SELECT id, dir FROM work WHERE checkout=? AND kind='distill' AND status='prepared'",
+                             (context.checkout.id,)).fetchone()
+        if row:
+            work = row['id']
+            report = report or str(Path(row['dir']) / 'guard.json')
+    if not report:
+        return fail('report-required', [dict(field='report', problem='请用 --report 给出 guard.json')], 2)
+    emit(daemon.call(context.project, 'POST', '/local/distill/submit', dict(
+        checkout=context.checkout.name, report=str(Path(report).resolve()), work=work,
+        operator=config.operator() or '本机'), timeout=7200))
+    return 0
+
+
+def cmd_fix(args):
+    from . import fixes
+    context = load(args)
+    if args.action == 'prepare':
+        emit(fixes.prepare(context, args.scenario, session=args.session))
+    elif args.fix is None:
+        return fail('fix-required', [dict(field='fix', problem='请用 --fix 给出修复编号')], 2)
+    elif args.action == 'submit':
+        emit(fixes.submit(context, args.fix))
+    elif args.action == 'close':
+        emit(fixes.close(context, args.fix))
+    elif args.action == 'abandon':
+        emit(fixes.abandon(context, args.fix))
+    return 0
+
+
+def cmd_specs(args):
+    from . import specs
+    context = load(args)
+    repo = context.checkout.paths.get(args.repo)
+    if repo is None:
+        return fail('repo-invalid', [dict(field='repo', problem=f'检出中没有仓库 {args.repo}')], 2)
+    ledger = json.loads(Path(args.ledger).read_text(encoding='utf-8')) if args.ledger else []
+    report = specs.check_file(repo, args.path, ledger=ledger)
+    emit(dict(ok=not report['violation'], **report))
+    return 0 if not report['violation'] else 1
+
+
 def cmd_skills(args):
     from .skill_install import install
     return install()
@@ -461,6 +521,33 @@ def parser():
     p.add_argument('--zip', action='store_true', help='同时打包所引证据')
     p.add_argument('--out', help='输出目录（缺省为数据目录 reports/ 下的新目录）')
     p.set_defaults(handler=cmd_report)
+
+    p = common(sub.add_parser('retest'))
+    p.add_argument('--scenario', nargs='+', help='只运行这些场景的守护（缺省为全部待复测且守护有效的场景）')
+    p.add_argument('--dry-run', action='store_true', help='只列出场景与将运行的命令')
+    p.set_defaults(handler=cmd_retest)
+
+    p = common(sub.add_parser('distill'))
+    p.add_argument('action', choices=('prepare', 'submit'))
+    p.add_argument('scenario', nargs='*', help='prepare：要沉淀的场景（缺省为全部待沉淀）')
+    p.add_argument('--session', help='prepare：沉淀会话编号')
+    p.add_argument('--report', help='submit：guard.json（缺省为进行中沉淀目录里的 guard.json）')
+    p.add_argument('--work', type=int, help='submit：沉淀编号')
+    p.set_defaults(handler=cmd_distill)
+
+    p = common(sub.add_parser('fix'))
+    p.add_argument('action', choices=('prepare', 'submit', 'close', 'abandon'))
+    p.add_argument('scenario', nargs='*', help='prepare：问题场景（缺省为当前检出全部失败或受阻的场景）')
+    p.add_argument('--session', help='prepare：修复会话编号')
+    p.add_argument('--fix', type=int)
+    p.set_defaults(handler=cmd_fix)
+
+    p = common(sub.add_parser('specs'))
+    p.add_argument('action', choices=('check',))
+    p.add_argument('--repo', required=True, help='spec 所在仓库别名')
+    p.add_argument('path', help='仓内相对路径')
+    p.add_argument('--ledger', help='账本 JSON 数组（改写或撤销断言的理由）')
+    p.set_defaults(handler=cmd_specs)
 
     p = sub.add_parser('skills')
     p.add_argument('action', choices=('install',))

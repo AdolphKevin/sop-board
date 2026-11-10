@@ -1,12 +1,12 @@
 // 断言、只读数据查询及其计算来源；仅解析源码，绝不运行候选。
 import path from 'node:path';
 import fs from 'node:fs';
-import {graph, canonical, walk, nameOf, assetSummary, sha, supportFiles, assetFiles, taskAssets} from '../templates/spec-assets.mjs';
+import {graph, canonical, walk, nameOf, assetSummary, sha, supportFiles, assetFiles, taskAssets} from './spec-assets.mjs';
 
 const [mode, specArg, rootArg, libraryArg, importsArg] = process.argv.slice(2);
 const spec = path.resolve(specArg), root = path.resolve(rootArg);
 const library = libraryArg === 'library';
-const extra = libraryArg === 'runtime' ? [...['playwright.config.mjs', 'global-setup.mjs', 'progress-reporter.mjs', 'spec-assets.mjs'].map(name => path.join(root, name)).filter(file => fs.existsSync(file)), ...taskAssets(root)] : library ? assetFiles(importsArg || root) : [];
+const extra = libraryArg === 'runtime' ? [...['playwright.config.mjs', 'global-setup.mjs', 'progress-reporter.mjs'].map(name => path.join(root, name)).filter(file => fs.existsSync(file)), ...taskAssets(root)] : library ? assetFiles(importsArg || root) : [];
 const sql = /\b(?:SELECT\b[\s\S]*\bFROM\b|WITH\s+\w+\s+AS\s*\(|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)/i;
 
 function analyze() {
