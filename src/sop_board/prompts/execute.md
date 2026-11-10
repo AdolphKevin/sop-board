@@ -48,7 +48,7 @@ ${environment_restriction}不修改任何仓库中的产品文件，不写单元
 
 - 字段：scenario、status（pass/fail/blocked/skip）、actual、executed_at（带时区的 ISO 8601）、executor、evidence（相对任务目录的路径数组），可选 finding、note、session，以及已登记问题的编号 issue（`sop-board issue list` 查看）。
 - blocked、skip 必须有 finding。实际执行的 pass、fail 至少有一份真实证据，写入 evidence/。
-- 证据面向内网的测试同事：路径写成相对仓库或任务目录的路径；凭据只写“已设置”之类的状态，不写本机绝对路径和凭据变量名。
+- 面向测试同事的文字说明使用相对仓库或任务目录的路径；凭据只写“已设置”之类的状态，不写本机绝对路径和凭据变量名。运行器、转换器生成的 JSON、运行摘要和脚本引用保持原值，不能批量替换其中的路径；本机协议字段按随包技能的 contracts.md 解释。
 - 不填 fingerprint；executor 与 session 由看板绑定到本次会话与任务。
 
 ## Web 场景

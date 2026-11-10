@@ -14,6 +14,8 @@ results.jsonl 每行一个场景：scenario、status（pass/fail/blocked/skip）
 
 自动执行：`sop-board playwright convert --out <任务目录>`，证据放在任务目录 evidence/ 下。看板校验结果完整性后，从任务快照补内容指纹、执行者、产品版本并登记轮次；执行者不自行调用 submit，以免重复登记。修复复测结果另有 batch 字段，按 playwright-scopes.json 分批转换、汇总后交回看板。
 
+路径按字段解释：结果行的 evidence 和 spec_run.file 相对结果目录；运行摘要 spec-runs/*.json 的 directory 指向本次冻结的候选脚本目录，模板写绝对路径，已有相对值从该冻结目录解析（普通执行为任务目录，分批复验为对应批次的冻结目录）。解析后仍须在任务目录内，分批复验还须等于对应冻结目录。保留运行器与转换器生成的协议字段，不对 evidence/、spec-runs/ 或报告做全目录路径替换；内网页面由看板隐藏本机路径，人的说明另写相对路径。
+
 手工执行：先用 `sop-board playwright scope` 固定原文和场景指纹，用 `convert` 生成结果，再用 `submit` 通过 `/api/v1/evidence` 与原工作区/批次的 `/rounds` 登记。submit 要求看板已存在同一原文版本，拒绝跨版本提交；SOP_BOARD_URL 通过环境提供；工作区 API 无需令牌，不放进报告。它不创建工作区或批次，也不自动猜测产品快照。
 
 数据准备记录由 `fixtures run/exec --task --scenario` 自动关联到结果，只用于追溯前置条件，不提供预期或通过依据。内网只显示打码后的配方名或临时说明、参数与时间。

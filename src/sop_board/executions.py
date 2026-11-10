@@ -156,12 +156,13 @@ class Executions:
                         db.execute('UPDATE tasks SET error=? WHERE id=?', (error, task_id))
         return dict(ok=True, task=self.tasks.read(task_id))
 
-    def freeze(self, task):
+    def freeze(self, task, *, preparing=True):
         workspace = self.service.workspace
         with self.store.connection() as db:
             batch = self.service.batch(db, task['workspace'], task['batch'])
-            from .scenario_edits import require_clean
-            require_clean(db, batch, self.store.data)
+            if preparing:
+                from .scenario_edits import require_clean
+                require_clean(db, batch, self.store.data)
             version = self.service.latest_version(db, batch)
             if not version:
                 raise ValueError('批次尚无场景')
@@ -316,7 +317,7 @@ class Executions:
             return '验证技能变化', []
         if not self.service.environment.approved() or snapshot['config_digest'] != self.service.workspace.config_digest:
             return '工作区配置或自检状态变化', []
-        current, _, files = self.freeze(task)
+        current, _, files = self.freeze(task, preparing=False)
         changed = self.tasks.types['execute'].inputs(task, product=not started).changed(current)
         if changed:
             return '、'.join(changed) + '变化', []
@@ -332,8 +333,15 @@ class Executions:
                 or snapshot['config_digest'] != self.service.workspace.config_digest):
             return None
         try:
-            current, current_inputs, files = self.freeze(task)
-        except (ValueError, KeyError, APIError):
+            current, current_inputs, files = self.freeze(task, preparing=False)
+            # 文件发现可能尚未登记这次保存；作废判断必须使用磁盘上的实际场景。
+            from .scenario_file import load_scenarios
+            source = self.service.workspace.scenario_path(task['batch']).read_bytes()
+            if hashlib.sha256(source).hexdigest() != current['source_sha256']:
+                return None
+            document = load_scenarios(source.decode('utf-8'), entries=set(self.service.workspace.entries))
+            actual = {s['id']: fingerprint(s) for n in document['sops'] for s in n['scenarios']}
+        except (OSError, ValueError, KeyError, APIError):
             return None
         changed = self.tasks.types['execute'].inputs(task, product=False).changed(current)
         if not changed or not set(changed) <= self.SCENARIO_LEVEL:
@@ -342,7 +350,7 @@ class Executions:
         before = {case['id']: canonical(case) for case in frozen.get('cases', [])}
         after = {case['id']: canonical(case) for case in current_inputs.get('cases', [])}
         cases = {cid for cid in before.keys() | after.keys() if before.get(cid) != after.get(cid)}
-        voided = {sid for sid, value in snapshot['scenarios'].items() if current['scenarios'].get(sid) != value}
+        voided = {sid for sid, value in snapshot['scenarios'].items() if actual.get(sid) != value}
         voided |= {scene['id'] for scene in frozen.get('scenes', []) if set(scene.get('refs', [])) & cases}
         return sorted(voided), self.drift(task, snapshot, current, files)
 

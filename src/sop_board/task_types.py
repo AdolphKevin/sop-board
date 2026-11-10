@@ -336,7 +336,8 @@ class ExecuteType(TaskType):
         return self.tasks.executions.materialize(task, inputs, environment)
 
     def launch(self, task, *, environment):
-        return Launch(sandbox='workspace-write', environment=environment)
+        return Launch(sandbox='workspace-write', environment=environment,
+                      writable_directories=(self.tasks.store.data,))
 
     def consume(self, task, session, **inputs):
         return self.tasks.executions.consume(task, session, **inputs)
@@ -516,7 +517,8 @@ class FixValidationType(TaskType):
         return validator.prepare(task, runtime, environment)
 
     def launch(self, task, *, environment):
-        return Launch(sandbox='workspace-write', environment=environment)
+        return Launch(sandbox='workspace-write', environment=environment,
+                      writable_directories=(self.tasks.store.data,))
 
     def consume(self, task, *, runtime, session, validator, reason='', register=True):
         # 环境恢复失败仍须计作复验失败，故保留读取和恢复后登记两个阶段。

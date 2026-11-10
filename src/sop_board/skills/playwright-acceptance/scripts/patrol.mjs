@@ -65,12 +65,17 @@ try {
     report.entries.push(result);
     if (!item.review?.by?.trim() || !item.review?.at?.trim()) { result.reason = '未审核，未执行'; continue; }
     let target, page, capture, route, context, failure, activeControl;
+    let stage = 'setup', feedbackKind = 'other', failureKind;
     const pendingRequests = new Set();
     const folder = path.join(out, 'entries', String(index + 1));
     fs.mkdirSync(folder, {recursive: true});
     let stopped;
     const stopSignal = new Promise(resolve => {stopped = resolve;});
-    const stop = reason => { if (!failure) {failure = reason; stopped(reason);} };
+    const stop = reason => {
+      if (!failure) {
+        failure = reason; failureKind = stage === 'reach' ? 'reach' : 'other'; stopped(reason);
+      }
+    };
     const active = async action => {
       if (failure) throw new Error(failure);
       const value = await Promise.race([Promise.resolve().then(action), stopSignal.then(reason => {throw new Error(reason);})]);
@@ -177,6 +182,7 @@ try {
         attach: async (name, attachment) => result.evidence.push({name, path: path.relative(out, attachment.path), contentType: attachment.contentType})};
       capture = recording(page, context, info, input.web_evidence);
       await capture.start();
+      stage = 'reach'; feedbackKind = 'reach';
       for (const step of item.reach) await active(async () => {
         if (step.action === 'goto') await page.goto(new URL(step.path, input.address).href, {waitUntil: 'networkidle'});
         else if (step.action === 'click') {
@@ -186,14 +192,22 @@ try {
           await page.waitForLoadState('networkidle');
         } else throw new Error('到达步骤只允许已审核 goto/click：' + step.action);
       });
+      stage = 'target';
       for (const check of item.targets) await active(async () => {
         activeControl = check.ref;
+        feedbackKind = 'locator';
         const element = located(page, check.locator);
-        await element.first().waitFor({state: 'attached'});
+        try { await element.first().waitFor({state: 'attached'}); }
+        catch (error) {
+          if (await element.count() === 0) feedbackKind = 'missing';
+          throw error;
+        }
         const count = await element.count();
         if (count !== check.count) throw new Error('定位数量不符：' + check.ref + '，要求 ' + check.count + '，实际 ' + count);
+        feedbackKind = 'other';
         for (let i = 0; i < count; i++) await element.nth(i).waitFor({state: 'visible'});
       });
+      stage = 'cleanup'; feedbackKind = 'other';
       if (failure) throw new Error(failure);
       result.status = 'pass';
     } catch (error) {
@@ -231,7 +245,7 @@ try {
       }
       if (result.status === 'fail') {
         fs.appendFileSync(path.join(out, 'atlas-feedback.jsonl'), JSON.stringify({entry: item.entry, page: item.page,
-          control: activeControl, kind: /定位/.test(result.reason) ? 'locator' : 'reach', detail: result.reason,
+          control: activeControl, kind: failure ? failureKind : feedbackKind, detail: result.reason,
           evidence: result.evidence.find(e => e.name === '失败截图')?.path || result.evidence.map(e => e.path).join('、')}) + '\n');
       }
       fs.writeFileSync(path.join(out, 'patrol-report.json'), JSON.stringify(report, null, 2) + '\n');

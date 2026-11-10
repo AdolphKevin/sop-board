@@ -379,7 +379,10 @@ def run_for_result(directory, row, *, task=None, batch=None):
             or batch and run.get('batch') != batch
             or run.get('scope', {}).get('scenarios', {}).get(sid) != row.get('fingerprint')):
         raise ValueError('运行摘要与场景、批次或指纹不一致：' + sid)
-    source_directory = Path(run.get('directory', selected)).resolve()
+    source_directory = Path(run.get('directory', selected))
+    if not source_directory.is_absolute():
+        source_directory = selected / source_directory
+    source_directory = source_directory.resolve()
     if split and source_directory != selected.resolve():
         raise ValueError('运行摘要不属于结果对应的分批冻结目录')
     if task is not None and not source_directory.is_relative_to(directory.resolve()):
