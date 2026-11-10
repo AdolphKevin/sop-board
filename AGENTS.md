@@ -2,11 +2,9 @@
 
 ## 当前入口
 
-本仓正在按 [docs/design.md](docs/design.md) 整体重写为 v10（分支 v10-rewrite，旧实现见 tag v9-final）。设计、阶段与已定决策以该文件为准：直接替换，不写双轨或兼容旧数据的代码；需要沿用的旧代码用 `git show v9-final:<路径>` 取出。
+设计与取舍见 [docs/design.md](docs/design.md)（v10，旧实现在 tag v9-final；不写兼容旧数据或双轨的代码）。验收标准的唯一正文是 [docs/standard.md](docs/standard.md)，命令与文件契约见 [docs/reference.md](docs/reference.md)，本仓的验收入口与留证见 [docs/verification.md](docs/verification.md)。
 
-验收标准的唯一正文是 [docs/standard.md](docs/standard.md)；本仓的验收入口与留证见 [docs/verification.md](docs/verification.md)。
-
-随包技能在 src/sop_board/skills/：sop-board（会话入口）、playwright-acceptance（Web 驱动）、regression-distill（沉淀守护测试），由 `sop-board skills install` 安装到两个客户端。编辑这些技能、提示词或本文件时，按 writing-for-agents 技能写作。
+随包技能在 src/sop_board/skills/：sop-board（会话入口）、playwright-acceptance（Web 驱动）、regression-distill（沉淀守护测试），由 `sop-board skills install` 安装到两个客户端。编辑这些技能、提示词（src/sop_board/prompts/）或本文件时，按 writing-for-agents 技能写作。
 
 ## 完成标准
 

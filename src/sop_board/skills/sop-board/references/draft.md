@@ -1,11 +1,50 @@
-# 会话草稿
+# 验收场景草稿：生成、批注与确认
 
-先完成入口技能的 status 检查，再按 [sessions.md](sessions.md) 记录本会话身份。
+草稿是场景目录下 `metadata.status: draft` 的场景 YAML。草稿不进入执行（`run prepare` 返回 `draft-not-runnable`），确认后才进入运行范围。
 
-1. 确认工作区已登记、配置合格，批次已登记业务 SOP 原文。缺原文时请使用者提供文件，并在本次请求中指定上传人和确认人，遵守[入口的等待答复规则](../SKILL.md)，收到资料与姓名后再运行 `sop-board sop upload <工作区> <批次> <文件> --uploaded-by <姓名> --confirmed-by <姓名> --session <标识>`。此命令登记已有原文并认领草稿任务；只有需求资料、需要先编写 SOP 时读取 [author-sop.md](author-sop.md)。
-2. 运行 `sop-board draft prepare <工作区> <批次> --session <标识>`；自定义数据目录加 `--data <目录>`。读取返回的提示词，按其中契约在返回目录写最终输出，然后运行 `sop-board draft submit <工作区> --task <编号>`。
-3. 呈报草稿和待确认问题，请使用者答复时一并写明答复人姓名。呈报后遵守[入口的等待答复规则](../SKILL.md)。收到答复后，批注与业务答复使用使用者给出的原文和姓名：`sop-board draft annotate <工作区> <批次> --version <版本> --target <目标> --kind <类型> --text <原文> --author <姓名>`。回答问题用 `--kind answer --target question:<问题编号>`，删除用例用 `--kind remove --target case:<用例编号>`，其他意见用 comment 或 add 指向 draft、case:、rule: 或 question:。按提示修订时再次 prepare，不自行补充业务口径。
-4. 确认人必须由使用者在本次确认请求中明确指定。此前的自我介绍、上传人、答复人或其他角色姓名都不能代替；未给出时先询问，并遵守[入口的等待答复规则](../SKILL.md)。收到明确确认和姓名后运行 `sop-board draft confirm <工作区> <批次> --version <版本> --confirmed-by <姓名> --session <本会话标识>`，只认领随确认产生的合并任务，避免看板替会话自动执行。
-5. 确认成功后先呈报告知并询问是否继续合并，遵守[入口的等待答复规则](../SKILL.md)，不自行运行 merge prepare/submit。使用者在当次请求中已明确要求继续合并的，沿用该明确授权；同意继续后才读取 [merge.md](merge.md)。
+## 生成草稿
 
-输出校验失败时，修正同一任务目录的输出并再次 submit；任务已作废则按最新输入重新准备。排队冲突先呈报编号，仅在使用者同意替换时加 `--replace-queued`；已有授权沿用，不重复询问。运行中或其他会话认领的任务不接管。参数和目标格式以各命令 `--help` 为准。
+1. `sop-board checkout show` 的 `checkout.scenarios` 是场景目录；已登记的 SOP（`.md`）和现有场景文件都在这里，现有场景文件是最直接的样例。
+2. 依据 SOP 写 `<场景目录>/<名称>.yaml`。写法遵循 sop-board 仓库 [docs/sop-guide.md](https://github.com/AdolphKevin/sop-board/blob/main/docs/sop-guide.md) 的“四要素”“场景粒度”“正向与反向”三节：预期只来自 SOP 原文和使用者的答复；SOP 没写明的结果在对话中问使用者，代码现状不当作预期；每个节点至少一条正向与一条反向场景，确实没有反向时写 `negative_exempt` 理由。
+3. 结构如下。`status: draft` 单独一行、`sources:` 用块格式，`draft confirm` 依赖这两点：
+
+   ```yaml
+   metadata:
+     requirement: "<这批场景验证的需求>"
+     version: 1
+     owner: "<负责人>"
+     status: draft
+     sources:
+       - ref: "<SOP 文件名>"
+         version: "<SOP 确认日期>"
+         confirmed_by: "<SOP 文末的确认人>"
+   sops:
+     - id: R1
+       title: <节点标题>
+       actor: <角色>
+       entry: <入口说明>
+       scenarios:
+         - id: R1-P01            # 不含 #
+           polarity: positive    # 反向写 negative，并加 negative_type
+           title: <标题>
+           actor: <角色>
+           priority: P1
+           verify: <config 中声明的入口名>
+           initial_state: ["…"]
+           steps: ["…"]
+           expected: ["…"]
+           forbidden_effects: []
+           refs: ["<SOP 文件>#R1"]
+   ```
+
+4. 运行 `sop-board status --json`，`invalid_files` 列出的问题全部修正（草稿计入 `counts.draft`）。告诉使用者草稿位置，测试同学可在看板“草稿”筛选中批注。
+
+## 处理批注
+
+1. `sop-board draft annotations [<文件名>]` 读取未处理的批注（`--all` 含已处理）。
+2. 按批注修订场景文件；批注涉及的业务口径不清时问使用者。
+3. 采纳：`sop-board draft resolve <批注编号> --note <怎么改的>`；不采纳：`sop-board draft resolve <批注编号> --reject --note <理由>`。
+
+## 确认
+
+使用者确认草稿内容后，运行 `sop-board draft confirm <文件名>`（不带 `.yaml`）：状态改为 confirmed，并在 sources 写入确认人（操作者；使用者说明是别人确认的，加 `--as <姓名>`）。返回 `draft-annotations-open` 时先处理列出的批注。确认后的场景显示为未执行，按 [run.md](run.md) 执行。

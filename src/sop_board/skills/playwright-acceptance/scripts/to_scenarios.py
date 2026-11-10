@@ -101,7 +101,7 @@ def last_result(test):
 
 
 def blocked_note(result, test):
-    """模板在调试连接中断、目标页关闭时写入的 blocked 注记（D87）；没有时返回空字符串。"""
+    """模板在调试连接中断、目标页关闭时写入的 blocked 注记；没有时返回空字符串。"""
     for item in list((test or {}).get('annotations') or []) + list(result.get('annotations') or []):
         if item.get('type') == 'blocked' and item.get('description'):
             return item['description']
@@ -307,7 +307,7 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         rows.append(row)
     if missing:
         warnings.append('部分试跑，执行范围中尚无结果的场景：%s' % ', '.join(missing))
-        # 明确写出未执行标记行（D87）：sop-board 登记时不登记这些场景，它们留在待执行范围；不能当作结果。
+        # 明确写出未执行标记行：sop-board 登记时不登记这些场景，它们留在待执行范围；不能当作结果。
         for sid in missing:
             row = {'scenario': sid, 'status': NOT_EXECUTED, 'finding': findings.get(sid) or '本轮执行中途停止，未执行', 'evidence': []}
             if session:

@@ -1,31 +1,32 @@
-# sop-board 验收契约
+# 验收契约
 
-本技能随 sop-board 发行，不依赖其他流程工具。看板校验器是字段约束的事实来源。
+看板的校验器是字段约束的事实来源；本文件只说明执行者要产出与读取的内容。
 
 ## 场景
 
-`scenarios.yaml` 顶层为 metadata 与 sops；metadata 包含 requirement、batch、version、owner、sources。每个 SOP 节点有 id、title、actor、entry、scenarios；场景包含 id、polarity、title、actor、priority、verify、initial_state、steps、expected、forbidden_effects，反向场景另有 negative_type。场景业务预期由上游确认，不由浏览器驱动改写。
-
-完整场景文件需正反向覆盖；看板为本次任务筛选出的文件可能只含待执行的某一方向，不能为补结构而新造场景。任务的 source/scope/snapshot 和原始场景版本由看板固定。
+`scenarios.yaml` 是本轮场景的列表，每项含 `key`（`<文件>#<编号>`）、`reason`、`id`、`polarity`、`title`、`actor`、`priority`、`verify`、`initial_state`、`steps`、`expected`、`forbidden_effects`，反向场景另有 `negative_type`。业务预期由上游确认，浏览器驱动不改写。本轮文件可能只含待执行的一部分，不为补结构新造场景。
 
 ## 结果
 
-results.jsonl 每行一个场景：scenario、status（pass/fail/blocked/skip）、actual、executed_at（带时区）、executor、evidence（相对结果目录的文件路径数组），可选 session、finding、note，以及 issue（问题台账编号，须已用 `sop-board issue add` 登记）。中途停止时，未执行的场景写成 `{"scenario", "status": "not-executed", "finding"}` 标记行（`convert --allow-partial` 自动生成），不附证据；登记时不登记这些场景，它们留在待执行范围，复验不接受标记行。pass/fail 至少一份证据，blocked/skip 须有 finding。单个证据文件不超过 64 MiB，路径不能越出结果目录。
+`results.jsonl` 每行一个场景，写在运行目录：
 
-自动执行：`sop-board playwright convert --out <任务目录>`，证据放在任务目录 evidence/ 下。看板校验结果完整性后，从任务快照补内容指纹、执行者、产品版本并登记轮次；执行者不自行调用 submit，以免重复登记。修复复测结果另有 batch 字段，按 playwright-scopes.json 分批转换、汇总后交回看板。
+| 字段 | 内容 |
+| --- | --- |
+| `scenario` | 场景 key |
+| `status` | `pass`、`fail`、`blocked`、`skip`、`not-executed` |
+| `actual` | 实际观察到的结果 |
+| `executed_at` | 带时区的实际执行时间 |
+| `executor` | 执行者（`convert` 写入） |
+| `evidence` | `evidence/` 下的相对路径数组，单个文件不超过 64 MiB |
+| `finding`、`note` | blocked、skip、not-executed 须写 `finding` |
+| `kept` | 按影响判定保留原通过时为 true，须在 `note` 写理由 |
 
-路径按字段解释：结果行的 evidence 和 spec_run.file 相对结果目录；运行摘要 spec-runs/*.json 的 directory 指向本次冻结的候选脚本目录，模板写绝对路径，已有相对值从该冻结目录解析（普通执行为任务目录，分批复验为对应批次的冻结目录）。解析后仍须在任务目录内，分批复验还须等于对应冻结目录。保留运行器与转换器生成的协议字段，不对 evidence/、spec-runs/ 或报告做全目录路径替换；内网页面由看板隐藏本机路径，人的说明另写相对路径。
-
-手工执行：先用 `sop-board playwright scope` 固定原文和场景指纹，用 `convert` 生成结果，再用 `submit` 通过 `/api/v1/evidence` 与原工作区/批次的 `/rounds` 登记。submit 要求看板已存在同一原文版本，拒绝跨版本提交；SOP_BOARD_URL 通过环境提供；工作区 API 无需令牌，不放进报告。它不创建工作区或批次，也不自动猜测产品快照。
-
-数据准备记录由 `fixtures run/exec --task --scenario` 自动关联到结果，只用于追溯前置条件，不提供预期或通过依据。内网只显示打码后的配方名或临时说明、参数与时间。
+实际执行的 pass、fail 至少一份真实证据；`not-executed` 不附证据，留在待执行范围。`convert` 生成上述字段，其他入口的行由对应驱动写入后合并。
 
 ## 配对标签
 
-pairs.json 顶层为 covered、conflict、disposed 数组。covered/conflict 含 case、scenarios、note；disposed 含 case、state、reason、confirmed_by。`sop-board playwright tags` 仅把已确定的对应关系转成 Playwright tag，不生成业务预期，也不把标签当作通过结果。
+`pairs.json` 顶层为 `covered`、`conflict`、`disposed` 数组。`covered`、`conflict` 含 `case`、`scenarios`、`note`；`disposed` 含 `case`、`state`、`reason`、`confirmed_by`。`sop-board playwright tags` 只把已确定的对应关系转成 Playwright tag，不生成业务预期，也不把标签当作通过结果。
 
 ## 回归
 
-场景仍是验收单位，不接受场景 regression 字段或 checks 声明。用户另行授权的测试建设使用随包 [regression-distill](../../regression-distill/SKILL.md)，通过 `sop-board distill submit` 登记测试关联；关联不写场景执行轮次或改变验收结论。入口来自工作区 config.yaml；既有历史格式的说明不代表恢复旧接口或测试套件。
-
-当前入口唯一配置为工作区数据目录 config.yaml；scope 的兼容 project 字段存工作区键，手工 scope 使用 --workspace。旧 .tw 字段说明只用于理解历史契约，不恢复配置读取或令牌逻辑。
+场景是验收单位。用户另行授权的测试建设使用随包 [regression-distill](../../regression-distill/SKILL.md)，由 `sop-board distill submit` 登记关联；关联不改变验收结论，场景执行会话不写测试。

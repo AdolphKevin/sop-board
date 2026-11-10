@@ -1,4 +1,4 @@
-// 逐条落盘（D87）：每个用例结束就重写一份与 JSON 报告同结构的部分报告。
+// 逐条落盘：每个用例结束就重写一份与 JSON 报告同结构的部分报告。
 // 执行进程中途退出时，已完成的场景仍可用 `sop-board playwright convert --report <PW_OUT>/report.partial.json --allow-partial` 转换；
 // 正常结束时以官方 report.json 为准。
 import fs from 'node:fs';

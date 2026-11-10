@@ -25,8 +25,9 @@ PENDING_STATES = {'not-run': 'new', 'retest': 'source-changed', 'fail': 'failed'
 
 
 def session_id(explicit):
-    """执行者：--session，其次启动器注入的 SOP_BOARD_SESSION，再次 CODEX_THREAD_ID。"""
-    value = explicit or os.environ.get('SOP_BOARD_SESSION') or os.environ.get('CODEX_THREAD_ID')
+    """执行者：--session，其次启动器注入的 SOP_BOARD_SESSION，再次 Codex 或 Claude Code 自己的会话编号。"""
+    value = (explicit or os.environ.get('SOP_BOARD_SESSION') or os.environ.get('CODEX_THREAD_ID')
+             or os.environ.get('CLAUDE_CODE_SESSION_ID'))
     if not value or not value.strip():
         reject(422, 'session-required', 'session', '取不到执行者会话编号：请用 --session <会话编号> 指定（Claude Code 用会话的 session_id）')
     return value.strip()
@@ -235,6 +236,12 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
                       or [dict(id='default', label='default', endpoint=browsers.get('default'))]
                       for name, entry in entries.items() if web_entry(entry)}
         (directory / 'identities.json').write_text(dumps(dict(entries=identities)), encoding='utf-8')
+        maps = atlas_excerpt(context, entries)
+        if maps:
+            (directory / 'atlas.json').write_text(dumps(dict(entries=maps)), encoding='utf-8')
+            env_lines['PW_ATLAS'] = str(directory / 'atlas.json')
+            if len(maps) == 1:
+                env_lines['PW_ATLAS_ENTRY'] = maps[0]['entry']
         endpoint = browsers.get('default') or next(iter(browsers.values()), None)
         if endpoint:
             env_lines['PW_CDP_ENDPOINT'] = endpoint
@@ -246,11 +253,33 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     env_lines.update(SOP_BOARD_RUN=str(work_id), SOP_BOARD_CHECKOUT=checkout.name)
     (directory / 'run.env').write_text(''.join(f"{name}={value}\n" for name, value in sorted(env_lines.items())), encoding='utf-8')
     write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None)
+    if (directory / 'atlas.json').exists():
+        with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
+            brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'
+                        'stale 列出的页面已过期，以实际页面为准。地图不提供预期。找不到时只读探测，并在结果 note 写明地图缺口。\n')
     from .entries import web_skill
     prompt = Template(files('sop_board').joinpath('prompts', 'run.md').read_text(encoding='utf-8')).substitute(
         run=work_id, directory=directory, skill=project.skill, web_skill=web_skill() / 'SKILL.md',
         checkout=checkout.name, verify_note=('这是修复 #%d 的独立复验：逐条实际执行，不能保留旧通过。' % fix['id']) if fix else '')
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
+
+
+def atlas_excerpt(context, entries):
+    """本轮 Web 入口在仓库中的交互地图（含过期页面），供模板 atlas.mjs 按页面与控件操作。"""
+    from . import atlas
+    result = []
+    for name, entry in entries.items():
+        if not (web_entry(entry) and isinstance(entry.get('atlas'), dict) and entry.get('spec_library')):
+            continue
+        target, _ = atlas.paths(context.project, context.checkout, name)
+        if not target.is_file():
+            continue
+        document = json.loads(target.read_text(encoding='utf-8'))
+        stale = atlas.stale(context, name) or []
+        result.append(dict(entry=name, pages=document['pages'],
+                           index=[dict(id=page['id'], title=page['title']) for page in document['pages']],
+                           stale=stale))
+    return result
 
 
 # ---- 提交 ----

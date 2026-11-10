@@ -1,9 +1,9 @@
-// 交互地图操作库（D86、D87）：按任务目录 atlas.json（PW_ATLAS）打开页面、取控件，执行者每一步只写 2～4 行。
-// 地图只说明怎么操作，不提供预期；断言仍按场景原文写，结论以实际页面为准。
-// 地图里找不到时抛出 AtlasGap：执行者把缺口写进任务目录 atlas-feedback.jsonl，再只读探测或查阅前端源码补足。
+// 交互地图操作库：按运行目录 atlas.json（PW_ATLAS，由 run prepare 从仓库中的地图生成）打开页面、取控件。
+// 地图只说明怎么操作，不提供预期；断言仍按场景原文写，结论以实际页面为准。stale 中列出的页面已过期，以实际页面为准。
+// 地图里找不到时抛出 AtlasGap：执行者只读探测页面或查阅前端源码补足，并在结果 note 中写明地图缺口，供之后更新地图。
 //
-// 环境变量：
-//   PW_ATLAS        任务目录 atlas.json 的路径
+// 环境变量（run.env 已给出）：
+//   PW_ATLAS        运行目录 atlas.json 的路径
 //   PW_ATLAS_ENTRY  可选，入口名；地图只有一个入口时可省略
 //   PW_BASE_URL     可选，入口地址；缺省用当前页面的源
 import fs from 'node:fs';
@@ -26,8 +26,7 @@ function document() {
 export function pageSpec(id) {
   const found = document().pages.find(page => page.id === id);
   if (!found) {
-    const known = document().index.some(page => page.id === id);
-    throw new AtlasGap(known ? `页面 ${id} 不在本轮节选中，可用 sop-board atlas show --entry … --page ${id} 查看` : `地图中没有页面 ${id}`);
+    throw new AtlasGap(`地图中没有页面 ${id}`);
   }
   return found;
 }

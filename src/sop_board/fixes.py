@@ -197,6 +197,15 @@ def close(context, fix_id):
     return dict(ok=True, fix=fix_id, status='closed', verified_run=fix['verified_work'], files=changes)
 
 
+def current(context, action):
+    """省略 --fix 时：当前检出里与操作相符的最近一个修复。"""
+    states = {'submit': ('open',), 'close': ('verified', 'submitted'), 'abandon': OPEN}[action]
+    with context.store.connection() as db:
+        row = db.execute(f"SELECT id FROM fixes WHERE checkout=? AND status IN ({','.join('?' * len(states))}) ORDER BY id DESC LIMIT 1",
+                         (context.checkout.id, *states)).fetchone()
+    return row['id'] if row else None
+
+
 def abandon(context, fix_id):
     fix = load(context, fix_id)
     if fix['status'] not in OPEN:

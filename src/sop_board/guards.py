@@ -348,7 +348,7 @@ def run_guards(app, checkout, index, keys, *, holder):
     results = {}
     try:
         for name, command in commands.items():
-            extra = {}
+            extra = dict(app.envs.status(checkout).get('address_env', {}))
             if command.get('browser'):
                 environment = app.envs.up(checkout)
                 extra.update(environment.get('address_env', {}))
@@ -509,6 +509,19 @@ def distill_prepare(context, scope, *, session):
                 report=str(directory / 'guard.json'), scenarios=keys, acceptance={k: v['result'] for k, v in acceptance.items()})
 
 
+def browser_fidelity(db, checkout, test, acceptance, ledger):
+    """浏览器层 spec 的保真检查：基线为 git HEAD 中的同一文件；HEAD 还没有时，以产生独立通过的那份 spec 为基线。"""
+    from . import specs
+    repo = checkout.paths[test['repo']]
+    if specs.baseline_from_git(repo, test['path']) is not None:
+        return specs.check_file(repo, test['path'], ledger=ledger)
+    work = db.execute('SELECT dir FROM work WHERE id=?', (acceptance['work'],)).fetchone() if acceptance['work'] else None
+    candidates = sorted(Path(work['dir']).rglob(Path(test['path']).name)) if work and work['dir'] else []
+    if candidates:
+        return specs.check(repo / test['path'], repo, baseline=candidates[0], baseline_root=Path(work['dir']), ledger=ledger)
+    return specs.check(repo / test['path'], repo, ledger=ledger)
+
+
 def distill_submit(app, checkout, report_path, *, operator, work_id=None):
     """核对沉淀报告，按 retest 规则实际运行一次，全部合格后合并进 regression.yaml（不提交）。"""
     import yaml
@@ -516,6 +529,11 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
     from .errors import reject
     from . import specs
     context = Context(app.project, app.store, checkout)
+    if work_id:
+        with app.store.connection() as db:
+            work = db.execute("SELECT status FROM work WHERE id=? AND kind='distill'", (work_id,)).fetchone()
+        if work is None or work['status'] != 'prepared':
+            reject(409, 'work-state-invalid', 'work', f'沉淀 #{work_id} 不是进行中的沉淀')
     report_path = Path(report_path)
     try:
         report = strict_yaml(report_path.read_text(encoding='utf-8'))
@@ -594,7 +612,7 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
             for test in tests:
                 if test['layer'] == 'browser':
                     try:
-                        specs.qualified(specs.check_file(checkout.paths[test['repo']], test['path'], ledger=entry['ledger']))
+                        specs.qualified(browser_fidelity(db, checkout, test, row, entry['ledger']))
                     except ValueError as error:
                         problems.append(f"{key}：{test['path']} {error}")
             entries[key] = entry

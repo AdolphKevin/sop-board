@@ -199,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(json_response(dict(ok=False, error_code=error.code, problems=error.problems), error.status), request)
         except (ValueError, OSError) as error:
             request = request or Request(self, None)
-            code = 'env-busy' if type(error).__name__ == 'EnvBusy' else 'browser-busy' if type(error).__name__ == 'BrowserBusy' else 'invalid'
+            code = 'env-busy' if type(error).__name__ == 'EnvBusy' else 'invalid'
             status = 409 if code != 'invalid' else 422
             body = dict(ok=False, error_code=code, problems=[dict(field='request', problem=str(error))])
             owner = getattr(error, 'owner', None)
@@ -276,6 +276,13 @@ def env_up(app, request):
 def env_down(app, request):
     checkout = _checkout_of(app, request)
     return json_response(dict(ok=True, environment=app.envs.down(checkout)))
+
+
+@route('POST', '/local/env/restart', 'token')
+def env_restart(app, request):
+    checkout = _checkout_of(app, request)
+    app.envs.down(checkout)
+    return json_response(dict(ok=True, environment=app.envs.up(checkout)))
 
 
 @route('POST', '/local/env/status', 'token')

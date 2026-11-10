@@ -30,9 +30,13 @@ def work_directory(project, checkout):
     return checkout.paths[project.scenario_repo]
 
 
-def prompt_for(project, checkout, kind, scope, implementer):
-    command = ('sop-board run prepare --scope ' + ' '.join(scope)) if kind == 'run' else \
-        ('sop-board distill prepare ' + ' '.join(scope))
+def prompt_for(project, checkout, kind, scope, implementer, fix=None):
+    if fix is not None:
+        command = f'sop-board run prepare --fix {fix}'
+    elif kind == 'run':
+        command = 'sop-board run prepare --scope ' + ' '.join(scope)
+    else:
+        command = 'sop-board distill prepare ' + ' '.join(scope)
     text = Template(files('sop_board').joinpath('prompts', 'launch.md').read_text(encoding='utf-8')).substitute(
         project=project.name, checkout=checkout.name, directory=work_directory(project, checkout),
         kind='场景执行' if kind == 'run' else '回归沉淀', scope='、'.join(scope), command=command,
@@ -46,7 +50,7 @@ class Launcher:
         self.processes = {}
         self.guard = threading.Lock()
 
-    def start(self, checkout, kind, scope, *, requested_by, implementer=None):
+    def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None):
         if kind not in KINDS:
             raise ValueError('启动类型应为 run 或 distill')
         if not scope:
@@ -66,7 +70,7 @@ class Launcher:
                     (checkout.id, kind, agent['runner'], dumps(scope), '', requested_by, now()))
                 launch_id = cursor.lastrowid
             log = directory / f'{launch_id}.jsonl'
-            prompt = prompt_for(self.project, checkout, kind, scope, implementer)
+            prompt = prompt_for(self.project, checkout, kind, scope, implementer, fix)
             (directory / f'{launch_id}.prompt.md').write_text(prompt, encoding='utf-8')
             session = str(uuid.uuid4()) if agent['runner'] == 'claude' else None
             env = dict(os.environ, SOP_BOARD_LAUNCH=str(launch_id), SOP_BOARD_CHECKOUT=checkout.name)
@@ -209,7 +213,8 @@ def _register():
         checkout = app.checkout(request.json_field('checkout'))
         return json_response(dict(ok=True, launch=app.launcher.start(
             checkout, request.json_field('kind') or 'run', request.json_field('scope') or [],
-            requested_by=request.json_field('requested_by') or '本机', implementer=request.json_field('implementer'))))
+            requested_by=request.json_field('requested_by') or '本机', implementer=request.json_field('implementer'),
+            fix=request.json_field('fix'))))
 
     @route('POST', '/local/launch/stop', 'token')
     def stop(app, request):

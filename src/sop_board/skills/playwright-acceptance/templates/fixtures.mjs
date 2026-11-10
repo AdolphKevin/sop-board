@@ -102,7 +102,7 @@ function stopsRun(target, testInfo) {
 async function scenarioFailure(target, testInfo, before) {
   const stop = stopsRun(target, testInfo);
   if (stop && !testInfo.errors.some(error => (error.message || '').includes(BLOCKED_PREFIX))) {
-    // 连接中断或目标页关闭不是产品缺陷：注记为受阻，转换时据此输出 blocked（D87）。
+    // 连接中断或目标页关闭不是产品缺陷：注记为受阻，转换时据此输出 blocked。
     testInfo.annotations.push({type: 'blocked', description: BLOCKED_PREFIX + '浏览器连接中断、页面关闭或渲染进程崩溃，本轮停止，剩余场景未执行'});
   }
   if (!target.page.isClosed()) {

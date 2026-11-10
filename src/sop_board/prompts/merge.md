@@ -6,7 +6,7 @@
 
 ## 怎样合并
 
-1. 先读现有场景文件与 docs/sop-guide.md 的场景写法。
+1. 先读现有场景文件与场景写法（https://github.com/AdolphKevin/sop-board/blob/main/docs/sop-guide.md）。
 2. 判断每条用例：
    - 是一个完整的业务流程，就生成或更新场景，四要素来自用例的前置条件、步骤与预期；
    - 只是一个细节预期，就把它并进所属流程场景的 expected，带上用例编号。

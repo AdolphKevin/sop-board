@@ -278,14 +278,18 @@ def cmd_run(args):
     elif args.action == 'launch':
         from . import daemon
         scope = args.scope or ['pending']
-        if scope == ['pending']:
+        if args.fix is not None:
+            from . import fixes
+            fix = fixes.load(context, args.fix)
+            scope = [scenarios.key(p['file'], p['scenario']) for p in json.loads(fix['problems'])]
+        elif scope == ['pending']:
             from .runs import scope_for
             found, snapshot, derived = scene_board(context)
             scope = [item['scenario'] for item in scope_for(context, found['scenarios'], derived, ['pending'])]
             if not scope:
                 return fail('nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')])
         emit(daemon.call(context.project, 'POST', '/local/launch', dict(
-            checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
+            checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer, fix=args.fix,
             requested_by=config.operator() or '本机')))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
@@ -411,14 +415,11 @@ def cmd_fix(args):
     context = load(args)
     if args.action == 'prepare':
         emit(fixes.prepare(context, args.scenario, session=args.session))
-    elif args.fix is None:
-        return fail('fix-required', [dict(field='fix', problem='请用 --fix 给出修复编号')], 2)
-    elif args.action == 'submit':
-        emit(fixes.submit(context, args.fix))
-    elif args.action == 'close':
-        emit(fixes.close(context, args.fix))
-    elif args.action == 'abandon':
-        emit(fixes.abandon(context, args.fix))
+        return 0
+    fix_id = args.fix if args.fix is not None else fixes.current(context, args.action)
+    if fix_id is None:
+        return fail('fix-not-found', [dict(field='fix', problem='这个检出没有可以操作的修复；用 --fix 指定编号')])
+    emit({'submit': fixes.submit, 'close': fixes.close, 'abandon': fixes.abandon}[args.action](context, fix_id))
     return 0
 
 
@@ -607,7 +608,7 @@ def parser():
     p.set_defaults(handler=cmd_serve)
 
     p = common(sub.add_parser('env'))
-    p.add_argument('action', choices=('up', 'down', 'status'))
+    p.add_argument('action', choices=('up', 'down', 'restart', 'status'))
     p.add_argument('--all', action='store_true', help='status：列出全部检出')
     p.set_defaults(handler=cmd_env)
 
@@ -617,8 +618,8 @@ def parser():
     p = common(sub.add_parser('run'))
     p.add_argument('action', choices=('prepare', 'submit', 'abandon', 'launch', 'wait'))
     p.add_argument('--scope', nargs='+', help='prepare：pending（缺省）、all，或场景（<文件>#<编号>，编号唯一时可省文件）')
-    p.add_argument('--session', help='prepare：执行者会话编号（缺省取 SOP_BOARD_SESSION 或 CODEX_THREAD_ID）')
-    p.add_argument('--fix', type=int, help='prepare：修复的独立复验，范围为该修复的问题场景')
+    p.add_argument('--session', help='prepare：执行者会话编号（缺省取 SOP_BOARD_SESSION、CODEX_THREAD_ID 或 CLAUDE_CODE_SESSION_ID）')
+    p.add_argument('--fix', type=int, help='prepare / launch：修复的独立复验，范围为该修复的问题场景')
     p.add_argument('--run', type=int, help='submit / abandon / wait：运行编号')
     p.add_argument('--implementer', help='submit / launch：实现者会话编号；不填记为独立性未声明')
     p.add_argument('--launch', type=int, help='wait：启动编号（缺省为本检出最近一次启动）')

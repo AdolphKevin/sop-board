@@ -1,4 +1,4 @@
-"""Claude Code 运行器（D92）。
+"""Claude Code 运行器：看板启动无头 Claude 会话时使用。
 
 调用 `claude -p --output-format stream-json`，把事件转换成看板已认识的事件格式写到标准输出：
 会话开始、执行命令、读写文件、推理摘要、错误。结构化结果（或最终答复）作为最后一条 agent_message 输出，

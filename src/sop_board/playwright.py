@@ -38,7 +38,7 @@ def guide():
 真实账号：sop-board browser open --identity <身份> --headed 打开有界面的窗口，由人登录；之后的运行沿用 profile。
 
 结果转换：sop-board playwright convert --report <报告.json> --out <运行目录> --scope <scope.json> \\
-  --scenarios <scenarios.json> --executor <执行者>
+  --scenario-file scenarios.yaml --executor <执行者>
 然后 sop-board run submit 登记；不要另行登记第二份结果。
 配对标签：sop-board playwright tags --pairs <pairs.json> --out <cases.json>
 细则见内置技能 references/。

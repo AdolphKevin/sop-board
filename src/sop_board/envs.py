@@ -337,8 +337,12 @@ class Manager:
         with self.lock(checkout):
             owner = self.busy_owner(checkout)
             if owner is not None:
-                raise EnvBusy(f'各检出共用端口（port_step 为 0），检出 {owner.name} 的环境正在运行；'
-                              f'先运行 sop-board env down --checkout {owner.name}', dict(checkout=owner.name))
+                with self.store.connection() as db:
+                    run = db.execute("SELECT id FROM work WHERE checkout=? AND kind='run' AND status='prepared'", (owner.id,)).fetchone()
+                using = f'（运行 #{run["id"]} 正在使用）' if run else ''
+                raise EnvBusy(f'各检出共用端口（port_step 为 0），检出 {owner.name} 的环境正在运行{using}；'
+                              f'先运行 sop-board env down --checkout {owner.name}',
+                              dict(checkout=owner.name, run=run['id'] if run else None))
             environment = self.environment(checkout)
             digest = self.snapshot_digest(checkout)
             if environment.alive() and (environment.digest == digest or not restart_on_change):
