@@ -206,6 +206,13 @@ class Handler(BaseHTTPRequestHandler):
             if owner and request.local:
                 body['owner'] = owner
             self.send(json_response(body, status), request)
+        except Exception as error:  # noqa: BLE001 - 任何未预期的错误都返回 500，不让连接无响应断开
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            request = request or Request(self, None)
+            detail = f'{type(error).__name__}: {error}' if request.local else type(error).__name__
+            self.send(json_response(dict(ok=False, error_code='internal-error',
+                                         problems=[dict(field='server', problem='看板内部错误：' + detail)]), 500), request)
 
     def authorize(self, request, access):
         if access == 'lan':

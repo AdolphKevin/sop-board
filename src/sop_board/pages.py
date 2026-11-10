@@ -152,7 +152,8 @@ def atlas(project, checkout, entries, *, local):
         for page in item['document']['pages']:
             controls = '、'.join(escape(next((t['text'] for t in c['name']), c['id'])) for c in page.get('controls', [])[:12])
             mark = f'<span class="badge old">已过期：{escape("、".join(stale[page["id"]]))}</span>' if page['id'] in stale else ''
-            rows.append(f'<tr><td>{escape(page["id"])}</td><td>{escape(page["title"])}{mark}</td><td>{escape(page.get("route") or "")}</td><td>{controls}</td></tr>')
+            title = ' / '.join(t['text'] for t in page.get('title', [])) or page['id']
+            rows.append(f'<tr><td>{escape(page["id"])}</td><td>{escape(title)}{mark}</td><td>{escape(page.get("route") or "")}</td><td>{controls}</td></tr>')
         blocks.append(f'<article><h2>{escape(item["entry"])}</h2><table><thead><tr><th>页面</th><th>标题</th><th>路由</th><th>控件</th></tr></thead>'
                       f'<tbody>{"".join(rows)}</tbody></table></article>')
     body = f'<section class="page"><p class="muted">地图只说明怎么操作，不提供预期。</p>{"".join(blocks) or "<p>没有声明 atlas 的 Web 入口</p>"}</section>'
