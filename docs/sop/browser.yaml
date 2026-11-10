@@ -1,0 +1,208 @@
+# v10 现行场景：浏览器代理（CfT 安装与启动、身份 profile、真人登录、崩溃记受阻、拒绝在 agent 进程树启动）
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，Web 场景 shop#W 使用身份 merchant，即演示项目的合成账号，凭据只经环境变量）。
+#   另需：看板由用户在终端以 sop-board serve demo --data $D --lan 启动（BRW-05-N01 除外）；用户日常 Google Chrome 以其默认 profile 打开，
+#   开始前记录其进程号、profile 目录文件清单与 mtime，以及 ~/Library/Caches/ms-playwright 的清单与 mtime。合成账号的登录已取得本任务授权。
+
+metadata:
+  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口登录一次后无头运行沿用登录态；浏览器崩溃记为受阻；不碰用户日常 Chrome，不在 agent 进程树中启动浏览器"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["browser", "chrome-for-testing", "identity", "crash"]
+
+sops:
+  - id: BRW-01
+    title: 安装自带浏览器运行时
+    actor: 开发者
+    entry: "sop-board browser install、browser status"
+    negative_exempt: "安装失败只来自 npm 或网络等外部依赖，不是业务规则；运行时缺失时的提示见 SET-05-N01"
+    scenarios:
+      - id: BRW-01-P01
+        polarity: positive
+        title: 安装固定版本的 Playwright 与 CfT，不使用共享缓存
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["sop-board 运行时目录尚未安装", "共享缓存 ~/Library/Caches/ms-playwright 中只有其他版本的浏览器"]
+        steps: ["运行 sop-board browser install", "运行 sop-board browser status --json", "查看运行时目录下的 runtime.json 与 browsers 目录"]
+        expected:
+          - "运行时目录中安装了 @playwright/test 1.64.1（来自随包 lock 文件）"
+          - "browsers 目录下有 chromium 修订 1248 的 Chrome for Testing 与 ffmpeg，没有 headless shell、WebKit 或 Firefox"
+          - "runtime.json 记录 CfT 可执行文件路径与版本，路径位于运行时的 browsers 目录下；browser status 显示相同的路径与版本"
+        forbidden_effects: ["向 ~/Library/Caches/ms-playwright 写入或改动任何文件", "读取或改写 ~/.sop-board/node_modules"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）"]
+        evidence_hints: ["安装输出", "runtime.json", "browsers 目录清单", "ms-playwright 缓存前后清单对比"]
+
+  - id: BRW-02
+    title: Web 运行使用守护进程启动的 CfT 与独立 profile
+    actor: 执行会话
+    entry: "sop-board run prepare 写出的 runs/<编号>/run.env，执行者经 CDP 连接"
+    must:
+      - "每个 检出×身份 一个浏览器，profile 为 <数据目录>/browsers/<检出>/<身份>/profile，端口为 9400 + 槽位×20 + 身份序号"
+      - "执行者只通过 CDP 连接，不启动浏览器，也不运行 playwright install"
+      - "不碰用户日常 Chrome"
+    negative_exempt: "调试端口被占用时直接报错属于确定性分支，验收后沉淀为单元测试；会话进程树启动浏览器的拒绝见 BRW-05-N01"
+    scenarios:
+      - id: BRW-02-P01
+        polarity: positive
+        title: main 与 wt1 的 Web 运行各用一个无头 CfT，日常 Chrome 不受影响
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state: ["浏览器运行时已安装（BRW-01-P01）", "身份 merchant 已经在 BRW-03-P01 中登录过", "没有运行中的 CfT"]
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#W --session S1，读取 runs/<编号>/run.env"
+          - "用 ps 查看新出现的浏览器进程的可执行文件、命令行参数与父进程；curl PW_CDP_ENDPOINT 的 /json/version"
+          - "执行者用 playwright-acceptance 模板经 PW_CDP_ENDPOINT 执行 shop#W 并 run submit"
+          - "在 wt1 重复以上步骤（会话 S2）"
+          - "检查日常 Chrome 的进程号、profile 目录清单与 mtime，以及 ms-playwright 缓存清单"
+        expected:
+          - "run.env 含 PW_CDP_ENDPOINT、PW_IDENTITIES（merchant 带 endpoint）、PLAYWRIGHT_BROWSERS_PATH（运行时的 browsers 目录）与 PW_NODE_ROOT"
+          - "浏览器可执行文件为 runtime.json 记录的 CfT，父进程是终端启动的 sop-board serve"
+          - "main 的参数含 --user-data-dir=$D 下的 browsers/main/merchant/profile、--remote-debugging-port=9400 + merchant 序号、--no-first-run、--no-default-browser-check、--use-mock-keychain、--headless=new，不含 --enable-automation"
+          - "wt1 的 CfT 使用 browsers/wt1/merchant/profile 与端口 9400 + s1×20 + merchant 序号，两个浏览器同时存在"
+          - "/json/version 有应答；shop#W 的结果在两个检出各自登记并附截图证据"
+          - "日常 Chrome 进程号不变，profile 目录与 ms-playwright 缓存没有变化"
+        forbidden_effects:
+          - "启动、结束、连接或改动用户日常 Chrome 及其 profile"
+          - "执行者自行启动浏览器或运行 playwright install"
+          - "使用共享 ms-playwright 缓存或 WebKit"
+          - "两个检出共用一个 profile"
+        refs: ["docs/design.md#浏览器代理（问题 5、6）"]
+        evidence_hints: ["run.env（凭据脱敏）", "ps 输出", "/json/version 响应", "日常 Chrome 与缓存前后对比"]
+
+  - id: BRW-03
+    title: 真人在有界面的 CfT 窗口登录一次
+    actor: 开发者
+    entry: "sop-board browser open --identity merchant --headed、browser close"
+    must: ["有界面登录与无头运行使用同一份 profile；登录期间持有 human 租约"]
+    scenarios:
+      - id: BRW-03-P01
+        polarity: positive
+        title: 有界面窗口登录后，之后的无头运行保持登录态
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["浏览器运行时已安装", "merchant 的 profile 尚未登录过演示项目", "没有运行中的 CfT"]
+        steps:
+          - "在 main 运行 sop-board browser open --identity merchant --headed"
+          - "用户在弹出的 CfT 窗口中输入合成账号的用户名与密码并登录"
+          - "运行 sop-board browser status，再运行 sop-board browser close"
+          - "运行 sop-board run prepare --scope shop#W --session S1，执行者经 CDP 打开演示项目入口"
+        expected:
+          - "弹出的是有界面的 Chrome for Testing 窗口（不是日常 Chrome），打开的是演示项目入口地址"
+          - "browser status 显示 merchant 由 human 租约持有；close 后租约释放"
+          - "无头运行打开入口时已是 merchant 登录状态，不出现登录表单"
+          - "有界面与无头两次启动的 --user-data-dir 相同"
+        forbidden_effects: ["看板或会话代填密码", "打开或改动用户日常 Chrome", "为绕过检测修改 UA 或启动参数"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#验证"]
+        evidence_hints: ["有界面窗口截图（不含密码）", "两次启动的 ps 参数", "无头页面截图"]
+      - id: BRW-03-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 真人登录占用身份时，Web 运行直接返回 browser-busy
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["已运行 browser open --identity merchant --headed，窗口仍开着"]
+        steps: ["在 main 运行 sop-board run prepare --scope shop#W --session S1 --json"]
+        expected:
+          - "以业务失败退出（退出码 1），错误为 browser-busy"
+          - "有界面窗口保持打开，human 租约不变"
+        forbidden_effects: ["关闭或接管真人正在使用的窗口", "排队等待租约"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）"]
+
+  - id: BRW-04
+    title: 浏览器崩溃记为受阻
+    actor: 开发者
+    entry: "守护进程的浏览器监视、run submit、工作台、sop-board attention list、browser status"
+    must:
+      - "异常退出记录信号、chrome.log 末尾和启动后写出的 DiagnosticReports；相关场景在提交时记为受阻并加一条待人处理"
+      - "租约持有期间不自动重启，下一次取得租约时再启动；30 分钟内异常退出两次记为 crashed，须由人重置"
+    scenarios:
+      - id: BRW-04-P01
+        polarity: positive
+        title: kill -ABRT 结束 CfT 后，shop#W 记为受阻并写明信号与日志
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["main 已为 shop#W run prepare，CfT 在运行，租约由该运行持有"]
+        steps:
+          - "用 kill -ABRT 结束该 CfT 主进程，等待 5 秒后用 ps 查看是否有新的 CfT 进程"
+          - "执行者按实际情况写出 shop#W 的结果（浏览器已断开）并 run submit"
+          - "运行 sop-board attention list 与 browser status，在工作台打开 shop#W"
+          - "再次运行 sop-board run prepare --scope shop#W --session S2"
+        expected:
+          - "提交前没有自动重启的 CfT 进程"
+          - "shop#W 的结果为受阻，finding 为“浏览器进程 <时间> 因 SIGABRT 退出，日志 <路径>”，路径指向 chrome.log；启动后出现的 Google Chrome for Testing*.ips 一并引用"
+          - "attention list 新增一条与此次崩溃对应的待人处理"
+          - "工作台 shop#W 显示受阻及上述原因"
+          - "下一次 run prepare 启动了新的 CfT"
+        forbidden_effects: ["shop#W 记为通过或失败", "租约持有期间自动重启浏览器", "回退到用户日常 Chrome"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#验证"]
+        evidence_hints: ["kill 命令与时间", "提交结果与 finding", "chrome.log 末尾", "attention list 输出", "工作台截图"]
+      - id: BRW-04-N01
+        polarity: negative
+        negative_type: interrupted
+        title: 30 分钟内两次异常退出后进入 crashed，须由人重置
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["merchant 的 CfT 在 30 分钟内已因 kill -ABRT 异常退出一次（BRW-04-P01）"]
+        steps:
+          - "在新的 run prepare 启动 CfT 后再次 kill -ABRT，提交该运行"
+          - "运行 sop-board browser status，再运行 run prepare --scope shop#W --session S3"
+          - "运行 sop-board browser open --identity merchant --reset-crash，然后再运行一次 run prepare"
+        expected:
+          - "browser status 显示 merchant 的浏览器状态为 crashed"
+          - "reset 前的 run prepare 没有启动 CfT"
+          - "reset 后的 run prepare 启动了 CfT"
+        forbidden_effects: ["crashed 状态下自动重启浏览器"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）"]
+
+  - id: BRW-05
+    title: 浏览器只由终端启动的守护进程启动
+    actor: 执行会话
+    entry: "真实 Codex 或 Claude Code 会话中运行 sop-board run prepare；sop-board serve"
+    must: ["环境中出现 CODEX_SANDBOX 或 CLAUDECODE 时，守护进程拒绝启动浏览器，并提示到终端运行 serve"]
+    scenarios:
+      - id: BRW-05-P01
+        polarity: positive
+        title: 会话请求 Web 验收时，浏览器挂在终端启动的守护进程下
+        actor: 执行会话
+        priority: P0
+        verify: agent
+        initial_state: ["看板由用户在终端启动", "没有运行中的 CfT"]
+        steps:
+          - "在 app 目录新开 Claude Code 会话，用自然语言请求“验收 shop#W 并提交”"
+          - "会话运行期间用 ps -o pid,ppid,command 追溯 CfT 进程的祖先进程"
+          - "对 Codex 会话重复一次"
+        expected:
+          - "CfT 的祖先链到达终端启动的 sop-board serve，不经过会话进程"
+          - "shop#W 的结果登记成功"
+        forbidden_effects: ["会话进程树中出现 chromium、Chrome for Testing 或 Playwright.app 进程", "会话运行 playwright install"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#进程与入口"]
+        evidence_hints: ["会话记录", "ps 祖先链输出"]
+      - id: BRW-05-N01
+        polarity: negative
+        negative_type: permission
+        title: 从 agent 进程树启动的守护进程拒绝启动浏览器
+        actor: 执行会话
+        priority: P0
+        verify: agent
+        initial_state: ["终端中的 sop-board serve 已停止", "没有运行中的 CfT"]
+        steps:
+          - "在 Claude Code 会话中让会话在后台运行 sop-board serve demo --data $D，然后运行 sop-board run prepare --scope shop#W --session S1"
+          - "停止该 serve；在普通终端中以 CODEX_SANDBOX=1 环境变量运行 serve，再从另一终端运行同一 run prepare"
+          - "用 ps 查找 CfT 进程"
+        expected:
+          - "两种情况下都没有启动浏览器，返回的错误提示到终端（不带 agent 标记）运行 sop-board serve"
+          - "ps 中没有 CfT 进程"
+        forbidden_effects: ["在带 agent 标记的环境中启动任何浏览器", "改用用户日常 Chrome"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）"]
+        evidence_hints: ["会话记录", "命令输出", "ps 输出"]

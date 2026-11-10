@@ -1,0 +1,163 @@
+# v10 现行场景：按检出启停环境、端口偏移、port_step: 0 的租约冲突
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（app、lib 两仓，项目 demo，数据目录 $D，场景 shop#X/A/B/W）。
+#   另需：已用 checkout create wt1 建立检出 wt1（槽位记为 s1）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动；
+#   演示 adapter 的 env.py 按 SOP_PORT_OFFSET 偏移端口并在 ready 输出里给出入口地址。基础端口记为 P。
+
+metadata:
+  requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时按租约轮流使用，冲突时返回 env-busy 并写明占用者"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["environment", "checkout", "ports", "lease"]
+
+sops:
+  - id: ENV-01
+    title: 守护进程按检出启停环境
+    actor: 开发者
+    entry: "sop-board env status|up|down|restart（经回环 HTTP 调用守护进程）"
+    must:
+      - "adapter.env 收到 SOP_CHECKOUT、该检出各仓库的 SOP_REPO_<别名> 与 SOP_PORT_OFFSET = 槽位 × port_step"
+      - "入口地址取自 adapter 的 ready 输出"
+    scenarios:
+      - id: ENV-01-P01
+        polarity: positive
+        title: main 与 wt1 的环境同时运行，各自服务本检出的代码
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "config.yaml 中 port_step 为 100"
+          - "wt1 的 app 有一处未提交改动：首页标题改为“wt1 版本”；main 未改"
+          - "两个检出都没有运行中的环境"
+        steps:
+          - "在 main 的 app 目录运行 sop-board env up，再在 wt1 的 app 目录运行 sop-board env up"
+          - "分别在两个检出运行 sop-board env status --json，记录入口地址与端口"
+          - "用 curl 请求两个入口地址的首页"
+          - "在 wt1 运行 sop-board env down，然后再次 curl 两个入口并在 main 运行 env status"
+        expected:
+          - "main 的端口为 P，wt1 的端口为 P + s1 × 100；两个环境同时处于运行状态"
+          - "env status 显示的环境变量中，main 的 SOP_PORT_OFFSET 为 0，wt1 为 s1 × 100；各自的 SOP_CHECKOUT 为本检出名，SOP_REPO_app、SOP_REPO_lib 指向本检出的仓库路径"
+          - "wt1 入口返回“wt1 版本”，main 入口不含该文字"
+          - "wt1 env down 后 wt1 入口不再应答，main 入口照常应答，main 环境的进程号不变"
+        forbidden_effects: ["wt1 的环境使用 main 的仓库路径", "对 wt1 的操作重启或停止 main 的环境", "两个环境监听同一端口"]
+        refs: ["docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["命令输出", "curl 响应", "lsof 端口清单"]
+      - id: ENV-01-N01
+        polarity: negative
+        negative_type: disconnect
+        title: 守护进程未运行时直接报错并给出启动命令
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示项目已登记", "守护进程未运行"]
+        steps: ["在 main 的 app 目录运行 sop-board env up"]
+        expected: ["命令以业务失败退出（退出码 1），说明守护进程未运行，并给出 sop-board serve 的启动命令"]
+        forbidden_effects: ["CLI 自行启动守护进程或 adapter 环境", "留下任何环境进程或端口监听"]
+        refs: ["docs/design.md#进程与入口"]
+
+  - id: ENV-02
+    title: 两个检出同时验证互不串扰
+    actor: 开发者
+    entry: "两个检出各自运行 sop-board run prepare/submit，看板工作台 /p/demo?checkout=<名称>"
+    must: ["场景文件、快照、结果、环境和端口都按检出隔离"]
+    negative_exempt: "检出之间争用同一组端口的拒绝分支见 ENV-03-N01"
+    scenarios:
+      - id: ENV-02-P01
+        polarity: positive
+        title: main 与 wt1 并行验证，结果、快照、场景文件与端口各自独立
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "config.yaml 中 port_step 为 100；两个检出都没有 prepared 的运行"
+          - "wt1 中修好了预埋缺陷（未提交），并把 shop#A 的一条 expected 文字改为新内容（未提交）；main 保持原样"
+        steps:
+          - "同时在 main 运行 sop-board run prepare --scope all --session S1，在 wt1 运行 sop-board run prepare --scope all --session S2"
+          - "两位执行者各自用本检出 run 目录给出的入口地址执行 shop#X 与 shop#A，按实际结果写结果后分别 run submit"
+          - "分别在两个检出运行 sop-board status --json，并在工作台切换 checkout=main 与 checkout=wt1 查看 shop#X、shop#A"
+          - "在 main 与 wt1 分别运行 git status"
+        expected:
+          - "两次运行的产品快照不同，各自的入口端口不同（P 与 P + s1 × 100）"
+          - "main 中 shop#X 为失败、shop#A 为通过；wt1 中 shop#X 为通过"
+          - "wt1 的 shop#A 详情显示改后的 expected 文字，结果绑定改后的指纹；main 的 shop#A 仍显示原文字与原指纹的结果"
+          - "main 的 status 不含 wt1 的任何结果，wt1 也不含 main 的结果"
+          - "git status 中只有测试者自己做的改动"
+        forbidden_effects:
+          - "一个检出的结果出现在另一个检出的状态、工作台或历史中"
+          - "wt1 对场景文件的改动出现在 main"
+          - "看板回写或生成任何场景文件"
+          - "两个检出的执行打到同一个环境"
+        refs: ["docs/design.md#七个问题：根因与新设计", "docs/design.md#检出与环境（问题 3）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["两份 run 目录清单", "两个入口的请求响应", "results 表按检出的只读查询", "工作台两个检出的截图"]
+
+  - id: ENV-03
+    title: port_step 为 0 时各检出按租约轮流使用同一组端口
+    actor: 开发者
+    entry: "sop-board env up|down、run prepare"
+    must: ["租约属于持有端口的检出；另一检出的 run prepare 与 env up 直接返回 env-busy，写明占用的检出、运行编号和 env down 命令；不排队，也不互相覆盖"]
+    scenarios:
+      - id: ENV-03-P01
+        polarity: positive
+        title: 持有方 env down 后，另一检出可以使用同一组端口
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["config.yaml 中 port_step 为 0", "main 的环境在运行，wt1 没有环境", "wt1 的 app 首页标题改为“wt1 版本”（未提交）"]
+        steps:
+          - "在 main 运行 sop-board env down"
+          - "在 wt1 运行 sop-board env up，curl 入口首页"
+          - "在 main 运行 sop-board env up"
+        expected:
+          - "wt1 env up 成功，端口为 P，入口返回“wt1 版本”"
+          - "main 的 env up 返回 env-busy，写明占用检出为 wt1 及 env down 命令"
+        forbidden_effects: ["main 的 env up 停掉 wt1 的环境或抢占端口"]
+        refs: ["docs/design.md#检出与环境（问题 3）"]
+      - id: ENV-03-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 端口被 main 的运行占用时，wt1 得到写明占用者的 env-busy
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["config.yaml 中 port_step 为 0", "main 已运行 sop-board run prepare --scope all --session S1，得到运行 R1，环境在运行"]
+        steps:
+          - "在 wt1 运行 sop-board env up --json"
+          - "在 wt1 运行 sop-board run prepare --scope all --session S2 --json"
+          - "在 main 运行 sop-board env status，并 curl main 的入口"
+        expected:
+          - "两条 wt1 命令都以业务失败退出（退出码 1），错误为 env-busy，写明占用检出 main、运行编号 R1 和 sop-board env down 命令"
+          - "wt1 没有新建 prepared 运行"
+          - "main 环境进程号不变，入口照常应答"
+        forbidden_effects: ["wt1 的请求排队等待", "wt1 的环境覆盖或停止 main 的环境", "错误信息不写占用者"]
+        refs: ["docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["命令原文与输出", "leases 表只读查询"]
+
+  - id: ENV-04
+    title: 守护进程重启后清理孤儿进程组
+    actor: 开发者
+    entry: "在终端重新运行 sop-board serve"
+    negative_exempt: "本节点本身就是中断恢复；不清理未登记进程已写在禁止项"
+    scenarios:
+      - id: ENV-04-P01
+        polarity: positive
+        title: 守护进程被强杀后重启，清理记录在案的环境进程组并释放端口
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "port_step 为 100，main 与 wt1 的环境都在运行，记录其进程组号"
+          - "测试者另起一个与项目无关的 python3 -m http.server 进程"
+        steps:
+          - "用 kill -9 结束 sop-board serve 进程，确认环境进程仍在"
+          - "在终端重新运行 sop-board serve demo --data $D --lan"
+          - "检查原环境进程组与端口，运行 sop-board env status，再在 main 运行 sop-board env up"
+        expected:
+          - "重启后原 main 与 wt1 的环境进程组已结束，端口 P 与 P + s1 × 100 已释放"
+          - "env up 成功使用端口 P"
+        forbidden_effects: ["结束与项目无关的 http.server 进程", "孤儿进程继续占用端口导致 env up 失败"]
+        refs: ["docs/design.md#检出与环境（问题 3）"]

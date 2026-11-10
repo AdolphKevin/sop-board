@@ -1,0 +1,138 @@
+# v10 现行场景：三栏场景工作台（场景树、筛选、详情、证据、复测标注、内网范围、本机 AI 重跑）
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo 是数据目录 $D 中唯一的项目）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动。
+#   “内网”指另一台设备用 --lan 打印的实际非回环地址访问；“本机”指回环地址。
+#   “已有结果”：main 上 shop#X 为失败（附请求响应证据），shop#W 为通过（附截图、录像与 trace），shop#A 曾在旧快照上通过且没有守护，
+#   shop#B 未执行；另有一份草稿文件 draft-a；wt1 检出已建立并有一条 shop#B 的通过结果。
+
+metadata:
+  requirement: "sop-board v10：测试同学在三栏场景工作台按场景找到、查看四要素与证据、复测标注并查看历史，内网全程可用；内网只显示业务字段，不能发起 AI 重跑"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["workbench", "web", "lan", "annotation"]
+
+sops:
+  - id: WB-01
+    title: 在场景树中按状态、搜索和检出找到场景
+    actor: 测试同学
+    entry: "看板 / 与 /p/demo?checkout=<名称>"
+    negative_exempt: "只读浏览；内网访问范围的拒绝分支见 WB-03-N01"
+    scenarios:
+      - id: WB-01-P01
+        polarity: positive
+        title: 状态筛选计数与命令行一致，检出切换与分享链接可用
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”"]
+        steps:
+          - "本机浏览器打开 /"
+          - "查看左栏 文件→节点→场景 树与顶部各状态筛选的计数，并与 sop-board status --json 对照"
+          - "点筛选“失败”，再清除筛选并搜索 shop#W 的标题中的一个词"
+          - "用检出切换选 wt1"
+          - "复制 shop#W 详情页的地址，在新标签页打开"
+        expected:
+          - "/ 直接进入 /p/demo 工作台"
+          - "树按 文件→节点→场景 排列，每条场景带状态点；筛选项为 待复测、失败、待沉淀、通过、守护通过、未执行、草稿，各带计数，与命令行一致（shop#A 计入待复测，draft-a 的场景计入草稿）"
+          - "“失败”筛选只列 shop#X；搜索结果包含 shop#W"
+          - "切换后地址带 checkout=wt1，shop#B 显示为通过，shop#X 显示为未执行"
+          - "分享地址带 #shop#W，在新标签页直接打开 shop#W 详情"
+        forbidden_effects: ["页面出现 批次、轮次、待同步、已作废、沿用、执行入口、任务状态 等术语", "切换检出后仍显示 main 的结果"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）"]
+        evidence_hints: ["工作台截图与页面文本", "status --json 输出"]
+
+  - id: WB-02
+    title: 测试同学从内网复测并标注
+    actor: 测试同学
+    entry: "内网地址上的工作台场景详情"
+    must:
+      - "右栏顺序固定：标题与徽标、当前状态与原因、四要素（预期与禁止逐条并附守护覆盖标记）、最新结果与证据、复测标注、本机按钮、历史"
+      - "不通过时缺陷链接必填；姓名填一次后存在浏览器 localStorage"
+    scenarios:
+      - id: WB-02-P01
+        polarity: positive
+        title: 内网找到失败场景，看完证据标注不通过，再标注另一条通过并查看历史
+        actor: 测试同学
+        priority: P0
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "测试同学的浏览器从未打开过本看板（localStorage 为空）"]
+        steps:
+          - "在另一台设备打开内网地址，点筛选“失败”，打开 shop#X"
+          - "从上到下阅读右栏：标题徽标、状态原因、起点、步骤、预期、禁止、最新结果与证据"
+          - "在复测标注表单选“不通过”，填缺陷链接 https://issues.example/DEMO-2 和姓名 张测，提交"
+          - "刷新页面，展开历史"
+          - "打开 shop#W，播放录像、打开 trace，选“通过”提交"
+        expected:
+          - "右栏依次为：标题与 P 级、入口、正反向徽标；当前状态与原因；起点、步骤、预期、禁止（预期与禁止逐条列出）；最新结果与证据画廊；复测标注表单；历史（折叠）"
+          - "shop#X 的证据画廊显示请求与响应"
+          - "提交后 shop#X 显示失败并附缺陷链接 https://issues.example/DEMO-2；历史中有 张测 的不通过标注与时间，原 Agent 结果仍在"
+          - "shop#W 的录像在页面内播放、可拖动进度（视频请求返回 206 分段响应），trace 可打开"
+          - "标注 shop#W 时姓名已预填为 张测，提交后历史中有 张测 的通过标注"
+          - "results 表中两条标注为 kind=manual 的新行"
+        forbidden_effects: ["要求填写姓名以外的身份信息", "标注改写或删除原 Agent 结果", "第二次标注仍要求重新输入姓名"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#署名"]
+        evidence_hints: ["内网设备截图与页面文本", "视频请求的响应头", "results 表只读查询"]
+      - id: WB-02-N01
+        polarity: negative
+        negative_type: incomplete-input
+        title: 标注不通过时不填缺陷链接被拒绝
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "内网浏览器已存有姓名 张测"]
+        steps: ["内网打开 shop#W，选“不通过”，缺陷链接留空，提交"]
+        expected: ["提交被拒绝并提示缺陷链接必填", "场景状态与历史不变"]
+        forbidden_effects: ["写入没有缺陷链接的不通过标注"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）"]
+
+  - id: WB-03
+    title: 本机才能发起运行，内网只显示业务字段
+    actor: 开发者
+    entry: "工作台“AI 重跑此场景”“运行守护”“沉淀”按钮；内网与本机的 HTTP 接口"
+    must:
+      - "三个按钮仅本机可用；AI 重跑用同一份 sop-board 技能在检出目录启动无头会话，只记录进程号、日志和退出码"
+      - "内网写入只限复测标注、答复问题、批注草稿、上传用例或 SOP；不显示本机路径、会话编号、命令和凭据变量名"
+    scenarios:
+      - id: WB-03-P01
+        polarity: positive
+        title: 本机点“AI 重跑此场景”，结果回到工作台
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“已有结果”", "config.yaml 的 agents 指定 claude", "main 没有运行中的启动"]
+        steps:
+          - "本机打开 shop#X 详情，确认三个按钮可见，点“AI 重跑此场景”"
+          - "打开运行记录页查看该次启动，等待其结束"
+          - "回到 shop#X 详情查看最新结果与历史"
+        expected:
+          - "launches 表新增一条 running 记录（进程号、日志路径），会话工作目录是 main 的检出目录"
+          - "运行记录页在本机能查看日志，结束后显示退出码"
+          - "shop#X 出现该会话登记的新结果，历史中显示其独立性"
+        forbidden_effects: ["会话进程树中启动浏览器", "在 main 以外的检出目录运行"]
+        refs: ["docs/design.md#进程与入口", "docs/design.md#看板：三栏场景工作台（问题 2）"]
+        evidence_hints: ["页面截图", "launches 表只读查询", "会话日志"]
+      - id: WB-03-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网看不到本机信息，也不能发起 AI 重跑、守护或沉淀
+        actor: 测试同学
+        priority: P0
+        verify: api
+        initial_state: ["演示项目处于“已有结果”，并已有一条本机启动的运行记录"]
+        steps:
+          - "内网浏览器依次打开工作台 shop#X 详情、运行记录页与报告导出页，保存页面文本"
+          - "从内网地址用 curl 以同源 JSON POST 调用本机页面上 AI 重跑、运行守护、沉淀所用的接口"
+          - "从内网地址用跨源 Origin 或非 JSON 内容类型 POST 一条复测标注"
+          - "只读查询 launches、guard_runs、work 与 results 表"
+        expected:
+          - "内网页面没有“AI 重跑此场景”“运行守护”“沉淀”按钮，页面文本中没有本机路径、会话编号、命令和凭据变量名"
+          - "三个 POST 都被拒绝，表中没有新增启动、守护运行或沉淀记录"
+          - "跨源或非 JSON 的标注请求被拒绝，没有新增标注"
+        forbidden_effects: ["从内网启动任何无头会话、守护运行或沉淀", "内网页面泄露本机路径、会话编号、命令或凭据变量名"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["内网页面文本", "curl 请求与响应原文", "表的只读查询"]

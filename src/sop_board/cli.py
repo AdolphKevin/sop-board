@@ -1,36 +1,42 @@
-"""工作区看板的命令行入口：启动、搭建指引、自检。"""
+"""sop-board 命令行：所有 Agent 工作与本机操作的唯一入口。
+
+除 status 的文字输出与 guide 外，命令都输出 JSON：成功退出 0，业务失败退出 1（ok: false），参数错误退出 2。
+"""
 import argparse
-from http.server import ThreadingHTTPServer
-from importlib.resources import files
+from dataclasses import dataclass
 from importlib import metadata
+from importlib.resources import files
 import json
-import os
 from pathlib import Path
-import signal
-import sqlite3
+import re
+import subprocess
 import sys
 
-from .adapters import Environment
-from .workspace import Workspace, initialize
-from .service import Service
-from .storage import Store
-from .tasks import Tasks, parse_timeout
-from .http import Handler
-from .jira import Jira
-from .network import local_ipv4_addresses
-from .repositories import Discovery
+from . import checkouts, config, gitops, scenarios, status
+from .errors import APIError
+from .store import Store
 
 
-COMMAND_GROUPS = {
-    '看板': {'<工作区>': '启动看板，可加 --lan 与 --paused', 'status': '查看批次、就绪情况和待处理事项',
-             'check': '检查工作区与运行环境', 'run': '管理连续执行', 'plan': '查看执行计划'},
-    '会话入口': {'sop': '登记或编写业务 SOP', 'draft': '生成、修订与确认草稿', 'cases': '上传、预览增改或导出用例',
-                 'merge': '合并用例、答复缺口或还原场景', 'execute': '准备与提交场景执行', 'fix': '修复、独立复验与关闭',
-                 'task': '列出、查看、等待或取消任务', 'atlas': '梳理交互地图与场景绑定', 'distill': '登记回归测试关联'},
-    '台账': {'attention': '登记与处理待办事项', 'confirmer': '查看或设置默认业务确认人', 'issue': '维护问题台账',
-             'decision': '登记与查看人的决定', 'identity': '管理执行身份与使用记录', 'fixtures': '准备隔离数据并留痕'},
-    '安装': {'init': '登记工作区与仓库', 'guide': '读取完整搭建指引', 'playwright': '读取 Web 驱动指引与转换执行材料',
-             'skills': '安装随包技能到两个客户端'},
+@dataclass
+class Context:
+    project: config.Project
+    store: Store
+    checkout: checkouts.Checkout
+
+
+GROUPS = {
+    '搭建': {'init': '登记项目与仓库', 'guide': '完整搭建指引', 'check': '校验配置、拉起环境并核对浏览器运行时',
+             'operator': '查看或设置本机操作者', 'skills': '安装随包技能到 Codex 与 Claude Code',
+             'serve': '在终端启动看板守护进程（网页、环境、浏览器、无头会话）', 'status': '查看场景状态与待处理事项'},
+    '检出': {'checkout': '列出、查看、建立或移除 main 与 worktree 检出'},
+    '执行': {'env': '按检出启停产品环境', 'browser': '安装与管理 Chrome for Testing',
+             'run': '准备、提交、启动执行会话', 'retest': '产品变化后运行守护测试', 'mark': '登记人工复测结论',
+             'launch': '查看或停止本机无头会话'},
+    '修复与沉淀': {'fix': '修复、独立复验与关闭', 'distill': '把独立通过的场景沉淀为守护测试'},
+    '编写': {'inbox': '处理测试同学上传的用例与 SOP', 'merge': '合并用例到场景文件', 'ask': '向测试同学提问',
+             'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '草稿批注与确认'},
+    '其他': {'atlas': '交互地图', 'specs': 'Web spec 保真检查', 'fixtures': '前置数据配方', 'identity': '身份使用计数',
+             'attention': '待人处理', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
 }
 
 
@@ -39,167 +45,232 @@ def version():
         distribution = metadata.distribution('sop-board')
         direct = json.loads(distribution.read_text('direct_url.json') or '{}')
         source = direct.get('url') or str(distribution.locate_file(''))
-        return f"sop-board {distribution.version}\n安装来源：{source}\n代码位置：{Path(__file__).resolve().parent}"
+        return f'sop-board {distribution.version}\n安装来源：{source}\n代码位置：{Path(__file__).resolve().parent}'
     except metadata.PackageNotFoundError:
-        # 直接从源码运行时仍可报告该检出的包版本。
-        import re
         root = Path(__file__).resolve().parents[2]
-        package_version = re.search(r'^version = "([^"]+)"', (root / 'pyproject.toml').read_text(), re.M)[1]
-        return f'sop-board {package_version}\n安装来源：源码 {root}'
+        found = re.search(r'^version = "([^"]+)"', (root / 'pyproject.toml').read_text(), re.M)
+        return f'sop-board {found[1] if found else "?"}\n安装来源：源码 {root}'
 
 
-def main():
-    argv = sys.argv[1:]
+def emit(value):
+    print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+
+
+def fail(code, problems, status=1):
+    emit(dict(ok=False, error_code=code, problems=problems))
+    return status
+
+
+def common(parser):
+    parser.add_argument('--project', '-p', help='项目名称（缺省按当前目录所在仓库查找）')
+    parser.add_argument('--data', help='项目数据目录')
+    parser.add_argument('--checkout', '-c', help='检出名称（缺省按当前目录识别，main 为登记路径）')
+    return parser
+
+
+def load(args, *, require=True):
+    data = config.resolve_data(getattr(args, 'project', None), getattr(args, 'data', None))
+    project = config.Project(data)
+    if require:
+        project.require()
+    store = Store(project.data)
+    checkout = checkouts.current(store, project, name=getattr(args, 'checkout', None))
+    return Context(project, store, checkout)
+
+
+def scene_board(context):
+    """当前检出的场景、快照与状态。"""
+    from . import guards
+    project, checkout = context.project, context.checkout
+    found = scenarios.scan(checkout.scenarios_dir(project), set(project.entries))
+    validity = guards.validity(context, found['scenarios'])
+    snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)))
+    with context.store.connection() as db:
+        derived = status.board(db, checkout.id, found['scenarios'], snapshot['product_digest'], guard_validity=validity)
+    return found, snapshot, derived
+
+
+# ---- 命令 ----
+
+def cmd_init(args):
+    data, identities = config.initialize(args.name, args.repos, args.data)
+    emit(dict(ok=True, project=args.name, data=str(data), repositories=identities,
+              next=f'在 {data}/config.yaml 写好 scenarios、skill、entries 与 adapter 后运行 sop-board check --project {args.name}'))
+    return 0
+
+
+def cmd_guide(args):
+    print(files('sop_board').joinpath('guide.md').read_text(encoding='utf-8'))
+    return 0
+
+
+def cmd_operator(args):
+    if args.action == 'set':
+        if not args.name:
+            return fail('operator-name-required', [dict(field='name', problem='请写出姓名')], 2)
+        emit(dict(ok=True, operator=config.set_operator(' '.join(args.name))))
+        return 0
+    name = config.operator()
+    emit(dict(ok=True, operator=name, source='sop-board operator' if config.operator_path().is_file() else 'git config user.name',
+              hint=None if name else '运行 sop-board operator set <姓名>'))
+    return 0
+
+
+def cmd_checkout(args):
+    if args.action == 'create':
+        if not args.name:
+            return fail('checkout-name-required', [dict(field='name', problem='请写出检出名称')], 2)
+        project = config.Project(config.resolve_data(args.project, args.data)).require()
+        store = Store(project.data)
+        log = project.data / 'checkouts' / (args.name + '.log')
+        created = checkouts.build(project, store, args.name, aliases=args.repo or None, base=args.base, log=log)
+        emit(dict(ok=True, checkout=created.public(local=True), log=str(log)))
+        return 0
+    context = load(args, require=False)
+    with context.store.connection() as db:
+        rows = checkouts.active(db)
+    if args.action == 'list':
+        emit(dict(ok=True, current=context.checkout.name, checkouts=[
+            dict(c.public(local=True), offset=c.offset(context.project)) for c in rows]))
+        return 0
+    name = args.name or context.checkout.name
+    target = next((c for c in rows if c.name == name), None)
+    if target is None:
+        return fail('checkout-not-found', [dict(field='name', problem=f'检出不存在：{name}')])
+    if args.action == 'remove':
+        from . import envs
+        envs.require_stopped(context, target)
+        log = context.project.data / 'checkouts' / (target.name + '-cleanup.log')
+        checkouts.destroy(context.project, context.store, target, log=log)
+        emit(dict(ok=True, removed=target.name, log=str(log)))
+        return 0
+    directory = target.scenarios_dir(context.project)
+    emit(dict(ok=True, checkout=dict(target.public(local=True), offset=target.offset(context.project),
+                                     scenarios=str(directory) if directory else None,
+                                     branches={a: gitops.branch(p) for a, p in target.paths.items()})))
+    return 0
+
+
+def cmd_status(args):
+    context = load(args, require=False)
+    project = context.project
+    result = dict(ok=True, project=project.name, operator=config.operator(), checkout=context.checkout.public(local=True),
+                  configured=project.configured, problems=project.problems)
+    if project.configured:
+        found, snapshot, derived = scene_board(context)
+        result.update(snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
+                                    changed=snapshot['changed'][:50]),
+                      counts=derived['counts'], distill=derived['distill'], total=derived['total'],
+                      queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state)
+                              for state in ('retest', 'fail', 'blocked', 'not-run')},
+                      distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
+                      invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
+        from . import daemon
+        result['daemon'] = daemon.describe(project)
+        from . import ledger
+        with context.store.connection() as db:
+            result['attention'] = ledger.open_attention(db, context.checkout.id, local=True)
+    if args.json:
+        emit(result)
+        return 0
+    print(f"项目 {project.name} · 检出 {context.checkout.name} · 操作者 {result['operator'] or '未设置'}")
+    if not project.configured:
+        print('配置不合格：')
+        for item in project.problems:
+            print(f"  {item['field']}：{item['problem']}")
+        return 0
+    counts = result['counts']
+    print(f"场景 {result['total']} 条：" + '；'.join(f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s])
+          + f"；待沉淀 {result['distill']}")
+    for name, problems in result['invalid_files'].items():
+        print(f'场景文件 {name} 不合格：' + '；'.join(p['problem'] for p in problems[:3]))
+    daemon_state = result['daemon']
+    print('看板守护进程：' + (f"运行中 {daemon_state['url']}" if daemon_state['running'] else '未运行（在终端运行 sop-board serve）'))
+    for item in result['attention']:
+        print(f"待人处理 #{item['id']} {item['kind']}：{item['text']}")
+    return 0
+
+
+def cmd_skills(args):
+    from .skill_install import install
+    return install()
+
+
+# ---- 解析 ----
+
+def parser():
+    root = argparse.ArgumentParser(prog='sop-board', add_help=False)
+    sub = root.add_subparsers(dest='command')
+
+    p = sub.add_parser('init', help=GROUPS['搭建']['init'])
+    p.add_argument('name')
+    p.add_argument('repos', nargs='+')
+    p.add_argument('--data')
+    p.set_defaults(handler=cmd_init)
+
+    sub.add_parser('guide').set_defaults(handler=cmd_guide)
+
+    p = sub.add_parser('operator')
+    p.add_argument('action', nargs='?', choices=('show', 'set'), default='show')
+    p.add_argument('name', nargs='*')
+    p.set_defaults(handler=cmd_operator)
+
+    p = common(sub.add_parser('checkout'))
+    p.add_argument('action', choices=('list', 'show', 'create', 'remove'))
+    p.add_argument('name', nargs='?')
+    p.add_argument('--repo', action='append', help='create：只为这些仓库建立 worktree（可重复），其余回落到 main')
+    p.add_argument('--base', help='create：新分支的起点（缺省为各仓 HEAD）')
+    p.set_defaults(handler=cmd_checkout)
+
+    p = common(sub.add_parser('status'))
+    p.add_argument('--json', action='store_true')
+    p.set_defaults(handler=cmd_status)
+
+    p = sub.add_parser('skills')
+    p.add_argument('action', choices=('install',))
+    p.set_defaults(handler=cmd_skills)
+
+    for module in EXTENSIONS:
+        module.register(sub, common)
+    return root
+
+
+EXTENSIONS = []
+
+
+def usage():
+    lines = ['用法：sop-board <命令> [参数]    sop-board <命令> --help    sop-board --version',
+             '项目与检出缺省按当前目录识别；可用 --project/--data 与 --checkout 指定。']
+    for title, commands in GROUPS.items():
+        lines.append('\n' + title)
+        lines += [f'  {name:10} {text}' for name, text in commands.items()]
+    return '\n'.join(lines)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv in ([], ['--help'], ['-h'], ['help']):
+        print(usage())
+        return 0
     if argv == ['--version']:
         print(version())
         return 0
-    if argv and argv[0] in ('--help', '-h'):
-        print('用法：sop-board <工作区> [--data 目录] [--port 端口] [--lan] [--paused]\n'
-              '      sop-board <子命令> --help\n      sop-board --version')
-        for title, commands in COMMAND_GROUPS.items():
-            print('\n' + title)
-            for command, description in commands.items():
-                print(f'  {command:14} {description}')
-        print('\n启动参数：--port 默认 8787；--lan 允许内网只读访问；--paused 暂停自动任务。')
-        return 0
-    if argv and argv[0] == 'attention':
-        from .attention import command
-        return command(argv[1:])
-    if argv and argv[0] == 'confirmer':
-        from .session import confirmer_command
-        return confirmer_command(argv[1:])
-    if argv and argv[0] in ('issue', 'decision'):
-        from .issues import command
-        return command(argv)
-    if argv and argv[0] == 'identity':
-        from .identities import command
-        return command(argv[1:])
-    if argv and argv[0] in ('run', 'plan'):
-        from .plans import command
-        return command(argv)
-    if argv and argv[0] == 'atlas':
-        from .atlas import command
-        return command(argv[1:])
-    if argv and argv[0] == 'fixtures':
-        from .fixtures import command
-        return command(argv[1:])
-    if argv and argv[0] in ('status', 'task', 'draft', 'cases', 'merge', 'execute', 'fix', 'sop'):
-        from .session import command
-        return command(argv)
-    if argv and argv[0] == 'playwright':
+    if argv[0] == 'playwright':
         from .playwright import command
         return command(argv[1:])
-    if argv and argv[0] == 'skills':
-        from .skill_install import command
-        return command(argv[1:])
-    if argv and argv[0] == 'distill':
-        from .distill import command
-        return command(argv[1:])
-    action = argv.pop(0) if argv and argv[0] in ('guide', 'check', 'init') else 'serve'
-    if action == 'guide':
-        if argv:
-            print('用法：sop-board guide', file=sys.stderr)
-            return 2
-        sys.stdout.write(files('sop_board').joinpath('guide.md').read_text(encoding='utf-8'))
-        from .playwright import guide
-        sys.stdout.write('\n' + guide())
-        return 0
-    parser = argparse.ArgumentParser(description={'serve': '启动 Flow Board 流程验收看板', 'check': '自检工作区适配', 'init': '登记工作区名称和仓库'}[action])
-    parser.add_argument('workspace', nargs=None if action == 'init' else '?', help='工作区名称')
-    if action == 'init':
-        parser.add_argument('repositories', nargs='+', type=Path)
-    parser.add_argument('--data', type=Path)
-    if action == 'serve':
-        parser.add_argument('--port', type=int, default=8787)
-        parser.add_argument('--lan', action='store_true')
-        parser.add_argument('--paused', action='store_true', help='启动前暂停自动任务（验收或排查时避免一启动就派发任务），之后在页面上恢复')
-    args = parser.parse_args(argv)
-    environment = tasks = discovery = server = None
+    args = parser().parse_args(argv)
+    if not getattr(args, 'handler', None):
+        print(usage())
+        return 2
     try:
-        if action == 'init':
-            data, identities = initialize(args.workspace, args.repositories, args.data)
-            print('数据目录：' + str(data))
-            for alias, identity in identities.items():
-                print(alias + '：' + identity)
-            print('继续搭建：')
-            for line in Workspace(data=data).setup_instructions():
-                print(line)
-            return 0
-        timeout = parse_timeout(os.environ.get('SOP_BOARD_CODEX_TIMEOUT'))
-        workspace = Workspace(args.workspace, args.data)
-        environment = Environment(workspace)
-        if action == 'check':
-            result = environment.check()
-            if result.get('message'):
-                print(result['message'],flush=True)
-            for credential in result['credentials']:
-                # 前置数据的凭据借用入口结构登记，显示时不冒充入口名称。
-                owner = '入口 ' + credential['entry'] if credential['entry'] in workspace.entries else '前置数据'
-                print(f"{owner} · {credential['name']}：{credential['status']}", flush=True)
-            for number, step in enumerate(result['steps'], 1):
-                print(f"{number}. {step['name']}：{step['status']} · {step['message']}", flush=True)
-                if step['log']:
-                    print('   日志：' + step['log'], flush=True)
-            if result.get('path'):
-                print('自检报告：' + result['path'], flush=True)
-            else:
-                print('自检报告未能保存；已记录的自检结果保持不变',flush=True)
-                if not environment.process and not environment.port_locks:
-                    # check 已释放资源；目录不可写时不在 finally 再写一次环境状态。
-                    environment = None
-            return 0 if result['ok'] else 1
-        server = ThreadingHTTPServer(('0.0.0.0' if args.lan else '127.0.0.1', args.port), Handler)
-        server.daemon_threads = False
-        store = Store(workspace.data)
-        with store.transaction() as db:
-            db.execute('INSERT INTO workspaces(key,root,name) VALUES (?,?,?) '
-                       'ON CONFLICT(key) DO UPDATE SET root=excluded.root,name=excluded.name',
-                       (workspace.name, str(workspace.data), workspace.name))
-            db.execute("INSERT INTO settings(key,value) VALUES ('board_url',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                       (f'http://127.0.0.1:{server.server_port}',))
-        service = server.service = Service(store, workspace, environment)
-        if args.paused:
-            service.set_automation_paused(True)
-            print('自动任务已暂停；在看板页面恢复后才派发任务', flush=True)
-        server.jira = service.jira = Jira(os.environ.get('JIRA_EMAIL', ''),
-                                        os.environ.get('JIRA_API_TOKEN', ''), timeout=os.environ.get('JIRA_TIMEOUT_SECONDS', '10'))
-        if environment.approved():
-            try:
-                with environment.operation:
-                    environment.ensure_baseline()
-            except (OSError, ValueError) as error:
-                print('环境未就绪：' + str(error), file=sys.stderr, flush=True)
-        tasks = server.tasks = Tasks(service, timeout=timeout)
-        discovery = Discovery(service)
-        discovery.scan()
-        discovery.thread.start()
-        stopping = False
-        def stop(signum, frame):
-            nonlocal stopping
-            stopping = True
-        signal.signal(signal.SIGTERM, stop)
-        signal.signal(signal.SIGINT, stop)
-        server.timeout = .1
-        print('工作区：' + workspace.name, flush=True)
-        print('数据目录：' + str(workspace.data), flush=True)
-        print(f'看板地址：http://127.0.0.1:{server.server_port}/', flush=True)
-        if args.lan:
-            for address in local_ipv4_addresses():
-                print(f'内网地址：http://{address}:{server.server_port}/', flush=True)
-        while not stopping:
-            server.handle_request()
-        return 0
-    except (OSError, ValueError, sqlite3.Error) as error:
-        print(('无法登记工作区：' if action == 'init' else '无法运行看板：') + str(error), file=sys.stderr)
-        return 1
-    finally:
-        if environment:
-            environment.stopping = True
-        if server:
-            server.server_close()
-        if discovery and discovery.thread.is_alive():
-            discovery.close()
-        if tasks:
-            tasks.close()
-        if environment:
-            environment.close()
+        return args.handler(args)
+    except config.ProjectNotFound as error:
+        return fail('project-not-found', [dict(field='project', problem=str(error))])
+    except APIError as error:
+        return fail(error.code, error.problems)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        return fail('invalid', [dict(field='command', problem=str(error))])
+
+
+if __name__ == '__main__':
+    sys.exit(main())

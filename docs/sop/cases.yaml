@@ -1,0 +1,117 @@
+# v10 现行场景：测试用例上传到收件箱、会话直接改文件合并、ask 与答复
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景文件 shop）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动。
+#   “演示用例文件”指 examples/demo-shop 提供的测试用例 YAML（test_cases 格式），含一条与 shop 现有场景对应的细节用例和一条新流程用例；
+#   “内网”指另一台设备经 --lan 的实际非回环地址访问。
+
+metadata:
+  requirement: "sop-board v10：测试同学从内网上传用例进收件箱；会话 merge prepare 后直接编辑仓库中的用例与场景文件，merge submit 校验并输出场景差异；疑问用 ask 挂到看板待答复，答复在下次合并读取"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["cases", "inbox", "merge", "questions"]
+
+sops:
+  - id: CAS-01
+    title: 测试同学从内网上传用例进收件箱
+    actor: 测试同学
+    entry: "内网收件箱页上传；sop-board inbox list|show"
+    must: ["上传文件先用用例格式校验，再进收件箱"]
+    scenarios:
+      - id: CAS-01-P01
+        polarity: positive
+        title: 内网上传演示用例文件，收件箱出现待合并条目
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state: ["收件箱为空", "内网浏览器已存有姓名 张测", "记录 app 的 git status"]
+        steps: ["在内网收件箱页上传演示用例文件", "本机运行 sop-board inbox list 与 inbox show <编号>", "查看 app 的 git status"]
+        expected:
+          - "上传成功，收件箱出现一条未合并条目，上传人为 张测"
+          - "inbox list 与 inbox show 显示该条目及其用例内容"
+          - "app 的 git status 与上传前相同"
+        forbidden_effects: ["上传直接改动场景或用例文件", "上传自动启动合并会话"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#看板：三栏场景工作台（问题 2）"]
+      - id: CAS-01-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 格式不合格的用例文件被拒绝
+        actor: 测试同学
+        priority: P2
+        verify: web
+        initial_state: ["收件箱为空"]
+        steps: ["在内网上传一份缺少 expected_results 字段的用例文件"]
+        expected: ["上传被拒绝，页面列出缺少的字段与位置", "收件箱仍为空"]
+        forbidden_effects: ["不合格文件进入收件箱"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+
+  - id: CAS-02
+    title: 会话直接编辑文件完成合并
+    actor: 开发者
+    entry: "真实会话中运行 sop-board merge prepare [--inbox ID…]、merge submit"
+    must:
+      - "看板不存场景版本，也不回写场景文件"
+      - "merge submit 校验改后的文件，输出新增、移除、改动编号及角色或入口变化，并把收件箱条目标为已合并"
+      - "refs 与 metadata.sources 记录来源与确认人，确认人自动取操作者或答复人"
+    scenarios:
+      - id: CAS-02-P01
+        polarity: positive
+        title: 会话合并收件箱用例，场景文件改动与差异输出一致
+        actor: 开发者
+        priority: P0
+        verify: agent
+        initial_state: ["收件箱有一条演示用例文件的未合并条目", "app 没有未提交改动"]
+        steps:
+          - "在 app 目录新开 Claude Code 会话，请求“合并收件箱里的用例”"
+          - "会话运行 merge prepare --inbox <编号>，直接编辑仓库中的用例与场景文件，运行 merge submit"
+          - "查看 merge submit 输出、app 的 git diff、inbox list 与工作台"
+        expected:
+          - "merge submit 输出的新增与改动编号与 git diff 中场景文件的变化一致"
+          - "新流程用例生成的场景在工作台显示为未执行；并入细节的现有场景按新指纹显示为未执行"
+          - "相关场景的 refs 或 metadata.sources 记录收件箱来源与确认人操作者 N"
+          - "收件箱条目标为已合并"
+          - "board.sqlite3 中没有场景内容的副本表或场景版本记录"
+        forbidden_effects: ["看板写入或改写场景文件", "会话询问确认人是谁", "会话或看板替开发者提交"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#署名"]
+        evidence_hints: ["会话记录", "git diff", "merge submit 输出", "工作台截图"]
+      - id: CAS-02-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 改后的场景文件不合格时 merge submit 拒绝
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["已对收件箱条目运行 merge prepare", "在场景文件中新增了一条缺少 expected 的场景"]
+        steps: ["运行 sop-board merge submit --json", "运行 sop-board inbox list"]
+        expected: ["merge submit 以业务失败退出，列出文件、字段与行号", "收件箱条目仍为未合并"]
+        forbidden_effects: ["不合格的文件被当作已合并"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+
+  - id: CAS-03
+    title: 会话向测试同学提问，答复在下次合并读取
+    actor: 开发者
+    entry: "sop-board ask --about inbox:ID|F#ID --text、answers；内网待答复页"
+    negative_exempt: "提问对象不存在等属于确定性参数校验，验收后沉淀为单元测试"
+    scenarios:
+      - id: CAS-03-P01
+        polarity: positive
+        title: 会话 ask 挂起问题，测试同学在内网答复，下次合并以答复人为确认人
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["收件箱有一条未合并条目，其中一条用例的预期金额与 shop 现有场景不一致"]
+        steps:
+          - "在合并会话中请会话就该不一致向测试同学提问；会话运行 ask --about inbox:<编号> --text <问题>"
+          - "测试同学在内网待答复页看到问题并答复（姓名 张测）"
+          - "本机运行 sop-board answers；在新会话中再次请求合并，会话运行 merge prepare 与 merge submit"
+        expected:
+          - "内网待答复页显示该问题与关联的收件箱条目"
+          - "answers 输出答复原文与答复人 张测"
+          - "merge prepare 的材料包含该答复；合并后相关场景的确认人为 张测"
+        forbidden_effects: ["会话询问答复人是谁", "答复被直接写进场景文件而不经合并"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名"]
+        evidence_hints: ["会话记录", "内网页面截图", "answers 输出", "git diff"]
