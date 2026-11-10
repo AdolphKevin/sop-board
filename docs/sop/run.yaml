@@ -1,7 +1,7 @@
 # v10 现行场景：运行的准备与提交、影响判定、独立性三类、run launch 启动器
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W，shop#X 被预埋缺陷打败）；
-#   看板由用户在终端以 sop-board serve demo --data $D --lan 启动；port_step 为 100，已有检出 wt1。
+#   看板已以 sop-board serve demo --data $D --lan 启动；port_step 为 100，已有检出 wt1。
 #   “执行者”指按 run 目录提示词经演示项目真实入口执行场景、写出结果的会话或测试者。
 
 metadata:
@@ -11,6 +11,9 @@ metadata:
   status: confirmed
   sources:
     - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["run", "impact", "independence", "launcher"]
@@ -54,11 +57,11 @@ sops:
         initial_state: ["main 已有 prepared 运行 R1"]
         steps: ["在 main 运行 sop-board run prepare --scope all --session S2 --json", "在 wt1 运行 sop-board run prepare --scope all --session S3 --json"]
         expected:
-          - "main 的命令以业务失败退出（退出码 1），写明已有运行 R1"
+          - "main 的命令以业务失败退出（退出码 1），error_code 为 run-prepared，写明已有运行 R1"
           - "R1 仍为 prepared，范围与快照不变"
           - "wt1 的 run prepare 成功"
         forbidden_effects: ["覆盖或作废 R1", "wt1 被 main 的运行阻挡"]
-        refs: ["docs/design.md#数据库（格式 6，board.sqlite3）"]
+        refs: ["docs/design.md#数据库（格式 6，board.sqlite3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
 
   - id: RUN-02
     title: 产品变化后按影响判定保留通过
@@ -184,7 +187,7 @@ sops:
         initial_state: ["main 有一个 running 的启动 L1"]
         steps: ["在 main 运行 sop-board run launch --scope shop#B --json", "本机工作台对 shop#B 点“AI 重跑此场景”", "在 wt1 运行 sop-board run launch --scope shop#B --json"]
         expected:
-          - "main 的两次请求都被拒绝并写明运行中的 L1；launch status 只显示 L1"
+          - "main 的两次请求都被拒绝，error_code 为 launch-running，写明运行中的 L1；launch status 只显示 L1"
           - "wt1 的启动成功"
         forbidden_effects: ["main 同时运行两个无头会话", "结束或替换 L1"]
-        refs: ["docs/design.md#进程与入口", "docs/design.md#数据库（格式 6，board.sqlite3）"]
+        refs: ["docs/design.md#进程与入口", "docs/design.md#数据库（格式 6，board.sqlite3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]

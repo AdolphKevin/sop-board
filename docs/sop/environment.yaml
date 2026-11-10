@@ -1,7 +1,7 @@
 # v10 现行场景：按检出启停环境、端口偏移、port_step: 0 的租约冲突
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
 # 共用前置：演示项目同 setup.yaml 文件头（app、lib 两仓，项目 demo，数据目录 $D，场景 shop#X/A/B/W）。
-#   另需：已用 checkout create wt1 建立检出 wt1（槽位记为 s1）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动；
+#   另需：已用 checkout create wt1 建立检出 wt1（槽位记为 s1）；看板已以 sop-board serve demo --data $D --lan 启动；
 #   演示 adapter 的 env.py 按 SOP_PORT_OFFSET 偏移端口并在 ready 输出里给出入口地址。基础端口记为 P。
 
 metadata:
@@ -11,6 +11,9 @@ metadata:
   status: confirmed
   sources:
     - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["environment", "checkout", "ports", "lease"]
@@ -41,12 +44,12 @@ sops:
           - "在 wt1 运行 sop-board env down，然后再次 curl 两个入口并在 main 运行 env status"
         expected:
           - "main 的端口为 P，wt1 的端口为 P + s1 × 100；两个环境同时处于运行状态"
-          - "env status 显示的环境变量中，main 的 SOP_PORT_OFFSET 为 0，wt1 为 s1 × 100；各自的 SOP_CHECKOUT 为本检出名，SOP_REPO_app、SOP_REPO_lib 指向本检出的仓库路径"
+          - "演示 env.py 日志记录的 SOP_* 变量中，main 的 SOP_PORT_OFFSET 为 0，wt1 为 s1 × 100；各自的 SOP_CHECKOUT 为本检出名，SOP_REPO_app、SOP_REPO_lib 指向本检出的仓库路径"
           - "wt1 入口返回“wt1 版本”，main 入口不含该文字"
           - "wt1 env down 后 wt1 入口不再应答，main 入口照常应答，main 环境的进程号不变"
         forbidden_effects: ["wt1 的环境使用 main 的仓库路径", "对 wt1 的操作重启或停止 main 的环境", "两个环境监听同一端口"]
-        refs: ["docs/design.md#检出与环境（问题 3）"]
-        evidence_hints: ["命令输出", "curl 响应", "lsof 端口清单"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 12 条"]
+        evidence_hints: ["命令输出", "curl 响应", "lsof 端口清单", "env.py 日志"]
       - id: ENV-01-N01
         polarity: negative
         negative_type: disconnect
@@ -78,11 +81,11 @@ sops:
           - "wt1 中修好了预埋缺陷（未提交），并把 shop#A 的一条 expected 文字改为新内容（未提交）；main 保持原样"
         steps:
           - "同时在 main 运行 sop-board run prepare --scope all --session S1，在 wt1 运行 sop-board run prepare --scope all --session S2"
-          - "两位执行者各自用本检出 run 目录给出的入口地址执行 shop#X 与 shop#A，按实际结果写结果后分别 run submit"
+          - "两位执行者各自用本检出 runs/<编号>/run.env 中的入口地址变量执行 shop#X 与 shop#A，按实际结果写结果后分别 run submit"
           - "分别在两个检出运行 sop-board status --json，并在工作台切换 checkout=main 与 checkout=wt1 查看 shop#X、shop#A"
           - "在 main 与 wt1 分别运行 git status"
         expected:
-          - "两次运行的产品快照不同，各自的入口端口不同（P 与 P + s1 × 100）"
+          - "两次运行的产品快照不同；两份 run.env 中的入口地址变量端口不同（P 与 P + s1 × 100）"
           - "main 中 shop#X 为失败、shop#A 为通过；wt1 中 shop#X 为通过"
           - "wt1 的 shop#A 详情显示改后的 expected 文字，结果绑定改后的指纹；main 的 shop#A 仍显示原文字与原指纹的结果"
           - "main 的 status 不含 wt1 的任何结果，wt1 也不含 main 的结果"
@@ -92,7 +95,7 @@ sops:
           - "wt1 对场景文件的改动出现在 main"
           - "看板回写或生成任何场景文件"
           - "两个检出的执行打到同一个环境"
-        refs: ["docs/design.md#七个问题：根因与新设计", "docs/design.md#检出与环境（问题 3）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        refs: ["docs/design.md#七个问题：根因与新设计", "docs/design.md#检出与环境（问题 3）", "docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-10 对场景集待确认问题的答复 第 7 条"]
         evidence_hints: ["两份 run 目录清单", "两个入口的请求响应", "results 表按检出的只读查询", "工作台两个检出的截图"]
 
   - id: ENV-03
@@ -140,7 +143,7 @@ sops:
   - id: ENV-04
     title: 守护进程重启后清理孤儿进程组
     actor: 开发者
-    entry: "在终端重新运行 sop-board serve"
+    entry: "重新运行 sop-board serve"
     negative_exempt: "本节点本身就是中断恢复；不清理未登记进程已写在禁止项"
     scenarios:
       - id: ENV-04-P01
@@ -154,7 +157,7 @@ sops:
           - "测试者另起一个与项目无关的 python3 -m http.server 进程"
         steps:
           - "用 kill -9 结束 sop-board serve 进程，确认环境进程仍在"
-          - "在终端重新运行 sop-board serve demo --data $D --lan"
+          - "重新运行 sop-board serve demo --data $D --lan"
           - "检查原环境进程组与端口，运行 sop-board env status，再在 main 运行 sop-board env up"
         expected:
           - "重启后原 main 与 wt1 的环境进程组已结束，端口 P 与 P + s1 × 100 已释放"

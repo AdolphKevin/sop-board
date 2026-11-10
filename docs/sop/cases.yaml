@@ -1,6 +1,6 @@
 # v10 现行场景：测试用例上传到收件箱、会话直接改文件合并、ask 与答复
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
-# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景文件 shop）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景文件 shop）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   “演示用例文件”指 examples/demo-shop 提供的测试用例 YAML（test_cases 格式），含一条与 shop 现有场景对应的细节用例和一条新流程用例；
 #   “内网”指另一台设备经 --lan 的实际非回环地址访问。
 
@@ -13,14 +13,17 @@ metadata:
     - ref: "docs/design.md"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
   tags: ["cases", "inbox", "merge", "questions"]
 
 sops:
   - id: CAS-01
-    title: 测试同学从内网上传用例进收件箱
+    title: 从内网或会话上传用例进收件箱
     actor: 测试同学
-    entry: "内网收件箱页上传；sop-board inbox list|show"
-    must: ["上传文件先用用例格式校验，再进收件箱"]
+    entry: "内网收件箱页上传；sop-board inbox add <文件> [--kind cases|sop]、inbox list|show"
+    must: ["上传文件先用用例格式校验，再进收件箱；内网表单与 inbox add 校验相同，inbox add 以操作者署名"]
     scenarios:
       - id: CAS-01-P01
         polarity: positive
@@ -29,13 +32,14 @@ sops:
         priority: P1
         verify: web
         initial_state: ["收件箱为空", "内网浏览器已存有姓名 张测", "记录 app 的 git status"]
-        steps: ["在内网收件箱页上传演示用例文件", "本机运行 sop-board inbox list 与 inbox show <编号>", "查看 app 的 git status"]
+        steps: ["在内网收件箱页上传演示用例文件", "本机运行 sop-board inbox add <另一份合格用例文件> --kind cases", "运行 sop-board inbox list 与 inbox show <编号>", "查看 app 的 git status"]
         expected:
           - "上传成功，收件箱出现一条未合并条目，上传人为 张测"
+          - "inbox add 成功，收件箱再出现一条待合并条目，上传人为操作者 N"
           - "inbox list 与 inbox show 显示该条目及其用例内容"
           - "app 的 git status 与上传前相同"
         forbidden_effects: ["上传直接改动场景或用例文件", "上传自动启动合并会话"]
-        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#看板：三栏场景工作台（问题 2）"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#看板：三栏场景工作台（问题 2）", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
       - id: CAS-01-N01
         polarity: negative
         negative_type: invalid-input
@@ -44,10 +48,10 @@ sops:
         priority: P2
         verify: web
         initial_state: ["收件箱为空"]
-        steps: ["在内网上传一份缺少 expected_results 字段的用例文件"]
-        expected: ["上传被拒绝，页面列出缺少的字段与位置", "收件箱仍为空"]
+        steps: ["在内网上传一份缺少 expected_results 字段的用例文件", "本机对同一文件运行 sop-board inbox add <文件> --kind cases --json"]
+        expected: ["内网上传被拒绝，页面列出缺少的字段与位置", "inbox add 以业务失败退出，列出相同的字段问题", "收件箱仍为空"]
         forbidden_effects: ["不合格文件进入收件箱"]
-        refs: ["docs/design.md#保留能力的简化形态"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
 
   - id: CAS-02
     title: 会话直接编辑文件完成合并

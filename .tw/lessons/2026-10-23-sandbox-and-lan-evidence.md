@@ -3,8 +3,8 @@ title: "沙箱自检不能替代真实模型与内网入口证据"
 scope: ["self:docs/verification.md", "self:src/sop_board/daemon.py", "self:src/sop_board/prompts/**"]
 tags: ["沙箱", "内网", "真实模型", "自检", "独立验收"]
 source: ["https://github.com/AdolphKevin/sop-board/commit/d50b3ad7443df8ca7610f82673c65707778c4e14"]
-verified: {"self": {"commit": "ee879cd9757ae595df27aa351a8fee9b0910f20b", "date": "2026-11-10"}}
-guards: ["self:docs/sop/sop-board-14.yaml#SOP-145-N01", "self:docs/sop/sop-board-14.yaml#SOP-149-N01", "self:docs/sop/sop-board-12.yaml#SOP-127-P02"]
+verified: {"self": {"commit": "af809e9776e032770961d6e4c8d684c0bd355ead", "date": "2026-11-10"}}
+guards: ["self:docs/sop/workbench.yaml#WB-03-N01", "self:docs/sop/run.yaml#RUN-04-P01", "self:docs/sop/browser.yaml#BRW-05-N01"]
 ---
 # 沙箱自检不能替代真实模型与内网入口证据
 

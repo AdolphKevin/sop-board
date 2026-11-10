@@ -3,7 +3,7 @@
 # 共用前置（下称“演示项目”）：
 #   - 用 examples/demo-shop 的一条生成命令在临时目录生成 app、lib 两个 Git 仓库（下称主检出），以临时数据目录 $D（所有命令带 --data $D）init 为项目 demo。
 #   - 演示场景文件 shop（app 的 scenarios.path 下）：shop#X 是会被预埋缺陷打败的 API 场景，shop#A、shop#B 是应通过的 API 场景，shop#W 是使用身份 merchant 的 Web 场景；实际编号见 docs/verification.md。
-#   - 看板守护进程由用户在终端运行 sop-board serve demo --data $D --lan 启动；“操作者 N”指在检出目录运行 git config user.name 的输出。
+#   - 看板守护进程已以 sop-board serve demo --data $D --lan 启动（终端或会话中均可）；“操作者 N”指在检出目录运行 git config user.name 的输出。
 
 metadata:
   requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对"
@@ -12,6 +12,9 @@ metadata:
   status: confirmed
   sources:
     - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["setup", "operator", "checkout", "check"]
@@ -52,17 +55,17 @@ sops:
         priority: P1
         verify: cli
         initial_state: ["$D/old 是用 tag v9-final 的 sop-board 建立的工作区目录（数据库格式 5），已记录其中全部文件的 sha256"]
-        steps: ["用 v10 运行 sop-board status old --data $D --json", "在终端运行 sop-board serve old --data $D"]
+        steps: ["用 v10 运行 sop-board status old --data $D --json", "运行 sop-board serve old --data $D"]
         expected:
-          - "两条命令都以业务失败退出（退出码 1），说明该目录是不受支持的旧格式"
+          - "两条命令都以业务失败退出（退出码 1），error_code 为 project-format"
           - "$D/old 下全部文件的 sha256 与执行前一致"
         forbidden_effects: ["自动迁移或改写旧数据库", "在旧目录中新建 board.sqlite3 或项目标记"]
-        refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#风险与说明"]
+        refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#风险与说明", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
 
   - id: SET-02
     title: 操作者身份按机器设一次，登记自动署名
     actor: 开发者
-    entry: "sop-board operator show|set，及所有带登记的 CLI 命令；真实 Codex 或 Claude Code 会话"
+    entry: "sop-board operator show|set，及所有带登记的 CLI 命令（含 inbox add）；真实 Codex 或 Claude Code 会话"
     must:
       - "操作者缺省取 git config user.name，可用 operator set 修改"
       - "所有 CLI 登记自动以操作者署名；只有别人确认时才用 --as <姓名>"
@@ -93,24 +96,25 @@ sops:
         evidence_hints: ["命令原文与输出", "results 表只读查询"]
       - id: SET-02-P02
         polarity: positive
-        title: 真实会话合并用例、确认草稿、提交运行，全程不问确认人
+        title: 真实会话上传并合并用例、确认草稿、提交运行，全程不问确认人
         actor: 开发者
         priority: P0
         verify: agent
         initial_state:
           - "演示项目已登记，看板已启动，sop-board skills install 已执行"
-          - "测试同学已从内网向收件箱上传一份格式合格的演示用例文件"
+          - "收件箱为空；演示用例文件在临时目录中"
           - "app 中有两份草稿场景文件 draft-a、draft-b（metadata.status: draft），没有待处理批注"
           - "会话开始前没有向会话提供任何人名"
         steps:
           - "在 app 目录分别新开一个 Claude Code 会话和一个 Codex 会话（各走一遍下列请求）"
-          - "用自然语言提出：“把收件箱里的新用例合并进场景”；会话就业务内容提问时按演示用例原文回答"
+          - "用自然语言提出：“上传这份用例文件 <路径> 并合并进场景”；会话就业务内容提问时按演示用例原文回答"
           - "提出：“确认草稿 draft-a”"
           - "提出：“草稿 draft-b 是产品负责人李四确认的，请确认”"
           - "提出：“对 shop#A 做一次验收并提交结果”"
           - "导出会话记录，查看合并后的场景文件、两份草稿文件头与运行记录"
         expected:
-          - "会话完成 merge prepare/submit、draft confirm、run prepare/submit，各命令退出码为 0"
+          - "会话完成 inbox add（--kind cases）、merge prepare/submit、draft confirm、run prepare/submit，各命令退出码为 0"
+          - "收件箱条目的上传人为操作者 N"
           - "合并后场景的 refs 或 metadata.sources 记录的确认人为操作者 N"
           - "draft-a 的 metadata.status 为 confirmed，确认人为操作者 N；draft-b 的确认人为 李四，且对应命令带 --as 李四"
           - "运行记录的操作者为操作者 N"
@@ -119,7 +123,7 @@ sops:
           - "会话询问“确认人是谁”或要求提供姓名"
           - "会话使用 --by、--author、--confirmed-by 或 --uploaded-by 参数"
           - "在用户未提及他人确认时使用 --as，或写入会话自行编造的姓名"
-        refs: ["docs/design.md#署名", "docs/design.md#七个问题：根因与新设计"]
+        refs: ["docs/design.md#署名", "docs/design.md#七个问题：根因与新设计", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
         evidence_hints: ["两个会话的完整记录导出", "场景文件与草稿文件的 git diff", "work 表只读查询"]
 
   - id: SET-03
@@ -148,10 +152,11 @@ sops:
           - "主检出目录识别为 main，槽位 0"
           - "wt-a/app 与 wt-a/lib 识别为同一个 worktree 检出，app 路径为 wt-a/app，lib 路径为 wt-a/lib"
           - "wt-b/app 识别为另一个 worktree 检出，app 路径为 wt-b/app，lib 路径为 lib 主检出路径"
-          - "两个 worktree 检出各有一个互不相同的非 0 槽位；重复 show 槽位不变"
+          - "wt-a 下有其他已登记仓库的兄弟 worktree，检出名为父目录名 wt-a；wt-b/app 没有这样的兄弟，检出名为 worktree 目录名 app"
+          - "两个 worktree 检出各有一个互不相同的非 0 槽位；重复 show 槽位与名称不变"
           - "checkout list 列出 main 与这两个检出，与 show 的结果一致"
         forbidden_effects: ["worktree 目录被当作未登记仓库而报错", "两个检出共用一个槽位", "wt-a 被拆成两个检出"]
-        refs: ["docs/design.md#检出与环境（问题 3）"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 5 条"]
         evidence_hints: ["命令原文与输出", "git worktree list 输出", "checkouts 表只读查询"]
       - id: SET-03-N01
         polarity: negative
@@ -161,14 +166,15 @@ sops:
         priority: P1
         verify: cli
         initial_state:
-          - "演示项目已登记"
+          - "演示项目已登记，SET-03-P01 已完成（已有名为 app 的检出 wt-b/app）"
           - "另有一个未登记到 demo 的 Git 仓库 other；在同一父目录 wt-c 下建立 wt-c/app（app 的 worktree）与 wt-c/other（other 的 worktree）"
         steps: ["在 wt-c/app 运行 sop-board checkout show --json"]
         expected:
           - "检出中 app 路径为 wt-c/app，lib 路径回落到 lib 主检出路径"
           - "输出中不出现 wt-c/other"
+          - "wt-c 下没有其他已登记仓库的兄弟 worktree，检出按 worktree 目录名命名；因 app 已被 wt-b/app 占用，名称为 app-2"
         forbidden_effects: ["wt-c/other 被并入 demo 的检出", "other 仓库内出现任何新文件或改动"]
-        refs: ["docs/design.md#检出与环境（问题 3）", "docs/design.md#实施阶段（同一分支，每个阶段结束时包都能导入，CLI 可用）"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "docs/design.md#实施阶段（同一分支，每个阶段结束时包都能导入，CLI 可用）", "使用者 2026-11-10 对场景集待确认问题的答复 第 5 条"]
 
   - id: SET-04
     title: 用 adapter 创建和移除检出
@@ -191,8 +197,9 @@ sops:
           - "create 由 adapter 为 app 和 lib 各建一个 worktree，输出 wt1 的两个路径与一个非 0 槽位"
           - "list 显示 main（槽位 0）与 wt1；在 wt1 的 app 目录 show 识别为 wt1"
           - "remove 后 list 不再有 wt1，两个仓库的 git worktree list 不再有 wt1 的路径"
+          - "wt1 的槽位被释放：checkouts 表中不再有占用该槽位的检出"
         forbidden_effects: ["remove 删除主检出、$D 或任何运行目录中的文件"]
-        refs: ["docs/design.md#检出与环境（问题 3）"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 5 条"]
         evidence_hints: ["命令输出", "git worktree list 前后对比", "$D 目录清单"]
 
   - id: SET-05
@@ -225,10 +232,10 @@ sops:
         actor: 开发者
         priority: P2
         verify: cli
-        initial_state: ["演示项目已登记，看板与 CLI 在一个从未运行 browser install 的临时 HOME 下运行"]
+        initial_state: ["演示项目已登记；看板与 CLI 的 SOP_BOARD_HOME 指向一个从未运行 browser install 的临时目录（运行时属于本机级，不随 --data 变化）"]
         steps: ["在主检出运行 sop-board check"]
         expected:
           - "check 以业务失败退出（退出码 1），浏览器运行时一项写明运行时缺失"
           - "配置与环境两项照常给出结果"
-        forbidden_effects: ["check 改用共享的 ms-playwright 缓存或用户日常 Chrome 充当运行时"]
-        refs: ["docs/design.md#浏览器代理（问题 5、6）"]
+        forbidden_effects: ["check 改用共享的 ms-playwright 缓存或用户日常 Chrome 充当运行时", "check 到 $D 下寻找运行时"]
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 2 条"]

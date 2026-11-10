@@ -1,0 +1,53 @@
+# v10 现行场景：按检出导出报告与证据包
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动；已有检出 wt1。
+#   “混合结果”：main 上 shop#X 失败且有测试同学的不通过标注（缺陷链接 https://issues.example/DEMO-2），shop#A 守护通过，
+#   shop#W 独立验收通过并附截图，shop#B 未执行；wt1 上只有一条 shop#B 的实现者自检通过。
+
+metadata:
+  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、证据、独立性、标注、守护通过、未执行范围）和证据 zip，只含该检出的结果"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["report"]
+
+sops:
+  - id: RPT-01
+    title: 导出检出报告
+    actor: 开发者
+    entry: "sop-board report [--file F] [--zip]"
+    scenarios:
+      - id: RPT-01-P01
+        polarity: positive
+        title: main 的报告如实列出各类结论与未执行范围，证据包含所引证据
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示项目处于“混合结果”"]
+        steps: ["在 main 运行 sop-board report --file shop --zip", "阅读 Markdown 报告，解压证据 zip 并计算各文件 sha256"]
+        expected:
+          - "报告逐条列出 shop 场景的状态：shop#X 失败（含 张测 的不通过标注与缺陷链接）、shop#A 守护通过、shop#W 通过、shop#B 未执行"
+          - "shop#W 一条写明独立性为独立验收并引用截图证据"
+          - "报告单列未执行范围，包含 shop#B"
+          - "zip 中包含报告所引的证据文件，sha256 与报告引用一致"
+        forbidden_effects: ["未执行或守护通过被写成经真实入口通过", "报告或 zip 中出现凭据明文"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+        evidence_hints: ["报告全文", "zip 清单与摘要"]
+      - id: RPT-01-N01
+        polarity: negative
+        negative_type: cross-tenant
+        title: wt1 的报告不含 main 的结果
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示项目处于“混合结果”"]
+        steps: ["在 wt1 的 app 目录运行 sop-board report --zip", "阅读报告与 zip 清单"]
+        expected:
+          - "shop#B 为通过且独立性为实现者自检；shop#X、shop#A、shop#W 都列为未执行"
+          - "zip 中没有 main 的证据文件"
+        forbidden_effects: ["wt1 报告出现 main 的结果、标注或守护通过"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#检出与环境（问题 3）"]

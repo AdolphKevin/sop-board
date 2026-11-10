@@ -1,6 +1,6 @@
 # v10 现行场景：SOP 编写、草稿批注与确认
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
-# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   “演示 PRD”指 examples/demo-shop 提供的一份需求 Markdown；草稿文件 draft-a 是 app 的 scenarios.path 下 metadata.status 为 draft 的场景文件。
 
 metadata:
@@ -12,6 +12,9 @@ metadata:
     - ref: "docs/design.md"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
   tags: ["authoring", "sop", "draft"]
 
 sops:
@@ -19,7 +22,7 @@ sops:
     title: 会话编写业务 SOP
     actor: 开发者
     entry: "真实会话中运行 sop-board sop prepare --source、sop submit"
-    must: ["sop submit 校验六个标题和规则编号，并在文件头写入确认人"]
+    must: ["sop submit 校验六个标题（业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围）和规则编号，并由命令追加确认信息"]
     scenarios:
       - id: AUT-01-P01
         polarity: positive
@@ -35,10 +38,11 @@ sops:
           - "查看 SOP 文件头与看板 SOP 原文页"
         expected:
           - "sop prepare 复制了资料并给出提示词"
-          - "sop submit 成功，SOP 文件头写有确认人操作者 N"
+          - "SOP 含 业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围 六个标题"
+          - "sop submit 成功，命令追加的确认信息中确认人为操作者 N"
           - "看板 SOP 原文页显示该 SOP"
-        forbidden_effects: ["会话询问确认人是谁", "会话把未答复的业务口径按代码现状写成规则"]
-        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名"]
+        forbidden_effects: ["会话询问确认人是谁", "会话把未答复的业务口径按代码现状写成规则", "会话自行在正文中填写确认信息"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
         evidence_hints: ["会话记录", "SOP 文件", "SOP 原文页截图"]
       - id: AUT-01-N01
         polarity: negative
@@ -47,11 +51,11 @@ sops:
         actor: 开发者
         priority: P2
         verify: cli
-        initial_state: ["已运行 sop prepare，仓库中的 SOP Markdown 删去了一个规定标题"]
+        initial_state: ["已运行 sop prepare，仓库中的 SOP Markdown 没有“流程图”标题，其余五个标题齐全"]
         steps: ["运行 sop-board sop submit --json"]
-        expected: ["以业务失败退出，写明缺少的标题", "文件头没有写入确认人"]
+        expected: ["以业务失败退出，写明缺少“流程图”", "没有追加确认信息"]
         forbidden_effects: ["结构不合格的 SOP 被登记"]
-        refs: ["docs/design.md#保留能力的简化形态"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
 
   - id: AUT-02
     title: 草稿批注、修订与确认
@@ -88,6 +92,6 @@ sops:
         verify: cli
         initial_state: ["draft-a 仍为 draft"]
         steps: ["运行 sop-board run prepare --scope draft-a#<其中一条场景编号> --session S1 --json"]
-        expected: ["该草稿场景不出现在运行范围中，输出说明它是草稿"]
+        expected: ["命令以业务失败退出（退出码 1），error_code 为 draft-not-runnable", "没有生成包含该草稿场景的 prepared 运行"]
         forbidden_effects: ["草稿场景得到执行结果"]
-        refs: ["docs/design.md#保留能力的简化形态"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]

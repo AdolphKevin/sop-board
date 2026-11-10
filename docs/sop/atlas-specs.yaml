@@ -1,0 +1,80 @@
+# v10 现行场景：交互地图过期判断、浏览器层 spec 保真检查
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，Web 场景 shop#W 使用身份 merchant）；看板已以 sop-board serve demo --data $D --lan 启动；
+#   浏览器运行时已安装，merchant 已登录（browser.yaml）。spec 库目录指演示项目 app 中存放浏览器层 spec 与地图文件的目录。
+
+metadata:
+  requirement: "sop-board v10：交互地图放在产品仓库 spec 库目录并记录前端源码摘要，atlas stale 按摘要判断过期；浏览器层守护测试在 distill submit 时做保真检查，基线是 HEAD 版本，首次以产生独立通过的那份 spec 为准"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["atlas", "specs", "fidelity"]
+
+sops:
+  - id: ATS-01
+    title: 地图随前端源码变化而过期
+    actor: 开发者
+    entry: "真实会话中运行 sop-board atlas prepare/submit；sop-board atlas stale；看板交互地图页"
+    negative_exempt: "地图文件的结构校验沿用 atlas.schema.json，属于确定性校验，验收后沉淀为单元测试"
+    scenarios:
+      - id: ATS-01-P01
+        polarity: positive
+        title: 生成地图后未改前端时不过期，改动前端文件后报告过期
+        actor: 开发者
+        priority: P2
+        verify: agent
+        initial_state: ["app 中还没有地图文件"]
+        steps:
+          - "在 app 目录新开会话，请求“为演示项目生成交互地图”；会话运行 atlas prepare，写地图文件后运行 atlas submit"
+          - "运行 sop-board atlas stale --json，并在看板打开交互地图页"
+          - "修改 app 中一个被地图记录的前端源码文件（改一处按钮文案），再运行 atlas stale --json"
+        expected:
+          - "地图文件位于 app 的 spec 库目录，记录了前端源码摘要"
+          - "第一次 atlas stale 报告该地图未过期；地图页能渲染"
+          - "改动后 atlas stale 报告该地图过期，并列出摘要变化的源码文件"
+        forbidden_effects: ["地图写进数据库而不在产品仓库", "未改动前端时报告过期"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+        evidence_hints: ["会话记录", "地图文件", "atlas stale 前后输出", "地图页截图"]
+
+  - id: ATS-02
+    title: 浏览器层测试沉淀时做 spec 保真检查
+    actor: 开发者
+    entry: "sop-board distill submit（浏览器层测试）、specs check（specs 只保留 check）"
+    must: ["浏览器层测试另跑保真检查，基线是 git show HEAD:<path>，首次以产生独立通过的那份 spec 为准"]
+    scenarios:
+      - id: ATS-02-P01
+        polarity: positive
+        title: 以独立通过的 spec 为基线沉淀 shop#W，保真检查合格后写进守护
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state: ["shop#W 已由一份浏览器 spec 在当前快照上独立通过，该 spec 尚未提交", "regression.yaml 中没有 shop#W 的守护"]
+        steps:
+          - "在会话中请求“把 shop#W 沉淀为浏览器层回归测试”；会话运行 distill prepare shop#W，以该 spec 为测试写 guard.json 并 distill submit"
+          - "运行 sop-board specs check，查看 regression.yaml"
+        expected:
+          - "submit 输出保真检查合格，并按 retest 规则实际运行一次（取得 merchant 的浏览器租约）"
+          - "regression.yaml 新增 shop#W 的守护，测试层为浏览器层，带保真账本 ledger"
+          - "specs check 报告该 spec 合格"
+        forbidden_effects: ["运行时启动用户日常 Chrome", "spec 索引写进 INDEX.json 等 regression.yaml 以外的文件", "需要另行运行 specs review 或 promote 才能生效"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "使用者 2026-11-10 对场景集待确认问题的答复 第 8 条"]
+        evidence_hints: ["会话记录", "submit 输出", "regression.yaml 的 git diff"]
+      - id: ATS-02-N01
+        polarity: negative
+        negative_type: tampered-input
+        title: 相对基线删掉断言的 spec 保真检查不合格
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["shop#W 的浏览器 spec 已提交（作为 HEAD 基线）", "工作区中把该 spec 对一条 expected 的断言删掉，guard.json 仍声明覆盖该条", "记录 regression.yaml 的 sha256"]
+        steps: ["运行 sop-board distill submit --report guard.json --json"]
+        expected: ["submit 以业务失败退出，写明保真检查不合格及被削弱的断言", "regression.yaml 的 sha256 不变"]
+        forbidden_effects: ["削弱断言的 spec 写进守护"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）"]

@@ -2,8 +2,8 @@
 title: "合并输出必须满足严格对象模式"
 scope: ["self:src/sop_board/prompts/**"]
 source: ["https://github.com/AdolphKevin/sop-board/commit/2082b7ecd8973452589d3f84160bf099f145a383"]
-guards: ["self:docs/sop/sop-board-7.yaml#SOP-75-P01"]
-verified: {"self": {"commit": "ee879cd9757ae595df27aa351a8fee9b0910f20b", "date": "2026-11-10"}}
+guards: ["self:docs/sop/atlas-specs.yaml#ATS-01-P01"]
+verified: {"self": {"commit": "af809e9776e032770961d6e4c8d684c0bd355ead", "date": "2026-11-10"}}
 ---
 # 合并输出必须满足严格对象模式
 

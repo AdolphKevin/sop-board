@@ -1,6 +1,6 @@
 # v10 现行场景：守护闭环（待沉淀、沉淀登记 regression.yaml、retest 守护通过、守护失败回落、漏检使守护失效）
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
-# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   app 的 scenarios.path 下的 regression.yaml 声明演示项目的守护命令 unit（只用 argv，输出 junit）。
 #   “独立通过”指经演示项目真实入口执行、执行者与声明的实现者不同的通过结果。下文都在 main 检出进行。
 
@@ -11,6 +11,9 @@ metadata:
   status: confirmed
   sources:
     - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
   tags: ["guard", "distill", "retest", "regression"]
@@ -165,25 +168,28 @@ sops:
     title: 漏检使守护失效，直到用新测试重新沉淀
     actor: 测试同学
     entry: "工作台复测标注或真实入口运行、sop-board retest、distill submit"
-    must: ["最近一次是守护通过、之后真实入口执行或人工复测发现失败时记一条漏检；该守护失效，直到重新沉淀且测试摘要变化"]
+    must: ["最近一次是守护通过、之后真实入口执行或人工复测发现失败时记一条漏检；该守护失效，直到在漏检之后取得新的独立通过、并以变化后的测试摘要重新沉淀"]
     scenarios:
       - id: GRD-04-P01
         polarity: positive
-        title: 修复后用更新过的测试重新沉淀，守护恢复有效
+        title: 漏检后取得新的独立通过并用更新过的测试重新沉淀，守护恢复有效
         actor: 开发者
         priority: P2
         verify: cli
-        initial_state: ["shop#A 已登记漏检（GRD-04-N01）", "缺陷已修复，shop#A 已在当前快照上重新独立通过"]
+        initial_state: ["shop#A 已登记漏检（GRD-04-N01）", "缺陷已修复，漏检之后 shop#A 还没有新的通过结果", "记录 regression.yaml 的 sha256"]
         steps:
-          - "不改测试文件，用原 guard.json 运行 distill submit"
-          - "补上能抓到该缺陷的断言（测试摘要变化），重新写 guard.json 并 distill submit"
+          - "补上能抓到该缺陷的断言（测试摘要变化），guard.json 的 acceptance 仍指向漏检前的那条独立通过，运行 distill submit"
+          - "由另一会话经真实入口独立执行 shop#A 并通过"
+          - "改回原测试文件（摘要与漏检前相同），acceptance 指向新的独立通过，运行 distill submit"
+          - "用补了断言的测试与新的独立通过运行 distill submit"
           - "对产品做一处无关改动后运行 sop-board retest"
         expected:
-          - "第一次 submit 被拒绝，写明该守护有漏检且测试摘要未变"
-          - "第二次 submit 成功，regression.yaml 中 shop#A 的测试 sha256 更新"
+          - "第一次 submit 被拒绝（acceptance 不是漏检之后的独立通过），regression.yaml 的 sha256 不变"
+          - "第二次 submit 被拒绝（测试摘要未变化），regression.yaml 的 sha256 不变"
+          - "第三次 submit 成功，regression.yaml 中 shop#A 的测试 sha256 与 acceptance 都已更新"
           - "retest 后 shop#A 为守护通过"
-        forbidden_effects: ["未改测试就恢复守护有效"]
-        refs: ["docs/design.md#守护与沉淀（问题 4）"]
+        forbidden_effects: ["未改测试或未取得漏检后的独立通过就恢复守护有效"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "使用者 2026-11-10 对场景集待确认问题的答复 第 10 条"]
       - id: GRD-04-N01
         polarity: negative
         negative_type: other

@@ -1,6 +1,6 @@
 # v10 现行场景：三栏场景工作台（场景树、筛选、详情、证据、复测标注、内网范围、本机 AI 重跑）
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
-# 共用前置：演示项目同 setup.yaml 文件头（项目 demo 是数据目录 $D 中唯一的项目）；看板由用户在终端以 sop-board serve demo --data $D --lan 启动。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo 是数据目录 $D 中唯一的项目）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   “内网”指另一台设备用 --lan 打印的实际非回环地址访问；“本机”指回环地址。
 #   “已有结果”：main 上 shop#X 为失败（附请求响应证据），shop#W 为通过（附截图、录像与 trace），shop#A 曾在旧快照上通过且没有守护，
 #   shop#B 未执行；另有一份草稿文件 draft-a；wt1 检出已建立并有一条 shop#B 的通过结果。
@@ -113,7 +113,7 @@ sops:
           - "launches 表新增一条 running 记录（进程号、日志路径），会话工作目录是 main 的检出目录"
           - "运行记录页在本机能查看日志，结束后显示退出码"
           - "shop#X 出现该会话登记的新结果，历史中显示其独立性"
-        forbidden_effects: ["会话进程树中启动浏览器", "在 main 以外的检出目录运行"]
+        forbidden_effects: ["在 main 以外的检出目录运行", "无头会话打开有界面浏览器窗口"]
         refs: ["docs/design.md#进程与入口", "docs/design.md#看板：三栏场景工作台（问题 2）"]
         evidence_hints: ["页面截图", "launches 表只读查询", "会话日志"]
       - id: WB-03-N01

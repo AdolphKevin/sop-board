@@ -1,0 +1,110 @@
+# v10 现行场景：数据配方留痕、待人处理、身份登录与验证码计数
+# 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D）；看板已以 sop-board serve demo --data $D --lan 启动；
+#   config.yaml 声明演示项目的数据配方 seed-order（向演示 SQLite 写入一笔测试订单），“内网”指另一台设备经 --lan 的实际非回环地址访问。
+
+metadata:
+  requirement: "sop-board v10：数据配方在 config.yaml 中声明，fixtures run/exec 的留痕写进运行目录和 fixture_runs；待人处理只有列表、新增、解决三个操作，且只能在本机写入；执行者在每次真实登录或请求验证码前用 identity record 计数，超过上限被拒绝并记入待人处理"
+  version: 1
+  owner: "blur.yin"
+  status: confirmed
+  sources:
+    - ref: "docs/design.md"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["fixtures", "attention", "identity"]
+
+sops:
+  - id: FXT-01
+    title: 运行中使用数据配方并留痕
+    actor: 执行会话
+    entry: "sop-board fixtures run"
+    negative_exempt: "配方未声明等属于确定性校验，验收后沉淀为单元测试"
+    scenarios:
+      - id: FXT-01-P01
+        polarity: positive
+        title: 在运行中执行配方，留痕写进运行目录与 fixture_runs
+        actor: 执行会话
+        priority: P2
+        verify: cli
+        initial_state: ["main 已为 shop#A run prepare，得到运行 R1", "演示 SQLite 中没有测试订单"]
+        steps: ["按运行目录中的指引对 R1 执行 sop-board fixtures run seed-order", "查看 runs/R1/ 目录，只读查询 fixture_runs 表与演示 SQLite"]
+        expected:
+          - "演示 SQLite 中出现一笔测试订单"
+          - "runs/R1/ 与 fixture_runs 中都有这次配方执行的留痕（配方名、输出、退出码、时间、执行者），凭据值已遮蔽"
+        forbidden_effects: ["留痕中出现凭据明文", "配方执行改变 shop#A 的结论"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+
+  - id: FXT-02
+    title: 待人处理的列表、新增与解决
+    actor: 开发者
+    entry: "sop-board attention list|add|resolve；看板待人处理页"
+    must: ["只保留列表、新增、解决三个操作；内网写入只限复测标注、答复问题、批注草稿、上传用例或 SOP"]
+    scenarios:
+      - id: FXT-02-P01
+        polarity: positive
+        title: 本机新增并解决一条待人处理，内网可以查看
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["没有未解决的待人处理"]
+        steps:
+          - "运行 sop-board attention add，内容为“merchant 需要真人重新登录”"
+          - "运行 attention list；在内网打开看板待人处理页"
+          - "运行 attention resolve <编号>，再运行 attention list"
+        expected:
+          - "list 与内网页面都显示该条，内容一致"
+          - "resolve 后该条不再出现在未解决列表中"
+        forbidden_effects: ["待人处理出现列表、新增、解决以外的操作"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+      - id: FXT-02-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网不能新增或解决待人处理
+        actor: 测试同学
+        priority: P2
+        verify: api
+        initial_state: ["有一条未解决的待人处理"]
+        steps: ["从内网地址用 curl 以同源 JSON POST 调用新增与解决待人处理的接口", "只读查询 attention 表"]
+        expected: ["两个请求都被拒绝", "attention 表没有变化"]
+        forbidden_effects: ["内网写入待人处理"]
+        refs: ["docs/design.md#看板：三栏场景工作台（问题 2）"]
+
+  - id: FXT-03
+    title: 身份登录与验证码计数
+    actor: 执行会话
+    entry: "sop-board identity record --identity <身份> --kind login|code、identity status"
+    must: ["执行者在每次真实登录或请求验证码前运行 identity record；计数有上限，超过上限被拒绝并记入待人处理"]
+    scenarios:
+      - id: FXT-03-P01
+        polarity: positive
+        title: 登录与验证码请求前各记一次，identity status 显示计数
+        actor: 执行会话
+        priority: P2
+        verify: cli
+        initial_state: ["config.yaml 为 merchant 声明的登录上限为 2、验证码上限为 2", "merchant 还没有计数"]
+        steps:
+          - "运行 sop-board identity record --identity merchant --kind login"
+          - "运行 sop-board identity record --identity merchant --kind code"
+          - "运行 sop-board identity status --json"
+        expected: ["两次 record 都成功", "identity status 显示 merchant 的登录计数 1、验证码计数 1"]
+        forbidden_effects: ["计数写到其他身份"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 13 条"]
+      - id: FXT-03-N01
+        polarity: negative
+        negative_type: other
+        title: 登录次数超过上限被拒绝并记入待人处理
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["config.yaml 为 merchant 声明的登录上限为 2", "merchant 的登录计数已为 2"]
+        steps: ["运行 sop-board identity record --identity merchant --kind login --json", "运行 sop-board identity status --json 与 sop-board attention list"]
+        expected:
+          - "record 以业务失败退出，说明 merchant 的登录次数已达上限"
+          - "identity status 中登录计数仍为 2"
+          - "attention list 新增一条关于 merchant 登录超限的待人处理"
+        forbidden_effects: ["超限后计数继续增加", "超限被拒绝却没有留下待人处理"]
+        refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 13 条"]
