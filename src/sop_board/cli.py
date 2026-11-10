@@ -63,13 +63,17 @@ def fail(code, problems, status=1):
 
 def common(parser):
     parser.add_argument('--project', '-p', help='项目名称（缺省按当前目录所在仓库查找）')
-    parser.add_argument('--data', help='项目数据目录')
+    parser.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
     parser.add_argument('--checkout', '-c', help='检出名称（缺省按当前目录识别，main 为登记路径）')
     return parser
 
 
+def project_name(args):
+    return getattr(args, 'name_or_project', None) or getattr(args, 'project', None)
+
+
 def load(args, *, require=True):
-    data = config.resolve_data(getattr(args, 'project', None), getattr(args, 'data', None))
+    data = config.resolve_data(project_name(args), getattr(args, 'data', None))
     project = config.Project(data)
     if require:
         project.require()
@@ -94,8 +98,9 @@ def scene_board(context):
 
 def cmd_init(args):
     data, identities = config.initialize(args.name, args.repos, args.data)
+    Store(data)
     emit(dict(ok=True, project=args.name, data=str(data), repositories=identities,
-              next=f'在 {data}/config.yaml 写好 scenarios、skill、entries 与 adapter 后运行 sop-board check --project {args.name}'))
+              next=f'在 {data}/config.yaml 写好 scenarios、skill、entries 与 adapter，启动 sop-board serve 后运行 sop-board check'))
     return 0
 
 
@@ -123,7 +128,7 @@ def cmd_checkout(args):
         project = config.Project(config.resolve_data(args.project, args.data)).require()
         store = Store(project.data)
         log = project.data / 'checkouts' / (args.name + '.log')
-        created = checkouts.build(project, store, args.name, aliases=args.repo or None, base=args.base, log=log)
+        created = checkouts.build(project, store, args.name, aliases=args.repo or None, base=args.base_ref, log=log)
         emit(dict(ok=True, checkout=created.public(local=True), log=str(log)))
         return 0
     context = load(args, require=False)
@@ -166,7 +171,7 @@ def cmd_status(args):
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
         from . import daemon
-        result['daemon'] = daemon.describe(project)
+        result['daemon'] = dict(daemon.describe(project), command=project.serve_command())
         from . import ledger
         with context.store.connection() as db:
             result['attention'] = ledger.open_attention(db, context.checkout.id, local=True)
@@ -175,6 +180,7 @@ def cmd_status(args):
         return 0
     print(f"项目 {project.name} · 检出 {context.checkout.name} · 操作者 {result['operator'] or '未设置'}")
     if not project.configured:
+        print('守护进程启动命令：' + project.serve_command())
         print('配置不合格：')
         for item in project.problems:
             print(f"  {item['field']}：{item['problem']}")
@@ -185,7 +191,7 @@ def cmd_status(args):
     for name, problems in result['invalid_files'].items():
         print(f'场景文件 {name} 不合格：' + '；'.join(p['problem'] for p in problems[:3]))
     daemon_state = result['daemon']
-    print('看板守护进程：' + (f"运行中 {daemon_state['url']}" if daemon_state['running'] else '未运行（在终端运行 sop-board serve）'))
+    print('看板守护进程：' + (f"运行中 {daemon_state['url']}" if daemon_state['running'] else f'未运行（运行 {project.serve_command()}）'))
     for item in result['attention']:
         print(f"待人处理 #{item['id']} {item['kind']}：{item['text']}")
     return 0
@@ -193,7 +199,7 @@ def cmd_status(args):
 
 def cmd_serve(args):
     from . import server
-    project = config.Project(config.resolve_data(args.project, args.data))
+    project = config.Project(config.resolve_data(project_name(args), args.data))
     return server.serve(project, port=args.port, lan=args.lan)
 
 
@@ -242,7 +248,65 @@ def cmd_check(args):
     return 0 if result['ok'] else 1
 
 
-CHECKS = []
+def check_browser(context, step):
+    from . import browsers
+    info = browsers.runtime_info()
+    if info is None:
+        step('浏览器运行时', False, f'没有安装：运行 sop-board browser install（安装到 {browsers.runtime_dir()}）')
+    else:
+        step('浏览器运行时', True, dict(playwright=info['playwright'], browser=f"{info['title']} {info['browser_version']}",
+                                    revision=info['revision'], executable=info['executable']))
+
+
+CHECKS = [check_browser]
+
+
+def cmd_run(args):
+    from . import runs
+    context = load(args)
+    if args.action == 'prepare':
+        scope = args.scope or ['pending']
+        if args.fix is not None and args.scope:
+            return fail('scope-invalid', [dict(field='scope', problem='--fix 复验的范围由修复决定，不能再写 --scope')], 2)
+        emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix))
+    elif args.action == 'submit':
+        emit(runs.submit(context, args.run, implementer=args.implementer))
+    elif args.action == 'abandon':
+        emit(runs.abandon(context, args.run))
+    return 0
+
+
+def cmd_mark(args):
+    from . import runs
+    context = load(args)
+    by = args.as_name or config.require_operator()
+    emit(runs.mark(context, args.scenario, args.verdict, by=by, defect=args.defect, note=args.note))
+    return 0
+
+
+def cmd_browser(args):
+    from . import browsers, daemon
+    if args.action == 'install':
+        info = browsers.install(log=lambda text: print(text, file=sys.stderr))
+        emit(dict(ok=True, runtime=info))
+        return 0
+    context = load(args)
+    body = dict(checkout=context.checkout.name, identity=args.identity if args.action == 'status' else (args.identity or 'default'))
+    if args.action == 'status':
+        result = daemon.call(context.project, 'POST', '/local/browser/status', body) if daemon.describe(context.project)['running'] \
+            else dict(ok=True, checkout=context.checkout.name, runtime=browsers.runtime_info(), browsers=[], daemon='未运行')
+        emit(result)
+        return 0
+    if args.action == 'open':
+        body.update(headed=args.headed, reset_crash=args.reset_crash, url=args.url)
+    emit(daemon.call(context.project, 'POST', f'/local/browser/{args.action}', body, timeout=120))
+    return 0
+
+
+def cmd_report(args):
+    from . import reports
+    emit(reports.export(load(args), file=args.file, zip_evidence=args.zip, out=args.out))
+    return 0
 
 
 def cmd_skills(args):
@@ -259,7 +323,7 @@ def parser():
     p = sub.add_parser('init', help=GROUPS['搭建']['init'])
     p.add_argument('name')
     p.add_argument('repos', nargs='+')
-    p.add_argument('--data')
+    p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board），项目建在 <根目录>/<名称>')
     p.set_defaults(handler=cmd_init)
 
     sub.add_parser('guide').set_defaults(handler=cmd_guide)
@@ -273,16 +337,18 @@ def parser():
     p.add_argument('action', choices=('list', 'show', 'create', 'remove'))
     p.add_argument('name', nargs='?')
     p.add_argument('--repo', action='append', help='create：只为这些仓库建立 worktree（可重复），其余回落到 main')
-    p.add_argument('--base', help='create：新分支的起点（缺省为各仓 HEAD）')
+    p.add_argument('--from', dest='base_ref', help='create：新分支的起点（缺省为各仓 HEAD）')
     p.set_defaults(handler=cmd_checkout)
 
     p = common(sub.add_parser('status'))
+    p.add_argument('name_or_project', nargs='?', metavar='项目')
     p.add_argument('--json', action='store_true')
     p.set_defaults(handler=cmd_status)
 
     p = sub.add_parser('serve')
+    p.add_argument('name_or_project', nargs='?', metavar='项目')
     p.add_argument('--project', '-p')
-    p.add_argument('--data')
+    p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
     p.add_argument('--port', type=int, default=8787)
     p.add_argument('--lan', action='store_true', help='同时在内网地址上开放（内网只能查看、复测标注、答复、批注、上传）')
     p.set_defaults(handler=cmd_serve)
@@ -294,6 +360,37 @@ def parser():
 
     p = common(sub.add_parser('check'))
     p.set_defaults(handler=cmd_check)
+
+    p = common(sub.add_parser('run'))
+    p.add_argument('action', choices=('prepare', 'submit', 'abandon'))
+    p.add_argument('--scope', nargs='+', help='prepare：pending（缺省）、all，或场景（<文件>#<编号>，编号唯一时可省文件）')
+    p.add_argument('--session', help='prepare：执行者会话编号（缺省取 SOP_BOARD_SESSION 或 CODEX_THREAD_ID）')
+    p.add_argument('--fix', type=int, help='prepare：修复的独立复验，范围为该修复的问题场景')
+    p.add_argument('--run', type=int, help='submit / abandon：运行编号')
+    p.add_argument('--implementer', help='submit：实现者会话编号；不填记为独立性未声明')
+    p.set_defaults(handler=cmd_run)
+
+    p = common(sub.add_parser('mark'))
+    p.add_argument('scenario', help='<文件>#<编号>，编号唯一时可省文件')
+    p.add_argument('verdict', choices=('pass', 'fail'))
+    p.add_argument('--defect', help='不通过时必填：缺陷链接或编号')
+    p.add_argument('--note')
+    p.add_argument('--as', dest='as_name', metavar='姓名', help='别人复测时写他的姓名；缺省为本机操作者')
+    p.set_defaults(handler=cmd_mark)
+
+    p = common(sub.add_parser('browser'))
+    p.add_argument('action', choices=('install', 'status', 'open', 'close'))
+    p.add_argument('--identity', help='身份编号（open/close 缺省 default；status 缺省列出全部）')
+    p.add_argument('--headed', action='store_true', help='open：打开有界面的窗口并持有真人租约（用于真人登录）')
+    p.add_argument('--reset-crash', action='store_true', help='open：清除 crashed 状态并重新启动')
+    p.add_argument('--url', help='open：打开的地址（缺省为该检出的 Web 入口地址）')
+    p.set_defaults(handler=cmd_browser)
+
+    p = common(sub.add_parser('report'))
+    p.add_argument('--file', help='只导出这个场景文件')
+    p.add_argument('--zip', action='store_true', help='同时打包所引证据')
+    p.add_argument('--out', help='输出目录（缺省为数据目录 reports/ 下的新目录）')
+    p.set_defaults(handler=cmd_report)
 
     p = sub.add_parser('skills')
     p.add_argument('action', choices=('install',))
@@ -316,6 +413,11 @@ def usage():
     return '\n'.join(lines)
 
 
+def daemon_module():
+    from . import daemon
+    return daemon
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv in ([], ['--help'], ['-h'], ['help']):
@@ -335,6 +437,10 @@ def main(argv=None):
         return args.handler(args)
     except config.ProjectNotFound as error:
         return fail('project-not-found', [dict(field='project', problem=str(error))])
+    except config.ProjectFormat as error:
+        return fail('project-format', [dict(field='project', problem=str(error))])
+    except daemon_module().DaemonUnavailable as error:
+        return fail('daemon-not-running', [dict(field='daemon', problem=str(error))])
     except APIError as error:
         return fail(error.code, error.problems)
     except (ValueError, OSError, subprocess.SubprocessError) as error:

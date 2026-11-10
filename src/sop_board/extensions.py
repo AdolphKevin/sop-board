@@ -13,4 +13,4 @@ def attach(app):
             hook(app)
 
 
-MODULES = []
+MODULES = ['browsers']

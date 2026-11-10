@@ -294,11 +294,13 @@ class Store:
             version = db.execute('PRAGMA user_version').fetchone()[0]
             tables = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
             if tables and version != VERSION:
-                raise ValueError(f'数据库格式 {version} 不是当前格式 {VERSION}；用 sop-board init 新建项目，不读取或迁移旧库')
+                from .config import ProjectFormat
+                raise ProjectFormat(f'数据库格式 {version} 不是当前格式 {VERSION}；用 sop-board init 新建项目，不读取或迁移旧库')
             db.execute('PRAGMA journal_mode=WAL')
             if not tables:
                 with self.lock:
-                    db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + f'\nPRAGMA user_version={VERSION};\nCOMMIT;')
+                    db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + f"\nINSERT INTO meta VALUES ('format','{VERSION}');"
+                                     f'\nPRAGMA user_version={VERSION};\nCOMMIT;')
 
     @contextmanager
     def connection(self):

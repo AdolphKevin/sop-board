@@ -13,6 +13,7 @@ import yaml
 from . import gitops
 from .config import strict_yaml
 from .scenarios import GUARD_INDEX, split_key
+from .store import now
 
 LAYERS = ('unit', 'api', 'component', 'browser')
 COMMAND_ID = re.compile(r'[a-z0-9][a-z0-9_-]*\Z')
@@ -230,3 +231,20 @@ def test_exclusions_for(project, checkout):
         for test in guard['tests']:
             result.setdefault(test['repo'], []).append(test['path'])
     return result
+
+
+def after_result(db, checkout, scene, verdict, result_id):
+    """真实入口或人工复测不通过、而该场景上一次是守护通过时，记一条漏检：该守护失效，直到重新沉淀。"""
+    if verdict != 'fail':
+        return
+    run = db.execute("SELECT * FROM guard_runs WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? AND status='pass' "
+                     'ORDER BY id DESC LIMIT 1', (checkout.id, scene['file'], scene['id'], scene['fingerprint'])).fetchone()
+    if run is None:
+        return
+    passed = db.execute("SELECT executed_at FROM results WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? "
+                        "AND status='pass' AND id<>? ORDER BY id DESC LIMIT 1",
+                        (checkout.id, scene['file'], scene['id'], scene['fingerprint'], result_id)).fetchone()
+    if passed and passed['executed_at'] > run['ran_at']:
+        return
+    db.execute('INSERT OR IGNORE INTO guard_misses(file,scenario,fingerprint,tests_digest,result,recorded_at) VALUES (?,?,?,?,?,?)',
+               (scene['file'], scene['id'], scene['fingerprint'], run['tests_digest'], result_id, now()))

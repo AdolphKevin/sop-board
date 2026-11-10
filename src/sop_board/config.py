@@ -26,6 +26,10 @@ class ProjectNotFound(ValueError):
     """没有已登记的项目；调用方给出 init 指引。"""
 
 
+class ProjectFormat(ValueError):
+    """数据目录不是当前格式（例如 v9 工作区），不读取、不迁移。"""
+
+
 def name_problem(name):
     if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', name):
         return '项目名称须以字母或数字开头，只含字母、数字、点、下划线或连字符，最长 64 字符'
@@ -166,12 +170,17 @@ def validate_adapter(adapter, problem):
     return dict(adapter, ports=ports, port_step=step, ready_timeout=timeout)
 
 
-def initialize(name, directories, data=None):
-    """登记项目：核对全部仓库后才创建数据目录，已存在的目录不覆盖。"""
+def root_of(data_root=None):
+    """项目数据目录的上级目录：--data 指定，缺省为 SOP_BOARD_HOME（~/.sop-board）。"""
+    return Path(data_root).expanduser().resolve() if data_root else HOME.resolve()
+
+
+def initialize(name, directories, data_root=None):
+    """登记项目：核对全部仓库后才创建 <根目录>/<名称>，已存在的目录不覆盖。"""
     problem = name_problem(name)
     if problem:
         raise ValueError(problem)
-    data = Path(data).expanduser().resolve() if data else (HOME / name).resolve()
+    data = root_of(data_root) / name
     problems, repos, identities, seen = [], {}, {}, set()
     if data.exists():
         problems.append('数据目录已存在：' + str(data))
@@ -201,10 +210,10 @@ def initialize(name, directories, data=None):
     return data, identities
 
 
-def registered_projects():
-    """HOME 下全部当前格式的项目数据目录。"""
+def registered_projects(data_root=None):
+    """根目录下全部当前格式的项目数据目录。"""
     result = []
-    for marker in sorted(HOME.glob('*/project.json')):
+    for marker in sorted(root_of(data_root).glob('*/project.json')):
         try:
             value = json.loads(marker.read_text(encoding='utf-8'))
         except (OSError, ValueError):
@@ -226,14 +235,14 @@ def configured_repos(data):
             if isinstance(alias, str) and isinstance(value, str) and (Path(value).is_absolute() or value.startswith('~/'))}
 
 
-def locate(cwd=None):
+def locate(cwd=None, data_root=None):
     """按当前目录所在仓库（含其 worktree）找到唯一项目的数据目录。"""
     found = gitops.toplevel(cwd or Path.cwd())
     if not found:
         raise ProjectNotFound('当前目录不在 Git 仓库中；用 --project <名称> 或 --data <目录> 指定项目')
     top, common = found
     matches = []
-    for data in registered_projects():
+    for data in registered_projects(data_root):
         for path in configured_repos(data).values():
             if path == top or gitops.common_dir(path) == common:
                 matches.append(data)
@@ -241,19 +250,18 @@ def locate(cwd=None):
     if not matches:
         raise ProjectNotFound('当前仓库没有登记的项目；用 sop-board init <名称> <仓库目录>... 登记')
     if len(matches) > 1:
-        raise ValueError('当前仓库属于多个项目：' + '、'.join(p.name for p in matches) + '；用 --project <名称> 指定')
+        raise ValueError('当前仓库属于多个项目：' + '、'.join(p.name for p in matches) + '；用项目名称指定')
     return matches[0]
 
 
-def resolve_data(project=None, data=None, cwd=None):
-    if data:
-        return Path(data).expanduser().resolve()
+def resolve_data(project=None, data_root=None, cwd=None):
+    """项目数据目录：<根目录>/<名称>；未给名称时按当前目录所在仓库查找。"""
     if project:
         problem = name_problem(project)
         if problem:
             raise ValueError(problem)
-        return (HOME / project).resolve()
-    return locate(cwd)
+        return root_of(data_root) / project
+    return locate(cwd, data_root)
 
 
 class Project:
@@ -265,13 +273,13 @@ class Project:
         try:
             registered = json.loads(marker.read_text(encoding='utf-8'))
         except FileNotFoundError as error:
-            if (self.data / 'workspace.json').exists():
-                raise ValueError('这是 v9 工作区数据目录，不读取也不迁移；用 sop-board init 新建项目') from error
+            if (self.data / 'workspace.json').exists() or (self.data / 'workspace.sqlite3').exists():
+                raise ProjectFormat('这是 v9 工作区数据目录，不读取也不迁移；用 sop-board init 新建项目') from error
             raise ProjectNotFound('项目不存在：' + str(self.data)) from error
         except ValueError as error:
-            raise ValueError('project.json 无法解析：' + str(marker)) from error
+            raise ProjectFormat('project.json 无法解析：' + str(marker)) from error
         if not isinstance(registered, dict) or registered.get('format') != FORMAT or name_problem(registered.get('name')):
-            raise ValueError('数据目录不是当前格式（' + FORMAT + '）；用 sop-board init 新建项目')
+            raise ProjectFormat('数据目录不是当前格式（' + FORMAT + '）；用 sop-board init 新建项目')
         self.name = registered['name']
         self.config_path = self.data / 'config.yaml'
         self.reload()
@@ -370,6 +378,12 @@ class Project:
         for alias, paths in (extra or {}).items():
             result.setdefault(alias, []).extend(Path(p) for p in paths)
         return result
+
+    def serve_command(self):
+        command = f'sop-board serve {self.name}'
+        if self.data.parent != HOME.resolve():
+            command += f' --data {self.data.parent}'
+        return command
 
     def public(self):
         return dict(name=self.name, configured=self.configured,

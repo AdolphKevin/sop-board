@@ -69,7 +69,7 @@ def call(project, method, path, body=None, *, timeout=60):
     """以本机令牌调用守护进程的 /local/ 接口；返回 JSON。"""
     state = describe(project)
     if not state['running']:
-        raise DaemonUnavailable(f'看板守护进程没有运行：请运行 sop-board serve --project {project.name}')
+        raise DaemonUnavailable(f'看板守护进程没有运行：请运行 {project.serve_command()}')
     try:
         token = token_path(project).read_text(encoding='ascii').strip()
     except OSError as error:

@@ -14,9 +14,10 @@ def bundled_skill():
     return Path(__file__).parent / 'skills' / 'playwright-acceptance'
 
 
-def write_scope(path, project, checkout, scenes, entries):
-    """运行目录的 scope.json：场景键 → 指纹，以及各场景的录制开关。"""
+def write_scope(path, project, checkout, scenes, entries, scenario_file):
+    """运行目录的 scope.json：绑定场景文件摘要；场景键 → 指纹，以及各场景的录制开关。"""
     scope = dict(project=project, checkout=checkout,
+                 scenario_file_sha256=hashlib.sha256(Path(scenario_file).read_bytes()).hexdigest(),
                  scenarios={f"{scene['file']}#{scene['id']}": fingerprint(scene) for scene in scenes},
                  web_evidence={f"{scene['file']}#{scene['id']}": web_evidence(entries[scene['verify']])
                                for scene in scenes if entries.get(scene['verify'], {}).get('surface') == 'web'})

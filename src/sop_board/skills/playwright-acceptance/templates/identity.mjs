@@ -1,7 +1,7 @@
-// 身份池（D95）：每个身份在自己的浏览器（调试端口）里保持登录；切换身份就是换浏览器，不退出、不在同一浏览器里换账号。
-// 读取任务目录 identities.json（PW_IDENTITIES）。真实登录或请求验证码前，先运行
-//   sop-board identity record --entry <入口> --identity <身份> --event login|code --task <任务编号>
-// 被拒时停下，把该身份的场景记为受阻，事项已登记到待人处理。
+// 身份：每个身份是看板为本检出启动的一个 Chrome for Testing（独立持久 profile），切换身份就是换浏览器。
+// 读取运行目录 identities.json（PW_IDENTITIES），其中每个身份带 endpoint。真实登录或请求验证码前先运行
+//   sop-board identity record --identity <身份> --kind login|code --run <运行编号>
+// 被拒时停下，把该身份的场景记为受阻（已登记到待人处理）。真实账号只由人在 sop-board browser open --headed 中登录。
 import fs from 'node:fs';
 import {chromium} from '@playwright/test';
 
@@ -19,17 +19,17 @@ export function identity(id, entry = process.env.PW_ATLAS_ENTRY) {
   throw new Error(`没有声明身份 ${id}`);
 }
 
-// 返回该身份浏览器中的第一个页面（已登录状态由项目钩子或人维护）；同一身份只连接一次。
+// 在该身份的浏览器里新开一页（登录态在 profile 中）；同一身份只连接一次。
 export async function as(id, {entry} = {}) {
   const spec = identity(id, entry);
-  if (!spec.cdp) throw new Error(`身份 ${spec.id} 没有声明浏览器调试地址 cdp`);
+  if (!spec.endpoint) throw new Error(`身份 ${spec.id} 的浏览器没有可用地址（可能启动失败或已崩溃，见 brief.md）`);
   let connection = connections.get(spec.id);
   if (!connection || !connection.browser.isConnected()) {
-    const browser = await chromium.connectOverCDP(spec.cdp);
+    const browser = await chromium.connectOverCDP(spec.endpoint);
     connection = {browser, context: browser.contexts()[0] || await browser.newContext()};
     connections.set(spec.id, connection);
   }
-  return connection.context.pages()[0] || connection.context.newPage();
+  return connection.context.newPage();
 }
 
 // 本轮结束时断开身份浏览器的调试连接（不关闭浏览器，登录状态保留）。
