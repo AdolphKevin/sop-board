@@ -22,7 +22,7 @@
 | 3 不支持多 worktree | 工作区由数据目录里 `repos:` 的绝对路径确定；`locate_workspace` 只做路径精确匹配（`workspace.py:254-276`），在 worktree 里直接失败；场景文件、产品快照、`batches.product_digest`、环境和端口锁都只有一份（`repositories.py:224`、`statistics.py:33-55`、`adapters.py:343-398`）；cw2 只好另登记 `cw2-live-chat-strands`，与主工作区混用仓库路径 | 新增**检出（checkout）**概念：一个项目可以有 main 与多个 worktree 检出，按 git common dir 自动识别；场景文件、快照、结果、环境和端口都按检出隔离；端口 = 基础端口 + 槽位×`port_step`（为 0 时各检出共用端口，按租约轮流使用，冲突时说清楚是谁占用） |
 | 4 通过后没有沉淀低成本测试 | 沉淀需要另行授权、只能手动发起，关联“不改变结论”；复测路径从不运行关联测试（`plans.py:43`、`prompts/execute.md:34`），产品一变就整条重跑 | 闭环：**独立通过 → 待沉淀 → 写测试 → 守护**。产品变化后由 `sop-board retest` 直接运行守护测试（不需要 AI），全部通过记为“守护通过”，失败、缺失或过期的才交 AI 走真实入口 |
 | 5 只能接管已打开的 Chrome | 技能与模板只做 CDP 接管（`playwright-acceptance/SKILL.md:13`、`templates/connection.mjs:128`），身份就是用户手动开好的 CDP 地址（`identities.py:42`），看板只有一个浏览器名额（`kernel.py:29` WAIT_BROWSER）；Chrome for Testing 未安装（1.64.1 需要 1248，缓存里只有 1234） | 新增 sop-board 自有的**浏览器代理**：看板守护进程用自带的 Playwright 运行时安装、启动 Google Chrome for Testing，按 检出×身份 使用独立持久 profile 和调试端口；执行者仍通过 CDP 连接；不再碰用户日常 Chrome。真实账号由用户在这个有界面的 CfT 窗口登录一次，profile 持久保存 |
-| 6 Playwright quit unexpectedly | 崩溃报告显示崩的是 WebKit 的 `Playwright.app`（webkit-2336，属于 `chan-product` 的 Playwright 1.62.1 的 iphone-webkit 项目）。它在 Paseo 下启动后约 50ms 就在 `_RegisterApplication` 中止，11-09 没有验收时也崩过；11-05 还有一次 CfT 渲染进程中止。规律是：从 agent 进程树里启动的 GUI 浏览器会崩，而且多个项目共用同一份 ms-playwright 缓存 | sop-board 的浏览器只由不在沙箱里的看板守护进程启动，使用独立的 `PLAYWRIGHT_BROWSERS_PATH`，只用 CfT、不用 WebKit；监测浏览器退出信号，崩溃时把场景记为受阻并写明原因，下次请求时重启。chan-product 的 WebKit 崩溃不在本仓范围，会单独告知用户 |
+| 6 Playwright quit unexpectedly | 崩溃报告显示崩的是 WebKit 的 `Playwright.app`（webkit-2336，属于 `chan-product` 的 Playwright 1.62.1 的 iphone-webkit 项目）。它在 Paseo 下启动后约 50ms 就在 `_RegisterApplication` 中止，11-09 没有验收时也崩过；11-05 还有一次 CfT 渲染进程中止。规律是：从 agent 进程树里启动的 GUI 浏览器会崩，而且多个项目共用同一份 ms-playwright 缓存 | sop-board 的浏览器只由看板守护进程启动，缺省无头运行（不需要窗口），只在真人登录时开有界面窗口；使用独立的 `PLAYWRIGHT_BROWSERS_PATH`，只用 CfT、不用 WebKit；监测浏览器退出信号，崩溃时把场景记为受阻并写明原因，下次请求时重启。chan-product 的 WebKit 崩溃不在本仓范围，会单独告知用户 |
 | 7 反复确认“确认人” | 每个登记命令都要人名（`--by/--author/--confirmed-by/--uploaded-by`），姓名只在一次请求内有效（`skills/sop-board/SKILL.md:24`）；询问后必须结束本轮（`SKILL.md:8`）；默认确认人要用户另行同意才设置，两个 cw2 工作区都没设；`plans/atlas decide/specs promote` 甚至不接受默认值 | **操作者身份按机器设一次**（默认取 `git config user.name`，可用 `sop-board operator set` 修改），所有 CLI 登记自动署名；只有别人确认时才用 `--as <姓名>`。技能里删除所有询问姓名的规则；内网表单的姓名存在浏览器 localStorage |
 
 ## 已定决策（2026-11-10 用户答复）
@@ -38,6 +38,7 @@
 9. 本仓开发期间不写测试，先验收再沉淀成 pytest。
 10. 内网不能发起 AI 重跑，只能人工复测标注、答复问题、批注草稿、上传用例。
 11. 一并删除：问题台账与决定记录、旧方案与设计文档、执行计划与连续运行、只读巡检 patrol；Jira 联动删除。
+12. 场景集确认时的补充（2026-11-10）：守护进程、服务与浏览器可以按验收需要在 agent 会话中启动；会话可用 `inbox add` 上传用例或 SOP；运行时与操作者文件始终在 `~/.sop-board`；specs 只保留 check；错误码 `run-prepared`、`launch-running`、`draft-not-runnable`、`project-format`、`browser-crashed`、`env-busy`、`browser-busy`；`fix close` 须独立复验通过且修复文件已提交并与复验时一致；漏检后重新沉淀须有新的独立通过。
 
 ## 目标架构
 
@@ -67,7 +68,7 @@
 
 ### 进程与入口
 
-- `sop-board serve [项目] [--lan] [--port]`：**看板守护进程**，必须由用户在终端（GUI 会话）启动，不能由 agent 进程树启动。负责：网页、按检出管理 adapter 环境、浏览器代理、本机无头会话启动器。CLI 需要环境或浏览器时，通过回环 HTTP 调用守护进程（数据目录里的本机令牌文件鉴权）；守护进程没运行时直接报错并给出启动命令。
+- `sop-board serve [项目] [--lan] [--port]`：**看板守护进程**，可以在终端或 agent 会话中启动（使用者 2026-11-10：可以根据验收需要启动服务和浏览器）。负责：网页、按检出管理 adapter 环境、浏览器代理、本机无头会话启动器。CLI 需要环境或浏览器时，通过回环 HTTP 调用守护进程（数据目录里的本机令牌文件鉴权）；守护进程没运行时直接报错并给出启动命令。
 - **会话 CLI** 是 Agent 工作的唯一入口。看板上的“AI 重跑”“沉淀”按钮（仅本机）用同一份 `sop-board` 技能在检出目录启动 `codex exec` 或 `claude -p`（按 `agents` 配置），只记录进程号、日志和退出码；同一检出同时只运行一个。
 
 ### 检出与环境（问题 3）
@@ -83,7 +84,7 @@
 ### 浏览器代理（问题 5、6）
 
 - **运行时**：`src/sop_board/assets/runtime/` 带 `package.json`（固定 `@playwright/test` 1.64.1）和 lock 文件。`sop-board browser install` 在 `~/.sop-board/runtime/` 中 `npm ci`，再设置 `PLAYWRIGHT_BROWSERS_PATH=~/.sop-board/runtime/browsers`，执行 `playwright install --no-shell chromium ffmpeg`。可执行文件路径取自 `playwright-core` 的 `chromium.executablePath()`，与 CfT 版本一起写入 `runtime.json`。此后不再读 `~/.sop-board/node_modules` 和共享的 `~/Library/Caches/ms-playwright`。
-- **启动**：只有守护进程能启动浏览器。环境里出现 agent 标记（`CODEX_SANDBOX`、`CLAUDECODE`）时，守护进程拒绝启动，并提示到终端运行 `serve`。
+- **启动**：只有守护进程能启动浏览器，执行者不自己启动。守护进程可以在 agent 会话中运行；浏览器缺省无头，启动即崩溃时按下面的崩溃规则记受阻并写明信号与日志。
   - 每个 检出×身份 一个浏览器：`--user-data-dir=<数据目录>/browsers/<检出>/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`。
   - 不加 `--enable-automation`。默认无头运行（`--headless=new`）；`browser open --headed` 和真人登录使用同一份 profile。
   - 端口 = `9400 + slot×20 + 身份序号`，被占用时直接报错。
@@ -238,8 +239,8 @@
 | 执行 | `run prepare [--scope pending\|all\|F#ID…] [--fix N] [--session S]`、`run submit --run N [--implementer X]`、`run abandon`、`run launch [--scope …]`、`run wait`；`retest [--dry-run]`；`mark F#ID pass\|fail [--defect URL] [--as 姓名]` |
 | 修复 | `fix prepare [F#ID…]`、`fix submit`、`fix close`、`fix abandon` |
 | 沉淀 | `distill prepare [F#ID…]`、`distill submit --report r.json` |
-| 编写 | `inbox list\|show\|done\|reject`、`merge prepare/submit`、`ask --about F#ID\|inbox:ID --text`、`answers`、`sop prepare/submit`、`draft annotations\|resolve\|confirm <文件>` |
-| 其他 | `atlas prepare/submit/stale`、`specs check\|review\|promote`、`fixtures run\|exec`、`identity status`、`attention list\|add\|resolve`、`report [--zip]`、`launch status\|stop`、`playwright guide\|convert\|tags` |
+| 编写 | `inbox add <文件> [--kind cases\|sop]\|list\|show\|done\|reject`、`merge prepare/submit`、`ask --about F#ID\|inbox:ID --text`、`answers`、`sop prepare/submit`、`draft annotations\|resolve\|confirm <文件>` |
+| 其他 | `atlas prepare/submit/stale`、`specs check`、`fixtures run\|exec`、`identity status`、`attention list\|add\|resolve`、`report [--zip]`、`launch status\|stop`、`playwright guide\|convert\|tags` |
 
 除 `status` 的文字输出外，所有命令都输出 JSON：成功退出 0，业务失败退出 1，参数错误退出 2。
 
@@ -266,7 +267,7 @@
 
 - **每阶段实现者自检**（只用于交付准备，不冒充验收）：`uv run sop-board …` 对 `examples/demo-shop` 生成的临时项目走通本阶段新增的命令；HTML/JSON 自检与浏览器操作分开留证，留证放在仓库外 `~/sop-board-runs/v10/`。
 - **端到端冒烟**（阶段 4、5 完成后）：
-  1. 在终端运行 `sop-board serve demo --lan`，从另一台设备通过实际的非回环地址打开工作台。
+  1. 运行 `sop-board serve demo --lan`，从另一台设备通过实际的非回环地址打开工作台。
   2. `checkout create wt1`，验证 main 与 wt1 的环境：`port_step` 不为 0 时能同时运行；为 0 时返回 `env-busy` 并写明占用者。
   3. `browser install`，确认安装的是 CfT 1248；`browser open --headed` 弹出有界面的 CfT 窗口，在其中登录合成账号；之后无头运行时登录态仍在。
   4. 用 `run launch` 启动真实的 Codex 和 Claude 执行会话，结果在工作台出现，并显示独立性。
@@ -281,5 +282,5 @@
 
 - **不兼容**：v10 不读旧数据目录。cw2 需要重新 `init` 新项目，旧结果和证据只能在旧目录与 Git 历史中查阅。cw2 有轮次在运行时不升级已安装的工具，到时把升级命令交给用户执行。
 - **Paseo 下的崩溃对话框**：chan-product 的 WebKit 崩溃不在本仓范围，完成后单独告知用户（例如在 agent 场景下停用它的 `iphone-webkit` project）。
-- **守护进程必须由用户在终端启动**：这是避免 agent 进程树启动 GUI 浏览器的根本做法。`status` 会显示守护进程是否在运行，并给出启动命令。
+- **守护进程可以在 agent 会话中启动**：浏览器缺省无头以避开窗口注册失败，启动崩溃会如实记受阻；`status` 会显示守护进程是否在运行，并给出启动命令。
 - **工作量**：约 9k 行新代码、技能与文档全部重写，按阶段推进；每个阶段结束先自检，再进入下一阶段。

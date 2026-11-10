@@ -191,6 +191,60 @@ def cmd_status(args):
     return 0
 
 
+def cmd_serve(args):
+    from . import server
+    project = config.Project(config.resolve_data(args.project, args.data))
+    return server.serve(project, port=args.port, lan=args.lan)
+
+
+def daemon_call(context, path, body=None, timeout=900):
+    from . import daemon
+    return daemon.call(context.project, 'POST', path, dict(body or {}, checkout=context.checkout.name), timeout=timeout)
+
+
+def cmd_env(args):
+    context = load(args)
+    if args.action == 'status' and args.all:
+        from . import daemon
+        emit(daemon.call(context.project, 'POST', '/local/env/status', {}))
+        return 0
+    result = daemon_call(context, '/local/env/' + args.action)
+    emit(result)
+    return 0 if result.get('ok') else 1
+
+
+def cmd_check(args):
+    """校验配置；守护进程在运行时拉起当前检出的环境并探测就绪；核对浏览器运行时。"""
+    from . import daemon
+    context = load(args, require=False)
+    project = context.project
+    result = dict(ok=True, project=project.name, checkout=context.checkout.name, steps=[])
+
+    def step(name, ok, detail):
+        result['steps'].append(dict(step=name, ok=ok, detail=detail))
+        result['ok'] = result['ok'] and ok
+    step('配置', project.configured, project.problems or '合格')
+    if project.configured:
+        state = daemon.describe(project)
+        if not state['running']:
+            step('环境', False, f'看板守护进程没有运行：先运行 sop-board serve --project {project.name}')
+        else:
+            try:
+                environment = daemon_call(context, '/local/env/up')['environment']
+                missing = [entry.get('address_env') for entry in project.entries.values()
+                           if entry.get('address_env') and entry['address_env'] not in environment.get('address_env', {})]
+                step('环境', not missing, environment if not missing else f'就绪，但缺少入口地址变量：{"、".join(missing)}')
+            except (APIError, ValueError) as error:
+                step('环境', False, getattr(error, 'problems', None) or str(error))
+        for extra in CHECKS:
+            extra(context, step)
+    emit(result)
+    return 0 if result['ok'] else 1
+
+
+CHECKS = []
+
+
 def cmd_skills(args):
     from .skill_install import install
     return install()
@@ -225,6 +279,21 @@ def parser():
     p = common(sub.add_parser('status'))
     p.add_argument('--json', action='store_true')
     p.set_defaults(handler=cmd_status)
+
+    p = sub.add_parser('serve')
+    p.add_argument('--project', '-p')
+    p.add_argument('--data')
+    p.add_argument('--port', type=int, default=8787)
+    p.add_argument('--lan', action='store_true', help='同时在内网地址上开放（内网只能查看、复测标注、答复、批注、上传）')
+    p.set_defaults(handler=cmd_serve)
+
+    p = common(sub.add_parser('env'))
+    p.add_argument('action', choices=('up', 'down', 'status'))
+    p.add_argument('--all', action='store_true', help='status：列出全部检出')
+    p.set_defaults(handler=cmd_env)
+
+    p = common(sub.add_parser('check'))
+    p.set_defaults(handler=cmd_check)
 
     p = sub.add_parser('skills')
     p.add_argument('action', choices=('install',))

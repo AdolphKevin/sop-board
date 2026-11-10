@@ -1,6 +1,6 @@
 """看板守护进程的状态文件与本机客户端；服务端在 server.py。
 
-守护进程必须由用户在终端启动：浏览器与环境进程都由它启动，不进入 agent 会话的进程树。
+浏览器与环境进程都由守护进程启动；它可以在终端或 agent 会话中运行。
 CLI 需要环境或浏览器时，通过回环 HTTP 调用它，以数据目录中的本机令牌鉴权。
 """
 import json
@@ -9,9 +9,6 @@ from pathlib import Path
 import secrets
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
-
-AGENT_MARKERS = ('CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CLAUDECODE')
-
 
 def state_path(project):
     return project.data / 'daemon.json'
@@ -40,11 +37,6 @@ def describe(project):
         return dict(running=False)
     return dict(running=True, pid=state['pid'], url=state.get('url'), lan=state.get('lan', []),
                 started_at=state.get('started_at'))
-
-
-def agent_context():
-    """当前进程是否位于 agent 会话的进程树中（这类环境启动 GUI 浏览器会崩溃）。"""
-    return [name for name in AGENT_MARKERS if os.environ.get(name)]
 
 
 def write_state(project, pid, port, lan, started_at):
@@ -77,7 +69,7 @@ def call(project, method, path, body=None, *, timeout=60):
     """以本机令牌调用守护进程的 /local/ 接口；返回 JSON。"""
     state = describe(project)
     if not state['running']:
-        raise DaemonUnavailable(f'看板守护进程没有运行：请在终端（不是 agent 会话）运行 sop-board serve --project {project.name}')
+        raise DaemonUnavailable(f'看板守护进程没有运行：请运行 sop-board serve --project {project.name}')
     try:
         token = token_path(project).read_text(encoding='ascii').strip()
     except OSError as error:

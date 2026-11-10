@@ -19,9 +19,13 @@ COMMAND_ID = re.compile(r'[a-z0-9][a-z0-9_-]*\Z')
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 
 
-def index_path(context):
-    directory = context.checkout.scenarios_dir(context.project)
+def index_path_for(project, checkout):
+    directory = checkout.scenarios_dir(project)
     return directory / GUARD_INDEX if directory else None
+
+
+def index_path(context):
+    return index_path_for(context.project, context.checkout)
 
 
 def _relative(value):
@@ -212,9 +216,13 @@ def validity(context, scenes):
 
 
 def test_exclusions(context):
+    return test_exclusions_for(context.project, context.checkout)
+
+
+def test_exclusions_for(project, checkout):
     """守护测试文件不计入产品快照：沉淀测试不会让已有通过变成待复测。"""
     try:
-        index = load_index(index_path(context))
+        index = load_index(index_path_for(project, checkout))
     except ValueError:
         return {}
     result = {}
