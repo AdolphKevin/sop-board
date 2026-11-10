@@ -520,13 +520,21 @@ def abandon(context, run_id):
 
 # ---- 人工复测 ----
 
-def mark(context, scene_key, verdict, *, by, defect=None, note=None):
-    """测试同学（或本机操作者）对场景当前内容的复测结论。"""
+def mark(context, scene_key, verdict, *, by=None, defect=None, note=None):
+    """测试同学（或本机操作者）对场景当前内容的复测结论：通过、不通过、阻塞或需求变更。
+
+    复测人与缺陷链接都可不填；不填复测人时记为未署名。
+    """
     from .cli import scene_board
-    if verdict not in ('pass', 'fail'):
-        reject(422, 'mark-invalid', 'status', '复测结论只能是通过或不通过')
-    if not isinstance(by, str) or not by.strip():
-        reject(422, 'marker-required', 'by', '请填写复测人姓名')
+    if verdict not in status.MANUAL:
+        reject(422, 'mark-invalid', 'verdict', '复测结论只能是通过、不通过、阻塞或需求变更')
+    if by is not None and (not isinstance(by, str) or len(by) > 64):
+        reject(422, 'mark-invalid', 'by', '复测人姓名须为文字，最长 64 字')
+    if note is not None and (not isinstance(note, str) or len(note) > 4000):
+        reject(422, 'mark-invalid', 'note', '说明须为文字，最长 4000 字')
+    by = (by or '').strip() or None
+    note = (note or '').strip() or None
+    defect = None if verdict == 'pass' else normalize_defect(defect)
     found, snapshot, derived = scene_board(context)
     try:
         key = scenarios.resolve([scene_key], found['scenarios'])[0]
@@ -535,8 +543,6 @@ def mark(context, scene_key, verdict, *, by, defect=None, note=None):
     scene = found['scenarios'][key]
     if scene.get('status') == 'draft':
         reject(409, 'draft-not-runnable', 'scenario', '草稿场景确认后才能复测')
-    if verdict == 'fail':
-        defect = normalize_defect(defect)
     with context.store.transaction() as db:
         latest = db.execute("SELECT id FROM results WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? AND kind='agent' "
                             'ORDER BY id DESC LIMIT 1', (context.checkout.id, scene['file'], scene['id'], scene['fingerprint'])).fetchone()
@@ -544,7 +550,7 @@ def mark(context, scene_key, verdict, *, by, defect=None, note=None):
             'INSERT INTO results(checkout,file,scenario,fingerprint,product_digest,kind,status,actual,defect,note,of_result,'
             'marked_by,executed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (context.checkout.id, scene['file'], scene['id'], scene['fingerprint'], snapshot['product_digest'], 'manual',
-             verdict, '人工复测' + ('通过' if verdict == 'pass' else '不通过'), defect if verdict == 'fail' else None,
-             note, latest['id'] if latest else None, by.strip(), now()))
+             verdict, '人工复测' + status.MANUAL[verdict], defect, note, latest['id'] if latest else None, by, now()))
         guards.after_result(db, context.checkout, scene, verdict, cursor.lastrowid)
-    return dict(ok=True, scenario=key, status=verdict, result=cursor.lastrowid, marked_by=by.strip(), defect=defect)
+    return dict(ok=True, scenario=key, status=verdict, label=status.MANUAL[verdict], result=cursor.lastrowid,
+                marked_by=by, defect=defect, note=note)

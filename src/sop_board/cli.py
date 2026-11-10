@@ -633,9 +633,10 @@ def parser():
 
     p = common(sub.add_parser('mark'))
     p.add_argument('scenario', help='<文件>#<编号>，编号唯一时可省文件')
-    p.add_argument('verdict', choices=('pass', 'fail'))
-    p.add_argument('--defect', help='不通过时必填：缺陷链接或编号')
-    p.add_argument('--note')
+    p.add_argument('verdict', choices=('pass', 'fail', 'blocked', 'changed'),
+                   help='pass 通过、fail 不通过、blocked 阻塞、changed 需求变更')
+    p.add_argument('--defect', help='可选：缺陷链接或编号')
+    p.add_argument('--note', help='可选：说明（阻塞原因、需求怎样变了等）')
     p.add_argument('--as', dest='as_name', metavar='姓名', help='别人复测时写他的姓名；缺省为本机操作者')
     p.set_defaults(handler=cmd_mark)
 

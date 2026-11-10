@@ -1,160 +1,210 @@
-"""页面外壳：工作台由 board.js 渲染；运行记录、报告、待人处理等为服务端渲染的简单页面。"""
+"""页面外壳：工作台与业务 SOP 由 board.js 渲染；运行记录、报告、待人处理等为服务端渲染的简单页面。
+
+所有页面共用顶栏：项目、导航、署名（姓名填一次存浏览器 localStorage，各页共用）与访问范围。
+表单里每个输入框各占一行。
+"""
 from html import escape
 import json
 from urllib.parse import quote
 
-NAV = (('', '工作台'), ('/runs', '运行记录'), ('/report', '报告'), ('/attention', '待人处理'),
-       ('/inbox', '收件箱与待答复'), ('/drafts', '草稿批注'), ('/sop', '业务 SOP'), ('/atlas', '交互地图'))
+from .status import ORDER
+
+ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E"
+        "%3Cpath d='M9 11h14M9 16h14M9 21h9' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E")
+NAV = (('', '工作台'), ('/sop', '业务 SOP'), ('/inbox', '收件箱与待答复'), ('/drafts', '草稿批注'),
+       ('/runs', '运行记录'), ('/attention', '待人处理'), ('/report', '报告'), ('/atlas', '交互地图'))
 
 
-def layout(project, title, body, *, local, active='', script=None, data=None):
+def layout(project, title, body, *, local, active='', page='', data=None, operator=None, wide=False, scripts=()):
     links = ''.join(f'<a href="/p/{quote(project)}{path}"{" class=active" if path == active else ""}>{escape(label)}</a>'
                     for path, label in NAV)
-    scope = '本机' if local else '内网'
-    config = f'<script id="board-config" type="application/json">{escape(json.dumps(data or {}, ensure_ascii=False), quote=False)}</script>'
+    config = dict(data or {}, project=project, local=local, page=page, operator=operator if local else None)
+    payload = escape(json.dumps(config, ensure_ascii=False), quote=False)
+    extra = ''.join(f'<script src="/assets/{name}"></script>' for name in scripts)
     return f'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(title)} · Flow Board</title><link rel="stylesheet" href="/assets/board.css"></head>
-<body data-local="{str(local).lower()}">
-<header class="top"><strong>Flow Board · {escape(project)}</strong><nav>{links}</nav><span class="scope">{scope}</span></header>
-{config}
+<title>{escape(title)} · Flow Board</title><link rel="icon" href="{ICON}"><link rel="stylesheet" href="/assets/board.css"></head>
+<body class="{'wide' if wide else 'plain'}">
+<header class="top">
+  <a class="brand" href="/p/{quote(project)}"><span class="logo" aria-hidden="true"></span>Flow Board</a>
+  <span class="project">{escape(project)}</span>
+  <nav class="tabs">{links}</nav>
+  <div class="top-right"><div id="signer" class="signer"></div><span class="scope {'local' if local else 'lan'}">{'本机' if local else '内网'}</span></div>
+</header>
+<script id="board-config" type="application/json">{payload}</script>
 <main>{body}</main>
-{f'<script src="/assets/{script}"></script>' if script else ''}
+{extra}<script src="/assets/board.js"></script>
 </body></html>'''
 
 
-def workbench(project, *, local):
+def page_head(title, lead=''):
+    return f'<div class="page-head"><h1>{escape(title)}</h1>{f"<p>{lead}</p>" if lead else ""}</div>'
+
+
+def workbench(project, *, local, operator=None):
     body = '''
 <section class="workbench">
-  <aside class="tree-pane">
-    <div class="toolbar">
-      <label>检出 <select id="checkout"></select></label>
-      <input id="search" type="search" placeholder="搜索场景编号或标题">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <label class="field compact"><span>检出</span><select id="checkout"></select></label>
+      <input id="search" class="search" type="search" placeholder="搜索场景编号或标题">
+      <div id="filters" class="filters"></div>
     </div>
-    <div id="filters" class="filters"></div>
-    <div id="tree" class="tree"></div>
+    <div id="tree" class="tree" role="tree"></div>
   </aside>
-  <article id="detail" class="detail-pane"><p class="muted">从左侧选择一个场景。</p></article>
+  <article id="detail" class="detail"><div class="empty"><p>从左侧选择一个场景</p><p class="muted">四要素、证据与复测都在这里</p></div></article>
 </section>'''
-    return layout(project, '工作台', body, local=local, script='board.js', data=dict(project=project, local=local, page='workbench'))
+    return layout(project, '工作台', body, local=local, page='workbench', operator=operator, wide=True,
+                  data=dict(states=list(ORDER)))
 
 
-def runs(project, *, local):
+def sop(project, *, local, operator=None):
     body = '''
-<section class="page">
-  <div class="toolbar"><label>检出 <select id="checkout"></select></label></div>
-  <h2>启动记录</h2><div id="launches"></div>
-  <h2>运行</h2><div id="runs"></div>
+<section class="workbench docs">
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <label class="field compact"><span>检出</span><select id="checkout"></select></label>
+      <input id="search" class="search" type="search" placeholder="搜索标题">
+      <div id="filters" class="filters"></div>
+    </div>
+    <div id="tree" class="tree" role="tree"></div>
+  </aside>
+  <article id="detail" class="detail"><div class="empty"><p>从左侧选择一份文档或一个问题</p></div></article>
 </section>'''
-    return layout(project, '运行记录', body, local=local, active='/runs', script='board.js',
-                  data=dict(project=project, local=local, page='runs'))
+    return layout(project, '业务 SOP', body, local=local, active='/sop', page='sop', operator=operator, wide=True,
+                  scripts=('vendor/mermaid/mermaid.min.js',))
 
 
-def report(project, checkout, markdown, evidence, *, local):
+def runs(project, *, local, operator=None):
+    body = f'''
+<section class="page">
+  {page_head('运行记录', '执行会话、复验与沉淀的运行；本机可查看无头会话日志。')}
+  <div class="toolbar"><label class="field compact"><span>检出</span><select id="checkout"></select></label></div>
+  <div class="card"><h2>无头会话启动</h2><div id="launches"></div></div>
+  <div class="card"><h2>运行</h2><div id="runs"></div></div>
+</section>'''
+    return layout(project, '运行记录', body, local=local, active='/runs', page='runs', operator=operator)
+
+
+def report(project, checkout, markdown, evidence, *, local, operator=None):
     links = ''.join(f'<li><a href="/evidence/{sha}/{quote(path.split("-", 1)[1])}">{escape(path)}</a></li>'
                     for path, sha in evidence)
+    zip_hint = '<span class="muted">证据 zip 用命令导出：sop-board report --zip</span>' if local else ''
     body = f'''
 <section class="page">
-  <p><a class="button" href="?checkout={quote(checkout)}&download=1">下载 Markdown</a>
-     {'<span class="muted">证据 zip 用命令导出：sop-board report --zip</span>' if local else ''}</p>
-  <pre class="report">{escape(markdown)}</pre>
-  <h2>所引证据</h2><ul>{links or '<li>无</li>'}</ul>
+  {page_head('报告', f'检出 {escape(checkout)} 的场景状态、证据、独立性与人工复测。')}
+  <div class="toolbar"><a class="button primary" href="?checkout={quote(checkout)}&download=1">下载 Markdown</a>{zip_hint}</div>
+  <div class="card"><pre class="report">{escape(markdown)}</pre></div>
+  <div class="card"><h2>所引证据</h2><ul class="links">{links or '<li class="muted">无</li>'}</ul></div>
 </section>'''
-    return layout(project, '报告', body, local=local, active='/report')
+    return layout(project, '报告', body, local=local, active='/report', page='report', operator=operator)
 
 
-def attention(project, checkout, items, *, local):
-    rows = ''.join(f'<tr><td>#{item["id"]}</td><td>{escape(item["kind"])}</td><td>{escape(item["text"])}</td>'
-                   f'<td>{escape("、".join(item["scenarios"]))}</td><td>{escape(item["created_by"])}</td></tr>' for item in items)
-    hint = '<p class="muted">处理后在本机运行 sop-board attention resolve --id &lt;编号&gt;。</p>' if local else ''
+def attention(project, checkout, items, *, local, operator=None):
+    rows = ''.join(f'<tr><td class="mono">#{item["id"]}</td><td><span class="chip">{escape(item["kind"])}</span></td>'
+                   f'<td>{escape(item["text"])}</td><td class="mono">{escape("、".join(item["scenarios"]))}</td>'
+                   f'<td>{escape(item["created_by"])}</td></tr>' for item in items)
+    hint = '处理后在本机运行 sop-board attention resolve --id &lt;编号&gt;。' if local else '需要本机开发者处理的事项。'
     body = f'''
 <section class="page">
-  <p>检出 {escape(checkout)} 的待人处理事项。</p>{hint}
-  <table><thead><tr><th>编号</th><th>种类</th><th>内容</th><th>场景</th><th>登记人</th></tr></thead>
-  <tbody>{rows or '<tr><td colspan=5>没有待处理事项</td></tr>'}</tbody></table>
+  {page_head('待人处理', f'检出 {escape(checkout)}。{hint}')}
+  <div class="card flush"><table><thead><tr><th>编号</th><th>种类</th><th>内容</th><th>场景</th><th>登记人</th></tr></thead>
+  <tbody>{rows or '<tr><td colspan=5 class="muted center">没有待处理事项</td></tr>'}</tbody></table></div>
 </section>'''
-    return layout(project, '待人处理', body, local=local, active='/attention')
+    return layout(project, '待人处理', body, local=local, active='/attention', page='attention', operator=operator)
 
 
-def simple(project, title, active, body, *, local):
-    return layout(project, title, f'<section class="page">{body}</section>', local=local, active=active)
+def simple(project, title, active, body, *, local, operator=None):
+    return layout(project, title, f'<section class="page">{page_head(title)}<div class="card">{body}</div></section>',
+                  local=local, active=active, operator=operator)
 
 
 STATUS = {'pending': '待合并', 'merged': '已合并', 'rejected': '已拒绝', 'open': '待处理', 'adopted': '已采纳'}
 
 
-def inbox(project, items, questions, *, local):
-    rows = ''.join(f'<tr><td>#{i["id"]}</td><td>{"用例" if i["kind"] == "cases" else "业务 SOP"}</td><td>{escape(i["filename"])}</td>'
-                   f'<td>{escape(i["uploaded_by"])}</td><td>{STATUS.get(i["status"], i["status"])}</td></tr>' for i in items)
-    question_rows = []
+def signer_line():
+    return '<p class="signed-as" data-signer></p>'
+
+
+def inbox(project, items, questions, *, local, operator=None):
+    rows = ''.join(f'<tr><td class="mono">#{i["id"]}</td><td>{"测试用例" if i["kind"] == "cases" else "业务 SOP"}</td>'
+                   f'<td>{escape(i["filename"])}</td><td>{escape(i["uploaded_by"])}</td>'
+                   f'<td><span class="chip">{STATUS.get(i["status"], i["status"])}</span></td></tr>' for i in items)
+    cards = []
     for q in questions:
         if q['answer']:
-            answered = f'<div>答复：{escape(q["answer"])}（{escape(q["answered_by"])}）</div>'
+            answer = (f'<div class="answer-done"><span class="pill pass">已答复</span><p>{escape(q["answer"])}</p>'
+                      f'<p class="muted">答复人 {escape(q["answered_by"])}</p></div>')
         else:
-            answered = (f'<form class="answer" data-question="{q["id"]}"><input name="answer" placeholder="答复" required>'
-                        f'<button>提交答复</button><span class="message"></span></form>')
-        question_rows.append(f'<li><strong>#{q["id"]} 关于 {escape(q["about"])}</strong>：{escape(q["text"])}{answered}</li>')
+            answer = (f'<form class="answer stack" data-question="{q["id"]}">'
+                      f'<label class="field"><span>答复</span><textarea name="answer" rows="3" required></textarea></label>'
+                      f'{signer_line()}<div class="form-actions"><button class="primary" type="submit">提交答复</button>'
+                      f'<span class="message"></span></div></form>')
+        pending = '' if q['answer'] else '<span class="pill retest">待答复</span>'
+        cards.append(f'<article class="question"><header><span class="mono">#{q["id"]}</span>'
+                     f'<span class="chip">关于 {escape(q["about"])}</span>{pending}</header>'
+                     f'<p class="question-text">{escape(q["text"])}</p>{answer}</article>')
     body = f'''
 <section class="page">
-  <h2>上传用例或业务 SOP</h2>
-  <form id="upload" class="mark">
-    <select name="kind"><option value="cases">测试用例（YAML）</option><option value="sop">业务 SOP（Markdown）</option></select>
-    <input type="file" name="file" required>
-    <button type="submit">上传</button><span class="message"></span>
+  {page_head('收件箱与待答复', '上传测试用例或业务 SOP，由开发者的会话合并进场景文件；会话提出的问题在这里答复。')}
+  <div class="card"><h2>上传</h2>
+  <form id="upload" class="stack">
+    <label class="field"><span>类型</span><select name="kind"><option value="cases">测试用例（YAML）</option><option value="sop">业务 SOP（Markdown）</option></select></label>
+    <label class="field"><span>文件</span><input type="file" name="file" required></label>
+    {signer_line()}
+    <div class="form-actions"><button class="primary" type="submit">上传</button><span class="message"></span></div>
   </form>
-  <div id="upload-problems" class="finding"></div>
-  <h2>收件箱（待合并）</h2>
+  <div id="upload-problems" class="problems"></div></div>
+  <div class="card flush"><h2 class="pad">收件箱（待合并）</h2>
   <table><thead><tr><th>编号</th><th>类型</th><th>文件</th><th>上传人</th><th>状态</th></tr></thead>
-  <tbody>{rows or '<tr><td colspan=5>没有待合并的条目</td></tr>'}</tbody></table>
-  <h2>待答复</h2>
-  <p class="muted">答复人姓名使用工作台复测时填写的姓名。</p>
-  <ul class="questions">{''.join(question_rows) or '<li>没有问题</li>'}</ul>
+  <tbody>{rows or '<tr><td colspan=5 class="muted center">没有待合并的条目</td></tr>'}</tbody></table></div>
+  <div class="card"><h2>待答复</h2><div class="questions">{''.join(cards) or '<p class="muted">没有问题</p>'}</div></div>
 </section>'''
-    return layout(project, '收件箱与待答复', body, local=local, active='/inbox', script='board.js',
-                  data=dict(project=project, local=local, page='inbox'))
+    return layout(project, '收件箱与待答复', body, local=local, active='/inbox', page='inbox', operator=operator)
 
 
-def drafts(project, checkout, files, notes, *, local):
+def drafts(project, checkout, files, notes, *, local, operator=None):
     blocks = []
     for item in files:
         own = [n for n in notes if n['file'] == item['name']]
-        listed = ''.join(f'<li>#{n["id"]} [{escape(n["target"])}] {escape(n["text"])}（{escape(n["author"])}，{STATUS.get(n["status"], n["status"])}）</li>'
-                         for n in own)
+        listed = ''.join(f'<li><span class="mono">#{n["id"]}</span> <span class="chip">{escape(n["target"])}</span> {escape(n["text"])}'
+                         f'<span class="muted">（{escape(n["author"])}，{STATUS.get(n["status"], n["status"])}）</span></li>' for n in own)
         targets = ''.join(f'<option value="{escape(s)}">{escape(s)}</option>' for node in item['nodes'] for s in node['scenarios'])
-        blocks.append(f'''<article class="draft"><h2>{escape(item["name"])}</h2><p>{escape(item.get("requirement") or "")}</p>
+        blocks.append(f'''<article class="card"><h2>{escape(item["name"])} <span class="pill draft">草稿</span></h2>
+  <p class="muted">{escape(item.get("requirement") or "")}</p>
   <p><a href="/p/{quote(project)}?checkout={quote(checkout)}">在工作台查看场景</a>（筛选“草稿”）</p>
-  <ul>{listed or '<li>没有批注</li>'}</ul>
-  <form class="annotate mark" data-file="{escape(item["name"])}"><select name="target"><option value="file">整个文件</option>{targets}</select>
-  <input name="text" placeholder="批注内容" required><button>提交批注</button><span class="message"></span></form></article>''')
-    body = f'<section class="page">{"".join(blocks) or "<p>没有草稿场景文件</p>"}</section>'
-    return layout(project, '草稿批注', body, local=local, active='/drafts', script='board.js',
-                  data=dict(project=project, local=local, page='drafts', checkout=checkout))
+  <ul class="notes">{listed or '<li class="muted">没有批注</li>'}</ul>
+  <form class="annotate stack" data-file="{escape(item["name"])}">
+    <label class="field"><span>批注对象</span><select name="target"><option value="file">整个文件</option>{targets}</select></label>
+    <label class="field"><span>批注内容</span><textarea name="text" rows="3" placeholder="例如：预期金额应为 99.00 元" required></textarea></label>
+    {signer_line()}
+    <div class="form-actions"><button class="primary" type="submit">提交批注</button><span class="message"></span></div>
+  </form></article>''')
+    body = f'''<section class="page">{page_head('草稿批注', '草稿场景不进入执行；批注由开发者的会话处理后再确认。')}
+{"".join(blocks) or '<div class="card"><p class="muted">没有草稿场景文件</p></div>'}</section>'''
+    return layout(project, '草稿批注', body, local=local, active='/drafts', page='drafts', operator=operator,
+                  data=dict(checkout=checkout))
 
 
-def sop(project, checkout, documents, *, local):
-    blocks = ''.join(f'<article class="sop"><h2>{escape(name)}</h2>{html}</article>' for name, html in documents)
-    body = f'<section class="page">{blocks or "<p>场景目录下没有业务 SOP（.md）</p>"}</section>'
-    return layout(project, '业务 SOP', body, local=local, active='/sop').replace(
-        '</body>', '<script src="/assets/vendor/mermaid/mermaid.min.js"></script><script src="/assets/sop.js"></script></body>')
-
-
-def atlas(project, checkout, entries, *, local):
+def atlas(project, checkout, entries, *, local, operator=None):
     blocks = []
     for item in entries:
         if item.get('problem'):
-            blocks.append(f'<article><h2>{escape(item["entry"])}</h2><p class="finding">{escape(item["problem"])}</p></article>')
+            blocks.append(f'<article class="card"><h2>{escape(item["entry"])}</h2><p class="finding">{escape(item["problem"])}</p></article>')
             continue
         if not item['exists']:
-            blocks.append(f'<article><h2>{escape(item["entry"])}</h2><p class="muted">还没有交互地图</p></article>')
+            blocks.append(f'<article class="card"><h2>{escape(item["entry"])}</h2><p class="muted">还没有交互地图</p></article>')
             continue
         stale = {s['page']: s['files'] for s in item['stale'] or []}
         rows = []
         for page in item['document']['pages']:
             controls = '、'.join(escape(next((t['text'] for t in c['name']), c['id'])) for c in page.get('controls', [])[:12])
-            mark = f'<span class="badge old">已过期：{escape("、".join(stale[page["id"]]))}</span>' if page['id'] in stale else ''
+            mark = f' <span class="pill retest">已过期：{escape("、".join(stale[page["id"]]))}</span>' if page['id'] in stale else ''
             title = ' / '.join(t['text'] for t in page.get('title', [])) or page['id']
-            rows.append(f'<tr><td>{escape(page["id"])}</td><td>{escape(title)}{mark}</td><td>{escape(page.get("route") or "")}</td><td>{controls}</td></tr>')
-        blocks.append(f'<article><h2>{escape(item["entry"])}</h2><table><thead><tr><th>页面</th><th>标题</th><th>路由</th><th>控件</th></tr></thead>'
+            rows.append(f'<tr><td class="mono">{escape(page["id"])}</td><td>{escape(title)}{mark}</td>'
+                        f'<td class="mono">{escape(page.get("route") or "")}</td><td>{controls}</td></tr>')
+        blocks.append(f'<article class="card flush"><h2 class="pad">{escape(item["entry"])}</h2><table><thead><tr><th>页面</th><th>标题</th><th>路由</th><th>控件</th></tr></thead>'
                       f'<tbody>{"".join(rows)}</tbody></table></article>')
-    body = f'<section class="page"><p class="muted">地图只说明怎么操作，不提供预期。</p>{"".join(blocks) or "<p>没有声明 atlas 的 Web 入口</p>"}</section>'
-    return layout(project, '交互地图', body, local=local, active='/atlas')
+    body = f'''<section class="page">{page_head('交互地图', '地图只说明怎么操作，不提供预期。')}
+{"".join(blocks) or '<div class="card"><p class="muted">没有声明 atlas 的 Web 入口</p></div>'}</section>'''
+    return layout(project, '交互地图', body, local=local, active='/atlas', page='atlas', operator=operator)

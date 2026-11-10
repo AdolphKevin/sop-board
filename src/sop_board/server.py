@@ -26,7 +26,7 @@ from .store import Store
 
 ROUTES = []
 ASSETS = {'board.css': 'text/css; charset=utf-8', 'board.js': 'text/javascript; charset=utf-8',
-          'sop.js': 'text/javascript; charset=utf-8', 'vendor/mermaid/mermaid.min.js': 'text/javascript; charset=utf-8'}
+          'vendor/mermaid/mermaid.min.js': 'text/javascript; charset=utf-8'}
 MAX_BODY = 64 * 1024 * 1024
 
 

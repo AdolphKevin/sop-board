@@ -31,6 +31,7 @@ python3 examples/demo-shop/make_demo.py $T --data $D    # 另外 init 为项目 
 | 预埋缺陷与修复 | lib `refundlib.can_apply` 写成 `<= APPLY_DAYS + 1`；修复为 `<= APPLY_DAYS` |
 | `draft-a`、`draft-b` | app `docs/sop/` 下 `metadata.status: draft` 的两份场景文件，各两条场景 |
 | 演示 PRD | `examples/demo-shop/materials/prd-partial-refund.md`（部分退款需求） |
+| 业务 SOP 与待确认问题（AUT-03） | app `docs/sop/refund.md`（含段落内换行与 Mermaid 流程图）与 `docs/sop/refund-待确认问题.md`（Q1 已答复，Q2、Q3 待答复） |
 | 演示用例文件 | `materials/cases.yaml`（一条与 shop 对应的细节用例、一条新流程用例）；`materials/cases-invalid.yaml` 缺 expected_results |
 | 数据配方 | `seed-order`：参数 `order_id`、`paid`、`days`，写入本检出的 `$D/demo/env/<检出>/shop.sqlite3`；输出含凭据取值，用来核对留痕遮蔽 |
 | 守护命令 | app `docs/sop/regression.yaml` 的 `unit`：`python3 tests/junit_runner.py --junit {junit}`（unittest，测试放 `tests/test_*.py`） |

@@ -37,4 +37,4 @@
 
 ## 人工复测结论
 
-使用者转述测试同学的复测结论时：`sop-board mark <场景键> pass|fail [--defect <缺陷链接>] [--note <说明>]`，不通过时 `--defect` 必填；复测人是别人时加 `--as <姓名>`。
+使用者转述测试同学的复测结论时：`sop-board mark <场景键> pass|fail|blocked|changed [--defect <缺陷链接>] [--note <说明>]`（阻塞为 blocked、需求变更为 changed，缺陷链接与说明可选）；复测人是别人时加 `--as <姓名>`。

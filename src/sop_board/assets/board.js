@@ -1,16 +1,19 @@
-// Flow Board 工作台：左栏 文件→节点→场景 树与状态筛选，右栏场景详情、证据、复测标注与历史。
+// Flow Board 页面脚本。
+// - 顶栏署名：姓名在页面上填一次，存 localStorage，所有页面与场景共用，使用者主动修改才变。
+// - 工作台：左栏 文件→节点→场景 树（展开状态按项目记在 localStorage；点击场景只切换右栏，不重建树、不动滚动位置），
+//   右栏四要素、证据、复测（通过 / 不通过 / 阻塞 / 需求变更，缺陷链接与姓名都可不填）与历史。
+// - 业务 SOP：左栏 文档→章节→问题 树，右栏显示所选一节；待确认问题按“答复”小节标出已答复 / 待答复。
 (() => {
   const config = JSON.parse(document.getElementById('board-config').textContent);
   const NAME_KEY = 'sop-board-name';
-  const FILTERS = [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['distill', '待沉淀'],
-    ['pass', '通过'], ['guarded', '守护通过'], ['not-run', '未执行'], ['draft', '草稿']];
-  const state = {board: null, filter: null, search: '', selected: null};
+  const TREE_KEY = `sop-board-tree:${config.project}:${config.page}`;
 
   const el = (tag, attrs = {}, ...children) => {
     const node = document.createElement(tag);
     for (const [key, value] of Object.entries(attrs)) {
       if (value === undefined || value === null || value === false) continue;
       if (key === 'class') node.className = value;
+      else if (key === 'html') node.innerHTML = value;
       else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
       else node.setAttribute(key, value === true ? '' : value);
     }
@@ -20,6 +23,7 @@
     }
     return node;
   };
+  const $ = selector => document.querySelector(selector);
 
   const params = () => new URLSearchParams(location.search);
   const checkoutName = () => params().get('checkout') || '';
@@ -34,12 +38,13 @@
     if (!checkoutName()) search.delete('checkout');
     return search.toString();
   };
+  const post = (path, body) => api(path, {method: 'POST', body: JSON.stringify(body)});
 
   function fillCheckouts(checkouts, current) {
-    const select = document.getElementById('checkout');
+    const select = $('#checkout');
     if (!select) return;
     select.replaceChildren(...checkouts.map(c => el('option', {value: c.name, selected: c.name === current},
-      c.name + (c.kind === 'main' ? '（登记路径）' : ''))));
+      c.name + (c.kind === 'main' ? '（主检出）' : ''))));
     select.onchange = () => {
       const search = params();
       search.set('checkout', select.value);
@@ -47,264 +52,620 @@
     };
   }
 
+  // ---- 署名 ----
+
+  const storedName = () => (localStorage.getItem(NAME_KEY) || '').trim();
+  const displayName = () => storedName() || (config.local && config.operator ? config.operator : '');
+
+  function renderSigner() {
+    const host = $('#signer');
+    if (!host) return;
+    const name = displayName();
+    host.replaceChildren(el('button', {class: 'signer-button', type: 'button', title: '修改署名', onclick: openSigner},
+      el('span', {class: 'signer-label'}, '署名'), el('strong', {}, name || '未填写'),
+      !storedName() && name ? el('span', {class: 'muted'}, '（本机操作者）') : null));
+    for (const line of document.querySelectorAll('[data-signer]')) fillSignerLine(line);
+  }
+
+  function fillSignerLine(line) {
+    const name = displayName();
+    line.replaceChildren(...[name ? '署名 ' : '未署名', name ? el('strong', {}, name) : null,
+      el('button', {type: 'button', class: 'link', onclick: openSigner}, name ? '修改' : '填写姓名')].filter(Boolean));
+  }
+
+  function openSigner() {
+    const host = $('#signer');
+    if (!host || host.querySelector('.signer-editor')) return;
+    const input = el('input', {type: 'text', maxlength: 64, value: storedName(), placeholder: '你的姓名', 'aria-label': '署名'});
+    const save = () => {
+      const value = input.value.trim();
+      if (value) localStorage.setItem(NAME_KEY, value); else localStorage.removeItem(NAME_KEY);
+      renderSigner();
+    };
+    const editor = el('form', {class: 'signer-editor', onsubmit: event => { event.preventDefault(); save(); }},
+      el('label', {}, '姓名填一次，所有页面与场景都沿用'), input,
+      el('div', {class: 'row-actions'}, el('button', {type: 'submit', class: 'primary'}, '保存'),
+        el('button', {type: 'button', onclick: renderSigner}, '取消')));
+    host.append(editor);
+    input.focus();
+    input.select();
+  }
+
+  // ---- 通用：可折叠树的展开状态 ----
+
+  const openState = (() => {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(TREE_KEY) || '{}'); } catch { saved = {}; }
+    return {
+      get: (key, fallback) => (key in saved ? saved[key] : fallback),
+      set: (key, value) => { saved[key] = value; localStorage.setItem(TREE_KEY, JSON.stringify(saved)); },
+    };
+  })();
+
+  function group(key, fallback, filtering, summary, children, className) {
+    const details = el('details', {class: className, open: filtering ? true : openState.get(key, fallback)},
+      el('summary', {}, el('span', {class: 'chevron', 'aria-hidden': 'true'}), summary), children);
+    details.addEventListener('toggle', () => { if (!details.dataset.filtering) openState.set(key, details.open); });
+    if (filtering) details.dataset.filtering = '1';
+    return details;
+  }
+
+  function keepScroll(container, render) {
+    const top = container.scrollTop;
+    render();
+    container.scrollTop = top;
+  }
+
+  // 折叠的 details 内容在新版 Chrome 中仍有 offsetParent，用 checkVisibility 判断是否真的可见。
+  const shown = node => (node.checkVisibility ? node.checkVisibility() : node.offsetParent !== null);
+
+  function moveSelection(tree, current, step) {
+    const rows = [...tree.querySelectorAll('.selectable')].filter(shown);
+    const index = rows.indexOf(current);
+    const next = rows[index + step];
+    if (next) { next.focus(); next.click(); next.scrollIntoView({block: 'nearest'}); }
+  }
+
+  const pill = (state, label) => el('span', {class: `pill ${state}`}, label);
+
   // ---- 工作台 ----
 
+  const LABELS = {'retest': '待复测', 'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'distill': '待沉淀',
+    'not-run': '未执行', 'pass': '通过', 'guarded': '守护通过', 'skip': '跳过', 'draft': '草稿'};
+  const VERDICTS = [['pass', '通过'], ['fail', '不通过'], ['blocked', '阻塞'], ['changed', '需求变更']];
+  const board = {data: null, signature: '', filter: null, search: '', selected: null};
+
   async function loadBoard() {
-    state.board = await api('/api/board?' + query());
-    fillCheckouts(state.board.checkouts, state.board.checkout);
+    const data = await api('/api/board?' + query());
+    const signature = JSON.stringify([data.counts, data.files.map(f => [f.name, f.invalid, f.nodes]),
+      Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.title])]);
+    board.data = data;
+    if (signature === board.signature) return;
+    const first = !board.signature;
+    board.signature = signature;
+    if (first) fillCheckouts(data.checkouts, data.checkout);
     renderFilters();
     renderTree();
+    if (!first && !board.selected) renderOverview();
   }
 
   function matches(key, item) {
-    if (state.filter === 'distill' ? !item.distill : state.filter && item.state !== state.filter) return false;
-    const text = state.search.trim().toLowerCase();
+    if (board.filter === 'distill' ? !item.distill : board.filter && item.state !== board.filter) return false;
+    const text = board.search.trim().toLowerCase();
     return !text || key.toLowerCase().includes(text) || item.title.toLowerCase().includes(text);
   }
 
   function renderFilters() {
-    const counts = state.board.counts;
-    const container = document.getElementById('filters');
-    container.replaceChildren(
-      el('button', {class: state.filter ? '' : 'active', onclick: () => { state.filter = null; renderFilters(); renderTree(); }},
-        `全部 ${state.board.total}`),
-      ...FILTERS.filter(([name]) => counts[name] || ['retest', 'fail', 'distill', 'pass', 'guarded', 'not-run', 'draft'].includes(name))
-        .map(([name, label]) => el('button', {class: state.filter === name ? 'active' : '', 'data-state': name,
-          onclick: () => { state.filter = state.filter === name ? null : name; renderFilters(); renderTree(); }},
-          `${label} ${counts[name] || 0}`)));
+    const counts = board.data.counts;
+    const chip = (name, label, count) => el('button', {type: 'button', class: 'filter' + (board.filter === name ? ' active' : ''),
+      onclick: () => { board.filter = board.filter === name ? null : name; renderFilters(); renderTree(); }},
+      name ? el('span', {class: `dot ${name}`}) : null, label, el('span', {class: 'count'}, count));
+    const always = ['retest', 'fail', 'not-run', 'pass'];
+    $('#filters').replaceChildren(chip(null, '全部', board.data.total),
+      ...config.states.concat(['distill']).filter(name => counts[name] || always.includes(name) || board.filter === name)
+        .map(name => chip(name, LABELS[name] || name, counts[name] || 0)));
+  }
+
+  function scenarioRow(key, item) {
+    return el('div', {class: 'row scenario selectable' + (board.selected === key ? ' selected' : ''), role: 'treeitem', tabindex: 0,
+      'data-key': key, title: item.label + (item.reason ? '：' + item.reason : ''),
+      onclick: () => select(key), onkeydown: event => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); moveSelection($('#tree'), event.currentTarget, event.key === 'ArrowDown' ? 1 : -1); }
+      }},
+      el('span', {class: `dot ${item.state}`}), el('span', {class: 'sid'}, item.id), el('span', {class: 'stitle'}, item.title),
+      item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null);
   }
 
   function renderTree() {
-    const tree = document.getElementById('tree');
-    const nodes = [];
-    for (const file of state.board.files) {
-      if (file.invalid) {
-        nodes.push(el('details', {class: 'file invalid', open: true}, el('summary', {}, `${file.name}（文件不合格）`),
-          el('ul', {}, (file.problems || []).map(p => el('li', {}, `${p.line ? '第 ' + p.line + ' 行 ' : ''}${p.field}：${p.problem}`)))));
-        continue;
+    const tree = $('#tree');
+    const filtering = Boolean(board.filter || board.search.trim());
+    keepScroll(tree, () => {
+      const files = [];
+      for (const file of board.data.files) {
+        if (file.invalid) {
+          if (filtering) continue;
+          files.push(group('f:' + file.name, true, false,
+            el('span', {class: 'group-label invalid'}, file.name, el('span', {class: 'tag fail'}, '不合格')),
+            el('ul', {class: 'problems'}, (file.problems || []).map(p => el('li', {}, `${p.line ? '第 ' + p.line + ' 行 ' : ''}${p.field}：${p.problem}`))),
+            'group file'));
+          continue;
+        }
+        let fileCount = 0;
+        // 场景少的文件缺省展开节点；大文件缺省只列节点，像目录一样逐个展开。
+        const smallFile = file.nodes.reduce((sum, node) => sum + node.scenarios.length, 0) <= 40;
+        const nodes = file.nodes.map(node => {
+          const keys = node.scenarios.map(id => `${file.name}#${id}`).filter(key => board.data.items[key] && matches(key, board.data.items[key]));
+          if (!keys.length) return null;
+          fileCount += keys.length;
+          return group(`n:${file.name}#${node.id}`, smallFile, filtering,
+            el('span', {class: 'group-label'}, el('span', {class: 'nid'}, node.id), el('span', {class: 'ntitle'}, node.title),
+              el('span', {class: 'count'}, keys.length)),
+            el('div', {class: 'rows'}, keys.map(key => scenarioRow(key, board.data.items[key]))), 'group node');
+        }).filter(Boolean);
+        if (!nodes.length) continue;
+        files.push(group('f:' + file.name, true, filtering,
+          el('span', {class: 'group-label'}, el('span', {class: 'fname'}, file.name),
+            file.status === 'draft' ? el('span', {class: 'tag draft'}, '草稿') : null, el('span', {class: 'count'}, fileCount)),
+          el('div', {class: 'nodes'}, nodes), 'group file'));
       }
-      const groups = file.nodes.map(node => {
-        const rows = node.scenarios.map(id => `${file.name}#${id}`).filter(key => matches(key, state.board.items[key]));
-        if (!rows.length) return null;
-        return el('li', {class: 'node'}, el('div', {class: 'node-title'}, `${node.id} ${node.title}`),
-          el('ul', {}, rows.map(key => {
-            const item = state.board.items[key];
-            return el('li', {class: 'scenario' + (state.selected === key ? ' selected' : ''), 'data-key': key,
-              onclick: () => select(key)},
-              el('span', {class: `dot ${item.state}`, title: item.label}), el('span', {class: 'sid'}, item.id),
-              el('span', {class: 'stitle'}, item.title), item.distill ? el('span', {class: 'badge distill'}, '待沉淀') : null);
-          })));
-      }).filter(Boolean);
-      if (!groups.length) continue;
-      nodes.push(el('details', {class: 'file', open: true},
-        el('summary', {}, file.name + (file.status === 'draft' ? '（草稿）' : '')), el('ul', {}, groups)));
-    }
-    tree.replaceChildren(...(nodes.length ? nodes : [el('p', {class: 'muted'}, '没有符合条件的场景')]));
+      tree.replaceChildren(...(files.length ? files : [el('p', {class: 'muted pad'}, '没有符合条件的场景')]));
+    });
   }
 
-  function select(key) {
-    state.selected = key;
-    if (decodeURIComponent(location.hash.slice(1)) !== key) history.replaceState(null, '', '#' + encodeURIComponent(key).replace(/%23/g, '#'));
+  function reveal(key) {
+    const item = board.data.items[key];
+    if (!item) return;
+    openState.set('f:' + item.file, true);
+    openState.set(`n:${item.file}#${item.node}`, true);
     renderTree();
+    $('#tree').querySelector(`[data-key="${CSS.escape(key)}"]`)?.scrollIntoView({block: 'center'});
+  }
+
+  function select(key, {fromHash = false} = {}) {
+    const tree = $('#tree');
+    tree.querySelector('.scenario.selected')?.classList.remove('selected');
+    board.selected = key;
+    const row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
+    row?.classList.add('selected');
+    if (fromHash && !(row && shown(row))) reveal(key);
+    if (decodeURIComponent(location.hash.slice(1)) !== key) history.replaceState(null, '', '#' + encodeURIComponent(key).replace(/%23/g, '#'));
     loadDetail(key);
   }
 
   function evidenceView(item) {
-    if (item.type.startsWith('image/')) return el('a', {href: item.url, target: '_blank'}, el('img', {src: item.url, alt: item.name, loading: 'lazy'}));
+    if (item.type.startsWith('image/')) return el('a', {href: item.url, target: '_blank', class: 'thumb'}, el('img', {src: item.url, alt: item.name, loading: 'lazy'}));
     if (item.type.startsWith('video/')) return el('video', {src: item.url, controls: true, preload: 'metadata'});
     if (item.name.endsWith('.zip') && item.name.includes('trace')) {
       const absolute = new URL(item.url, location.href).href;
-      return el('span', {}, el('a', {href: item.url}, `下载 ${item.name}`), ' · ',
-        el('a', {href: 'https://trace.playwright.dev/?trace=' + encodeURIComponent(absolute), target: '_blank'}, '在 Trace Viewer 中打开'));
+      return el('div', {class: 'file-evidence'}, el('a', {href: item.url}, '下载 trace'), el('a', {href: 'https://trace.playwright.dev/?trace=' + encodeURIComponent(absolute), target: '_blank'}, '在 Trace Viewer 中打开'));
     }
     const pre = el('pre', {class: 'text-evidence'}, '…');
     fetch(item.url).then(r => r.text()).then(text => { pre.textContent = text.length > 6000 ? text.slice(0, 6000) + '\n…（已截断，下载查看全文）' : text; });
-    return el('div', {}, el('a', {href: item.url, target: '_blank'}, item.name), pre);
+    return el('div', {class: 'file-evidence'}, el('a', {href: item.url, target: '_blank'}, '打开原文'), pre);
   }
 
   function gallery(items) {
     if (!items?.length) return el('p', {class: 'muted'}, '没有证据');
-    return el('div', {class: 'gallery'}, items.map(item => el('figure', {}, evidenceView(item), el('figcaption', {}, item.name))));
+    const media = items.filter(i => i.type.startsWith('image/') || i.type.startsWith('video/'));
+    const others = items.filter(i => !media.includes(i));
+    return el('div', {class: 'evidence'},
+      media.length ? el('div', {class: 'gallery'}, media.map(item => el('figure', {}, evidenceView(item), el('figcaption', {}, item.name)))) : null,
+      others.map(item => el('details', {class: 'evidence-file'}, el('summary', {}, item.name), evidenceView(item))));
   }
 
-  function itemsList(values, part, coverage) {
-    return el('ol', {}, values.map((text, index) => {
+  function numbered(values, part, coverage, kind) {
+    if (!values?.length) return el('p', {class: 'muted'}, '无');
+    return el('ol', {class: `numbered ${kind}`}, values.map((text, index) => {
       const tests = coverage?.[part]?.[index];
-      return el('li', {}, text, tests ? el('span', {class: 'badge guard', title: '守护测试：' + tests.join('、')}, '已守护') : null);
+      return el('li', {}, el('span', {class: 'text'}, text),
+        tests ? el('span', {class: 'tag guard', title: '守护测试：' + tests.join('、')}, '已守护') : null);
     }));
   }
 
-  function historyRow(entry) {
-    const pieces = [el('strong', {}, entry.label), ` · ${entry.executed_at}`];
-    if (entry.kind === 'manual') pieces.push(` · 复测人 ${entry.marked_by}`);
-    else {
-      pieces.push(` · ${entry.independence}`);
-      if (entry.run) pieces.push(` · 运行 #${entry.run}`);
-      if (entry.launch) pieces.push(` · 启动 #${entry.launch}`);
-      if (entry.executor) pieces.push(` · 执行者 ${entry.executor}`);
-    }
-    if (!entry.current) pieces.push(el('span', {class: 'badge old'}, '旧内容'));
-    return el('li', {}, el('div', {}, ...pieces),
-      entry.finding ? el('div', {class: 'finding'}, entry.finding) : null,
-      entry.kept && entry.note ? el('div', {class: 'note'}, '理由：' + entry.note) : null,
-      entry.defect ? el('div', {}, '缺陷：', /^https?:/.test(entry.defect) ? el('a', {href: entry.defect, target: '_blank', rel: 'noopener'}, entry.defect) : entry.defect) : null,
-      entry.product_changed?.length ? el('div', {class: 'muted'}, '执行期间产品变化：' + entry.product_changed.slice(0, 5).join('、')) : null,
-      entry.evidence?.length ? el('details', {}, el('summary', {}, `证据 ${entry.evidence.length} 份`), gallery(entry.evidence)) : null);
+  const section = (title, ...content) => el('section', {class: 'block'}, el('h3', {}, title), ...content);
+
+  function stateOf(entry) {
+    if (entry.kind === 'manual') return {pass: 'pass', fail: 'fail', blocked: 'blocked', changed: 'changed'}[entry.status];
+    if (entry.kept) return 'pass';
+    return entry.status;
   }
 
-  function markForm(data) {
-    const name = el('input', {name: 'by', placeholder: '复测人姓名', required: true, value: localStorage.getItem(NAME_KEY) || ''});
-    const defect = el('input', {name: 'defect', placeholder: '缺陷链接或编号（不通过时必填）'});
-    const note = el('input', {name: 'note', placeholder: '备注（可选）'});
-    const message = el('span', {class: 'message'});
-    const form = el('form', {class: 'mark', onsubmit: async event => {
+  function historyItem(entry) {
+    const who = entry.kind === 'manual' ? `复测人 ${entry.marked_by}` :
+      [entry.independence, entry.run ? `运行 #${entry.run}` : null, entry.launch ? `启动 #${entry.launch}` : null,
+        entry.executor ? `执行者 ${entry.executor}` : null].filter(Boolean).join(' · ');
+    return el('li', {class: 'event'},
+      el('div', {class: 'event-head'}, pill(stateOf(entry), entry.label), el('span', {class: 'muted'}, entry.executed_at),
+        el('span', {class: 'muted'}, who), entry.current ? null : el('span', {class: 'tag old'}, '旧内容')),
+      entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
+      entry.note ? el('p', {class: 'note'}, (entry.kept ? '理由：' : '说明：') + entry.note) : null,
+      entry.defect ? el('p', {}, '缺陷：', /^https?:/.test(entry.defect) ? el('a', {href: entry.defect, target: '_blank', rel: 'noopener'}, entry.defect) : entry.defect) : null,
+      entry.product_changed?.length ? el('p', {class: 'muted'}, '执行期间产品变化：' + entry.product_changed.slice(0, 5).join('、')) : null,
+      entry.evidence?.length ? el('details', {class: 'event-evidence'}, el('summary', {}, `证据 ${entry.evidence.length} 份`), gallery(entry.evidence)) : null);
+  }
+
+  function markCard(data) {
+    let verdict = null;
+    const defect = el('input', {type: 'text', name: 'defect', placeholder: '缺陷链接或编号'});
+    const note = el('textarea', {name: 'note', rows: 3, placeholder: '例如：阻塞原因、需求怎样变了'});
+    const defectField = el('label', {class: 'field', hidden: true}, el('span', {}, '缺陷链接', el('em', {}, '可选')), defect);
+    const noteField = el('label', {class: 'field'}, el('span', {}, '说明', el('em', {}, '可选')), note);
+    const message = el('p', {class: 'message'});
+    const submit = el('button', {type: 'submit', class: 'primary block', disabled: true}, '提交复测结论');
+    const choices = VERDICTS.map(([value, label]) => el('button', {type: 'button', class: `verdict ${value}`, role: 'radio', 'aria-checked': 'false',
+      onclick: event => {
+        verdict = value;
+        for (const button of choices) button.setAttribute('aria-checked', String(button === event.currentTarget));
+        defectField.hidden = !(value === 'fail' || value === 'blocked');
+        submit.disabled = false;
+        message.textContent = '';
+      }}, label));
+    const signer = el('p', {class: 'signed-as', 'data-signer': ''});
+    fillSignerLine(signer);
+    const form = el('form', {class: 'stack', onsubmit: async event => {
       event.preventDefault();
-      const verdict = form.querySelector('input[name=verdict]:checked')?.value;
-      if (!verdict) { message.textContent = '请选择通过或不通过'; return; }
-      if (verdict === 'fail' && !defect.value.trim()) { message.textContent = '不通过时必须填写缺陷链接'; return; }
+      if (!verdict) return;
+      submit.disabled = true;
+      message.textContent = '提交中…';
       try {
-        await api('/api/mark', {method: 'POST', body: JSON.stringify({checkout: data.checkout, scenario: data.key, verdict,
-          by: name.value.trim(), defect: defect.value.trim() || null, note: note.value.trim() || null})});
-        localStorage.setItem(NAME_KEY, name.value.trim());
+        await post('/api/mark', {checkout: data.checkout, scenario: data.key, verdict, by: storedName() || null,
+          defect: defectField.hidden ? null : defect.value.trim() || null, note: note.value.trim() || null});
         await loadBoard();
-        await loadDetail(data.key);
-      } catch (error) { message.textContent = '提交失败：' + error.message; }
-    }},
-      el('label', {}, el('input', {type: 'radio', name: 'verdict', value: 'pass'}), '通过'),
-      el('label', {}, el('input', {type: 'radio', name: 'verdict', value: 'fail'}), '不通过'),
-      defect, name, note, el('button', {type: 'submit'}, '提交复测结论'), message);
-    return form;
+        await loadDetail(data.key, {keep: true});
+      } catch (error) { message.textContent = '提交失败：' + error.message; submit.disabled = false; }
+    }}, el('div', {class: 'verdicts', role: 'radiogroup', 'aria-label': '复测结论'}, choices), defectField, noteField, signer, submit, message);
+    return el('div', {class: 'card'}, el('h3', {}, '复测'), el('p', {class: 'muted small'}, '按左侧四要素操作后登记结论；缺陷链接与姓名都可不填。'), form);
   }
 
-  function annotationList(items) {
-    if (!items?.length) return el('p', {class: 'muted'}, '还没有批注');
-    return el('ul', {}, items.map(a => el('li', {}, `#${a.id} ${a.text}（${a.author}，${a.created_at}，${a.status === 'open' ? '待处理' : a.status === 'adopted' ? '已采纳' : '未采纳'}）`)));
+  function annotationCard(data) {
+    const text = el('textarea', {name: 'text', rows: 4, placeholder: '例如：预期金额应为 99.00 元', required: true});
+    const message = el('p', {class: 'message'});
+    const signer = el('p', {class: 'signed-as', 'data-signer': ''});
+    fillSignerLine(signer);
+    const list = data.annotations?.length ? el('ul', {class: 'notes'}, data.annotations.map(a => el('li', {},
+      el('div', {}, a.text), el('div', {class: 'muted small'}, `#${a.id} · ${a.author} · ${a.created_at} · ${a.status === 'open' ? '待处理' : a.status === 'adopted' ? '已采纳' : '未采纳'}`))))
+      : el('p', {class: 'muted small'}, '还没有批注');
+    return el('div', {class: 'card'}, el('h3', {}, '草稿批注'), list,
+      el('form', {class: 'stack', onsubmit: async event => {
+        event.preventDefault();
+        if (!displayName()) { message.textContent = '请先填写姓名（右上角“署名”）'; openSigner(); return; }
+        try {
+          await post('/api/annotate', {checkout: data.checkout, file: data.scene.file, target: data.scene.id, text: text.value.trim(), by: displayName()});
+          await loadDetail(data.key, {keep: true});
+        } catch (error) { message.textContent = '提交失败：' + error.message; }
+      }}, el('label', {class: 'field'}, el('span', {}, '批注内容'), text), signer, el('button', {type: 'submit', class: 'primary block'}, '提交批注'), message));
   }
 
-  function annotationForm(data) {
-    const text = el('input', {name: 'text', placeholder: '批注内容，例如预期应如何', required: true});
-    const name = el('input', {name: 'by', placeholder: '批注人姓名', required: true, value: localStorage.getItem(NAME_KEY) || ''});
-    const message = el('span', {class: 'message'});
-    return el('form', {class: 'mark', onsubmit: async event => {
-      event.preventDefault();
-      try {
-        await api('/api/annotate', {method: 'POST', body: JSON.stringify({checkout: data.checkout, file: data.scene.file,
-          target: data.scene.id, text: text.value.trim(), by: name.value.trim()})});
-        localStorage.setItem(NAME_KEY, name.value.trim());
-        await loadDetail(data.key);
-      } catch (error) { message.textContent = '提交失败：' + error.message; }
-    }}, text, name, el('button', {type: 'submit'}, '提交批注'), message);
-  }
-
-  function localButtons(data) {
+  function localCard(data) {
     if (!config.local) return null;
-    const message = el('span', {class: 'message'});
-    const call = (path, body, done) => async () => {
+    const message = el('p', {class: 'message'});
+    const call = (path, body, done) => async event => {
+      const button = event.currentTarget;
+      button.disabled = true;
       message.textContent = '已提交…';
-      try { const result = await api(path, {method: 'POST', body: JSON.stringify(body)}); message.textContent = done(result); }
+      try { message.textContent = done(await post(path, body)); }
       catch (error) { message.textContent = '失败：' + error.message; }
+      finally { button.disabled = false; }
     };
-    return el('div', {class: 'actions'},
-      el('button', {onclick: call('/api/launch', {checkout: data.checkout, scenario: data.key},
-        r => `已启动无头会话 #${r.launch.id}，结果会回到这里；进度见运行记录`)}, 'AI 重跑此场景'),
-      el('button', {onclick: call('/api/retest', {checkout: data.checkout, scenario: data.key},
-        r => r.summary || '守护测试已运行')}, '运行守护'),
-      el('button', {disabled: !data.state.distill, onclick: call('/api/distill', {checkout: data.checkout, scenario: data.key},
-        r => `已启动沉淀会话 #${r.launch.id}`)}, '沉淀'),
+    const action = (label, hint, handler, disabled) => el('button', {type: 'button', class: 'action', disabled, onclick: handler},
+      el('strong', {}, label), el('span', {}, hint));
+    return el('div', {class: 'card'}, el('h3', {}, '本机操作'),
+      el('div', {class: 'actions'},
+        action('AI 重跑此场景', '启动无头会话经真实入口执行', call('/api/launch', {checkout: data.checkout, scenario: data.key},
+          r => `已启动无头会话 #${r.launch.id}，结果会回到这里；进度见运行记录`)),
+        action('运行守护', '直接运行守护测试，不启动 AI', call('/api/retest', {checkout: data.checkout, scenario: data.key},
+          r => r.summary || '守护测试已运行')),
+        action('沉淀', data.state.distill ? '启动沉淀会话写守护测试' : '需要先有独立真实入口通过', call('/api/distill', {checkout: data.checkout, scenario: data.key},
+          r => `已启动沉淀会话 #${r.launch.id}`), !data.state.distill)),
       message);
   }
 
-  async function loadDetail(key) {
-    const pane = document.getElementById('detail');
+  async function loadDetail(key, {keep = false} = {}) {
+    const pane = $('#detail');
     let data;
     try { data = await api('/api/scenario?' + query({key})); }
-    catch (error) { pane.replaceChildren(el('p', {class: 'error'}, error.message)); return; }
+    catch (error) { pane.replaceChildren(el('div', {class: 'empty'}, el('p', {class: 'finding'}, error.message))); return; }
+    if (board.selected !== key) return;
     const scene = data.scene;
     const latest = data.latest;
     const current = data.history.filter(h => h.current);
-    pane.replaceChildren(
-      el('h2', {}, `${data.key} ${scene.title}`),
-      el('div', {class: 'badges'}, el('span', {class: 'badge'}, scene.priority), el('span', {class: 'badge'}, '入口 ' + scene.verify),
-        el('span', {class: 'badge'}, scene.polarity === 'positive' ? '正向' : '反向' + (scene.negative_type ? ' · ' + scene.negative_type : '')),
-        el('span', {class: 'badge'}, '角色 ' + scene.actor), scene.draft ? el('span', {class: 'badge distill'}, '草稿') : null),
-      el('p', {class: `state ${data.state.state}`}, el('strong', {}, data.state.label), data.state.reason ? '：' + data.state.reason : '',
-        data.state.distill ? el('span', {class: 'badge distill'}, '待沉淀') : null),
-      el('section', {}, el('h3', {}, '起点'), el('ul', {}, scene.initial_state.map(t => el('li', {}, t)))),
-      el('section', {}, el('h3', {}, '步骤'), el('ol', {}, scene.steps.map(t => el('li', {}, t)))),
-      el('section', {}, el('h3', {}, '预期'), itemsList(scene.expected, 'expected', data.coverage)),
-      el('section', {}, el('h3', {}, '禁止'), itemsList(scene.forbidden_effects, 'forbidden_effects', data.coverage)),
-      el('section', {}, el('h3', {}, '最新结果与证据'),
-        latest ? el('div', {}, el('p', {}, el('strong', {}, latest.label), ` · ${latest.executed_at} · ${latest.actual || ''}`),
-          latest.finding ? el('p', {class: 'finding'}, latest.finding) : null, gallery(latest.evidence))
-          : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
-      scene.draft ? el('section', {}, el('h3', {}, '草稿批注'), annotationList(data.annotations), annotationForm(data)) : el('section', {}, el('h3', {}, '复测'), markForm(data)),
-      localButtons(data),
-      el('details', {class: 'history'}, el('summary', {}, `历史（${data.history.length} 条，当前内容 ${current.length} 条）`),
-        el('ul', {}, data.history.map(historyRow)),
-        data.guard_runs.length ? el('div', {}, el('h4', {}, '守护运行'), el('ul', {}, data.guard_runs.map(run =>
-          el('li', {}, `${run.status === 'pass' ? '守护通过' : '守护未通过'} · ${run.ran_at} · ${run.operator}`, run.reason ? ' · ' + run.reason : '')))) : null));
+    const top = pane.scrollTop;
+    const main = el('div', {class: 'main'},
+      el('div', {class: 'crumbs'}, scene.file, el('span', {}, '›'), `${scene.node} ${scene.node_title || ''}`),
+      el('h1', {}, scene.title),
+      el('div', {class: 'meta'}, el('span', {class: 'sid big'}, data.key),
+        el('span', {class: 'chip'}, scene.priority), el('span', {class: 'chip'}, '入口 ' + scene.verify),
+        el('span', {class: 'chip'}, scene.polarity === 'positive' ? '正向' : '反向' + (scene.negative_type ? ' · ' + scene.negative_type : '')),
+        el('span', {class: 'chip'}, '角色 ' + scene.actor), scene.draft ? pill('draft', '草稿') : null),
+      el('div', {class: `banner ${data.state.state}`}, pill(data.state.state, data.state.label),
+        el('span', {class: 'reason'}, data.state.reason || ''), data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null),
+      section('起点', scene.initial_state?.length ? el('ul', {class: 'plain'}, scene.initial_state.map(t => el('li', {}, t))) : el('p', {class: 'muted'}, '无')),
+      section('步骤', numbered(scene.steps, null, null, 'steps')),
+      section('预期', numbered(scene.expected, 'expected', data.coverage, 'expected')),
+      section('禁止', numbered(scene.forbidden_effects, 'forbidden_effects', data.coverage, 'forbidden')),
+      section('最新执行结果与证据', latest ? el('div', {},
+        el('div', {class: 'event-head'}, pill(stateOf(latest), latest.label), el('span', {class: 'muted'}, latest.executed_at)),
+        latest.actual ? el('p', {}, latest.actual) : null, latest.finding ? el('p', {class: 'finding'}, latest.finding) : null,
+        gallery(latest.evidence)) : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
+      el('details', {class: 'block history'}, el('summary', {}, el('h3', {}, '历史'), el('span', {class: 'muted'}, `${data.history.length} 条，当前内容 ${current.length} 条`)),
+        data.history.length ? el('ul', {class: 'timeline'}, data.history.map(historyItem)) : el('p', {class: 'muted'}, '没有记录'),
+        data.guard_runs.length ? el('div', {}, el('h4', {}, '守护运行'), el('ul', {class: 'timeline'}, data.guard_runs.map(run =>
+          el('li', {class: 'event'}, el('div', {class: 'event-head'}, pill(run.status === 'pass' ? 'guarded' : 'fail', run.status === 'pass' ? '守护通过' : '守护未通过'),
+            el('span', {class: 'muted'}, run.ran_at), el('span', {class: 'muted'}, run.operator)), run.reason ? el('p', {}, run.reason) : null)))) : null));
+    const side = el('aside', {class: 'side'}, scene.draft ? annotationCard(data) : markCard(data), localCard(data));
+    pane.replaceChildren(el('div', {class: 'detail-grid'}, main, side));
+    pane.scrollTop = keep ? top : 0;
+  }
+
+  function renderOverview() {
+    const pane = $('#detail');
+    const {counts, total, items} = board.data;
+    const tile = (state, label) => el('button', {type: 'button', class: `tile ${state}`,
+      onclick: () => { board.filter = state; renderFilters(); renderTree(); }}, el('strong', {}, counts[state] || 0), el('span', {}, label));
+    const urgent = Object.entries(items).filter(([, item]) => ['retest', 'fail', 'blocked', 'changed'].includes(item.state));
+    pane.replaceChildren(el('div', {class: 'overview'},
+      el('div', {}, el('h1', {}, `检出 ${board.data.checkout} · ${total} 条场景`),
+        el('p', {class: 'muted'}, board.data.product.dirty ? '产品有未提交改动；结果按当前内容快照记录。' : '从左侧选择场景查看四要素、证据并复测。')),
+      el('div', {class: 'tiles'}, [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['changed', '需求变更'],
+        ['not-run', '未执行'], ['pass', '通过'], ['guarded', '守护通过'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
+      el('section', {class: 'block'}, el('h3', {}, `需要处理（${urgent.length}）`),
+        urgent.length ? el('ul', {class: 'todo'}, urgent.map(([key, item]) => el('li', {},
+          el('div', {class: 'row selectable', onclick: () => select(key, {fromHash: true})},
+            el('span', {class: `dot ${item.state}`}), el('span', {class: 'sid'}, key), el('span', {class: 'stitle'}, item.title),
+            el('span', {class: 'reason'}, item.label + (item.reason ? '：' + item.reason : ''))))))
+          : el('p', {class: 'muted'}, '没有待复测、失败、受阻或需求变更的场景'))));
   }
 
   async function startWorkbench() {
-    document.getElementById('search').addEventListener('input', event => { state.search = event.target.value; renderTree(); });
+    $('#search').addEventListener('input', event => { board.search = event.target.value; renderTree(); });
     await loadBoard();
     const key = decodeURIComponent(location.hash.slice(1));
-    if (key && state.board.items[key]) select(key);
+    if (key && board.data.items[key]) select(key, {fromHash: true});
+    else renderOverview();
     window.addEventListener('hashchange', () => {
       const next = decodeURIComponent(location.hash.slice(1));
-      if (next && next !== state.selected && state.board.items[next]) select(next);
+      if (next && next !== board.selected && board.data.items[next]) select(next, {fromHash: true});
     });
     setInterval(() => loadBoard().catch(() => {}), 15000);
   }
 
+  // ---- 业务 SOP ----
+
+  const docs = {data: null, filter: null, search: '', selected: null};
+  const ANSWER = {answered: ['pass', '已答复'], open: ['retest', '待答复']};
+
+  function docOutline(doc) {
+    // 把节组织成：概览（0、1 级）+ 2 级分组（含其下 3 级）+ 无上级的 3 级。
+    const overview = [], items = [];
+    let parent = null;
+    doc.sections.forEach((section, index) => {
+      if (section.level <= 1) { overview.push(index); parent = null; return; }
+      if (section.level === 2) { parent = {index, children: []}; items.push(parent); return; }
+      if (parent) parent.children.push(index); else items.push({index, children: []});
+    });
+    return {overview, items};
+  }
+
+  const sectionKey = (doc, index) => `${doc.name}::${doc.sections[index].anchor}`;
+  const shortTitle = title => title.replace(/^标题[:：]\s*/, '');
+
+  function docMatches(doc, index) {
+    const section = doc.sections[index];
+    if (docs.filter && section.answer !== docs.filter) return false;
+    const text = docs.search.trim().toLowerCase();
+    return !text || section.title.toLowerCase().includes(text);
+  }
+
+  function docRow(doc, index, label) {
+    const section = doc.sections[index];
+    const key = sectionKey(doc, index);
+    const answer = ANSWER[section.answer];
+    return el('div', {class: 'row selectable' + (docs.selected === key ? ' selected' : ''), role: 'treeitem', tabindex: 0, 'data-key': key,
+      onclick: () => selectSection(key), onkeydown: event => {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); moveSelection($('#tree'), event.currentTarget, event.key === 'ArrowDown' ? 1 : -1); }
+      }},
+      answer ? el('span', {class: `dot ${answer[0]}`, title: answer[1]}) : el('span', {class: 'dot hollow'}),
+      el('span', {class: 'stitle'}, label || shortTitle(section.title)));
+  }
+
+  function renderDocFilters() {
+    const all = docs.data.documents.flatMap(doc => doc.sections.filter(s => s.answer));
+    const host = $('#filters');
+    if (!all.length) { host.replaceChildren(); return; }
+    const count = state => all.filter(s => s.answer === state).length;
+    const chip = (state, label, n) => el('button', {type: 'button', class: 'filter' + (docs.filter === state ? ' active' : ''),
+      onclick: () => { docs.filter = docs.filter === state ? null : state; renderDocFilters(); renderDocTree(); }},
+      state ? el('span', {class: `dot ${ANSWER[state][0]}`}) : null, label, el('span', {class: 'count'}, n));
+    host.replaceChildren(chip(null, '全部问题', all.length), chip('open', '待答复', count('open')), chip('answered', '已答复', count('answered')));
+  }
+
+  function renderDocTree() {
+    const tree = $('#tree');
+    const filtering = Boolean(docs.filter || docs.search.trim());
+    keepScroll(tree, () => {
+      const groups = [];
+      for (const doc of docs.data.documents) {
+        const {overview, items} = docOutline(doc);
+        const rows = [];
+        if (overview.length && !filtering) rows.push(docRow(doc, overview[0], '概览'));
+        for (const item of items) {
+          const children = item.children.filter(index => docMatches(doc, index));
+          if (!item.children.length) {
+            if (docMatches(doc, item.index)) rows.push(docRow(doc, item.index));
+            continue;
+          }
+          if (!children.length && !(docMatches(doc, item.index) && !docs.filter)) continue;
+          const section = doc.sections[item.index];
+          const head = el('span', {class: 'group-label'}, el('span', {class: 'ntitle'}, shortTitle(section.title)), el('span', {class: 'count'}, children.length));
+          const node = group(`s:${doc.name}::${section.anchor}`, false, filtering, head,
+            el('div', {class: 'rows'}, children.map(index => docRow(doc, index))), 'group node');
+          const summary = node.querySelector('summary');
+          summary.classList.add('selectable');
+          summary.dataset.key = sectionKey(doc, item.index);
+          if (docs.selected === summary.dataset.key) summary.classList.add('selected');
+          head.addEventListener('click', event => { event.preventDefault(); node.open = true; selectSection(summary.dataset.key); });
+          rows.push(node);
+        }
+        if (!rows.length) continue;
+        const questions = doc.sections.filter(s => s.answer);
+        const open = questions.filter(s => s.answer === 'open').length;
+        groups.push(group('d:' + doc.name, false, filtering,
+          el('span', {class: 'group-label'}, el('span', {class: 'fname'}, doc.name.replace(/\.md$/, '')),
+            questions.length ? el('span', {class: 'tag ' + (open ? 'retest' : 'pass')}, open ? `待答复 ${open}` : `已答复 ${questions.length}`) : null),
+          el('div', {class: 'nodes'}, doc.problem ? el('p', {class: 'finding'}, doc.problem) : rows), 'group file'));
+      }
+      tree.replaceChildren(...(groups.length ? groups : [el('p', {class: 'muted pad'}, docs.data.documents.length ? '没有符合条件的章节' : '场景目录下没有业务 SOP（.md）')]));
+    });
+  }
+
+  function findSection(key) {
+    for (const doc of docs.data.documents) {
+      const index = doc.sections.findIndex(s => `${doc.name}::${s.anchor}` === key);
+      if (index >= 0) return {doc, index};
+    }
+    return null;
+  }
+
+  function sectionRange(doc, index) {
+    const level = doc.sections[index].level;
+    let end = index + 1;
+    if (level <= 1) {
+      while (end < doc.sections.length && doc.sections[end].level <= 1) end++;
+    } else {
+      while (end < doc.sections.length && doc.sections[end].level > level) end++;
+    }
+    return doc.sections.slice(index, end);
+  }
+
+  async function renderMermaid(container) {
+    if (!window.mermaid) return;
+    if (!renderMermaid.ready) {
+      // 禁止图源改变安全设置、注入主题 CSS 或启用 HTML 标签。
+      window.mermaid.initialize({startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, flowchart: {htmlLabels: false},
+        secure: ['secure', 'securityLevel', 'startOnLoad', 'suppressErrorRendering', 'flowchart', 'themeCSS', 'themeVariables', 'fontFamily']});
+      renderMermaid.ready = true;
+    }
+    for (const node of container.querySelectorAll('pre.mermaid:not([data-processed])')) {
+      const original = node.textContent;
+      try { await window.mermaid.run({nodes: [node]}); }
+      catch {
+        node.textContent = original;
+        node.after(el('p', {class: 'muted'}, '图示无法渲染，请核对 Mermaid 原文。'));
+      }
+    }
+  }
+
+  function selectSection(key, {fromHash = false} = {}) {
+    const found = findSection(key);
+    if (!found) return;
+    const tree = $('#tree');
+    tree.querySelectorAll('.selectable.selected').forEach(node => node.classList.remove('selected'));
+    docs.selected = key;
+    let row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
+    if (fromHash && !(row && shown(row))) {
+      openState.set('d:' + found.doc.name, true);
+      const outline = docOutline(found.doc);
+      const parent = outline.items.find(item => item.children.includes(found.index));
+      if (parent) openState.set(`s:${found.doc.name}::${found.doc.sections[parent.index].anchor}`, true);
+      renderDocTree();
+      row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      row?.scrollIntoView({block: 'center'});
+    }
+    row?.classList.add('selected');
+    if (decodeURIComponent(location.hash.slice(1)) !== key) history.replaceState(null, '', '#' + encodeURIComponent(key));
+    const {doc, index} = found;
+    const sections = sectionRange(doc, index);
+    const head = doc.sections[index];
+    const parent = docOutline(doc).items.find(item => item.children.includes(index));
+    const visible = [...tree.querySelectorAll('.selectable')].filter(shown);
+    const position = visible.findIndex(node => node.dataset.key === key);
+    const nav = (step, label) => {
+      const target = visible[position + step];
+      return el('button', {type: 'button', disabled: !target, onclick: () => { target.click(); target.scrollIntoView({block: 'nearest'}); }}, label);
+    };
+    const answer = ANSWER[head.answer];
+    const pane = $('#detail');
+    const body = el('div', {class: 'markdown'});
+    body.innerHTML = sections.map(s => s.html).join('\n');
+    pane.replaceChildren(el('div', {class: 'doc-view'},
+      el('div', {class: 'crumbs'}, doc.name, parent ? [el('span', {}, '›'), shortTitle(doc.sections[parent.index].title)] : null),
+      answer ? el('div', {class: `banner ${answer[0]}`}, pill(answer[0], answer[1])) : null,
+      body,
+      el('div', {class: 'pager'}, nav(-1, '← 上一节'), nav(1, '下一节 →'))));
+    pane.scrollTop = 0;
+    renderMermaid(body);
+  }
+
+  async function startSop() {
+    docs.data = await api('/api/sop?' + query());
+    fillCheckouts(docs.data.checkouts, docs.data.checkout);
+    $('#search').addEventListener('input', event => { docs.search = event.target.value; renderDocTree(); });
+    renderDocFilters();
+    renderDocTree();
+    const key = decodeURIComponent(location.hash.slice(1));
+    if (key && findSection(key)) selectSection(key, {fromHash: true});
+    else if (docs.data.documents[0]?.sections.length) {
+      const first = docs.data.documents[0];
+      selectSection(`${first.name}::${first.sections[0].anchor}`, {fromHash: true});
+    }
+    window.addEventListener('hashchange', () => {
+      const next = decodeURIComponent(location.hash.slice(1));
+      if (next && next !== docs.selected) selectSection(next, {fromHash: true});
+    });
+  }
+
   // ---- 运行记录 ----
+
+  const table = (headers, rows, empty) => el('div', {class: 'table-wrap'}, el('table', {},
+    el('thead', {}, el('tr', {}, headers.filter(Boolean).map(t => el('th', {}, t)))),
+    el('tbody', {}, rows.length ? rows : [el('tr', {}, el('td', {colspan: headers.length, class: 'muted center'}, empty))])));
 
   async function startRuns() {
     const data = await api('/api/runs?' + query());
-    const board = await api('/api/board?' + query());
-    fillCheckouts(board.checkouts, data.checkout);
-    const launchRows = data.launches.map(item => el('tr', {},
-      el('td', {}, '#' + item.id), el('td', {}, item.kind === 'run' ? '场景执行' : '回归沉淀'), el('td', {}, item.agent),
-      el('td', {}, item.scope.join('、')), el('td', {}, item.status + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : '')),
-      el('td', {}, item.started_at || ''), el('td', {}, item.requested_by),
-      config.local ? el('td', {}, el('a', {href: `/api/launches/${item.id}/log`, target: '_blank'}, '日志'), item.session ? ` · ${item.session}` : '') : null));
-    document.getElementById('launches').replaceChildren(el('table', {},
-      el('thead', {}, el('tr', {}, ['编号', '类型', '代理', '场景', '状态', '开始', '发起人', config.local ? '本机' : null].filter(Boolean).map(t => el('th', {}, t)))),
-      el('tbody', {}, launchRows.length ? launchRows : [el('tr', {}, el('td', {colspan: 8}, '没有启动记录'))])));
-    const runRows = data.runs.map(item => el('tr', {},
-      el('td', {}, '#' + item.id), el('td', {}, item.kind === 'run' ? (item.fix ? `修复 #${item.fix} 的复验` : '执行') : '沉淀'),
-      el('td', {}, {prepared: '进行中', submitted: '已提交', abandoned: '已放弃'}[item.status] || item.status),
-      el('td', {}, item.scope.join('、')), el('td', {}, `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : '')),
-      el('td', {}, item.created_at), config.local ? el('td', {}, item.session || '') : null));
-    document.getElementById('runs').replaceChildren(el('table', {},
-      el('thead', {}, el('tr', {}, ['编号', '类型', '状态', '场景', '结果', '开始', config.local ? '会话' : null].filter(Boolean).map(t => el('th', {}, t)))),
-      el('tbody', {}, runRows.length ? runRows : [el('tr', {}, el('td', {colspan: 7}, '没有运行'))])));
+    const boardData = await api('/api/board?' + query());
+    fillCheckouts(boardData.checkouts, data.checkout);
+    const launchState = {running: ['retest', '运行中'], exited: ['pass', '已结束'], failed: ['fail', '失败'], stopped: ['skip', '已停止']};
+    $('#launches').replaceChildren(table(['编号', '类型', '代理', '场景', '状态', '开始', '发起人', config.local ? '本机' : null],
+      data.launches.map(item => {
+        const [cls, label] = launchState[item.status] || ['skip', item.status];
+        return el('tr', {}, el('td', {class: 'mono'}, '#' + item.id), el('td', {}, item.kind === 'run' ? '场景执行' : '回归沉淀'), el('td', {}, item.agent),
+          el('td', {class: 'mono'}, item.scope.join('、')),
+          el('td', {}, pill(cls, label + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : ''))),
+          el('td', {}, item.started_at || ''), el('td', {}, item.requested_by),
+          config.local ? el('td', {}, el('a', {href: `/api/launches/${item.id}/log`, target: '_blank'}, '日志'), item.session ? el('span', {class: 'muted mono'}, ' ' + item.session) : null) : null);
+      }), '没有启动记录'));
+    const runState = {prepared: ['retest', '进行中'], submitted: ['pass', '已提交'], abandoned: ['skip', '已放弃']};
+    $('#runs').replaceChildren(table(['编号', '类型', '状态', '场景', '结果', '开始', config.local ? '会话' : null],
+      data.runs.map(item => {
+        const [cls, label] = runState[item.status] || ['skip', item.status];
+        return el('tr', {}, el('td', {class: 'mono'}, '#' + item.id), el('td', {}, item.kind === 'run' ? (item.fix ? `修复 #${item.fix} 的复验` : '执行') : '沉淀'),
+          el('td', {}, pill(cls, label)), el('td', {class: 'mono'}, item.scope.join('、')),
+          el('td', {}, `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : '')),
+          el('td', {}, item.created_at), config.local ? el('td', {class: 'mono muted'}, item.session || '') : null);
+      }), '没有运行'));
   }
 
   // ---- 收件箱与草稿批注 ----
 
-  function askName() {
-    let name = localStorage.getItem(NAME_KEY) || '';
-    if (!name) {
-      name = (prompt('请填写你的姓名（之后自动沿用）') || '').trim();
-      if (name) localStorage.setItem(NAME_KEY, name);
-    }
+  function requireName(message) {
+    const name = displayName();
+    if (!name) { message.textContent = '请先填写姓名（右上角“署名”）'; openSigner(); }
     return name;
   }
 
   async function startInbox() {
-    const form = document.getElementById('upload');
+    const form = $('#upload');
     form.addEventListener('submit', async event => {
       event.preventDefault();
       const message = form.querySelector('.message');
-      const problems = document.getElementById('upload-problems');
+      const problems = $('#upload-problems');
       problems.replaceChildren();
       const file = form.querySelector('input[type=file]').files[0];
-      const by = askName();
-      if (!file || !by) { message.textContent = '请选择文件并填写姓名'; return; }
+      const by = requireName(message);
+      if (!file || !by) return;
       try {
         const content = await file.text();
-        await api('/api/inbox', {method: 'POST', body: JSON.stringify({kind: form.elements.namedItem('kind').value, filename: file.name, content, by})});
+        await post('/api/inbox', {kind: form.elements.namedItem('kind').value, filename: file.name, content, by});
         location.reload();
       } catch (error) {
         message.textContent = '上传被拒绝';
@@ -314,12 +675,13 @@
     for (const answerForm of document.querySelectorAll('form.answer')) {
       answerForm.addEventListener('submit', async event => {
         event.preventDefault();
-        const by = askName();
+        const message = answerForm.querySelector('.message');
+        const by = requireName(message);
+        if (!by) return;
         try {
-          await api('/api/answer', {method: 'POST', body: JSON.stringify({question: Number(answerForm.dataset.question),
-            answer: answerForm.elements.namedItem('answer').value.trim(), by})});
+          await post('/api/answer', {question: Number(answerForm.dataset.question), answer: answerForm.elements.namedItem('answer').value.trim(), by});
           location.reload();
-        } catch (error) { answerForm.querySelector('.message').textContent = '提交失败：' + error.message; }
+        } catch (error) { message.textContent = '提交失败：' + error.message; }
       });
     }
   }
@@ -328,16 +690,19 @@
     for (const form of document.querySelectorAll('form.annotate')) {
       form.addEventListener('submit', async event => {
         event.preventDefault();
-        const by = askName();
+        const message = form.querySelector('.message');
+        const by = requireName(message);
+        if (!by) return;
         try {
-          await api('/api/annotate', {method: 'POST', body: JSON.stringify({checkout: config.checkout, file: form.dataset.file,
-            target: form.elements.namedItem('target').value, text: form.elements.namedItem('text').value.trim(), by})});
+          await post('/api/annotate', {checkout: config.checkout, file: form.dataset.file,
+            target: form.elements.namedItem('target').value, text: form.elements.namedItem('text').value.trim(), by});
           location.reload();
-        } catch (error) { form.querySelector('.message').textContent = '提交失败：' + error.message; }
+        } catch (error) { message.textContent = '提交失败：' + error.message; }
       });
     }
   }
 
-  const start = {workbench: startWorkbench, runs: startRuns, inbox: startInbox, drafts: startDrafts}[config.page];
-  if (start) start().catch(error => document.querySelector('main').prepend(el('p', {class: 'error'}, error.message)));
+  renderSigner();
+  const start = {workbench: startWorkbench, sop: startSop, runs: startRuns, inbox: startInbox, drafts: startDrafts}[config.page];
+  if (start) start().catch(error => $('main').prepend(el('p', {class: 'error-bar'}, error.message)));
 })();

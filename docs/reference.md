@@ -14,7 +14,7 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 | 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
 | 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者 | `work` 表（kind=run）+ `runs/<编号>/` |
 | 结果 | 运行中某场景的结论与证据，绑定 指纹 + 快照；证据按 sha256 存储 | `results`（kind=agent）、`evidence/` |
-| 标注 | 人工复测结论（通过/不通过 + 缺陷链接 + 复测人） | `results`（kind=manual） |
+| 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人） | `results`（kind=manual） |
 | 守护 | 场景到低成本测试的关联，绑定场景指纹与测试文件摘要 | 产品仓库 `<scenarios.path>/regression.yaml` |
 | 守护运行 | 一次在某快照上运行守护命令的结果 | `guard_runs` 表 + 输出证据 |
 | 修复 | 失败场景 → 会话改产品 → 另一会话独立复验 → 提交后关闭 | `fixes` 表 + `fixes/<编号>/` |
@@ -30,7 +30,8 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 | 通过 | `pass` | 最新结果为通过，其快照等于当前快照，且执行期间产品没有变化（含按影响判定保留的通过） |
 | 守护通过 | `guarded` | 最新结果为通过但快照已变化；守护有效，且当前快照上最近一次守护运行通过 |
 | 待复测 | `retest` | 通过发生在旧快照或执行期间产品有变化，且没有守护通过；或最新为失败/受阻、之后修复已关闭；或人工不通过后修复已关闭、尚无新的人工通过 |
-| 失败 / 受阻 / 跳过 | `fail` / `blocked` / `skip` | 最新结果如此；人工标注不通过按失败显示，附缺陷链接 |
+| 失败 / 受阻 / 跳过 | `fail` / `blocked` / `skip` | 最新结果如此；人工标注不通过按失败、阻塞按受阻显示 |
+| 需求变更 | `changed` | 最新结果是人工标注的需求变更；场景文件按新需求修改后指纹变化，回到未执行 |
 
 **待沉淀**是徽标，可与其他状态并存：非草稿，同一指纹上有独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化），且没有有效守护。
 
@@ -171,7 +172,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `run launch [--scope …] [--fix N] [--implementer X]` | 由守护进程启动无头执行会话；`pending` 在 CLI 侧展开为具体场景；`--fix` 启动修复的独立复验 |
 | | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
 | | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
-| | `mark <键> pass\|fail [--defect 链接] [--note] [--as 姓名]` | 人工复测；不通过时缺陷链接必填；草稿拒绝 |
+| | `mark <键> pass\|fail\|blocked\|changed [--defect 链接] [--note 说明] [--as 姓名]` | 人工复测：通过、不通过、阻塞、需求变更；缺陷链接与说明可选；草稿拒绝 |
 | | `launch status` / `launch stop --launch N` | 最近 20 次启动；停止发 SIGTERM 给进程组 |
 | 修复 | `fix prepare [键…] [--session]`、`fix submit\|close\|abandon [--fix N]` | 见 §8；省略 `--fix` 时取本检出最近一个状态相符的修复 |
 | 沉淀 | `distill prepare [键…] [--session]`、`distill submit [--report guard.json] [--work N]` | 见 §7 |
@@ -428,7 +429,9 @@ fixtures:
 | `GET /p/<项目>/atlas` | lan | 交互地图与过期页面 |
 | `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据 |
 | `GET /evidence/<sha256>/<文件名>` | lan | 证据下载；视频支持 Range；trace zip 允许 trace.playwright.dev 跨域读取 |
-| `POST /api/mark`、`/api/inbox`、`/api/answer`、`/api/annotate` | lan | 复测标注（不通过须缺陷链接）、上传、答复、批注；均须填姓名（浏览器 localStorage 记住） |
+| `POST /api/mark` | lan | 复测标注：`verdict` 取 pass/fail/blocked/changed，`defect`、`note`、`by` 都可不填（本机缺省为操作者，内网不填记为未署名） |
+| `POST /api/inbox`、`/api/answer`、`/api/annotate` | lan | 上传、答复、批注；须有姓名（顶栏署名填一次，浏览器 localStorage 记住，各页面共用） |
+| `GET /p/<项目>/sop`、`GET /api/sop?checkout=<名称>` | lan | 业务 SOP：场景目录下的 Markdown 按 1～3 级标题分节，左树右文；含“答复”小节的节标出已答复 / 待答复 |
 | `POST /api/launch`、`/api/retest`、`/api/distill` | local | AI 重跑此场景、运行守护、沉淀 |
 | `GET /api/launches/<编号>/log` | local | 启动日志末尾 512 KiB |
 | `/local/health`、`/local/env/{up,down,status}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
@@ -454,7 +457,6 @@ fixtures:
 | `scope-invalid` | `--fix` 与 `--scope` 同用 |
 | `launch-running` | 本检出已有运行中的启动；等待或 `launch stop` |
 | `launch-not-found` | 启动不存在 |
-| `defect-link-required` | 人工不通过缺少缺陷链接 |
 | `not-distillable` / `nothing-to-distill` / `distill-prepared` | 场景不是待沉淀 / 没有待沉淀 / 已有进行中的沉淀 |
 | `report-invalid` | guard.json 无法读取、缺 guards 或命令定义冲突 |
 | `distill-invalid` | 沉淀核对未通过（独立通过、覆盖、检出能力、漏检、保真检查） |

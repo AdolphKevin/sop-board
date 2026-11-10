@@ -4,14 +4,21 @@
 - pass 通过：最新结果为通过，且产品快照等于当前快照、执行期间产品没有变化。
 - guarded 守护通过：曾经真实入口通过，当前快照上守护测试全部通过。
 - retest 待复测：通过发生在旧快照上；或不通过的场景修复已关闭。
-- fail 失败 / blocked 受阻 / skip 跳过：最新结果如此（人工不通过按失败）。
+- fail 失败 / blocked 受阻 / skip 跳过：最新结果如此（人工不通过按失败，人工阻塞按受阻）。
+- changed 需求变更：测试同学复测时标为需求变更；场景文件按新需求修改后指纹变化，回到未执行。
 另有 distill（待沉淀）标记：同一指纹上已有独立真实入口通过，但没有有效守护。
 """
 import json
 
 LABELS = {'not-run': '未执行', 'pass': '通过', 'guarded': '守护通过', 'retest': '待复测',
-          'fail': '失败', 'blocked': '受阻', 'skip': '跳过', 'draft': '草稿'}
-ORDER = ('retest', 'fail', 'blocked', 'not-run', 'pass', 'guarded', 'skip', 'draft')
+          'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'skip': '跳过', 'draft': '草稿'}
+ORDER = ('retest', 'fail', 'blocked', 'changed', 'not-run', 'pass', 'guarded', 'skip', 'draft')
+MANUAL = {'pass': '通过', 'fail': '不通过', 'blocked': '阻塞', 'changed': '需求变更'}
+
+
+def manual_reason(row):
+    reason = '测试同学复测' + MANUAL[row['status']]
+    return reason + ('：' + row['note'] if row.get('note') else '')
 INDEPENDENCE = {'independent': '独立验收', 'self-check': '实现者自检', 'undeclared': '独立性未声明'}
 
 
@@ -58,10 +65,12 @@ def derive(scene, results, product_digest, *, guard=None, guard_valid=False, gua
         passed_after = any(r['status'] == 'pass' and r['executed_at'] > fixed_at for r in manual)
         if failed_before and not passed_after and not (latest['kind'] == 'manual' and latest['executed_at'] > fixed_at):
             return dict(state='retest', reason='修复已关闭，等待测试同学复测', result=latest['id'])
+    if latest['status'] == 'changed':
+        return dict(state='changed', reason=manual_reason(latest) + '；按新需求修改场景文件后回到未执行', result=latest['id'])
     if latest['status'] in ('fail', 'blocked'):
         if fixed_at and fixed_at > latest['executed_at']:
             return dict(state='retest', reason='修复已关闭，等待复测', result=latest['id'])
-        reason = latest.get('finding') or ('人工复测不通过' if latest['kind'] == 'manual' else '')
+        reason = manual_reason(latest) if latest['kind'] == 'manual' else latest.get('finding') or ''
         return dict(state=latest['status'], reason=reason, result=latest['id'])
     if latest['status'] == 'skip':
         return dict(state='skip', reason=latest.get('finding') or '', result=latest['id'])

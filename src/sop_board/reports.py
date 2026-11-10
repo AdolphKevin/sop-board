@@ -65,8 +65,9 @@ def build(context, *, file=None, local=True):
             lines.append(f"- 守护通过：{local_time(guard['ran_at'])}，运行者 {guard['operator']}（守护测试，不是真实入口执行）")
         for result in history[:5]:
             if result['kind'] == 'manual':
-                lines.append(f"- 人工复测 {local_time(result['executed_at'])}：{'通过' if result['status'] == 'pass' else '不通过'}，"
-                             f"复测人 {result['marked_by']}" + (f"，缺陷 {result['defect']}" if result['defect'] else ''))
+                lines.append(f"- 人工复测 {local_time(result['executed_at'])}：{status.MANUAL[result['status']]}，"
+                             f"复测人 {result['marked_by'] or '未署名'}" + (f"，缺陷 {result['defect']}" if result['defect'] else '')
+                             + (f"，说明 {result['note']}" if result['note'] else ''))
                 continue
             label = '按影响判定保留通过' if result['reused_from'] else \
                 {'pass': '通过', 'fail': '失败', 'blocked': '受阻', 'skip': '跳过'}[result['status']]

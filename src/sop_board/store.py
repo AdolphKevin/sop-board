@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS results(
   product_digest TEXT,
   product_changed TEXT NOT NULL DEFAULT '[]',
   kind TEXT NOT NULL CHECK(kind IN ('agent','manual')),
-  status TEXT NOT NULL CHECK(status IN ('pass','fail','blocked','skip')),
+  status TEXT NOT NULL CHECK(status IN ('pass','fail','blocked','skip','changed')),
   actual TEXT,
   finding TEXT,
   defect TEXT,

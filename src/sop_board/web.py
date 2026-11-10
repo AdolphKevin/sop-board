@@ -17,6 +17,12 @@ INDEPENDENCE = status.INDEPENDENCE
 TRACE_VIEWER = 'https://trace.playwright.dev'
 
 
+def operator_for(request):
+    """本机页面以本机操作者为缺省署名；内网页面不透露它。"""
+    from . import config
+    return config.operator() if request.local else None
+
+
 def context_for(app, name):
     app.reload()
     return Context(app.project, app.store, app.checkout(name))
@@ -57,7 +63,7 @@ def history_entry(db, row, *, local):
     item = dict(id=row['id'], kind=row['kind'], status=row['status'], executed_at=local_time(row['executed_at']),
                 actual=row['actual'], finding=row['finding'], note=row['note'], defect=row['defect'])
     if row['kind'] == 'manual':
-        item.update(label='人工复测' + ('通过' if row['status'] == 'pass' else '不通过'), marked_by=row['marked_by'])
+        item.update(label='人工复测' + status.MANUAL[row['status']], marked_by=row['marked_by'] or '未署名')
     else:
         kept = bool(row['reused_from'])
         item.update(label='按影响判定保留通过' if kept else status.LABELS.get(row['status'], row['status']), kept=kept,
@@ -121,7 +127,7 @@ def workbench(app, request):
     if request.arg(1) != app.project.name:
         reject(404, 'project-not-found', 'project', '项目不存在')
     from .pages import workbench as page
-    return html_response(page(app.project.name, local=request.local))
+    return html_response(page(app.project.name, local=request.local, operator=operator_for(request)))
 
 
 @route('GET', '/api/board', 'lan')
@@ -154,11 +160,11 @@ def evidence(app, request):
 
 @route('POST', '/api/mark', 'lan')
 def mark_api(app, request):
-    from . import runs
+    from . import config, runs
     context = context_for(app, request.json_field('checkout'))
     by = request.json_field('by')
-    if not isinstance(by, str) or not by.strip() or len(by) > 64:
-        reject(422, 'marker-required', 'by', '请填写复测人姓名')
+    if request.local and not (isinstance(by, str) and by.strip()):
+        by = config.operator()
     return json_response(runs.mark(context, request.json_field('scenario') or '', request.json_field('verdict'),
                                    by=by, defect=request.json_field('defect'), note=request.json_field('note')))
 
@@ -217,7 +223,7 @@ def launch_log(app, request):
 @route('GET', r'/p/([^/]+)/runs', 'lan')
 def runs_page(app, request):
     from .pages import runs as page
-    return html_response(page(app.project.name, local=request.local))
+    return html_response(page(app.project.name, local=request.local, operator=operator_for(request)))
 
 
 @route('GET', r'/p/([^/]+)/report', 'lan')
@@ -229,7 +235,7 @@ def report_page(app, request):
     if request.query.get('download'):
         return Response(200, markdown.encode(), 'text/markdown; charset=utf-8',
                         [('Content-Disposition', f"attachment; filename*=UTF-8''{quote(context.checkout.name)}-report.md")])
-    return html_response(page(app.project.name, context.checkout.name, markdown, evidence, local=request.local))
+    return html_response(page(app.project.name, context.checkout.name, markdown, evidence, local=request.local, operator=operator_for(request)))
 
 
 @route('GET', r'/p/([^/]+)/attention', 'lan')
@@ -239,7 +245,7 @@ def attention_page(app, request):
     context = context_for(app, request.query.get('checkout'))
     with app.store.connection() as db:
         items = ledger.open_attention(db, context.checkout.id, local=request.local)
-    return html_response(page(app.project.name, context.checkout.name, items, local=request.local))
+    return html_response(page(app.project.name, context.checkout.name, items, local=request.local, operator=operator_for(request)))
 
 
 def attach(app):
@@ -255,7 +261,7 @@ def inbox_page(app, request):
     with app.store.connection() as db:
         items = authoring.inbox_rows(db, status='pending')
     questions = authoring.answers(app.store)
-    return html_response(page(app.project.name, items, questions, local=request.local))
+    return html_response(page(app.project.name, items, questions, local=request.local, operator=operator_for(request)))
 
 
 @route('POST', '/api/inbox', 'lan')
@@ -302,17 +308,31 @@ def drafts_page(app, request):
     drafts = [dict(name=name, nodes=info['nodes'], requirement=info.get('requirement'))
               for name, info in sorted(found['files'].items()) if info.get('status') == 'draft']
     notes = authoring.annotations(app.store, include_resolved=True)
-    return html_response(page(app.project.name, context.checkout.name, drafts, notes, local=request.local))
+    return html_response(page(app.project.name, context.checkout.name, drafts, notes, local=request.local, operator=operator_for(request)))
 
 
 @route('GET', r'/p/([^/]+)/sop', 'lan')
 def sop_page(app, request):
-    from . import authoring
     from .pages import sop as page
-    from .sop_markdown import render
+    return html_response(page(app.project.name, local=request.local, operator=operator_for(request)))
+
+
+@route('GET', '/api/sop', 'lan')
+def sop_api(app, request):
+    """场景目录下的 Markdown（业务 SOP 与待确认问题），按 1～3 级标题分节渲染，供左树右文展示。"""
+    from . import authoring
+    from .sop_markdown import sections
     context = context_for(app, request.query.get('checkout'))
-    documents = [(path.name, render(path.read_text(encoding='utf-8'), path.name)) for path in authoring.sop_files(context)]
-    return html_response(page(app.project.name, context.checkout.name, documents, local=request.local))
+    documents = []
+    for path in authoring.sop_files(context):
+        try:
+            raw = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError) as error:
+            documents.append(dict(name=path.name, problem=f'无法读取：{error}', sections=[]))
+            continue
+        documents.append(dict(name=path.name, sections=sections(raw, path.name)))
+    return json_response(dict(ok=True, checkout=context.checkout.name,
+                              checkouts=[dict(name=c.name, kind=c.kind) for c in app.checkouts()], documents=documents))
 
 
 @route('GET', r'/p/([^/]+)/atlas', 'lan')
@@ -320,4 +340,4 @@ def atlas_page(app, request):
     from . import atlas
     from .pages import atlas as page
     context = context_for(app, request.query.get('checkout'))
-    return html_response(page(app.project.name, context.checkout.name, atlas.summary(context), local=request.local))
+    return html_response(page(app.project.name, context.checkout.name, atlas.summary(context), local=request.local, operator=operator_for(request)))

@@ -52,7 +52,7 @@
 | 场景键 | `<文件名>#<场景编号>`，指纹沿用现有算法（四要素） | 计算得出 |
 | 运行 | 一次执行或复验：范围、检出、产品快照、执行者、实现者、独立性 | `work` 表（kind=run）+ `runs/<编号>/` 目录 |
 | 结果 | 运行中某场景的结论与证据，绑定 指纹 + 快照 | `results` 表（kind=agent），证据按 sha256 存储 |
-| 标注 | 测试同学对某条结果的复测结论（通过/不通过 + 缺陷链接 + 姓名） | `results` 表（kind=manual） |
+| 标注 | 测试同学对场景当前内容的复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明与姓名，均不必填） | `results` 表（kind=manual） |
 | 守护 | 场景到低成本测试的关联，绑定场景指纹与测试文件摘要 | 产品仓库 `<scenarios.path>/regression.yaml` |
 | 守护运行 | 一次在某快照上运行守护命令的原始结果 | `guard_runs` 表 + 输出文件 |
 | 修复 | 失败场景 → 会话在当前检出改产品 → 独立复验运行 → 提交后关闭 | `fixes` 表 |
@@ -63,7 +63,8 @@
 - **通过**：最新结果为通过，指纹相同，快照等于当前快照（包括按影响判定沿用的结果）。
 - **守护通过**：此前在同一指纹上经真实入口独立通过；产品变化后，当前快照上的守护运行全部通过。
 - **待复测**：通过发生在旧快照上，且当前快照没有守护通过；或测试同学标注不通过后修复已关闭。
-- **失败 / 受阻**：最新结果如此（测试同学标注不通过时按失败显示，并附缺陷链接）。
+- **失败 / 受阻**：最新结果如此（测试同学标注不通过按失败、标注阻塞按受阻显示）。
+- **需求变更**：测试同学复测时标为需求变更。场景文件按新需求修改后指纹变化，回到未执行。
 - **待沉淀**（徽标，可与“通过”并存）：已有独立真实入口通过，但没有有效守护。
 
 ### 进程与入口
@@ -155,7 +156,7 @@
   2. 当前状态和原因（例如“产品已变化，守护未覆盖”）；
   3. 起点、步骤、预期、禁止（预期和禁止逐条列出，附守护覆盖标记）；
   4. 最新结果和证据画廊：截图、内联视频（沿用 Range 播放）、trace、请求响应；
-  5. 复测标注表单：通过或不通过，不通过时缺陷链接必填；
+  5. 复测标注表单：通过、不通过、阻塞、需求变更；缺陷链接、说明与姓名都可不填，每个输入框独占一行；姓名在顶栏填一次，各页面与场景共用，使用者主动修改才变；
   6. “AI 重跑此场景”“运行守护”“沉淀”三个按钮，仅本机；
   7. 历史（折叠）。
 
@@ -236,7 +237,7 @@
 | 搭建 | `init`、`guide`、`check`、`operator [show\|set]`、`skills install`、`serve [--lan] [--port]`、`status [--json]` |
 | 检出 | `checkout list\|show\|create <名称> [--from ref]\|remove <名称>` |
 | 守护进程 | `env status\|up\|down\|restart`；`browser install\|status\|open --identity I [--headed]\|close` |
-| 执行 | `run prepare [--scope pending\|all\|F#ID…] [--fix N] [--session S]`、`run submit --run N [--implementer X]`、`run abandon`、`run launch [--scope …]`、`run wait`；`retest [--dry-run]`；`mark F#ID pass\|fail [--defect URL] [--as 姓名]` |
+| 执行 | `run prepare [--scope pending\|all\|F#ID…] [--fix N] [--session S]`、`run submit --run N [--implementer X]`、`run abandon`、`run launch [--scope …]`、`run wait`；`retest [--dry-run]`；`mark F#ID pass\|fail\|blocked\|changed [--defect URL] [--note 说明] [--as 姓名]` |
 | 修复 | `fix prepare [F#ID…]`、`fix submit`、`fix close`、`fix abandon` |
 | 沉淀 | `distill prepare [F#ID…]`、`distill submit --report r.json` |
 | 编写 | `inbox add <文件> [--kind cases\|sop]\|list\|show\|done\|reject`、`merge prepare/submit`、`ask --about F#ID\|inbox:ID --text`、`answers`、`sop prepare/submit`、`draft annotations\|resolve\|confirm <文件>` |
@@ -246,7 +247,7 @@
 
 ### 署名
 
-`~/.sop-board/operator`（缺省取 `git config user.name`）是本机操作者。CLI 的所有登记都自动以操作者署名，只有别人确认时才加 `--as <姓名>`，因此 `--by/--author/--confirmed-by/--uploaded-by` 参数全部删除。会话可以问业务内容（“这些预期是否确认”），但不再问“是谁”。内网表单的姓名填一次后存在浏览器 localStorage。
+`~/.sop-board/operator`（缺省取 `git config user.name`）是本机操作者。CLI 的所有登记都自动以操作者署名，只有别人确认时才加 `--as <姓名>`，因此 `--by/--author/--confirmed-by/--uploaded-by` 参数全部删除。会话可以问业务内容（“这些预期是否确认”），但不再问“是谁”。内网表单的姓名在顶栏填一次后存在浏览器 localStorage，各页面共用；复测标注不填姓名时记为未署名（本机页面缺省为操作者）。
 
 技能文本要删掉以下规则：`skills/sop-board/SKILL.md:8` 中“询问后结束本轮”对署名的适用、`:24` 与 `:29` 两段署名规则、`references/ledger.md:21`、`merge.md:27`、`draft.md:5,8`，以及 `prompts/author-sop.md:29`。
 
