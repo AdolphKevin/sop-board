@@ -1,25 +1,35 @@
-# v10 现行场景：按检出导出报告与证据包
+# v10 现行场景：按检出导出报告与证据包（含 Agent 独立通过的人工确认率、复核覆盖、未决、误判明细与待人工复核）
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 2 按 docs/design.md 已定决策 13（补回人工复核，2026-11-10 blur.yin 批准）与 docs/reference.md §10 的统计口径，由未参与实现的审核方在实现前修订。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动；已有检出 wt1。
 #   “混合结果”：main 上 shop#X 失败且有测试同学的不通过标注（缺陷链接 https://issues.example/DEMO-2），shop#A 守护通过，
 #   shop#W 独立验收通过并附截图，shop#B 未执行；wt1 上只有一条 shop#B 的实现者自检通过。
+#   main 的全部结果记录为：旧快照上 shop#A 的 Agent 独立通过（之后沉淀守护、产品变化、retest 守护通过）；当前快照上 shop#X 的 Agent 失败、
+#   shop#W 的 Agent 独立通过（执行期间产品无变化，不是保留通过）；张测 对 shop#X 的不通过标注。没有其他人工标注。由此 main 的确认率样本恰为 shop#A、shop#W 各 1 条。
+#   “复核结果”：重新生成的演示项目（预埋缺陷未修复），main 上只有运行 R5（执行者 T5、实现者 I1，独立验收，执行期间产品无变化，无保留通过）的结果：
+#   shop#A、shop#B、shop#W 通过，shop#X 失败；之后 张测 在当前快照上依次标注：shop#A 通过；shop#W 不通过（缺陷链接 https://issues.example/DEMO-4，
+#   说明“退款状态未显示”）；shop#B 阻塞（说明“缺商家测试账号”）。没有守护，也没有其他结果。由此确认率样本恰为 R5 的 shop#A、shop#B、shop#W 三条。
+#   比率写作“分子/分母”，只核对分子与分母的数值，不限定百分比的取整与排版。
 
 metadata:
-  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、证据、独立性、标注、守护通过、未执行范围）和证据 zip，只含该检出的结果"
-  version: 1
+  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、证据、独立性、标注、守护通过、Agent 独立通过的人工确认率与复核覆盖、未决计数、误判明细、待人工复核、未执行范围）和证据 zip，只含该检出的结果；内网报告页不显示执行者"
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
     - ref: "docs/design.md"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
-  tags: ["report"]
+    - ref: "docs/design.md 已定决策 13：补回人工复核（待人工复核、Agent 独立通过的人工确认率、复核覆盖与误判明细）"
+      version: "2026-11-10"
+      confirmed_by: "blur.yin"
+  tags: ["report", "review"]
 
 sops:
   - id: RPT-01
     title: 导出检出报告
     actor: 开发者
-    entry: "sop-board report [--file F] [--zip]"
+    entry: "sop-board report [--file F] [--zip]；看板报告页 /p/demo/report"
     scenarios:
       - id: RPT-01-P01
         polarity: positive
@@ -33,10 +43,37 @@ sops:
           - "报告逐条列出 shop 场景的状态：shop#X 失败（含 张测 的不通过标注与缺陷链接）、shop#A 守护通过、shop#W 通过、shop#B 未执行"
           - "shop#W 一条写明独立性为独立验收并引用截图证据"
           - "报告单列未执行范围，包含 shop#B"
+          - "报告的 Agent 独立通过的人工确认率分母为 0（shop#X 的不通过标注针对的是 Agent 失败，不是样本），复核覆盖为 0/2；误判明细为空"
+          - "报告的待人工复核一节只列 shop#W；shop#A（守护通过）不在其中"
           - "zip 中包含报告所引的证据文件，sha256 与报告引用一致"
-        forbidden_effects: ["未执行或守护通过被写成经真实入口通过", "报告或 zip 中出现凭据明文"]
-        refs: ["docs/design.md#保留能力的简化形态"]
+        forbidden_effects: ["未执行或守护通过被写成经真实入口通过", "报告或 zip 中出现凭据明文", "守护通过的场景列入待人工复核"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/reference.md#10. 报告与看板页面"]
         evidence_hints: ["报告全文", "zip 清单与摘要"]
+      - id: RPT-01-P02
+        polarity: positive
+        title: 报告列出人工确认率、复核覆盖、未决与误判明细，内网报告页不显示执行者
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["演示项目处于“复核结果”", "内网浏览器已存有姓名 张测"]
+        steps:
+          - "在 main 运行 sop-board report，阅读 report.md"
+          - "本机打开 /p/demo/report 预览并下载 Markdown；另一台设备从内网地址打开同一页面并下载 Markdown"
+          - "测试同学在内网打开 shop#B，选“通过”提交"
+          - "在 main 再次运行 sop-board report，阅读 report.md"
+        expected:
+          - "第一份报告：Agent 独立通过的人工确认率为 1/2，复核覆盖为 2/3；未决单列阻塞 1、需求变更 0；shop#X 的 Agent 失败不计入样本"
+          - "第一份报告逐条列出场景状态：shop#A 通过、shop#W 失败（人工不通过使其显示为失败，并附 张测 的标注与缺陷链接 https://issues.example/DEMO-4）、shop#B 受阻、shop#X 失败"
+          - "误判明细只有 shop#W 一行，含场景键、运行编号 R5、Agent 执行时间、复测时间、复测人 张测、缺陷链接 https://issues.example/DEMO-4、说明“退款状态未显示”；两个时间与 results 表中对应行一致"
+          - "本机报告（命令导出与本机报告页）的误判明细显示执行者 T5；内网报告页与内网下载的 Markdown 中误判明细的其余字段与本机相同，但不出现 T5 或其他会话编号（执行者如有显示只写“Agent 会话”）"
+          - "待人工复核一节为空：三条样本都已有人工标注"
+          - "shop#B 标注通过后的第二份报告：人工确认率为 2/3，复核覆盖为 3/3，未决阻塞 0；误判明细仍只有 shop#W"
+        forbidden_effects:
+          - "阻塞标注计入人工确认率的分子或分母，或计入复核覆盖的分子"
+          - "人工不通过之后 shop#W 仍按 Agent 通过显示为通过"
+          - "内网报告页或内网下载的报告出现执行者会话编号"
+        refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#保留能力的简化形态", "docs/reference.md#10. 报告与看板页面", "docs/reference.md#3. 守护进程与访问范围", "docs/standard.md#9. 开发与测试每周共同复盘"]
+        evidence_hints: ["两份报告全文", "本机与内网报告页的页面文本与下载文件", "results 表只读查询（时间、复测人、缺陷链接、of_result、产品快照）"]
       - id: RPT-01-N01
         polarity: negative
         negative_type: cross-tenant
@@ -48,6 +85,7 @@ sops:
         steps: ["在 wt1 的 app 目录运行 sop-board report --zip", "阅读报告与 zip 清单"]
         expected:
           - "shop#B 为通过且独立性为实现者自检；shop#X、shop#A、shop#W 都列为未执行"
+          - "人工确认率与复核覆盖的分母都为 0（实现者自检不是样本，main 的样本不计入）；待人工复核与误判明细为空"
           - "zip 中没有 main 的证据文件"
-        forbidden_effects: ["wt1 报告出现 main 的结果、标注或守护通过"]
+        forbidden_effects: ["wt1 报告出现 main 的结果、标注、守护通过、确认率样本或待人工复核"]
         refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#检出与环境（问题 3）"]
