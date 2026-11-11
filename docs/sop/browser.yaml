@@ -1,12 +1,16 @@
-# v10 现行场景：浏览器代理（CfT 安装与启动、身份 profile、真人登录、崩溃记受阻、会话中启动的守护进程）
+# v10 现行场景：浏览器代理（CfT 安装与启动、身份 profile、真人登录与交还、崩溃记受阻、会话中启动的守护进程、声明的测试账号由会话直接登录）
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
-# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，Web 场景 shop#W 使用身份 merchant，即演示项目的合成账号，凭据只经环境变量）。
-#   另需：看板已以 sop-board serve demo --data $D --lan 启动（BRW-05 由会话自己启动）；用户日常 Google Chrome 以其默认 profile 打开，
-#   开始前记录其进程号、profile 目录文件清单与 mtime，以及 ~/Library/Caches/ms-playwright 的清单与 mtime。合成账号的登录已取得本任务授权。
+#   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 15～17（使用者 2026-11-11 需求）修订：BRW-03 改为真人完成后用 browser release 交还、
+#   之后的运行沿用同一浏览器进程与窗口，新增 BRW-03-P02（运行中交给真人再交还）与 BRW-06（声明的测试账号由会话直接登录）。
+# 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，Web 场景 shop#W 使用身份 merchant，即演示项目声明的合成测试账号，凭据只经环境变量）。
+#   另需：看板已以 sop-board serve demo --data $D --lan 启动（BRW-05、BRW-06 由会话自己启动或沿用）；用户日常 Google Chrome 以其默认 profile 打开，
+#   开始前记录其进程号、profile 目录文件清单与 mtime，以及 ~/Library/Caches/ms-playwright 的清单与 mtime。
+#   演示项目没有真实账号、人机验证与二次验证：只能由真人完成的步骤用“真人在窗口中输入合成账号密码”或“未声明的账号”（BRW-06-N01）代替，
+#   各场景的 initial_state 注明替代做法与未覆盖范围。
 
 metadata:
-  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口登录一次后无头运行沿用登录态；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
-  version: 1
+  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -16,7 +20,10 @@ metadata:
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
-  tags: ["browser", "chrome-for-testing", "identity", "crash"]
+    - ref: "使用者 2026-11-11 需求（cw2 实际使用复盘：左栏展开收起与隐藏、真人完成后不关浏览器、声明的测试账号即授权）"
+      version: "2026-11-11"
+      confirmed_by: "blur.yin"
+  tags: ["browser", "chrome-for-testing", "identity", "crash", "release", "declared-account"]
 
 sops:
   - id: BRW-01
@@ -81,39 +88,86 @@ sops:
         evidence_hints: ["run.env（凭据脱敏）", "ps 输出", "/json/version 响应", "日常 Chrome 与缓存前后对比"]
 
   - id: BRW-03
-    title: 真人在有界面的 CfT 窗口登录一次
+    title: 真人在有界面的 CfT 窗口完成登录或验证，用 browser release 交还
     actor: 开发者
-    entry: "sop-board browser open --identity merchant --headed、browser close"
-    must: ["有界面登录与无头运行使用同一份 profile；登录期间持有 human 租约"]
+    entry: "sop-board browser open --identity merchant [--headed]、browser release、browser status、browser close"
+    must:
+      - "有界面窗口与无头运行使用同一份 profile；真人操作期间持有 human 租约，期间该身份的 Web 运行返回 browser-busy"
+      - "browser release 只解除 human 租约，窗口与页面保持打开；之后取得租约的运行和不带 --headed 的 browser open 都沿用这个浏览器进程，不重启成无头"
+      - "browser close 结束浏览器并释放租约，只在要关掉浏览器时使用"
+      - "出现 browser may not be secure 时停止，该身份的场景记为受阻并写明原文；不回退到用户日常 Chrome，也不改 UA 或参数绕过"
+    negative_exempt: "窗口已开着时再运行 browser open --headed 只取得 human 租约、不重启，属于确定性分支，验收后沉淀为单元测试；browser may not be secure 无法在演示项目中触发，列为未覆盖范围"
     scenarios:
       - id: BRW-03-P01
         polarity: positive
-        title: 有界面窗口登录后，之后的无头运行保持登录态
+        title: 真人在有界面窗口登录后用 browser release 交还，之后的运行沿用同一窗口，browser close 才结束浏览器
         actor: 开发者
         priority: P0
         verify: web
-        initial_state: ["浏览器运行时已安装", "merchant 的 profile 尚未登录过演示项目", "没有运行中的 CfT"]
+        initial_state:
+          - "浏览器运行时已安装；没有运行中的 CfT；merchant 的 profile 尚未登录过演示项目"
+          - "替代做法：演示项目没有真实账号，本场景由真人在窗口中输入合成账号 merchant 的密码，代表只能由真人登录的账号"
         steps:
-          - "在 main 运行 sop-board browser open --identity merchant --headed"
-          - "用户在弹出的 CfT 窗口中输入合成账号的用户名与密码并登录"
-          - "运行 sop-board browser status，再运行 sop-board browser close"
-          - "运行 sop-board run prepare --scope shop#W --session S1，执行者经 CDP 打开演示项目入口"
+          - "在 main 运行 sop-board browser open --identity merchant --headed，用 ps 记录 merchant 的 CfT 进程号与参数"
+          - "用户在弹出的 CfT 窗口中输入合成账号的用户名与密码并登录，停留在订单页"
+          - "运行 sop-board browser status，再运行 sop-board browser release，再运行 browser status；用 ps 查看 CfT 进程，curl 该 CfT 调试端口的 /json/list"
+          - "运行 sop-board run prepare --scope shop#W --session S1，读取 run.env；执行者经 PW_CDP_ENDPOINT 执行 shop#W 并 run submit；期间用 ps 查看 CfT 进程"
+          - "运行 sop-board browser open --identity merchant（不带 --headed），再运行 sop-board browser status；用 ps 查看 CfT 进程与窗口"
+          - "运行 sop-board browser close，用 ps 与 browser status 查看；再运行 sop-board run prepare --scope shop#W --session S2，用 ps 查看新启动的 CfT 的参数"
         expected:
-          - "弹出的是有界面的 Chrome for Testing 窗口（不是日常 Chrome），打开的是演示项目入口地址"
-          - "browser status 显示 merchant 由 human 租约持有；close 后租约释放"
-          - "无头运行打开入口时已是 merchant 登录状态，不出现登录表单"
-          - "有界面与无头两次启动的 --user-data-dir 相同"
-        forbidden_effects: ["看板或会话代填密码", "打开或改动用户日常 Chrome", "为绕过检测修改 UA 或启动参数"]
-        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#验证"]
-        evidence_hints: ["有界面窗口截图（不含密码）", "两次启动的 ps 参数", "无头页面截图"]
+          - "弹出的是有界面的 Chrome for Testing 窗口（不是日常 Chrome），打开的是演示项目入口地址，参数不含 --headless=new"
+          - "release 前 browser status 显示 merchant 由 human 租约持有；release 后 human 租约解除，CfT 进程号不变，窗口仍开着，/json/list 中仍有登录后的订单页"
+          - "S1 的 run prepare 成功（不是 browser-busy），没有启动新的浏览器进程：CfT 进程号与 release 前相同，参数仍不含 --headless=new，PW_CDP_ENDPOINT 指向这个窗口的调试端口"
+          - "执行者打开入口时已是 merchant 登录状态，不出现登录表单；shop#W 结果登记成功并附截图"
+          - "不带 --headed 的 browser open 之后 browser status 显示 merchant 没有 human 租约（holder 为空）；CfT 进程号不变，仍是有界面窗口，订单页仍在"
+          - "browser close 后该 CfT 进程结束，browser status 显示 merchant 的浏览器未运行且没有租约"
+          - "close 之后 S2 的 run prepare 启动了新的 CfT：参数含 --headless=new，--user-data-dir 与有界面窗口相同"
+        forbidden_effects:
+          - "browser release 结束浏览器进程，或关闭窗口、页面"
+          - "release 之后的运行或不带 --headed 的 browser open 重启浏览器、改成无头，或为 merchant 另起一个 CfT"
+          - "看板代填密码"
+          - "打开或改动用户日常 Chrome"
+          - "为绕过检测修改 UA 或启动参数"
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
+        evidence_hints: ["有界面窗口截图（不含密码）", "各步骤的 ps 输出（进程号、父进程、参数）", "release 前后的 browser status 与 /json/list", "run.env（凭据脱敏）", "订单页截图"]
+      - id: BRW-03-P02
+        polarity: positive
+        title: 运行中遇到只能由真人完成的步骤，真人在同一窗口完成并交还，重跑沿用该窗口，不再重复
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state:
+          - "上一次运行中 shop#W 因 merchant 需要真人登录记为受阻，并有对应的待人处理（按 BRW-06-N01 产生：merchant 未声明为测试账号）"
+          - "merchant 的 CfT 由守护进程无头运行或未运行，没有 human 租约"
+          - "替代做法：演示项目没有人机验证，以“未声明账号需要真人登录”代替；演示登录写入的会话 cookie 不带过期时间，与真人在窗口里通过的人机验证、证书例外一样只在同一浏览器进程内有效。真实网站的人机验证、二次验证与证书例外未覆盖，在记录中注明"
+        steps:
+          - "开发者在工作台看到 shop#W 受阻及原因、在 sop-board attention list 看到对应的待人处理后，在 main 运行 sop-board browser open --identity merchant --headed"
+          - "在弹出的 CfT 窗口中输入 merchant 的用户名与密码并登录，停留在订单页；用 ps 记录 merchant 的 CfT 进程号与参数"
+          - "运行 sop-board browser release 与 browser status，用 ps 查看 CfT 进程；运行 sop-board attention resolve <该待人处理编号>"
+          - "运行 sop-board run prepare --scope shop#W --session S2，执行者经 PW_CDP_ENDPOINT 重跑 shop#W 并 run submit；期间用 ps 查看 CfT 进程"
+          - "在工作台打开 shop#W 并展开历史，运行 sop-board attention list"
+        expected:
+          - "browser open --headed 弹出有界面的 CfT 窗口并打开演示项目入口；merchant 在 main 只有这一个 CfT 进程，参数不含 --headless=new"
+          - "release 后 human 租约解除，CfT 进程号不变，窗口与登录后的订单页仍然打开"
+          - "重跑的 run prepare 成功，没有启动新的浏览器进程：CfT 进程号与 release 前相同，仍是有界面窗口"
+          - "重跑的执行者直接看到订单页，没有出现登录页；shop#W 登记为通过并附截图"
+          - "工作台 shop#W 显示通过，历史中保留之前的受阻结果；attention list 中该待人处理已解决"
+        forbidden_effects:
+          - "browser release 结束浏览器进程，或关闭窗口、页面"
+          - "重跑重启浏览器、改成无头，或为 merchant 另起一个 CfT"
+          - "重跑时要求真人再次登录或验证"
+          - "重跑的执行者自行输入 merchant 的密码登录"
+          - "回退到用户日常 Chrome"
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
+        evidence_hints: ["工作台受阻与通过的截图", "attention list 前后输出", "各步骤的 ps 输出", "release 前后的 browser status", "重跑的订单页截图"]
       - id: BRW-03-N01
         polarity: negative
         negative_type: concurrency
-        title: 真人登录占用身份时，Web 运行直接返回 browser-busy
+        title: 真人占用身份尚未交还时，Web 运行直接返回 browser-busy
         actor: 执行会话
         priority: P1
         verify: cli
-        initial_state: ["已运行 browser open --identity merchant --headed，窗口仍开着"]
+        initial_state: ["已运行 browser open --identity merchant --headed，真人尚未运行 browser release，窗口仍开着"]
         steps: ["在 main 运行 sop-board run prepare --scope shop#W --session S1 --json"]
         expected:
           - "以业务失败退出（退出码 1），错误为 browser-busy"
@@ -176,7 +230,7 @@ sops:
     entry: "真实 Codex 或 Claude Code 会话中运行 sop-board serve 与 run prepare/submit"
     must:
       - "sop-board serve 可以在会话中启动，没有按 agent 标记的拒绝；浏览器仍只由守护进程启动，默认无头"
-      - "browser open --headed 只用于真人登录"
+      - "browser open --headed 只用于真人登录或验证"
       - "CfT 启动即中止时，运行把受影响场景记为受阻并写明信号与日志路径，不挂起，也不是什么都不显示"
     scenarios:
       - id: BRW-05-P01
@@ -220,3 +274,67 @@ sops:
         forbidden_effects: ["命令一直挂起或静默结束而没有任何记录", "shop#W 记为通过或失败", "回退到用户日常 Chrome"]
         refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 3 条"]
         evidence_hints: ["会话记录与命令耗时", "chrome.log 末尾", "提交结果", "工作台截图"]
+
+  - id: BRW-06
+    title: 执行会话直接登录声明的测试账号，只把真人才能完成的步骤交给人
+    actor: 执行会话
+    entry: "真实 Codex 或 Claude Code 会话中运行 run prepare/submit，经 PW_CDP_ENDPOINT 操作看板浏览器；sop-board identity record、identity status、attention add|list"
+    must:
+      - "项目验证手册或配置里声明的测试账号（含为验收注册的第三方账号与测试邮箱）声明即授权：会话在声明的测试环境与用途内直接登录、申请并读取测试邮箱中的验证码，受身份使用次数限制；不逐任务取得授权，不写授权记录"
+      - "测试环境在看板浏览器中触发的提示（本地网络访问、localhost 自签名证书警告等）由会话处理"
+      - "仍由人完成：真实或生产账号与未声明账号的登录、人机验证、只发到使用者本人设备（手机、身份验证器）的验证码；遇到 browser may not be secure 时停止"
+    scenarios:
+      - id: BRW-06-P01
+        polarity: positive
+        title: profile 未登录时，会话用声明的凭据变量直接登录 merchant，不索要授权、不写授权记录
+        actor: 执行会话
+        priority: P0
+        verify: agent
+        initial_state:
+          - "新生成的演示项目：app 手册与 config.yaml 把 merchant 声明为合成测试账号，web 入口的 credential_env 为 DEMO_MERCHANT_PASSWORD；看板守护进程与会话的环境中都设有该变量"
+          - "merchant 的 profile 没有演示项目的登录态；identity status 中 merchant 今日登录计数为 0（上限 2）；没有未解决的待人处理"
+          - "本任务没有任何授权记录，使用者没有在对话中提到账号或授权"
+        steps:
+          - "在 app 目录新开 Claude Code 会话，用自然语言请求“验收 shop#W 并提交结果”，不另外说明账号或授权"
+          - "会话运行 run prepare --scope shop#W，经 PW_CDP_ENDPOINT 执行并 run submit；使用者不主动给出任何授权说明"
+          - "运行 sop-board identity status --json 与 attention list，在工作台打开 shop#W；查看会话记录，列出会话写出或改动的文件"
+          - "在另一份新生成的演示项目中对 Codex 会话重复一次"
+        expected:
+          - "会话在登录前运行 identity record --identity merchant --kind login 并成功；identity status 中 merchant 的登录计数为 1"
+          - "会话在看板启动的 CfT 中用 merchant 与 DEMO_MERCHANT_PASSWORD 的取值完成登录，shop#W 登记为通过并附订单页截图"
+          - "会话记录中没有向使用者索要登录授权或确认的提问"
+          - "会话写出或改动的文件中没有授权记录"
+          - "attention list 中没有关于 merchant 登录的待人处理；工作台 shop#W 显示通过"
+          - "会话记录、运行目录、结果与证据中只出现变量名 DEMO_MERCHANT_PASSWORD，不出现密码取值"
+        forbidden_effects:
+          - "会话询问使用者是否授权登录，或在得到答复前停下不登录"
+          - "会话写出授权记录"
+          - "因账号登录登记待人处理、运行 browser open --headed 让使用者登录，或把 shop#W 记为受阻"
+          - "不经 identity record 就登录"
+          - "密码取值出现在会话记录、证据或日志中"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
+        evidence_hints: ["会话记录导出（凭据脱敏）", "identity status 与 attention list 输出", "会话写出或改动的文件清单", "订单页截图"]
+      - id: BRW-06-N01
+        polarity: negative
+        negative_type: permission
+        title: 账号未声明时，会话不自行登录，登记待人处理并把场景记为受阻
+        actor: 执行会话
+        priority: P0
+        verify: agent
+        initial_state:
+          - "替代做法（演示项目没有真实账号与人机验证，用未声明的账号代表只能由真人完成的登录，在记录中注明）：在新生成的演示项目中撤销 merchant 的测试账号声明——删去 app 手册 docs/operations/verification.md 与数据目录 skills/demo-verification/SKILL.md 中关于 merchant 账号和 DEMO_MERCHANT_PASSWORD 的说明，删去 config.yaml 中 web 入口的 credential_env；身份 merchant 仍保留为看板浏览器的 profile"
+          - "会话环境中仍设有 DEMO_MERCHANT_PASSWORD；merchant 的 profile 没有登录态，登录计数为 0；没有未解决的待人处理"
+        steps:
+          - "在 app 目录新开 Claude Code 会话，请求“验收 shop#W 并提交结果”"
+          - "会话按实际情况处理并提交；会话提问时只回答“按项目规则处理”"
+          - "运行 sop-board identity status --json 与 attention list，在工作台打开 shop#W；查看会话记录"
+        expected:
+          - "会话没有在 CfT 中登录 merchant，也没有运行 identity record --kind login；merchant 的登录计数仍为 0"
+          - "attention list 新增一条待人处理，写明 merchant 需要真人登录"
+          - "shop#W 记为受阻，finding 写明需要真人完成 merchant 登录；工作台 shop#W 显示受阻及原因"
+        forbidden_effects:
+          - "会话用环境变量、源码中的缺省值或其他途径取得的密码登录 merchant"
+          - "绕过登录页取得登录态，例如直接调用登录接口后把 cookie 写进看板浏览器"
+          - "shop#W 记为通过或失败"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
+        evidence_hints: ["替代做法的改动清单", "会话记录导出", "identity status 与 attention list 输出", "工作台截图"]
