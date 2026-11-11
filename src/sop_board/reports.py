@@ -1,4 +1,5 @@
 """检出的验收报告：Markdown 正文与所引证据的 zip。只含该检出的结果。"""
+import json
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from . import status
@@ -15,6 +16,10 @@ def _ratio(item):
     if not item['denominator']:
         return '—'
     return f"{item['numerator']}/{item['denominator']}（{item['value']:.0%}）"
+
+
+def _version(digest):
+    return digest[:16] if digest else '代码版本未记录'
 
 
 def _undecided(counts):
@@ -40,8 +45,7 @@ def build(context, *, file=None, local=True):
         for result in [r for group in rows.values() for r in group]:
             files_of[result['id']] = [dict(item) for item in db.execute(
                 'SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (result['id'],))]
-        guards = {(r['file'], r['scenario'], r['fingerprint']): dict(r) for r in db.execute(
-            "SELECT * FROM guard_runs WHERE checkout=? AND product_digest=? AND status='pass'", (checkout.id, snapshot['product_digest']))}
+        guards = status.guard_runs(db, checkout.id)
     title = f"# 验收报告：{project.name} · 检出 {checkout.name}" + (f" · 场景文件 {file}" if file else '')
     lines += [title, '', f"- 导出时间：{local_time(now())}",
               f"- 产品快照：{snapshot['product_digest'][:16]}（{'含未提交改动' if snapshot['dirty'] else '与提交一致'}）",
@@ -56,7 +60,7 @@ def build(context, *, file=None, local=True):
     lines += ['', f"- Agent 通过率：{_ratio(stats['agent_pass_rate'])}；一次通过率：{_ratio(stats['first_pass_rate'])}",
               f"- 人工复测覆盖：{_ratio(stats['manual_coverage'])}；人工复测通过率：{_ratio(stats['manual_pass_rate'])}",
               f"- Agent 独立通过的人工确认率：{_ratio(stats['agent_confirm_rate'])}；复核覆盖：{_ratio(stats['agent_review_coverage'])}"
-              + _undecided(stats['review_undecided']) + "（同一产品快照上人工复核过的 Agent 独立真实入口通过）",
+              + _undecided(stats['review_undecided']) + "（人工复核过的经真实入口 Agent 独立通过）",
               '- 独立性（各场景最新 Agent 结果）：' + ('，'.join(f"{status.INDEPENDENCE.get(k, k)} {v}"
                                                        for k, v in sorted(stats['independence'].items())) or '—'), '']
     lines += ['## 场景', '']
@@ -67,21 +71,26 @@ def build(context, *, file=None, local=True):
                   f"- 状态：**{info['label']}**" + (f"（{info['reason']}）" if info['reason'] else ''),
                   f"- 入口 {scene['verify']} · {scene['priority']} · {'正向' if scene['polarity'] == 'positive' else '反向'}"]
         guard = guards.get((scene['file'], scene['id'], scene['fingerprint']))
-        if info['state'] == 'guarded' and guard:
-            lines.append(f"- 守护通过：{local_time(guard['ran_at'])}，运行者 {guard['operator']}（守护测试，不是真实入口执行）")
+        if guard:
+            lines.append(f"- 最近一次守护运行：{'通过' if guard['status'] == 'pass' else '未通过'}，{local_time(guard['ran_at'])}，"
+                         f"快照 {_version(guard['product_digest'])}，运行者 {guard['operator']}"
+                         + (f"；{_cell(guard['reason'])}" if guard['reason'] else '') + "（守护测试，不是真实入口执行）")
         for result in history[:5]:
             if result['kind'] == 'manual':
                 lines.append(f"- 人工复测 {local_time(result['executed_at'])}：{status.MANUAL[result['status']]}，"
                              f"复测人 {result['marked_by'] or '未署名'}" + (f"，缺陷 {result['defect']}" if result['defect'] else '')
                              + (f"，说明 {result['note']}" if result['note'] else ''))
                 continue
-            label = '按影响判定保留通过' if result['reused_from'] else \
-                {'pass': '通过', 'fail': '失败', 'blocked': '受阻', 'skip': '跳过'}[result['status']]
+            label = {'pass': '通过', 'fail': '失败', 'blocked': '受阻', 'skip': '跳过'}[result['status']]
+            if result['reused_from']:
+                label += '（沿用早先结果的证据，未实际执行）'
             executor = result['executor'] if local else 'Agent 会话'
+            changed = json.loads(result['product_changed'] or '[]')
             lines.append(f"- 运行 #{result['work']} {local_time(result['executed_at'])}：{label}，"
-                         f"执行者 {executor}，{status.INDEPENDENCE.get(result['independence'], '独立性未声明')}"
-                         + (f"；{_cell(result['finding'])}" if result['finding'] else '')
-                         + (f"；理由：{_cell(result['note'])}" if result['reused_from'] and result['note'] else ''))
+                         f"执行者 {executor}，{status.INDEPENDENCE.get(result['independence'], '独立性未声明')}，"
+                         f"快照 {_version(result['product_digest'])}"
+                         + (f"（执行期间变化：{_cell('、'.join(changed[:5]))}）" if changed else '')
+                         + (f"；{_cell(result['finding'])}" if result['finding'] else ''))
             for item in files_of.get(result['id'], []):
                 path = f"evidence/{item['sha256'][:12]}-{item['name']}"
                 evidence.append((path, item['sha256']))

@@ -69,9 +69,11 @@ def history_entry(db, row, *, local):
     if row['kind'] == 'manual':
         item.update(label='人工复测' + status.MANUAL[row['status']], marked_by=row['marked_by'] or '未署名')
     else:
-        kept = bool(row['reused_from'])
-        item.update(label='按影响判定保留通过' if kept else status.LABELS.get(row['status'], row['status']), kept=kept,
-                    independence=INDEPENDENCE.get(row['independence'], '独立性未声明'), run=row['work'],
+        label = status.LABELS.get(row['status'], row['status'])
+        if row['reused_from']:
+            label += '（沿用早先结果的证据，未实际执行）'
+        item.update(label=label, independence=INDEPENDENCE.get(row['independence'], '独立性未声明'), run=row['work'],
+                    snapshot=row['product_digest'][:12] if row['product_digest'] else None,
                     product_changed=json.loads(row['product_changed']))
         work = db.execute('SELECT launch FROM work WHERE id=?', (row['work'],)).fetchone() if row['work'] else None
         item['launch'] = work['launch'] if work else None
@@ -99,6 +101,7 @@ def detail(app, request):
         history = [dict(history_entry(db, row, local=request.local), current=row['fingerprint'] == scene['fingerprint'])
                    for row in rows]
         guard_runs = [dict(status=r['status'], reason=r['reason'], ran_at=local_time(r['ran_at']), operator=r['operator'],
+                           snapshot=r['product_digest'][:12],
                            evidence=[dict(name=o['name'], url=f"/evidence/{o['sha256']}/{quote(o['name'])}", type='text/plain')
                                      for o in json.loads(r['output'])])
                       for r in db.execute('SELECT * FROM guard_runs WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? '

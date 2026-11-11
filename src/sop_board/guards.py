@@ -5,7 +5,6 @@
 没有登记过漏检。只覆盖部分预期的守护不写进索引。
 """
 import hashlib
-import json
 from pathlib import Path
 import re
 
@@ -235,17 +234,19 @@ def test_exclusions_for(project, checkout):
 
 
 def after_result(db, checkout, scene, verdict, result_id):
-    """真实入口或人工复测不通过、而该场景上一次是守护通过时，记一条漏检：该守护失效，直到重新沉淀。"""
+    """真实入口或人工复测不通过、而该场景同一指纹上最近一次守护运行是通过（其后没有更晚的通过）时，
+    记一条漏检：该守护失效，直到重新沉淀。最近一次守护运行未通过时，守护已经发现了问题，不算漏检。"""
+    from .status import instant
     if verdict != 'fail':
         return
-    run = db.execute("SELECT * FROM guard_runs WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? AND status='pass' "
+    run = db.execute('SELECT * FROM guard_runs WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? '
                      'ORDER BY id DESC LIMIT 1', (checkout.id, scene['file'], scene['id'], scene['fingerprint'])).fetchone()
-    if run is None:
+    if run is None or run['status'] != 'pass':
         return
     passed = db.execute("SELECT executed_at FROM results WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? "
                         "AND status='pass' AND id<>? ORDER BY id DESC LIMIT 1",
                         (checkout.id, scene['file'], scene['id'], scene['fingerprint'], result_id)).fetchone()
-    if passed and passed['executed_at'] > run['ran_at']:
+    if passed and instant(passed['executed_at']) > instant(run['ran_at']):
         return
     db.execute('INSERT OR IGNORE INTO guard_misses(file,scenario,fingerprint,tests_digest,result,recorded_at) VALUES (?,?,?,?,?,?)',
                (scene['file'], scene['id'], scene['fingerprint'], run['tests_digest'], result_id, now()))
@@ -413,7 +414,8 @@ def record_runs(store, checkout, scenes, index, verdicts, digest, operator):
 
 
 def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
-    """产品变化后运行有效守护：全部通过记为守护通过，其余留在待复测并附原因。"""
+    """运行有效守护发现代码回归：缺省取全部非草稿场景，只运行守护有效的。
+    每个场景记一条守护运行；通过不改变状态，未通过的场景转为待复测（见 status.derive）。"""
     from .cli import Context, scene_board
     context = Context(app.project, app.store, checkout)
     found, snapshot, derived = scene_board(context)
@@ -423,7 +425,7 @@ def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
         from .scenarios import resolve
         keys = resolve(scenarios_, scenes)
     else:
-        keys = [k for k, v in derived['items'].items() if v['state'] == 'retest']
+        keys = sorted(k for k, v in derived['items'].items() if v['state'] != 'draft')
     runnable = [k for k in keys if derived['items'][k]['guard']['valid']]
     skipped = {k: derived['items'][k]['guard']['reason'] for k in keys if k not in runnable}
     plan = {}
@@ -439,9 +441,10 @@ def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
         return result
     verdicts, digest = run_guards(app, checkout, index, runnable, holder=f'retest:{checkout.name}')
     record_runs(app.store, checkout, scenes, index, verdicts, digest, operator)
-    result['results'] = {k: dict(status='守护通过' if ok else '守护未通过', reason=reason) for k, (ok, reason, _) in verdicts.items()}
+    result['results'] = {k: dict(status='pass' if ok else 'fail', label='守护运行通过' if ok else '守护运行未通过，转为待复测',
+                                 reason=reason) for k, (ok, reason, _) in verdicts.items()}
     passed = sum(1 for ok, _, _ in verdicts.values() if ok)
-    result['summary'] = f'守护通过 {passed}，未通过 {len(verdicts) - passed}，没有有效守护 {len(skipped)}'
+    result['summary'] = f'守护运行通过 {passed}，未通过 {len(verdicts) - passed}（转为待复测），没有有效守护 {len(skipped)}'
     return result
 
 
@@ -500,8 +503,7 @@ def distill_prepare(context, scope, *, session):
     (directory / 'repos.json').write_text(dumps({a: str(p) for a, p in context.checkout.paths.items()}), encoding='utf-8')
     skill = Path(__file__).parent / 'skills' / 'regression-distill' / 'SKILL.md'
     prompt = Template(files('sop_board').joinpath('prompts', 'distill.md').read_text(encoding='utf-8')).substitute(
-        work=work_id, directory=directory, skill=skill, index=index_path(context), checkout=context.checkout.name,
-        exclude=json.dumps({a: [str(p) for p in ps] for a, ps in context.project.snapshot_exclude.items()}, ensure_ascii=False))
+        work=work_id, directory=directory, skill=skill, index=index_path(context), checkout=context.checkout.name)
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
     with context.store.transaction() as db:
         db.execute('UPDATE work SET dir=? WHERE id=?', (str(directory), work_id))

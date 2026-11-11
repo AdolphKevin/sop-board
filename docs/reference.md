@@ -234,6 +234,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | `evidence` | `evidence/` 下的相对路径数组，普通文件，单个不超过 64 MiB；实际执行的 pass/fail 至少一份 |
 | `finding` | blocked、skip、not-executed 必填 |
 | `note` | 可选说明 |
+| `executor`、`session` | `playwright convert` 写入的执行者信息，只作留痕；登记以运行准备时的执行者为准 |
 
 `not-executed` 行写 finding、不附证据，不登记结果，场景留在待执行。独立复验（`--fix`）不接受 `not-executed`。表外字段不合格。
 

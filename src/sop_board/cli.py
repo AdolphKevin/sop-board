@@ -30,7 +30,7 @@ GROUPS = {
              'serve': '在终端启动看板守护进程（网页、环境、浏览器、无头会话）', 'status': '查看场景状态与待处理事项'},
     '检出': {'checkout': '列出、查看、建立或移除 main 与 worktree 检出'},
     '执行': {'env': '按检出启停产品环境', 'browser': '安装与管理 Chrome for Testing',
-             'run': '准备、提交、启动执行会话', 'retest': '产品变化后运行守护测试', 'mark': '登记人工复测结论',
+             'run': '准备、提交、启动执行会话', 'retest': '运行守护测试发现代码回归', 'mark': '登记人工复测结论',
              'launch': '查看或停止本机无头会话'},
     '修复与沉淀': {'fix': '修复、独立复验与关闭', 'distill': '把独立通过的场景沉淀为守护测试'},
     '编写': {'inbox': '处理测试同学上传的用例与 SOP', 'merge': '合并用例到场景文件', 'ask': '向测试同学提问',
@@ -92,7 +92,7 @@ def scene_board(context):
     validity = guards.validity(context, found['scenarios'])
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)))
     with context.store.connection() as db:
-        derived = status.board(db, checkout.id, found['scenarios'], snapshot['product_digest'], guard_validity=validity)
+        derived = status.board(db, checkout.id, found['scenarios'], guard_validity=validity)
     return found, snapshot, derived
 
 

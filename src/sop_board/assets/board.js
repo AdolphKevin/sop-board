@@ -181,7 +181,7 @@
   // ---- 工作台 ----
 
   const LABELS = {'retest': '待复测', 'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'distill': '待沉淀', 'review': '待人工复核',
-    'not-run': '未执行', 'pass': '通过', 'guarded': '守护通过', 'skip': '跳过', 'draft': '草稿'};
+    'not-run': '未执行', 'pass': '通过', 'skip': '跳过', 'draft': '草稿'};
   const VERDICTS = [['pass', '通过'], ['fail', '不通过'], ['blocked', '阻塞'], ['changed', '需求变更']];
   const BADGES = ['review', 'distill'];
   const board = {data: null, signature: '', filter: null, search: '', selected: null};
@@ -320,21 +320,20 @@
 
   function stateOf(entry) {
     if (entry.kind === 'manual') return {pass: 'pass', fail: 'fail', blocked: 'blocked', changed: 'changed'}[entry.status];
-    if (entry.kept) return 'pass';
     return entry.status;
   }
 
   function historyItem(entry) {
     const who = entry.kind === 'manual' ? `复测人 ${entry.marked_by}` :
       [entry.independence, entry.run ? `运行 #${entry.run}` : null, entry.launch ? `启动 #${entry.launch}` : null,
-        entry.executor ? `执行者 ${entry.executor}` : null].filter(Boolean).join(' · ');
+        entry.executor ? `执行者 ${entry.executor}` : null, entry.snapshot ? `快照 ${entry.snapshot}` : null].filter(Boolean).join(' · ');
     return el('li', {class: 'event'},
       el('div', {class: 'event-head'}, pill(stateOf(entry), entry.label), el('span', {class: 'muted'}, entry.executed_at),
         el('span', {class: 'muted'}, who), entry.current ? null : el('span', {class: 'tag old'}, '旧内容')),
       entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
-      entry.note ? el('p', {class: 'note'}, (entry.kept ? '理由：' : '说明：') + entry.note) : null,
+      entry.note ? el('p', {class: 'note'}, '说明：' + entry.note) : null,
       entry.defect ? el('p', {}, '缺陷：', /^https?:/.test(entry.defect) ? el('a', {href: entry.defect, target: '_blank', rel: 'noopener'}, entry.defect) : entry.defect) : null,
-      entry.product_changed?.length ? el('p', {class: 'muted'}, '执行期间产品变化：' + entry.product_changed.slice(0, 5).join('、')) : null,
+      entry.product_changed?.length ? el('p', {class: 'muted'}, '执行期间产品变化（只作版本记录）：' + entry.product_changed.slice(0, 5).join('、')) : null,
       entry.evidence?.length ? el('details', {class: 'event-evidence'}, el('summary', {}, `证据 ${entry.evidence.length} 份`), gallery(entry.evidence)) : null);
   }
 
@@ -445,8 +444,8 @@
       el('details', {class: 'block history'}, el('summary', {}, el('h3', {}, '历史'), el('span', {class: 'muted'}, `${data.history.length} 条，当前内容 ${current.length} 条`)),
         data.history.length ? el('ul', {class: 'timeline'}, data.history.map(historyItem)) : el('p', {class: 'muted'}, '没有记录'),
         data.guard_runs.length ? el('div', {}, el('h4', {}, '守护运行'), el('ul', {class: 'timeline'}, data.guard_runs.map(run =>
-          el('li', {class: 'event'}, el('div', {class: 'event-head'}, pill(run.status === 'pass' ? 'guarded' : 'fail', run.status === 'pass' ? '守护通过' : '守护未通过'),
-            el('span', {class: 'muted'}, run.ran_at), el('span', {class: 'muted'}, run.operator)), run.reason ? el('p', {}, run.reason) : null)))) : null));
+          el('li', {class: 'event'}, el('div', {class: 'event-head'}, pill(run.status === 'pass' ? 'pass' : 'fail', run.status === 'pass' ? '守护运行通过' : '守护运行未通过'),
+            el('span', {class: 'muted'}, run.ran_at), el('span', {class: 'muted'}, `${run.operator} · 快照 ${run.snapshot}`)), run.reason ? el('p', {}, run.reason) : null)))) : null));
     const side = el('aside', {class: 'side'}, scene.draft ? annotationCard(data) : markCard(data), localCard(data));
     pane.replaceChildren(el('div', {class: 'detail-grid'}, main, side));
     pane.scrollTop = keep ? top : 0;
@@ -464,9 +463,9 @@
     const urgent = Object.entries(items).filter(([, item]) => ['retest', 'fail', 'blocked', 'changed'].includes(item.state));
     pane.replaceChildren(el('div', {class: 'overview'},
       el('div', {}, el('h1', {}, `检出 ${board.data.checkout} · ${total} 条场景`),
-        el('p', {class: 'muted'}, board.data.product.dirty ? '产品有未提交改动；结果按当前内容快照记录。' : '从左侧选择场景查看四要素、证据并复测。')),
+        el('p', {class: 'muted'}, '从左侧选择场景查看四要素、证据并复测。代码改动不改变场景状态，结果记下取证时的快照。')),
       el('div', {class: 'tiles'}, [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['changed', '需求变更'],
-        ['not-run', '未执行'], ['pass', '通过'], ['guarded', '守护通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
+        ['not-run', '未执行'], ['pass', '通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
       el('p', {class: 'muted metrics'}, `Agent 独立通过的人工确认率 ${ratio(board.data.stats.agent_confirm_rate)} · 复核覆盖 ${ratio(board.data.stats.agent_review_coverage)}`),
       el('section', {class: 'block'}, el('h3', {}, `需要处理（${urgent.length}）`),
         urgent.length ? el('ul', {class: 'todo'}, urgent.map(([key, item]) => el('li', {},

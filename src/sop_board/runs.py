@@ -1,7 +1,7 @@
 """运行：会话经 CLI 准备与提交场景执行；人工复测标注。
 
-一次运行绑定一个检出、准备时的产品快照与执行者。结果按 检出 + 场景指纹 + 快照 登记；
-运行中途内容变化的场景只作废这些场景；执行期间产品文件变化的路径记在结果上。
+一次运行绑定一个检出、准备时的产品快照与执行者。结果按 检出 + 场景指纹 登记，并记下准备时的快照；
+运行中途内容变化的场景只作废这些场景；执行期间产品文件变化的路径记在结果上，只作版本记录。
 """
 from datetime import datetime, timedelta, timezone
 from importlib.resources import files
@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 from string import Template
 import shutil
-import subprocess
 
 import yaml
 
@@ -20,8 +19,9 @@ from .entries import identities as entry_identities, web_evidence
 from .errors import APIError, reject
 from .store import dumps, now
 
-REASONS = {'new': '未执行', 'source-changed': '产品变化待判定', 'failed': '上次不通过', 'rerun': '须实际执行'}
-PENDING_STATES = {'not-run': 'new', 'retest': 'source-changed', 'fail': 'failed', 'blocked': 'failed', 'skip': 'failed'}
+REASONS = {'new': '未执行', 'guard-failed': '守护未通过', 'failed': '上次不通过', 'rerun': '须实际执行'}
+PENDING_STATES = {'not-run': 'new', 'retest': 'guard-failed', 'fail': 'failed', 'blocked': 'failed', 'skip': 'failed'}
+RESULT_FIELDS = {'scenario', 'status', 'actual', 'executed_at', 'evidence', 'finding', 'note', 'executor', 'session'}
 
 
 def session_id(explicit):
@@ -59,10 +59,7 @@ def scope_for(context, scenes, derived, requested, fix=None):
             if requested == ['all']:
                 result.append(dict(scenario=key, reason='rerun'))
             elif info['state'] in PENDING_STATES:
-                reason = PENDING_STATES[info['state']]
-                if info['state'] == 'retest' and info['reason'].startswith('修复已关闭'):
-                    reason = 'rerun'
-                result.append(dict(scenario=key, reason=reason))
+                result.append(dict(scenario=key, reason=pending_reason(info)))
         return result
     try:
         keys = scenarios.resolve(requested, scenes)
@@ -71,50 +68,14 @@ def scope_for(context, scenes, derived, requested, fix=None):
     drafts = [k for k in keys if items[k]['state'] == 'draft']
     if drafts:
         reject(409, 'draft-not-runnable', 'scope', '草稿场景确认后才能执行：' + '、'.join(drafts))
-    result = []
-    for key in keys:
-        info = items[key]
-        reason = PENDING_STATES.get(info['state'], 'rerun')
-        if info['state'] == 'retest' and info['reason'].startswith('修复已关闭'):
-            reason = 'rerun'
-        result.append(dict(scenario=key, reason=reason))
-    return result
+    return [dict(scenario=key, reason=pending_reason(items[key])) for key in keys]
 
 
-def previous_pass(db, checkout_id, scene):
-    """同一指纹上最近的通过结果（影响判定与保留通过的依据）。"""
-    row = db.execute("SELECT * FROM results WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? AND kind='agent' "
-                     "AND status='pass' ORDER BY id DESC LIMIT 1",
-                     (checkout_id, scene['file'], scene['id'], scene['fingerprint'])).fetchone()
-    if row is None:
-        return None
-    evidence = [dict(name=e['name'], sha256=e['sha256']) for e in
-                db.execute('SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (row['id'],))]
-    work = db.execute('SELECT snapshot FROM work WHERE id=?', (row['work'],)).fetchone() if row['work'] else None
-    commits = {alias: info.get('commit') for alias, info in json.loads(work['snapshot']).get('repos', {}).items()} if work else {}
-    return dict(result=row['id'], executed_at=row['executed_at'], product_digest=row['product_digest'],
-                product_changed=json.loads(row['product_changed']), note=row['note'], evidence=evidence, commits=commits)
-
-
-def changes_since(checkout, previous, snapshot):
-    """每个仓库自上次通过时提交以来的改动（含当前未提交改动）。"""
-    commits = {}
-    for item in previous.values():
-        for alias, commit in item['commits'].items():
-            if commit:
-                commits.setdefault(alias, set()).add(commit)
-    result = {}
-    for alias, root in checkout.paths.items():
-        entry = dict(current=snapshot['repos'][alias]['commit'], previous=[],
-                     uncommitted=[p[len(alias) + 1:] for p in snapshot['changed'] if p.startswith(alias + '/')])
-        for commit in sorted(commits.get(alias, ())):
-            try:
-                diff = os.fsdecode(gitops.git(root, 'diff', '--name-status', commit, '--'))
-            except subprocess.SubprocessError:
-                diff = '旧提交不可读取，不能仅据此判定不受影响'
-            entry['previous'].append(dict(commit=commit, files=diff))
-        result[alias] = entry
-    return result
+def pending_reason(info):
+    """状态 → 本轮原因；修复关闭导致的待复测须实际执行（rerun）。"""
+    if info.get('cause') == 'fix-closed':
+        return 'rerun'
+    return PENDING_STATES.get(info['state'], 'rerun')
 
 
 def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared):
@@ -199,7 +160,7 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
         db.execute('UPDATE work SET dir=?, snapshot=?, product_digest=? WHERE id=?',
                    (str(directory), dumps(product), snapshot['product_digest'], work_id))
     return dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
-                outputs=dict(results=str(directory / 'results.jsonl'), impact=str(directory / 'impact.json')),
+                outputs=dict(results=str(directory / 'results.jsonl')),
                 session=executor, scope=scope, browser_problems=browser_problems,
                 environment=dict(state=environment['state'], address_env=environment.get('address_env', {})))
 
@@ -219,11 +180,6 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     (directory / 'repos.json').write_text(dumps({alias: str(path) for alias, path in checkout.paths.items()}), encoding='utf-8')
     (directory / 'snapshot.json').write_text(dumps({k: v for k, v in snapshot.items() if k != 'files'}), encoding='utf-8')
     (directory / 'product-files.json').write_text(dumps(snapshot['files']), encoding='utf-8')
-    with context.store.connection() as db:
-        previous = {item['key']: previous_pass(db, checkout.id, item) for item in selected if item['reason'] == 'source-changed'}
-    previous = {k: v for k, v in previous.items() if v}
-    (directory / 'previous-results.json').write_text(dumps(previous), encoding='utf-8')
-    (directory / 'changes.json').write_text(dumps(changes_since(checkout, previous, snapshot)), encoding='utf-8')
     web = [scene for scene in selected if web_entry(entries[scene['verify']])]
     env_lines = {**addresses}
     runtime = None
@@ -335,7 +291,10 @@ def read_results(directory, scope, scenes, *, partial):
     return rows
 
 
-def validate_row(directory, key, row, reason, previous, impact):
+def validate_row(directory, key, row):
+    extra = sorted(set(row) - RESULT_FIELDS)
+    if extra:
+        raise ValueError(f'{key} 的结果行有表外字段：' + '、'.join(extra) + '；每条场景都须实际执行，不能保留旧通过')
     status_ = row.get('status')
     if status_ == 'not-executed':
         if not isinstance(row.get('finding'), str) or not row['finding'].strip() or row.get('evidence'):
@@ -353,16 +312,6 @@ def validate_row(directory, key, row, reason, previous, impact):
         raise ValueError(f'{key} 的 executed_at 须为带时区的实际执行时间') from None
     if status_ in ('blocked', 'skip') and not (isinstance(row.get('finding'), str) and row['finding'].strip()):
         raise ValueError(f'{key} 为 {status_} 时须写 finding')
-    kept = row.get('kept', False)
-    if type(kept) is not bool:
-        raise ValueError(f'{key} 的 kept 须为布尔值')
-    if kept:
-        if reason != 'source-changed' or previous is None or status_ != 'pass':
-            raise ValueError(f'{key} 不符合按影响判定保留通过的条件：只有产品变化待判定、且同一内容此前通过的场景可以保留')
-        if not isinstance(row.get('note'), str) or len(row['note'].strip()) < 4:
-            raise ValueError(f'{key} 保留通过须在 note 写明改动范围、依赖关系与不受影响的理由')
-    if key in impact and impact[key] == kept:
-        raise ValueError(f'{key} 的 impact.json 判定与结果不一致：' + ('判定受影响，必须实际执行' if impact[key] else '判定不受影响，必须保留通过'))
     evidence = row.get('evidence', [])
     if not isinstance(evidence, list):
         raise ValueError(f'{key} 的 evidence 应为路径数组')
@@ -375,30 +324,8 @@ def validate_row(directory, key, row, reason, previous, impact):
             raise ValueError(f'{key} 的证据文件不存在或越界：{name}')
         if path.stat().st_size > 64 * 1024 * 1024:
             raise ValueError(f'{key} 的证据超过 64 MiB：{name}')
-    if status_ in ('pass', 'fail') and not kept and not evidence:
+    if status_ in ('pass', 'fail') and not evidence:
         raise ValueError(f'{key} 实际执行的 pass、fail 至少要有一份真实证据')
-
-
-def read_impact(directory, changed):
-    if not changed:
-        return {}
-    path = directory / 'impact.json'
-    if not path.is_file() or path.is_symlink():
-        raise ValueError('、'.join(sorted(changed)) + ' 缺少 impact.json 影响判定')
-    decisions = _strict_json(path.read_text(encoding='utf-8'))
-    if not isinstance(decisions, list):
-        raise ValueError('impact.json 应为数组')
-    impact = {}
-    for item in decisions:
-        if not isinstance(item, dict) or item.get('scenario') not in changed or item['scenario'] in impact:
-            raise ValueError(f'impact.json 场景重复或不在待判定范围内：{item.get("scenario") if isinstance(item, dict) else item}')
-        if type(item.get('affected')) is not bool or not isinstance(item.get('reason'), str) or not item['reason'].strip():
-            raise ValueError(f"{item['scenario']} 的 impact.json 须有布尔值 affected 与非空 reason")
-        impact[item['scenario']] = item['affected']
-    missing = changed - impact.keys()
-    if missing:
-        raise ValueError('、'.join(sorted(missing)) + ' 缺少 impact.json 影响判定')
-    return impact
 
 
 def submit(context, run_id, *, implementer=None):
@@ -413,13 +340,10 @@ def submit(context, run_id, *, implementer=None):
     directory = Path(work['dir'])
     scope = {item['scenario']: item['reason'] for item in json.loads(work['scope'])}
     prepared = {item['key']: item for item in yaml.safe_load((directory / 'scenarios.yaml').read_text(encoding='utf-8'))}
-    previous = json.loads((directory / 'previous-results.json').read_text(encoding='utf-8'))
     fixing = work['fix'] is not None
     rows = read_results(directory, scope, prepared, partial=not fixing)
-    changed = {key for key, reason in scope.items() if reason == 'source-changed' and key in previous}
     current = scenarios.scan(checkout.scenarios_dir(project), set(project.entries))['scenarios']
     voided = sorted(key for key in scope if key not in current or current[key]['fingerprint'] != prepared[key]['fingerprint'])
-    impact = read_impact(directory, changed - set(voided))
     crashed = crash_findings(context, work, prepared)
     not_executed, recorded = [], []
     for key in scope:
@@ -435,9 +359,7 @@ def submit(context, run_id, *, implementer=None):
             raise ValueError(f'{key} 缺少结果行')
         if row.get('status') == 'not-executed' and fixing:
             raise ValueError(f'{key}：独立复验须完整执行，不接受未执行标记')
-        if row.get('kept') and scope[key] == 'rerun':
-            raise ValueError(f'{key} 须实际执行并保存新证据，不能保留旧通过')
-        validate_row(directory, key, row, scope[key], previous.get(key), impact)
+        validate_row(directory, key, row)
     before = json.loads((directory / 'product-files.json').read_text(encoding='utf-8'))
     after = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)['files']
     product_changed = gitops.changed_between(before, after)
@@ -452,21 +374,18 @@ def submit(context, run_id, *, implementer=None):
                 not_executed.append(dict(scenario=key, finding=row['finding']))
                 continue
             scene = prepared[key]
-            reused = previous[key]['result'] if row.get('kept') else None
             cursor = db.execute(
                 'INSERT INTO results(work,checkout,file,scenario,fingerprint,product_digest,product_changed,kind,status,actual,'
-                'finding,note,reused_from,executor,implementer,independence,executed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                'finding,note,executor,implementer,independence,executed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (run_id, checkout.id, scene['file'], scene['id'], scene['fingerprint'], work['product_digest'],
                  dumps(product_changed), 'agent', row['status'], row['actual'], row.get('finding'), row.get('note'),
-                 reused, executor, implementer, independence, row['executed_at']))
+                 executor, implementer, independence, row['executed_at']))
             result_id = cursor.lastrowid
             evidence = [(Path(name).name, (directory / name).read_bytes()) for name in row.get('evidence', [])]
-            if reused:
-                evidence = [(e['name'], store.read_evidence(e['sha256'])) for e in previous[key]['evidence']] + evidence
             for ordinal, (name, raw) in enumerate(evidence):
                 sha = store.save_evidence(db, raw, name)
                 db.execute('INSERT INTO result_evidence VALUES (?,?,?,?)', (result_id, ordinal, name, sha))
-            recorded.append(dict(scenario=key, status=row['status'], result=result_id, kept=bool(reused)))
+            recorded.append(dict(scenario=key, status=row['status'], result=result_id))
             guards.after_result(db, checkout, scene, row['status'], result_id)
         summary = dict(recorded=recorded, voided=voided, not_executed=not_executed, product_changed=product_changed,
                        browser_crashes=sorted(crashed), independence=independence)

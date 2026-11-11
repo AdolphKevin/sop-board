@@ -153,7 +153,7 @@ def after_verify(db, work, recorded):
     if fix is None or fix['status'] not in ('submitted', 'verified'):
         return
     problems = {scenarios.key(p['file'], p['scenario']) for p in loads(fix['problems'])}
-    passed = {item['scenario'] for item in recorded if item['status'] == 'pass' and not item['kept']}
+    passed = {item['scenario'] for item in recorded if item['status'] == 'pass'}
     independent = work['session'] != fix['session']
     if problems <= passed and independent:
         files = json.loads((Path(work['dir']) / 'product-files.json').read_text(encoding='utf-8'))

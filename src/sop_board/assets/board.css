@@ -89,7 +89,7 @@ input[type=file] { font: inherit; font-size: 13px; }
 .dot.hollow { background: none; border: 1.5px solid var(--faint); }
 .pass { --c: var(--pass); --b: var(--pass-bg); } .fail { --c: var(--fail); --b: var(--fail-bg); }
 .blocked { --c: var(--blocked); --b: var(--blocked-bg); } .changed { --c: var(--changed); --b: var(--changed-bg); }
-.retest { --c: var(--retest); --b: var(--retest-bg); } .guarded { --c: var(--guarded); --b: var(--guarded-bg); }
+.retest { --c: var(--retest); --b: var(--retest-bg); }
 .not-run { --c: var(--notrun); --b: var(--notrun-bg); } .draft { --c: var(--draft); --b: var(--draft-bg); }
 .skip { --c: var(--skip); --b: var(--skip-bg); } .distill { --c: var(--draft); --b: var(--draft-bg); }
 .review { --c: var(--accent); --b: var(--accent-soft); }
