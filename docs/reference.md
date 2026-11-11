@@ -11,9 +11,9 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 | 场景文件 | 产品仓库 `scenarios.path` 下的 `*.yaml`，是场景的唯一真相。看板从检出目录现读（按 mtime 与大小缓存），从不回写 | 产品仓库 |
 | 场景键 | `<文件名去掉 .yaml>#<场景编号>`。场景编号在全部文件中唯一时，命令可只写编号 | 计算得出 |
 | 指纹 | `initial_state`、`steps`、`expected`、`forbidden_effects` 四要素的 sha256（换行统一为 `\n`）。改标题、优先级等不改变指纹 | 计算得出 |
-| 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
+| 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要，记录取证时的代码版本，不参与状态判定。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
 | 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者 | `work` 表（kind=run）+ `runs/<编号>/` |
-| 结果 | 运行中某场景的结论与证据，绑定 指纹 + 快照；证据按 sha256 存储。从旧看板导入的结果 `product_digest` 为空，不绑定快照 | `results`（kind=agent）、`evidence/` |
+| 结果 | 运行中某场景的结论与证据，绑定指纹，记录准备时的快照；证据按 sha256 存储。从旧看板导入的结果 `product_digest` 为空，即代码版本未记录 | `results`（kind=agent）、`evidence/` |
 | 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人） | `results`（kind=manual） |
 | 守护 | 场景到低成本测试的关联，绑定场景指纹与测试文件摘要 | 产品仓库 `<scenarios.path>/regression.yaml` |
 | 守护运行 | 一次在某快照上运行守护命令的结果 | `guard_runs` 表 + 输出证据 |
@@ -21,23 +21,24 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 
 ### 场景状态
 
-状态按检出推导，不存储。只看当前指纹的结果，从新到旧。
+状态按检出推导，不存储。只看当前指纹的结果，从新到旧。哪些场景需要执行由场景内容（指纹）决定，代码改动不改变状态。
 
 | 状态 | 键 | 条件 |
 | --- | --- | --- |
 | 草稿 | `draft` | 文件 `metadata.status: draft`；不进入执行与复测 |
 | 未执行 | `not-run` | 当前指纹没有结果 |
-| 通过 | `pass` | 最新结果为通过，其快照等于当前快照，且执行期间产品没有变化（含按影响判定保留的通过）；或最新结果是不绑定快照的导入通过（`product_digest` 为空），产品变化后仍为通过，原因写“导入的历史结果，不绑定产品快照” |
-| 守护通过 | `guarded` | 最新结果为通过但快照已变化；守护有效，且当前快照上最近一次守护运行通过 |
-| 待复测 | `retest` | 通过发生在旧快照或执行期间产品有变化，且没有守护通过；或最新为失败/受阻、之后修复已关闭；或人工不通过后修复已关闭、尚无新的人工通过 |
+| 通过 | `pass` | 最新结果为通过，且没有更晚的未通过守护运行 |
+| 待复测 | `retest` | 当前指纹最近一次守护运行未通过，且晚于最新结果的执行时间；或最新为失败/受阻、之后修复已关闭；或人工不通过后修复已关闭、尚无新的人工通过 |
 | 失败 / 受阻 / 跳过 | `fail` / `blocked` / `skip` | 最新结果如此；人工标注不通过按失败、阻塞按受阻显示 |
 | 需求变更 | `changed` | 最新结果是人工标注的需求变更；场景文件按新需求修改后指纹变化，回到未执行 |
 
-**待沉淀**是徽标，可与其他状态并存：非草稿，同一指纹上有独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化），且没有有效守护。
+**经真实入口的 Agent 独立通过**指 kind=agent、`independent`、`reused_from` 为空的通过。执行期间产品有变化的通过也算，变化的路径只作版本记录。
 
-**待人工复核**也是徽标，可与待沉淀并存：状态为通过，且当前指纹最新一条结果是 Agent 独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化）。之后有任一人工标注即消失；产品变化使状态离开通过时也消失。
+**待沉淀**是徽标，可与其他状态并存：非草稿，同一指纹上有经真实入口的 Agent 独立通过，且没有有效守护。
 
-待复测的原因写在状态旁，例如“产品已变化，守护未覆盖”“产品已变化，守护无效：<原因>”“守护测试未通过：<原因>”“执行期间产品有变化（…）”“修复已关闭，等待复测”。
+**待人工复核**也是徽标，可与待沉淀并存：状态为通过，且当前指纹最新一条结果是经真实入口的 Agent 独立通过。之后有任一人工标注即消失。
+
+待复测的原因写在状态旁，例如“守护测试未通过：<原因>”“修复已关闭，等待复测”“修复已关闭，等待测试同学复测”。
 
 ## 2. 安装与搭建
 
@@ -200,7 +201,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 | `--scope` | 包含 | 原因 |
 | --- | --- | --- |
-| `pending`（缺省） | 未执行、待复测、失败、受阻、跳过的非草稿场景 | 未执行 `new`；待复测 `source-changed`（修复关闭导致的为 `rerun`）；失败/受阻/跳过 `failed` |
+| `pending`（缺省） | 未执行、待复测、失败、受阻、跳过的非草稿场景 | 未执行 `new`；守护未通过导致的待复测 `guard-failed`，修复关闭导致的为 `rerun`；失败/受阻/跳过 `failed` |
 | `all` | 全部非草稿场景 | `rerun` |
 | 键或编号 | 指定场景；含草稿则 `draft-not-runnable` | 同 pending 的映射，其余 `rerun` |
 | `--fix N` | 修复的问题场景 | `rerun` |
@@ -209,18 +210,17 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 | 文件 | 内容 |
 | --- | --- |
-| `prompt.md` | 执行提示词（随包 `run.md`，修复复验附“逐条实际执行，不能保留旧通过”） |
+| `prompt.md` | 执行提示词（随包 `run.md`，修复复验附“逐条实际执行问题场景”） |
 | `brief.md` | 速查卡：范围计数、入口证据与录制开关、浏览器问题、前置数据规则、时间上限 |
 | `scenarios.yaml`、`pending.json` | 本轮场景（带 key、reason）与范围 |
 | `entries.json`、`repos.json` | 用到的入口与地址；检出仓库路径 |
 | `snapshot.json`、`product-files.json` | 准备时的快照与逐文件清单 |
-| `previous-results.json`、`changes.json` | `source-changed` 场景上次通过的结果、证据与提交；各仓自那次提交以来的改动与当前未提交改动 |
 | `run.env` | 入口地址变量、`SOP_BOARD_RUN`、`SOP_BOARD_CHECKOUT`；有 Web 场景时另有 `PW_CDP_ENDPOINT`（default 身份或第一个身份）、`PW_IDENTITIES`、`PW_SCOPE`、`PW_SCENARIO_FILE`、`PW_OUT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT` |
 | `scope.json`、`identities.json`、`node_modules`（链接到运行时） | 仅 Web：Playwright 范围；各身份及其 CDP endpoint |
 | `evidence/` | 证据放这里 |
 | `fixtures/` | `fixtures run/exec --run N` 的留痕 |
 
-会话写出 `results.jsonl` 与（需要时）`impact.json` 后提交。
+会话写出 `results.jsonl` 后提交。
 
 ### results.jsonl
 
@@ -233,14 +233,9 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | `executed_at` | 带时区的 ISO 8601，不能晚于现在 5 分钟 |
 | `evidence` | `evidence/` 下的相对路径数组，普通文件，单个不超过 64 MiB；实际执行的 pass/fail 至少一份 |
 | `finding` | blocked、skip、not-executed 必填 |
-| `kept` | 布尔。为 true 表示按影响判定保留通过：只用于 `source-changed`、同指纹此前有通过、`status: pass`，`note` 写明改动范围、依赖与不受影响的理由（至少 4 字）；证据可空，看板复制原证据并记 `reused_from` |
 | `note` | 可选说明 |
 
-`not-executed` 行写 finding、不附证据，不登记结果，场景留在待执行。独立复验（`--fix`）不接受 `not-executed`；`rerun` 场景不能 `kept`。
-
-### impact.json
-
-本轮有 `source-changed` 且有上次通过的场景时必填：数组，恰好覆盖这些场景（已作废的除外），每项 `{"scenario", "affected": bool, "reason": 非空}`。`affected: false` 必须对应 `kept: true`，`true` 必须实际执行。
+`not-executed` 行写 finding、不附证据，不登记结果，场景留在待执行。独立复验（`--fix`）不接受 `not-executed`。表外字段不合格。
 
 ### 提交规则
 
@@ -250,10 +245,10 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 2. **作废**：准备后场景被删除或指纹变化的，只作废这些场景（`voided`），不登记。
 3. **浏览器崩溃**：租约期间该运行持有的身份浏览器异常退出时，用到该身份的 Web 场景若没有 pass 行，记为 `blocked`，finding 为“浏览器进程 <时间> 因 <信号或退出码> 退出，日志 <路径>[，崩溃报告 <路径>]”。
 4. 其余场景逐行校验（缺行即失败）。
-5. **product_changed**：比较准备时与提交时的逐文件清单，执行期间变化的路径记在每条结果上；有变化的通过显示为待复测，也不算独立通过。
-6. 登记结果、证据入库；某场景上次是守护通过而本次失败时记漏检（§7）；释放浏览器租约；修复复验时更新修复状态（§8）。
+5. **product_changed**：比较准备时与提交时的逐文件清单，执行期间变化的路径记在每条结果上，作为版本记录，不影响状态与独立性。
+6. 登记结果、证据入库；某场景最近一次守护运行通过而本次失败时记漏检（§7）；释放浏览器租约；修复复验时更新修复状态（§8）。
 
-输出 `recorded`、`voided`、`not_executed`、`product_changed`、`browser_crashes`、`independence`。
+输出 `recorded`、`voided`、`not_executed`、`product_changed`、`browser_crashes`、`independence`。校验不合格时不登记任何结果，运行保持 prepared，修正后重交。
 
 ### 独立性
 
@@ -318,12 +313,12 @@ guards:
 
 ### retest
 
-`sop-board retest` 交给守护进程执行，不启动 AI：
+`sop-board retest` 交给守护进程执行，不启动 AI，用来发现代码改动带来的回归：
 
-1. 缺省取当前检出全部待复测场景（`--scenario` 可指定），只运行守护有效的，其余列在 `not_guarded` 并附原因；`--dry-run` 只输出场景与将运行的命令。
+1. 缺省取当前检出全部非草稿场景（`--scenario` 可指定），只运行守护有效的，其余列在 `not_guarded` 并附原因；`--dry-run` 只输出场景与将运行的命令。
 2. 每条引用到的命令只运行一次：工作目录为检出对应仓库下的 `cwd`，`start_new_session`，超时结束整个进程组。环境为守护进程环境去掉 `SOP_*`，加上该检出环境运行中时的入口地址变量、命令 `env`、`PLAYWRIGHT_JUNIT_OUTPUT_NAME`、`PYTHONDONTWRITEBYTECODE=1`；声明了 `browser` 的命令先拉起环境、取得浏览器租约，再注入 `PW_CDP_ENDPOINT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT`。日志与 junit 写在 `<数据目录>/retests/<时间>-<检出>/`，并作为证据入库。
-3. 场景记“守护通过”须同时满足：相关命令退出码 0、没超时；每个声明的测试名都出现在 junit 中且为通过（跳过、缺失都不算；匹配完整名、以其结尾或测试标题相同）；运行前后产品快照不变。
-4. 每个场景写一条 `guard_runs`（pass/fail + 原因）；未通过的留在待复测并显示原因。
+3. 场景的守护运行记为通过须同时满足：相关命令退出码 0、没超时；每个声明的测试名都出现在 junit 中且为通过（跳过、缺失都不算；匹配完整名、以其结尾或测试标题相同）；运行前后产品快照不变。
+4. 每个场景写一条 `guard_runs`（pass/fail + 原因 + 快照）。通过不改变状态；未通过的场景转为待复测并显示原因，之后经真实入口通过，或守护重新运行通过，就回到通过。
 
 ### 漏检
 
@@ -341,7 +336,7 @@ guards:
 | --- | --- | --- |
 | 认领 | `fix prepare [键…] [--session]` | 缺省为当前检出全部失败或受阻场景；指定的须为失败/受阻（`fix-scenario-invalid`）。同一检出只能有一个 open 的修复（`fix-open`）；场景已在已提交/已复验修复中时 `fix-already-owned`。目录 `<数据目录>/fixes/<编号>/`：`prompt.md`、`problems.json`（最近 5 条结果与证据路径）、`scenarios.yaml`、`repos.json`、`scenario-files.json`；记录准备时的产品文件清单 |
 | 提交 | `fix submit [--fix N]` | 读 `fix.json`：`{"root_cause": 非空, "product_problem": bool}`。场景文件被改动则 `scenario-file-protected`（修复只改产品代码）。判定为产品问题却没有产品改动则 `fix-no-changes`。`product_problem: false` 时修复记为 abandoned 并登记待人处理；否则为 submitted，记下改动文件 |
-| 独立复验 | 另一会话 `run prepare --fix N` | 修复须为 submitted/verified，且在同一检出。实现者自动为修复会话；不接受 not-executed，不能保留旧通过。全部问题场景都实际通过、且执行者不是修复会话时，修复进入 verified，并记下复验时各改动文件的内容摘要 |
+| 独立复验 | 另一会话 `run prepare --fix N` | 修复须为 submitted/verified，且在同一检出。实现者自动为修复会话；不接受 not-executed。全部问题场景都实际通过、且执行者不是修复会话时，修复进入 verified，并记下复验时各改动文件的内容摘要 |
 | 关闭 | `fix close [--fix N]` | 须为 verified（`fix-validation-required`）；改动文件须已提交且工作区与 HEAD 一致（`fix-commit-required`）；提交内容须与复验时一致（`fix-content-changed`）。关闭后之前失败/受阻（及人工不通过）的问题场景显示为待复测 |
 | 放弃 | `fix abandon --fix N` | open/submitted/verified 可放弃 |
 
@@ -385,12 +380,12 @@ sops:
 ### 业务 SOP
 
 - `sop prepare --source <资料>...`（最多 32 份、每份 ≤20 MiB）把资料复制到 `<数据目录>/authoring/<编号>/sources/S<n>/`，写 `sources.json` 与 `prompt.md`。
-- 会话在场景目录写 SOP Markdown，二级标题须有：业务目标与范围、角色、业务规则（其下 `###`/`####` 的 `R<n>` 规则小节）、流程图、禁止的副作用、未覆盖范围。
+- 会话先逐份核对场景目录中已有的 SOP，找出业务交叉（见[标准](standard.md)第 5 节）；新规则改变已有规则口径的，经使用者确认后同时改正已有 SOP（删去其文末确认记录后重新 `sop submit`）。然后在场景目录写 SOP Markdown，二级标题须有：业务目标与范围、角色、业务规则（其下 `###`/`####` 的 `R<n>` 规则小节）、流程图、禁止的副作用、未覆盖范围。
 - `sop submit --file <场景目录下的 .md>` 校验后在文末追加 `## 确认记录`（确认人、时间、各资料摘要）；正文不能自带该节。
 
 ### 草稿
 
-带 `metadata.status: draft` 的场景文件就是草稿，不进入执行与复测。测试同学在内网批注（目标为整个文件或某个场景，≤4000 字，须填姓名），批注存数据库。会话按批注修订后 `draft resolve <编号> [--reject]`。`draft confirm <文件>` 要求没有未处理批注、metadata 中有单独一行 `status: draft` 与块格式 `sources:`，把状态改为 `confirmed` 并在 sources 首项插入 `{ref: "sop-board draft confirm", version: <日期>, confirmed_by: <确认人>}`。
+带 `metadata.status: draft` 的场景文件就是草稿，不进入执行与复测。会话由 SOP 写草稿或合并用例时核对已有场景：业务交叉改变已有场景预期的，直接修改这些场景（指纹变化后回到未执行），不另写重复场景。测试同学在内网批注（目标为整个文件或某个场景，≤4000 字，须填姓名），批注存数据库。会话按批注修订后 `draft resolve <编号> [--reject]`。`draft confirm <文件>` 要求没有未处理批注、metadata 中有单独一行 `status: draft` 与块格式 `sources:`，把状态改为 `confirmed` 并在 sources 首项插入 `{ref: "sop-board draft confirm", version: <日期>, confirmed_by: <确认人>}`。
 
 ### 交互地图
 
@@ -417,7 +412,7 @@ fixtures:
 
 ## 10. 报告与看板页面
 
-`report` 导出当前检出的 `report.md`（缺省目录 `<数据目录>/reports/<检出>-<时间>/`，不写进产品仓库）：快照与各仓提交、各状态计数、Agent 通过率与一次通过率、人工复测覆盖与通过率、Agent 独立通过的人工确认率与复核覆盖、独立性计数；每个场景的状态与原因、守护通过（注明不是真实入口执行）、最近 5 条结果（保留通过、独立性、finding、证据 sha256）和人工复测；然后是误判明细与待人工复核；最后列出未执行范围（未执行、待复测、草稿）。`--zip` 另写 `evidence.zip`（含报告与所引证据原文）。正文按凭据取值脱敏。
+`report` 导出当前检出的 `report.md`（缺省目录 `<数据目录>/reports/<检出>-<时间>/`，不写进产品仓库）：快照与各仓提交、各状态计数、Agent 通过率与一次通过率、人工复测覆盖与通过率、Agent 独立通过的人工确认率与复核覆盖、独立性计数；每个场景的状态与原因、最近一次守护运行（注明不是真实入口执行）、最近 5 条结果（取证时的快照、独立性、finding、证据 sha256）和人工复测；然后是误判明细与待人工复核；最后列出未执行范围（未执行、待复测、草稿）。`--zip` 另写 `evidence.zip`（含报告与所引证据原文）。正文按凭据取值脱敏。
 
 统计口径（全部取当前检出的结果记录，不限当前场景文件）：
 
@@ -430,7 +425,7 @@ fixtures:
 | Agent 独立通过的人工确认率 | 样本中人工结论为通过的 / 有人工结论的样本 |
 | 复核覆盖 | 有人工结论的样本 / 全部样本 |
 
-样本是每一条 Agent 独立真实入口通过（kind=agent、`independent`、不是保留通过、执行期间产品无变化）。人工标注登记时，`of_result` 记当时该场景当前指纹最新一条 Agent 结果（不论其间是否已有别的人工标注），`product_digest` 记标注时的产品快照。样本的人工结论取 `of_result` 指向它、且 `product_digest` 与它相同（样本不绑定快照时不比较快照）的最近一条人工“通过”或“不通过”；只有阻塞或需求变更的样本不计入分子分母，按最近一条的结论计入“未决”，报告总是写出“未决：阻塞 N，需求变更 M”。分母为 0 的比率在报告与概况中显示为“—”。`report --file` 只筛选场景各节、待人工复核与未执行范围，概况中的统计与误判明细仍按整个检出。人工结论为不通过的样本列为误判明细：场景键、运行编号、Agent 执行时间、复测时间、复测人、缺陷链接、说明；执行者只在本机报告中显示。
+样本是每一条经真实入口的 Agent 独立通过（§1）。人工标注登记时，`of_result` 记当时该场景当前指纹最新一条 Agent 结果（不论其间是否已有别的人工标注），`product_digest` 记标注时的产品快照（版本记录）。样本的人工结论取 `of_result` 指向它的最近一条人工“通过”或“不通过”，不比较快照；只有阻塞或需求变更的样本不计入分子分母，按最近一条的结论计入“未决”，报告总是写出“未决：阻塞 N，需求变更 M”。分母为 0 的比率在报告与概况中显示为“—”。`report --file` 只筛选场景各节、待人工复核与未执行范围，概况中的统计与误判明细仍按整个检出。人工结论为不通过的样本列为误判明细：场景键、运行编号、Agent 执行时间、复测时间、复测人、缺陷链接、说明；执行者只在本机报告中显示。
 
 | 路由 | 级别 | 内容 |
 | --- | --- | --- |
@@ -504,7 +499,7 @@ fixtures:
 | `meta` | 格式号 |
 | `checkouts` | 名称、槽位（均唯一）、kind main/worktree、路径、adapter 返回的变量、移除时间 |
 | `work` | run/fix/distill/merge/author/draft/atlas 工作：检出、会话、操作者、实现者、修复、启动、目录、范围、快照、状态 prepared/submitted/abandoned；同一检出的 run 与 distill 各只能有一个 prepared |
-| `results` | agent 与 manual 结果：文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人 |
+| `results` | agent 与 manual 结果：文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from（只出现在早先的保留通过上，现行运行不再写入）、of_result、执行者、实现者、独立性、复测人 |
 | `evidence`、`result_evidence` | 按 sha256 存储的证据（文件在 `evidence/<前两位>/<sha256>`）及结果引用 |
 | `guard_runs`、`guard_misses` | 守护运行（快照、测试摘要、pass/fail、原因、输出证据）与漏检 |
 | `fixes` | 修复：会话、状态、问题、基线文件清单、fix.json、改动、复验运行与文件摘要 |

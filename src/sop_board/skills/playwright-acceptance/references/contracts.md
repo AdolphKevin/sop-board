@@ -19,7 +19,6 @@
 | `executor` | 执行者（`convert` 写入） |
 | `evidence` | `evidence/` 下的相对路径数组，单个文件不超过 64 MiB |
 | `finding`、`note` | blocked、skip、not-executed 须写 `finding` |
-| `kept` | 按影响判定保留原通过时为 true，须在 `note` 写理由 |
 
 实际执行的 pass、fail 至少一份真实证据；`not-executed` 不附证据，留在待执行范围。`convert` 生成上述字段，其他入口的行由对应驱动写入后合并。
 

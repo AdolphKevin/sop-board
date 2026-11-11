@@ -4,7 +4,7 @@ source: ["self:README.md", "self:docs/design.md", "self:docs/standard.md"]
 ---
 # Flow Board 项目总览
 
-Flow Board（命令 `sop-board`）是运行在开发者本机的 SOP 场景验收工具。场景 yaml 放在产品仓库，是唯一真相；AI 会话经 CLI 走真实入口执行，结果按场景指纹与产品快照登记；测试同学在看板上按场景复测和标注；修复后由独立会话复验；通过的场景沉淀成低成本测试，产品变化后先跑这些守护测试。
+Flow Board（命令 `sop-board`）是运行在开发者本机的 SOP 场景验收工具。场景 yaml 放在产品仓库，是唯一真相；AI 会话经 CLI 走真实入口执行，结果按场景指纹登记并记下取证时的产品快照，哪些场景要验收由场景内容决定、代码改动不改变状态；测试同学在看板上按场景复测和标注；修复后由独立会话复验；通过的场景沉淀成低成本守护测试，由 retest 运行来发现代码回归。
 
 设计见 [docs/design.md](../docs/design.md)（v10；旧实现见 tag v9-final），取舍见 decisions/2026-11-10-v10-rewrite.md。命令与文件契约见 docs/reference.md。
 

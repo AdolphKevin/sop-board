@@ -1,6 +1,6 @@
 # Flow Board
 
-> 以业务 SOP 场景为中心的验收工具：AI 会话经真实入口执行场景、留证；测试同学在看板上按场景复测；修复由独立会话复验；通过的场景沉淀成低成本守护测试，产品变化后先跑守护，不必每次整条重跑。
+> 以业务 SOP 场景为中心的验收工具：AI 会话经真实入口执行场景、留证；测试同学在看板上按场景复测；修复由独立会话复验；哪些场景要验收由业务变化（场景内容）决定，代码改动不让已有通过失效；通过的场景沉淀成低成本守护测试，用来发现代码回归。
 
 命令名为 `sop-board`，运行在开发者本机。
 
@@ -14,12 +14,12 @@ flowchart LR
     B -->|失败| F[fix：修复 → 独立复验 → 提交后关闭]
     F --> R
     B -->|独立通过| D[distill：沉淀为守护测试<br/>regression.yaml]
-    D --> G[产品变化后 retest：<br/>直接运行守护，不需要 AI]
-    G -->|守护通过| B
-    G -->|失败或过期| R
+    D --> G[retest：直接运行守护<br/>发现代码回归，不需要 AI]
+    G -->|通过，状态不变| B
+    G -->|未通过，转待复测| R
 ```
 
-- **场景文件是唯一真相**：场景 YAML 放在产品仓库，随分支与 worktree 走；会话直接编辑，开发者审核提交。看板只按场景内容指纹与产品快照记录结果。
+- **场景文件是唯一真相**：场景 YAML 放在产品仓库，随分支与 worktree 走；会话直接编辑，开发者审核提交。看板按场景内容指纹记录结果，产品快照只记下取证时的代码版本。
 - **一条路径**：所有 AI 工作都经 `sop-board` 命令完成。看板上的“AI 重跑”只是用同一份技能启动一个无头会话。
 - **多 worktree**：同一项目的 main 与各个 git worktree 自动识别为不同检出，结果、快照、环境端口和浏览器各自隔离。
 - **自带浏览器**：看板守护进程启动固定版本的 Google Chrome for Testing（每个检出×身份一份持久 profile，缺省无头），不接管你日常用的 Chrome。
@@ -54,7 +54,7 @@ sop-board check
 | 看状态 | `sop-board status` |
 | 执行待执行场景 | `sop-board run prepare` → 按 prompt.md 执行 → `sop-board run submit --run N` |
 | 让独立会话执行 | `sop-board run launch --scope <场景>…`，`sop-board run wait` |
-| 产品变化后复核 | `sop-board retest` |
+| 运行守护测试检查代码回归 | `sop-board retest` |
 | 沉淀守护测试 | `sop-board distill prepare` → 写测试与 guard.json → `sop-board distill submit` |
 | 修复 | `sop-board fix prepare` → 改代码 → `fix submit` → 另一会话 `run prepare --fix N` → 提交后 `fix close` |
 | worktree | `sop-board checkout list`，`sop-board checkout create <名称>` |

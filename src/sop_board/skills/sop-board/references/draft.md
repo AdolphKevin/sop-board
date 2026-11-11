@@ -5,8 +5,9 @@
 ## 生成草稿
 
 1. `sop-board checkout show` 的 `checkout.scenarios` 是场景目录；已登记的 SOP（`.md`）和现有场景文件都在这里，现有场景文件是最直接的样例。
-2. 依据 SOP 写 `<场景目录>/<名称>.yaml`。写法遵循 sop-board 仓库 [docs/sop-guide.md](https://github.com/AdolphKevin/sop-board/blob/main/docs/sop-guide.md) 的“四要素”“场景粒度”“正向与反向”三节：预期只来自 SOP 原文和使用者的答复；SOP 没写明的结果在对话中问使用者，代码现状不当作预期；每个节点至少一条正向与一条反向场景，确实没有反向时写 `negative_exempt` 理由。
-3. 结构如下。`status: draft` 单独一行、`sources:` 用块格式，`draft confirm` 依赖这两点：
+2. 核对业务交叉：按 SOP 写明的交叉，再逐个读现有场景，找出预期随新规则改变的已有场景。看板只按场景内容决定哪些场景要重新验收，这些场景直接修改四要素（内容一变即回到未执行），新规则不另写重复的场景；预期不变的不改。改已确认文件里的场景前，先向使用者说明改哪些场景、改成什么。
+3. 依据 SOP 写 `<场景目录>/<名称>.yaml`。写法遵循 sop-board 仓库 [docs/sop-guide.md](https://github.com/AdolphKevin/sop-board/blob/main/docs/sop-guide.md) 的“四要素”“场景粒度”“正向与反向”三节：预期只来自 SOP 原文和使用者的答复；SOP 没写明的结果在对话中问使用者，代码现状不当作预期；每个节点至少一条正向与一条反向场景，确实没有反向时写 `negative_exempt` 理由。
+4. 结构如下。`status: draft` 单独一行、`sources:` 用块格式，`draft confirm` 依赖这两点：
 
    ```yaml
    metadata:
@@ -37,7 +38,7 @@
            refs: ["<SOP 文件>#R1"]
    ```
 
-4. 运行 `sop-board status --json`，`invalid_files` 列出的问题全部修正（草稿计入 `counts.draft`）。告诉使用者草稿位置，测试同学可在看板“草稿”筛选中批注。
+5. 运行 `sop-board status --json`，`invalid_files` 列出的问题全部修正（草稿计入 `counts.draft`）。告诉使用者草稿位置、因业务交叉修改的已有场景，以及有交叉但预期不变的场景和理由；测试同学可在看板“草稿”筛选中批注。
 
 ## 处理批注
 
