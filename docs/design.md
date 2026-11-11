@@ -41,6 +41,9 @@
 12. 场景集确认时的补充（2026-11-10）：守护进程、服务与浏览器可以按验收需要在 agent 会话中启动；会话可用 `inbox add` 上传用例或 SOP；运行时与操作者文件始终在 `~/.sop-board`；specs 只保留 check；错误码 `run-prepared`、`launch-running`、`draft-not-runnable`、`project-format`、`browser-crashed`、`env-busy`、`browser-busy`；`fix close` 须独立复验通过且修复文件已提交并与复验时一致；漏检后重新沉淀须有新的独立通过。
 13. 补回人工复核（2026-11-10）：重写时把“Agent 通过、等待人工复核”的队列和误判统计一并去掉了，与标准中“所需人工复核已完成”的交付条件不符。改为“待人工复核”徽标与筛选；统计 Agent 独立通过的人工确认率、复核覆盖与误判明细。人工标注不通过仍直接使场景显示为失败。
 14. 不绑定产品快照的导入结果（2026-11-10）：cw2 从 v9 看板迁到 v10 时，用户决定把旧看板的执行结果与证据导入新看板，且产品变化后这些通过不转待复测。导入结果的 `product_digest` 为空，表示不绑定产品快照：最新结果为这种通过时状态保持“通过”，Agent 独立通过照常显示“待人工复核”，人工结论不论在哪个快照上标注都与它配对；该场景之后有新的执行或人工结论，就按新结果和正常规则判定。看板自身的运行与人工标注总是绑定快照。导入由一次性脚本直接写库，本仓不提供导入命令，也不读取旧格式数据。
+15. 左栏一键展开收起与隐藏（2026-11-11 使用者需求）：工作台的左栏树缺省展开（文件都展开，场景不超过 40 条的文件连节点一起展开），原来只能逐个折叠，也不能隐藏左栏。工作台与业务 SOP 的左栏各加一个“全部展开 / 全部收起”切换按钮：树中所有分组都已展开时显示“全部收起”，点击后收起全部分组；否则显示“全部展开”，点击后展开全部。两页的缺省展开状态不变（业务 SOP 页仍只展开当前打开的文档）。结果与手动展开收起一样记在浏览器 localStorage（按项目与页面分别记），刷新与 15 秒轮询后保持；有筛选或搜索时只作用于当前显示的结果，不改记住的状态，清除筛选或搜索后树按记住的状态显示。左栏另有“隐藏左栏”按钮，隐藏后右栏占满宽度，左侧留一条窄栏，其中的“显示左栏”按钮恢复左栏；隐藏状态记在浏览器 localStorage，工作台与业务 SOP 共用，内网同样可用。
+16. 真人完成后交还浏览器，不关窗口（2026-11-11 使用者需求）：原流程要求真人登录后运行 `browser close`，它会结束浏览器进程，之后的运行再拉起一个无头浏览器；有界面窗口里通过的人机验证、浏览器权限与证书例外因此作废，使用者要重复登录、验证。cw2 的会话只好直接调用本机接口解除占用。改为：真人在 `browser open --headed` 的窗口里完成登录、人机验证或二次验证后，运行 `browser release` 交还，只解除真人占用，窗口与页面保持打开；之后的运行直接沿用这个浏览器进程，不重启。没有加 `--headed` 的 `browser open` 遇到正在运行的有界面窗口时直接沿用，不取得租约，也不再把它重启成无头。`browser close` 只在要结束浏览器时使用。
+17. 声明的测试账号即授权（2026-11-11 使用者确认）：原标准要求“账号声明本身不是授权”，每个任务开始时另取授权并写授权记录，导致会话反复询问、拒绝登录项目给它的测试邮箱、把浏览器权限提示也交给人。改为：项目验证手册或配置里声明的测试账号（包括为验收注册的第三方账号与测试邮箱），声明即授权，AI 在声明的测试环境与用途内直接登录、申请并读取测试邮箱中的验证码，受身份使用次数限制；不再逐任务取得授权、不写授权记录。测试环境自身在看板浏览器中触发的提示（本地网络访问、localhost 自签名证书警告等）由 AI 处理。仍由人完成的只有：真实或生产账号与未声明账号的登录、人机验证、只发到使用者本人设备（手机、身份验证器）的验证码，以及遇到 `browser may not be secure` 时停止。
 
 ## 目标架构
 
@@ -95,7 +98,7 @@
   - 端口 = `9400 + slot×20 + 身份序号`，被占用时直接报错。
   - `/json/version` 15 秒内有应答才算就绪。
 - **租约**：`run prepare` 为本轮 Web 场景用到的身份取得租约，确保对应浏览器已启动，并写出 `runs/<编号>/run.env`，其中有 `PW_CDP_ENDPOINT`、`PW_IDENTITIES`（每个身份带 endpoint）、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT`。身份被真人登录占用时，直接返回 `browser-busy`。删除 `WAIT_BROWSER`，也删除身份的 `cdp` 字段。
-- **真人登录**：`browser open --identity X --headed` 在有界面的 CfT 窗口打开入口地址，并持有 human 租约。用户自己输入密码、完成 2FA，profile 保留登录态；之后用 `browser close` 释放。出现 `browser may not be secure` 时停止，该身份的场景记为受阻并写明原文。不回退到用户日常 Chrome，也不改 UA 或参数绕过。
+- **真人登录与交还**：`browser open --identity X --headed` 在有界面的 CfT 窗口打开入口地址，并持有 human 租约（窗口已开着时只取得租约，不重启）。用户自己输入密码、完成人机验证或 2FA，profile 保留登录态；之后用 `browser release` 交还：只解除 human 租约，窗口和页面保持打开，下一次取得租约的运行直接沿用这个进程（仍是有界面窗口），人在窗口里通过的验证、权限与证书例外都还在。没有 `--headed` 的 `browser open` 遇到运行中的有界面窗口时直接沿用，不取得租约，不重启成无头。`browser close` 结束浏览器并释放租约，只在要关掉它时使用。出现 `browser may not be secure` 时停止，该身份的场景记为受阻并写明原文。不回退到用户日常 Chrome，也不改 UA 或参数绕过。（已定决策 16）
 - **崩溃**：监视线程 `wait()` 浏览器进程。异常退出时，记录信号、`chrome.log` 末尾，以及启动之后写出的 `DiagnosticReports/Google Chrome for Testing*.ips`。持有租约的运行在提交时，相关场景记为受阻，finding 写成“浏览器进程 <时间> 因 <信号> 退出，日志 <路径>”，同时加一条待人处理。租约持有期间不自动重启，下一次取得租约时再启动。30 分钟内异常退出两次，状态记为 crashed，须由人运行 `browser open --reset-crash`。模板里补上 `page.on('crash')` 和 `/Target crashed/`，渲染进程崩溃也按受阻处理。
 - **playwright-acceptance 技能改动**：
   - `templates/connection.mjs` 只读 `PW_CDP_ENDPOINT`，删掉 7-19 行（DevToolsActivePort、`PW_CHROME_USER_DATA`）和 39-114 行（`targetTransport`、`PW_CDP_MODE`），保留 `connectOverCDP :128`。
@@ -155,7 +158,7 @@
 
 ### 看板：三栏场景工作台（问题 2）
 
-- 路由：`/` 是项目列表（只有一个项目时直接进入）。`/p/<项目>?checkout=<名称>` 是工作台：左栏是 文件→节点→场景 树，每条带状态点；顶部是检出切换、搜索和状态筛选（待复测、失败、待人工复核、待沉淀、通过、守护通过、未执行、草稿），各筛选带计数；概况页另显示 Agent 独立通过的人工确认率与复核覆盖。右栏顺序固定：
+- 路由：`/` 是项目列表（只有一个项目时直接进入）。`/p/<项目>?checkout=<名称>` 是工作台：左栏是 文件→节点→场景 树，每条带状态点，可一键全部展开或收起，左栏本身可隐藏（已定决策 15）；顶部是检出切换、搜索和状态筛选（待复测、失败、待人工复核、待沉淀、通过、守护通过、未执行、草稿），各筛选带计数；概况页另显示 Agent 独立通过的人工确认率与复核覆盖。右栏顺序固定：
   1. 标题和徽标（P 级、入口、正反向）；
   2. 当前状态和原因（例如“产品已变化，守护未覆盖”）；
   3. 起点、步骤、预期、禁止（预期和禁止逐条列出，附守护覆盖标记）；
@@ -240,7 +243,7 @@
 | --- | --- |
 | 搭建 | `init`、`guide`、`check`、`operator [show\|set]`、`skills install`、`serve [--lan] [--port]`、`status [--json]` |
 | 检出 | `checkout list\|show\|create <名称> [--from ref]\|remove <名称>` |
-| 守护进程 | `env status\|up\|down\|restart`；`browser install\|status\|open --identity I [--headed]\|close` |
+| 守护进程 | `env status\|up\|down\|restart`；`browser install\|status\|open --identity I [--headed]\|release\|close` |
 | 执行 | `run prepare [--scope pending\|all\|F#ID…] [--fix N] [--session S]`、`run submit --run N [--implementer X]`、`run abandon`、`run launch [--scope …]`、`run wait`；`retest [--dry-run]`；`mark F#ID pass\|fail\|blocked\|changed [--defect URL] [--note 说明] [--as 姓名]` |
 | 修复 | `fix prepare [F#ID…]`、`fix submit`、`fix close`、`fix abandon` |
 | 沉淀 | `distill prepare [F#ID…]`、`distill submit --report r.json` |
@@ -274,7 +277,7 @@
 - **端到端冒烟**（阶段 4、5 完成后）：
   1. 运行 `sop-board serve demo --lan`，从另一台设备通过实际的非回环地址打开工作台。
   2. `checkout create wt1`，验证 main 与 wt1 的环境：`port_step` 不为 0 时能同时运行；为 0 时返回 `env-busy` 并写明占用者。
-  3. `browser install`，确认安装的是 CfT 1248；`browser open --headed` 弹出有界面的 CfT 窗口，在其中登录合成账号；之后无头运行时登录态仍在。
+  3. `browser install`，确认安装的是 CfT 1248；`browser open --headed` 弹出有界面的 CfT 窗口，在其中登录；`browser release` 后的运行沿用同一窗口，登录态仍在。
   4. 用 `run launch` 启动真实的 Codex 和 Claude 执行会话，结果在工作台出现，并显示独立性。
   5. 在内网标注一条不通过，填写缺陷链接，期间不被要求填姓名以外的身份。
   6. 沉淀一条场景，再修改产品：`retest` 显示守护通过；对预埋的缺陷做受控改错后，`retest` 把该场景回落为待复测，并交给 AI 重跑。

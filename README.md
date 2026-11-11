@@ -58,7 +58,7 @@ sop-board check
 | 沉淀守护测试 | `sop-board distill prepare` → 写测试与 guard.json → `sop-board distill submit` |
 | 修复 | `sop-board fix prepare` → 改代码 → `fix submit` → 另一会话 `run prepare --fix N` → 提交后 `fix close` |
 | worktree | `sop-board checkout list`，`sop-board checkout create <名称>` |
-| 真人登录 | `sop-board browser open --identity <身份> --headed`，登录后 `browser close` |
+| 真人登录与验证 | `sop-board browser open --identity <身份> --headed`，完成后 `browser release` 交还（窗口不关） |
 
 ## 文档
 

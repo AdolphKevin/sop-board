@@ -2,8 +2,8 @@
 title: "Web 验收只用看板守护进程启动的 Chrome for Testing，缺省无头"
 scope: ["self:src/sop_board/browsers.py", "self:src/sop_board/skills/playwright-acceptance/**"]
 source: ["self:docs/design.md"]
-guards: ["self:docs/sop/browser.yaml#BRW-04-P01", "self:docs/sop/browser.yaml#BRW-05-N01", "self:docs/sop/browser.yaml#BRW-02-P01"]
-verified: {"self": {"commit": "f310990b145aa38fd1a1b57c62d4fd8957fd21b8", "date": "2026-11-10"}}
+guards: ["self:docs/sop/browser.yaml#BRW-04-P01", "self:docs/sop/browser.yaml#BRW-05-N01", "self:docs/sop/browser.yaml#BRW-02-P01", "self:docs/sop/browser.yaml#BRW-03-P01"]
+verified: {"self": {"commit": "77908996bb22317ddde77d9f0cf3cc50d978fb94", "date": "2026-11-11"}}
 tags: ["浏览器", "Chrome for Testing", "Playwright quit unexpectedly", "崩溃", "无头", "CDP"]
 ---
 # Web 验收只用看板守护进程启动的 Chrome for Testing，缺省无头
@@ -12,7 +12,7 @@ tags: ["浏览器", "Chrome for Testing", "Playwright quit unexpectedly", "崩�
 
 根因：浏览器的启动方和版本都不受 sop-board 控制。有界面浏览器从 agent 进程树启动时会在窗口注册阶段中止；共用缓存让各项目的浏览器修订混在一起。崩溃发生后，执行者看不到原因，场景也没有如实记录。
 
-修复与防护：运行时固定版本，装在本机级的 `~/.sop-board/runtime`，浏览器目录自用。只有看板守护进程启动 CfT：每个 检出×身份 一份持久 profile，缺省 `--headless=new`，只在真人登录时开窗口。执行者只通过 run.env 的 PW_CDP_ENDPOINT 连接，不自己启动浏览器。浏览器异常退出时记录信号、chrome.log 与 .ips；租约期间不自动重启，相关场景提交时记为受阻；30 分钟内两次异常退出进入 crashed，由人 `--reset-crash`。
+修复与防护：运行时固定版本，装在本机级的 `~/.sop-board/runtime`，浏览器目录自用。只有看板守护进程启动 CfT：每个 检出×身份 一份持久 profile，缺省 `--headless=new`，只在真人登录或验证时开窗口；人完成后 `browser release` 交还，窗口保持运行供之后的运行沿用（见 decisions/2026-11-11-browser-handover.md）。执行者只通过 run.env 的 PW_CDP_ENDPOINT 连接，不自己启动浏览器。浏览器异常退出时记录信号、chrome.log 与 .ips；租约期间不自动重启，相关场景提交时记为受阻；30 分钟内两次异常退出进入 crashed，由人 `--reset-crash`。
 
 发现方法：用 `kill -ABRT` 结束 CfT，核对场景是否记为受阻并写明信号与日志；用 `ps -o ppid,command` 核对浏览器的父进程是守护进程，参数含 `--headless=new`。
 

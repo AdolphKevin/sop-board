@@ -86,7 +86,7 @@ fixtures:                                   # 可选：前置数据配方
 
 ## 5. 写项目验证技能
 
-数据目录 `skills/<skill>/SKILL.md`：文件头有 name、description；每个入口一个含入口名的二级标题，写明执行前读哪份手册的哪几节、本机参数怎样取得、授权记录在哪里。Web 入口缺省使用随包 playwright-acceptance。
+数据目录 `skills/<skill>/SKILL.md`：文件头有 name、description；每个入口一个含入口名的二级标题，写明执行前读哪份手册的哪几节、本机参数怎样取得、声明了哪些测试账号与凭据变量。Web 入口缺省使用随包 playwright-acceptance。
 
 ## 6. 启动与核对
 

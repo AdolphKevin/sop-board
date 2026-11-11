@@ -33,11 +33,11 @@ $verify_note
 - 字段：scenario（场景 key）、status（pass/fail/blocked/skip/not-executed）、actual、executed_at（带时区的 ISO 8601）、evidence（evidence/ 下的相对路径数组），可选 finding、note、kept。
 - 实际执行的 pass、fail 至少有一份真实证据，放在 evidence/。blocked、skip 必须写 finding。
 - 中途停止时，没执行的场景写 `{"scenario", "status": "not-executed", "finding": 原因}`，不附证据；它们留在待执行范围。
-- 判定只依据真实入口的观察；不能只看源码或地图就判通过。凭据缺失、前置数据准备不了、需要人处理的事项，记 blocked 并写明缺什么（需要人做的事用 `sop-board attention add` 登记）。
+- 判定只依据真实入口的观察；不能只看源码或地图就判通过。凭据缺失、前置数据准备不了、只有人能做的事（真实账号登录、人机验证、只发到使用者本人设备的验证码），记 blocked 并写明缺什么（需要人做的事用 `sop-board attention add` 登记）。
 
 ## 凭据
 
-入口 credential_env 只列变量名，取值在本会话环境中。只在获授权的请求里使用；不打印、不写入脚本、截图、结果或日志；证据先脱敏。缺变量的场景记 blocked，finding 只写变量名。
+入口 credential_env 只列变量名，取值在本会话环境中。声明的测试账号声明即授权：未登录时用这些变量直接登录、申请并从声明的测试邮箱读取验证码，不另向使用者要授权。取值只用于声明它的入口；不打印、不写入脚本、截图、结果或日志；证据先脱敏。缺变量的场景记 blocked，finding 只写变量名。
 
 ## Web 场景
 

@@ -24,9 +24,9 @@ Shopify 项目与普通前端的流程相同，差别都在入口层。一个项
 
 ## 人机验证与登录
 
-- 短时间内反复打开主题编辑器等页面会触发 "Your connection needs to be verified before you can proceed"。遇到即抛 `受阻：Shopify 要求人机验证`，由人在 `browser open --headed` 的窗口中完成后重跑；不要重试或绕过。
-- 真实账号（商家、合作伙伴、Google 登录）由人用 `sop-board browser open --identity <身份> --headed` 登录一次，脚本只复用 profile 中的会话（见[Web 参考](web.md#真实账号登录)）。出现 "browser may not be secure" 立即停止并记 blocked。
-- 合成测试账号登录须有用户本次明确授权；真实账号登录仍由人完成。
+- 短时间内反复打开主题编辑器等页面会触发 "Your connection needs to be verified before you can proceed"。遇到即抛 `受阻：Shopify 要求人机验证`，由人在同一身份的看板窗口中完成后交还再重跑；不要重试或绕过。
+- 项目声明的 Shopify 测试员工账号与测试邮箱，由执行者用声明的凭据变量登录、读邮件中的验证码；真实账号（商家、合作伙伴、Google 登录）与只发到使用者本人设备的验证码由人在看板窗口完成，脚本复用该窗口的会话（见[Web 参考](web.md#账号登录与人做的验证)）。出现 "browser may not be secure" 立即停止并记 blocked。
+- 后台内嵌应用加载本机前端时，浏览器会询问 admin.shopify.com 是否可以访问本地网络，自签名的 localhost 证书也会被拦；两者都由执行者在该身份的浏览器里放行。
 
 ## 数据与副作用
 
@@ -37,4 +37,4 @@ Shopify 项目与普通前端的流程相同，差别都在入口层。一个项
 
 ## 回归限制
 
-依赖已登录后台的脚本只能在有人登录过 profile 的本机运行。场景执行保留验收证据，说明仅本机执行、实际运行范围和未验证范围。产品回归测试由用户另行授权 [regression-distill](../../regression-distill/SKILL.md) 按已有设施建设，不将依赖人工登录的脚本记为 CI 已运行。
+依赖已登录后台的脚本只能在有人登录过 profile 的本机运行。场景执行保留验收证据，说明仅本机执行、实际运行范围和未验证范围。产品回归测试由人触发 [regression-distill](../../regression-distill/SKILL.md) 按已有设施建设，不将依赖人工登录的脚本记为 CI 已运行。

@@ -2,11 +2,14 @@
 // - 顶栏署名：姓名在页面上填一次，存 localStorage，所有页面与场景共用，使用者主动修改才变。
 // - 工作台：左栏 文件→节点→场景 树（展开状态按项目记在 localStorage；点击场景只切换右栏，不重建树、不动滚动位置），
 //   右栏四要素、证据、复测（通过 / 不通过 / 阻塞 / 需求变更，缺陷链接与姓名都可不填）与历史。
+// - 左栏（工作台与业务 SOP 共用）：“全部展开 / 全部收起”一键切换树中全部分组，结果同手动展开一样记住；
+//   有筛选或搜索时只作用于当前显示的结果。左栏可隐藏，隐藏状态记在 localStorage，两页共用。
 // - 业务 SOP：左栏 文档→章节→问题 树，右栏显示所选一节；待确认问题按“答复”小节标出已答复 / 待答复。
 (() => {
   const config = JSON.parse(document.getElementById('board-config').textContent);
   const NAME_KEY = 'sop-board-name';
   const TREE_KEY = `sop-board-tree:${config.project}:${config.page}`;
+  const SIDEBAR_KEY = 'sop-board-sidebar-hidden';
 
   const el = (tag, attrs = {}, ...children) => {
     const node = document.createElement(tag);
@@ -99,6 +102,8 @@
     return {
       get: (key, fallback) => (key in saved ? saved[key] : fallback),
       set: (key, value) => { saved[key] = value; localStorage.setItem(TREE_KEY, JSON.stringify(saved)); },
+      // 打开页面时地址里的场景或章节只在它的分组没被收起过时才展开，使用者收起的状态刷新后保持。
+      collapsed: keys => keys.some(key => saved[key] === false),
     };
   })();
 
@@ -108,6 +113,51 @@
     details.addEventListener('toggle', () => { if (!details.dataset.filtering) openState.set(key, details.open); });
     if (filtering) details.dataset.filtering = '1';
     return details;
+  }
+
+  // ---- 左栏：隐藏与显示、全部展开或收起 ----
+
+  function setupSidebar() {
+    const section = $('.workbench');
+    if (!section) return;
+    const apply = hidden => {
+      section.classList.toggle('sidebar-hidden', hidden);
+      for (const button of section.querySelectorAll('[data-sidebar]')) button.setAttribute('aria-expanded', String(!hidden));
+    };
+    apply(localStorage.getItem(SIDEBAR_KEY) === '1');
+    section.addEventListener('click', event => {
+      const button = event.target.closest('[data-sidebar]');
+      if (!button) return;
+      const hidden = button.dataset.sidebar === 'hide';
+      if (hidden) localStorage.setItem(SIDEBAR_KEY, '1'); else localStorage.removeItem(SIDEBAR_KEY);
+      apply(hidden);
+      section.querySelector(`[data-sidebar="${hidden ? 'show' : 'hide'}"]`)?.focus();
+    });
+  }
+
+  // 所有分组都展开时按钮为“全部收起”，否则为“全部展开”。改的是 details.open，
+  // 由各分组自己的 toggle 监听记进 openState（筛选或搜索时不记），与手动展开收起一致。
+  function setupTreeToggle() {
+    const tree = $('#tree');
+    const button = $('#tree-all');
+    if (!tree || !button) return;
+    const groups = () => [...tree.querySelectorAll('details')];
+    const sync = () => {
+      const all = groups();
+      const expanded = all.length > 0 && all.every(details => details.open);
+      button.textContent = expanded ? '全部收起' : '全部展开';
+      button.dataset.action = expanded ? 'collapse' : 'expand';
+      button.title = expanded ? '收起左栏树中的全部分组' : '展开左栏树中的全部分组';
+      button.disabled = !all.length;
+    };
+    button.addEventListener('click', () => {
+      const open = button.dataset.action !== 'collapse';
+      for (const details of groups()) details.open = open;
+      sync();
+    });
+    tree.addEventListener('toggle', sync, true);
+    new MutationObserver(sync).observe(tree, {childList: true});
+    sync();
   }
 
   function keepScroll(container, render) {
@@ -215,22 +265,23 @@
     });
   }
 
-  function reveal(key) {
+  function reveal(key, {initial = false} = {}) {
     const item = board.data.items[key];
     if (!item) return;
-    openState.set('f:' + item.file, true);
-    openState.set(`n:${item.file}#${item.node}`, true);
+    const keys = ['f:' + item.file, `n:${item.file}#${item.node}`];
+    if (initial && openState.collapsed(keys)) return;
+    for (const groupKey of keys) openState.set(groupKey, true);
     renderTree();
     $('#tree').querySelector(`[data-key="${CSS.escape(key)}"]`)?.scrollIntoView({block: 'center'});
   }
 
-  function select(key, {fromHash = false} = {}) {
+  function select(key, {fromHash = false, initial = false} = {}) {
     const tree = $('#tree');
     tree.querySelector('.scenario.selected')?.classList.remove('selected');
     board.selected = key;
     const row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
     row?.classList.add('selected');
-    if (fromHash && !(row && shown(row))) reveal(key);
+    if (fromHash && !(row && shown(row))) reveal(key, {initial});
     if (decodeURIComponent(location.hash.slice(1)) !== key) history.replaceState(null, '', '#' + encodeURIComponent(key).replace(/%23/g, '#'));
     loadDetail(key);
   }
@@ -429,7 +480,7 @@
     $('#search').addEventListener('input', event => { board.search = event.target.value; renderTree(); });
     await loadBoard();
     const key = decodeURIComponent(location.hash.slice(1));
-    if (key && board.data.items[key]) select(key, {fromHash: true});
+    if (key && board.data.items[key]) select(key, {fromHash: true, initial: true});
     else renderOverview();
     window.addEventListener('hashchange', () => {
       const next = decodeURIComponent(location.hash.slice(1));
@@ -564,7 +615,7 @@
     }
   }
 
-  function selectSection(key, {fromHash = false} = {}) {
+  function selectSection(key, {fromHash = false, initial = false} = {}) {
     const found = findSection(key);
     if (!found) return;
     const tree = $('#tree');
@@ -572,13 +623,14 @@
     docs.selected = key;
     let row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
     if (fromHash && !(row && shown(row))) {
-      openState.set('d:' + found.doc.name, true);
-      const outline = docOutline(found.doc);
-      const parent = outline.items.find(item => item.children.includes(found.index));
-      if (parent) openState.set(`s:${found.doc.name}::${found.doc.sections[parent.index].anchor}`, true);
-      renderDocTree();
-      row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
-      row?.scrollIntoView({block: 'center'});
+      const parent = docOutline(found.doc).items.find(item => item.children.includes(found.index));
+      const keys = ['d:' + found.doc.name].concat(parent ? [`s:${found.doc.name}::${found.doc.sections[parent.index].anchor}`] : []);
+      if (!(initial && openState.collapsed(keys))) {
+        for (const groupKey of keys) openState.set(groupKey, true);
+        renderDocTree();
+        row = tree.querySelector(`[data-key="${CSS.escape(key)}"]`);
+        row?.scrollIntoView({block: 'center'});
+      }
     }
     row?.classList.add('selected');
     if (decodeURIComponent(location.hash.slice(1)) !== key) history.replaceState(null, '', '#' + encodeURIComponent(key));
@@ -586,11 +638,15 @@
     const sections = sectionRange(doc, index);
     const head = doc.sections[index];
     const parent = docOutline(doc).items.find(item => item.children.includes(index));
-    const visible = [...tree.querySelectorAll('.selectable')].filter(shown);
-    const position = visible.findIndex(node => node.dataset.key === key);
+    // 翻页按树中的顺序走全部章节（含收起的分组与隐藏的左栏），筛选或搜索时只走当前结果。
+    const rows = [...tree.querySelectorAll('.selectable')];
+    const position = rows.findIndex(node => node.dataset.key === key);
     const nav = (step, label) => {
-      const target = visible[position + step];
-      return el('button', {type: 'button', disabled: !target, onclick: () => { target.click(); target.scrollIntoView({block: 'nearest'}); }}, label);
+      const target = position < 0 ? null : rows[position + step];
+      return el('button', {type: 'button', disabled: !target, onclick: () => {
+        selectSection(target.dataset.key);
+        if (shown(target)) target.scrollIntoView({block: 'nearest'});
+      }}, label);
     };
     const answer = ANSWER[head.answer];
     const pane = $('#detail');
@@ -612,10 +668,10 @@
     renderDocFilters();
     renderDocTree();
     const key = decodeURIComponent(location.hash.slice(1));
-    if (key && findSection(key)) selectSection(key, {fromHash: true});
+    if (key && findSection(key)) selectSection(key, {fromHash: true, initial: true});
     else if (docs.data.documents[0]?.sections.length) {
       const first = docs.data.documents[0];
-      selectSection(`${first.name}::${first.sections[0].anchor}`, {fromHash: true});
+      selectSection(`${first.name}::${first.sections[0].anchor}`, {fromHash: true, initial: true});
     }
     window.addEventListener('hashchange', () => {
       const next = decodeURIComponent(location.hash.slice(1));
@@ -712,6 +768,8 @@
   }
 
   renderSigner();
-  const start = {workbench: startWorkbench, sop: startSop, runs: startRuns, inbox: startInbox, drafts: startDrafts}[config.page];
+  setupSidebar();
+  setupTreeToggle();
+  const start ={workbench: startWorkbench, sop: startSop, runs: startRuns, inbox: startInbox, drafts: startDrafts}[config.page];
   if (start) start().catch(error => $('main').prepend(el('p', {class: 'error-bar'}, error.message)));
 })();

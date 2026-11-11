@@ -29,4 +29,4 @@
 
 ## 回归
 
-场景是验收单位。用户另行授权的测试建设使用随包 [regression-distill](../../regression-distill/SKILL.md)，由 `sop-board distill submit` 登记关联；关联不改变验收结论，场景执行会话不写测试。
+场景是验收单位。由人触发的测试建设使用随包 [regression-distill](../../regression-distill/SKILL.md)，由 `sop-board distill submit` 登记关联；关联不改变验收结论，场景执行会话不写测试。

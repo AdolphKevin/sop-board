@@ -167,7 +167,8 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
 | | `browser status [--identity]` | 守护进程未运行时只给运行时信息 |
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
-| | `browser close [--identity]` | 停浏览器并释放真人租约 |
+| | `browser release [--identity]` | 真人完成后交还：只释放真人租约，窗口保持打开，之后的运行沿用；见 §6 |
+| | `browser close [--identity]` | 结束浏览器并释放真人租约 |
 | 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
 | | `run submit --run N [--implementer X]` | 见 §5 |
 | | `run abandon --run N` | 放弃并释放浏览器租约 |
@@ -274,7 +275,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - **启动**：只有守护进程启动浏览器，执行者只经 CDP 连接，不自己启动或安装。每个 检出×身份 一个 CfT：`--user-data-dir=<数据目录>/browsers/<检出>/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`，缺省加 `--headless=new`，不加 `--enable-automation`；输出写同目录 `chrome.log`。`/json/version` 15 秒内有应答才算就绪。
 - **端口**：`9400 + slot × 20 + 身份序号`。序号：`default` 为 0，其后按各 Web 入口声明顺序；超过 20 个身份报错。端口已被占用时直接报错，不换随机端口。
 - **租约**（`browser_instances.holder`）：持有者 `run:<编号>`、`retest:<检出>`、`distill:<检出>` 或 `human`。别的持有者占用时返回 `browser-busy`；状态 crashed 时返回 `browser-crashed`；启动即退出不抛错，问题写进 brief.md，相关场景应记受阻。运行提交或放弃时释放。
-- **真人登录**：`browser open --identity X --headed` 以有界面窗口打开（缺省地址为该检出第一个 Web 入口的地址），并持有 `human` 租约。用户自己输入密码、完成二次验证，登录态保存在 profile；完成后 `browser close --identity X` 释放，之后无头运行沿用登录态。出现 “browser may not be secure” 时停止，该身份的场景记受阻；不回退到日常 Chrome，不改 UA 或参数绕过。
+- **真人登录与交还**：`browser open --identity X --headed` 以有界面窗口打开（缺省地址为该检出第一个 Web 入口的地址），并持有 `human` 租约；窗口已在运行时只取得租约，不重启，正在运行的无头浏览器则重启为有界面窗口（profile 不变）。用户在窗口里登录、完成人机验证或二次验证后，`browser release --identity X` 交还：只释放 `human` 租约，进程、窗口与页面保持运行，下一次取得租约的运行直接沿用这个窗口，不重启；身份被运行持有时返回 `browser-busy`。不带 `--headed` 的 `browser open` 遇到运行中的有界面窗口时沿用它，不取得租约。`browser close` 结束浏览器并释放租约，之后的运行重新以无头启动。出现 “browser may not be secure” 时停止，该身份的场景记受阻；不回退到日常 Chrome，不改 UA 或参数绕过。
 - **崩溃**：监视线程等待进程退出。非主动停止的退出记录退出码、信号名、日志路径与启动后写出的 `~/Library/Logs/DiagnosticReports/Google Chrome for Testing*.ips`，并登记一条“浏览器崩溃”待人处理。租约期间不自动重启，下次取得租约时再启动。30 分钟内异常退出两次进入 `crashed`，须人运行 `browser open --identity X --reset-crash`。
 - **身份计数**：真实登录或请求验证码前，执行者运行 `identity record --identity X --kind login|code`；达到 `limits` 上限时拒绝（`identity-limit`）并登记待人处理。
 
@@ -460,7 +461,7 @@ fixtures:
 | `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …` |
 | `invalid` | 其他参数或配置问题（含配置不合格、检出不存在等），见 problems |
 | `env-busy` | 端口被其他检出或项目的环境租用（`port_step: 0` 时写明占用的检出、正在使用的运行编号与 `env down` 命令），或端口已被其他进程监听（附 lsof 信息） |
-| `browser-busy` | 该身份浏览器被真人登录或其他运行占用 |
+| `browser-busy` | 该身份浏览器被真人登录或其他运行占用；真人占用时，真人完成后 `browser release` 交还 |
 | `browser-crashed` | 30 分钟内两次异常退出；`browser open --reset-crash` |
 | `browser-runtime-missing` | 未安装运行时；`browser install` |
 | `session-required` | 取不到执行者会话编号；加 `--session` |

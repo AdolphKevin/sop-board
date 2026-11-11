@@ -32,14 +32,14 @@ sop-board playwright guide      # 只看 Web 操作
 
 ## 真实账号登录
 
-真实账号、人机验证与二次验证由人完成：
+项目声明的测试账号由执行者直接用声明的凭据变量登录。真实账号、未声明的账号、人机验证与只发到用户本人设备的验证码由人在看板打开的窗口完成，完成后交还，窗口保持打开：
 
 ```sh
-sop-board browser open --identity <身份> --headed   # 有界面的 CfT 窗口，人登录
-sop-board browser close
+sop-board browser open --identity <身份> --headed   # 有界面的 CfT 窗口，人登录或完成验证
+sop-board browser release --identity <身份>          # 交还：窗口不关，之后的运行直接沿用
 ```
 
-之后的无头运行沿用同一 profile。人持有窗口期间，`run prepare` 对该身份返回 `browser-busy`。看到 "browser may not be secure" 时停止，执行者把场景记为 blocked。每次真实登录或请求验证码前，执行者先运行 `sop-board identity record --identity <身份> --kind login|code --run <N>`；超限被拒绝并登记到待人处理。合成账号的登录须先取得用户授权。
+人持有窗口期间，`run prepare` 对该身份返回 `browser-busy`。看到 "browser may not be secure" 时停止，执行者把场景记为 blocked。每次真实登录或请求验证码前，执行者先运行 `sop-board identity record --identity <身份> --kind login|code --run <N>`；超限被拒绝并登记到待人处理。
 
 ## 崩溃
 
@@ -61,5 +61,5 @@ sop-board specs check --repo <仓库别名> <路径> [--ledger ledger.json]
 ## 验证与维护
 
 - `sop-board playwright` 的子命令是 `guide`、`convert`、`tags`；`tags` 把上游配对文件转成用例 tag，不表示通过。
-- 验收以 `docs/sop/` 场景经真实入口执行为准，不新增单元、接口或集成测试。用户另行授权的回归沉淀用 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md)。
+- 验收以 `docs/sop/` 场景经真实入口执行为准，不新增单元、接口或集成测试。由人触发的回归沉淀用 [regression-distill](../src/sop_board/skills/regression-distill/SKILL.md)。
 - 仅更新技能说明与模板不会改写已准备好的运行目录里的脚本；继续旧运行目录前核对其脚本与完成等待配置。

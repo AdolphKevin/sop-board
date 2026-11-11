@@ -16,5 +16,5 @@ description: 演示商城（examples/demo-shop）的真实入口验证方法：a
 ## web 入口
 
 1. 用随包 playwright-acceptance 技能，经 `PW_CDP_ENDPOINT` 连接看板为身份 merchant 启动的 Chrome for Testing；执行者不自行启动浏览器。
-2. 未登录时在登录页以 merchant 和环境变量 `DEMO_MERCHANT_PASSWORD` 的取值登录；这是演示合成账号，登录已取得本任务授权。登录前运行 `sop-board identity record --identity merchant --kind login`。
+2. 未登录时在登录页以 merchant 和环境变量 `DEMO_MERCHANT_PASSWORD` 的取值登录；这是声明的演示合成账号，直接登录，不另要授权。登录前运行 `sop-board identity record --identity merchant --kind login`。
 3. 订单页 `$WEB_URL/orders` 截图并保存页面文本。

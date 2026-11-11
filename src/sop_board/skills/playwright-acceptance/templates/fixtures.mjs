@@ -21,7 +21,7 @@ export {cdpEndpoint};
 
 const BLOCKED_PREFIX = '受阻：';
 
-// 受阻：前置条件不满足、人机验证、登录过期、未知遮挡。to_scenarios.py 据此输出 blocked。
+// 受阻：前置条件不满足、人机验证、真实账号登录过期、未知遮挡。to_scenarios.py 据此输出 blocked。
 export function blocked(reason) {
   return new Error(BLOCKED_PREFIX + reason);
 }

@@ -28,12 +28,19 @@
 | --- | --- |
 | `run-prepared` | 本检出已有 prepared 运行：报告编号；是本会话的就完成并 submit；使用者同意放弃后 `sop-board run abandon --run <编号>` |
 | `env-busy` | 端口被另一检出的环境占用，输出写明占用者与 `env down` 命令：转告使用者，由他决定 |
-| `browser-busy` | 该身份正被真人登录占用：等使用者用完并 `browser close` 后再准备 |
+| `browser-busy` | 该身份正被真人占用：使用者说完成后 `sop-board browser release --identity <身份>` 交还，再准备 |
 | `draft-not-runnable` | 范围含草稿场景：先按 [draft.md](draft.md) 确认 |
 
-## 真人登录
+## 账号与真人操作
 
-身份需要真实账号登录时：`sop-board browser open --identity <身份> --headed` 在 Chrome for Testing 窗口打开入口，请使用者自己输入密码、完成验证，登录态保存在该身份的 profile；完成后 `sop-board browser close --identity <身份>`。出现 `browser may not be secure` 时停止，相关场景记受阻并照录原文。身份处于 crashed 状态时，经使用者同意后 `sop-board browser open --identity <身份> --reset-crash`。
+项目声明的测试账号（含测试邮箱）声明即授权：执行会话直接用声明的凭据变量登录、读验证码，你不向使用者要授权，也不写授权记录。
+
+真人只做三类事：真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码。需要时：
+
+1. `sop-board browser open --identity <身份> --headed`：在该身份的 Chrome for Testing 窗口打开入口（窗口已开着时只取得真人租约，不重启），请使用者在窗口里完成。
+2. 使用者说完成后，`sop-board browser release --identity <身份>` 交还。窗口保持打开，之后的运行直接沿用其中的登录与验证。
+
+`browser close` 会结束浏览器，人做过的验证随之作废，只在使用者要关掉浏览器时用。出现 `browser may not be secure` 时停止，相关场景记受阻并照录原文。身份处于 crashed 状态时，经使用者同意后 `sop-board browser open --identity <身份> --reset-crash`。
 
 ## 人工复测结论
 

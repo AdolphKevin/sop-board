@@ -1,7 +1,8 @@
 // 身份：每个身份是看板为本检出启动的一个 Chrome for Testing（独立持久 profile），切换身份就是换浏览器。
 // 读取运行目录 identities.json（PW_IDENTITIES），其中每个身份带 endpoint。真实登录或请求验证码前先运行
 //   sop-board identity record --identity <身份> --kind login|code --run <运行编号>
-// 被拒时停下，把该身份的场景记为受阻（已登记到待人处理）。真实账号只由人在 sop-board browser open --headed 中登录。
+// 被拒时停下，把该身份的场景记为受阻（已登记到待人处理）。声明的测试账号由执行者用凭据变量登录；真实账号由人在
+// sop-board browser open --headed 的窗口中登录后 browser release 交还，窗口保持打开，这里直接沿用。
 import fs from 'node:fs';
 import {chromium} from '@playwright/test';
 

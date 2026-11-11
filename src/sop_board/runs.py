@@ -141,7 +141,7 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
         lines.append('- 项目没有声明前置数据配方：前置不满足时记受阻，finding 写明缺什么，不自行写库。')
     lines += ['', '## 时间上限与停止', '',
               '- 单场景 4 分钟、定位或操作 15 秒、导航 30 秒（模板缺省）。单个场景累计 15 分钟或 4 次仍无结论时记下证据转下一个。',
-              '- 业务断言失败只记该场景失败并继续；连接异常、授权等待、状态不明时停止本轮，剩余场景写 not-executed 行（带 finding）。']
+              '- 业务断言失败只记该场景失败并继续；连接异常、等待人处理（真实账号登录、人机验证、只发到使用者本人设备的验证码）、状态不明时停止本轮，剩余场景写 not-executed 行（带 finding）。声明的测试账号未登录时直接用凭据变量登录，不算等待人处理。']
     (directory / 'brief.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 

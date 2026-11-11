@@ -3,7 +3,8 @@
 - 运行时是本机级的：<SOP_BOARD_HOME>/runtime，固定版本（随包 lock 文件），浏览器装在同目录 browsers/，
   不读写共享的 ms-playwright 缓存，也不碰用户日常 Chrome。
 - 只有看板守护进程启动浏览器：每个 检出×身份 一个 CfT，独立持久 profile 与调试端口，缺省无头；
-  执行者通过 CDP 连接。真实账号由人在 `browser open --headed` 打开的窗口里登录，profile 保留登录态。
+  执行者通过 CDP 连接。真实账号由人在 `browser open --headed` 打开的窗口里登录、完成验证，之后
+  `browser release` 交还：只解除真人租约，窗口保持运行，之后的运行直接沿用它，人做过的验证不作废。
 - 浏览器异常退出时记录信号、日志与崩溃报告；租约持有期间不自动重启；30 分钟内两次异常退出进入 crashed。
 """
 from datetime import datetime, timedelta, timezone
@@ -307,7 +308,8 @@ class Manager:
                 if row and row['holder'] and row['holder'] != holder:
                     raise APIError(409, 'browser-busy', [dict(field=identity, problem=
                         f"身份 {identity} 的浏览器正由 {'真人登录' if row['holder'] == 'human' else row['holder']} 使用"
-                        + ('；登录完成后运行 sop-board browser close --identity ' + identity if row['holder'] == 'human' else ''))])
+                        + (f'；真人完成后运行 sop-board browser release --identity {identity} 交还（窗口保持打开，运行直接沿用）'
+                           if row['holder'] == 'human' else ''))])
             for identity in identities:
                 instance = self.instance(checkout, identity)
                 self.set_holder(checkout, identity, holder)
@@ -356,7 +358,8 @@ class Manager:
                     db.execute("UPDATE browser_instances SET state='exited', crashes='[]' WHERE checkout=? AND identity=?",
                                (checkout.id, identity))
             instance = self.instance(checkout, identity)
-            if instance.alive() and instance.headed != headed:
+            # 只有要窗口而现有进程是无头时才重启；有界面窗口一律沿用，不把人做过的登录与验证关掉。
+            if headed and instance.alive() and not instance.headed:
                 instance.stop()
             if headed:
                 self.set_holder(checkout, identity, 'human')
@@ -370,6 +373,16 @@ class Manager:
     def release_identity(self, checkout, identity):
         with self.store.transaction() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE checkout=? AND identity=?', (checkout.id, identity))
+
+    def handover(self, checkout, identity):
+        """真人交还：只解除 human 租约，浏览器进程与窗口保持运行，下一次取得租约的运行直接沿用。"""
+        port_for(self.project, checkout, identity)
+        with self.guard:
+            row = self.row(checkout, identity)
+            if row and row['holder'] and row['holder'] != 'human':
+                raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
+            self.release_identity(checkout, identity)
+            return self.status(checkout, identity)
 
     def close(self, checkout, identity):
         with self.guard:
@@ -450,8 +463,8 @@ def _register():
 
     @route('POST', '/local/browser/release', 'token')
     def release(app, request):
-        app.browsers.release(request.json_field('holder'))
-        return json_response(dict(ok=True))
+        checkout = checkout_of(app, request)
+        return json_response(dict(ok=True, browser=app.browsers.handover(checkout, request.json_field('identity') or 'default')))
 
     @route('POST', '/local/browser/crashes', 'token')
     def crashes(app, request):

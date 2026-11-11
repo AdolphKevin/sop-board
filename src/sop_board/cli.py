@@ -643,9 +643,10 @@ def parser():
     p.set_defaults(handler=cmd_mark)
 
     p = common(sub.add_parser('browser'))
-    p.add_argument('action', choices=('install', 'status', 'open', 'close'))
-    p.add_argument('--identity', help='身份编号（open/close 缺省 default；status 缺省列出全部）')
-    p.add_argument('--headed', action='store_true', help='open：打开有界面的窗口并持有真人租约（用于真人登录）')
+    p.add_argument('action', choices=('install', 'status', 'open', 'release', 'close'),
+                   help='release：真人完成后交还，窗口保持打开、之后的运行直接沿用；close：结束浏览器')
+    p.add_argument('--identity', help='身份编号（open/release/close 缺省 default；status 缺省列出全部）')
+    p.add_argument('--headed', action='store_true', help='open：打开有界面的窗口并持有真人租约（真人登录、人机验证、二次验证）')
     p.add_argument('--reset-crash', action='store_true', help='open：清除 crashed 状态并重新启动')
     p.add_argument('--url', help='open：打开的地址（缺省为该检出的 Web 入口地址）')
     p.set_defaults(handler=cmd_browser)

@@ -41,36 +41,35 @@ def page_head(title, lead=''):
     return f'<div class="page-head"><h1>{escape(title)}</h1>{f"<p>{lead}</p>" if lead else ""}</div>'
 
 
-def workbench(project, *, local, operator=None):
-    body = '''
-<section class="workbench">
-  <aside class="sidebar">
+def tree_page(kind, search, empty):
+    """左栏树加右栏的两栏外壳。左栏可隐藏（隐藏后左侧留一条窄栏用来恢复），树可一键全部展开或收起；状态由 board.js 记在 localStorage。"""
+    return f'''
+<section class="workbench{kind}">
+  <aside id="sidebar" class="sidebar">
     <div class="sidebar-head">
-      <label class="field compact"><span>检出</span><select id="checkout"></select></label>
-      <input id="search" class="search" type="search" placeholder="搜索场景编号或标题">
+      <div class="sidebar-top">
+        <label class="field compact"><span>检出</span><select id="checkout"></select></label>
+        <button type="button" class="icon-button" data-sidebar="hide" aria-controls="sidebar" title="隐藏左栏" aria-label="隐藏左栏">«</button>
+      </div>
+      <input id="search" class="search" type="search" placeholder="{search}">
       <div id="filters" class="filters"></div>
+      <div class="tree-tools"><button type="button" id="tree-all" class="tree-all" aria-controls="tree" disabled>全部展开</button></div>
     </div>
     <div id="tree" class="tree" role="tree"></div>
   </aside>
-  <article id="detail" class="detail"><div class="empty"><p>从左侧选择一个场景</p><p class="muted">四要素、证据与复测都在这里</p></div></article>
+  <div class="sidebar-rail"><button type="button" class="icon-button" data-sidebar="show" aria-controls="sidebar" title="显示左栏" aria-label="显示左栏">»</button></div>
+  <article id="detail" class="detail"><div class="empty">{empty}</div></article>
 </section>'''
+
+
+def workbench(project, *, local, operator=None):
+    body = tree_page('', '搜索场景编号或标题', '<p>从左侧选择一个场景</p><p class="muted">四要素、证据与复测都在这里</p>')
     return layout(project, '工作台', body, local=local, page='workbench', operator=operator, wide=True,
                   data=dict(states=list(ORDER)))
 
 
 def sop(project, *, local, operator=None):
-    body = '''
-<section class="workbench docs">
-  <aside class="sidebar">
-    <div class="sidebar-head">
-      <label class="field compact"><span>检出</span><select id="checkout"></select></label>
-      <input id="search" class="search" type="search" placeholder="搜索标题">
-      <div id="filters" class="filters"></div>
-    </div>
-    <div id="tree" class="tree" role="tree"></div>
-  </aside>
-  <article id="detail" class="detail"><div class="empty"><p>从左侧选择一份文档或一个问题</p></div></article>
-</section>'''
+    body = tree_page(' docs', '搜索标题', '<p>从左侧选择一份文档或一个问题</p>')
     return layout(project, '业务 SOP', body, local=local, active='/sop', page='sop', operator=operator, wide=True,
                   scripts=('vendor/mermaid/mermaid.min.js',))
 

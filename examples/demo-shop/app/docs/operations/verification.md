@@ -7,7 +7,7 @@
 ## 2. 入口
 
 - **api**：用 curl 调用 `APP_URL` 下的 `/api/orders`、`/api/refunds`。测试订单用数据配方 `seed-order`，或 `POST /api/orders {id, paid, delivered_days_ago}` 准备（只准备无关前置，不准备退款本身）。
-- **web**：经看板浏览器（身份 merchant）打开 `WEB_URL`。合成账号 merchant 的密码在环境变量 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass），登录已取得本任务授权。
+- **web**：经看板浏览器（身份 merchant）打开 `WEB_URL`。合成账号 merchant 的密码在环境变量 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass）；它是声明的测试账号，执行者直接登录。
 
 ## 3. 观察与证据
 

@@ -12,16 +12,19 @@
 
 `global-setup.mjs` 在开跑前检查 Playwright 版本、scope、调试端口与（仅本轮需要录屏时）ffmpeg，不另开 CDP 会话；唯一目标页与 `PW_FRAME` 在 worker 首次连接时核对。任何一项失败，整轮不执行业务步骤。
 
-### 真实账号登录
+### 账号登录与人做的验证
 
-人在有界面的窗口登录一次：
+- **声明的测试账号**（项目手册或技能列出、凭据在 `credential_env` 变量中，含为验收注册的第三方账号与测试邮箱）：声明即授权。未登录时用凭据变量直接在页面登录，需要验证码时申请并从声明的测试邮箱读取；每次先按[使用次数](#多身份与使用次数)登记。登录放在录制之外：`playwright test` 之前在运行目录用一次性脚本经同一身份的 endpoint 登录，登录态留在 profile，场景里只核对已登录。trace 会记下填写的值与登录请求正文，录屏会拍到输入框，所以不在场景用例里填密码；登录本身就是被验收的步骤时，提交前逐个检查 trace 与录屏，里面不能出现取值。
+- **人做的部分**：真实账号与未声明账号的登录、人机验证、只发到使用者本人设备（手机、身份验证器）的验证码。运行中遇到时记 blocked，写明哪个身份、在哪一页、需要人做什么，并 `sop-board attention add` 登记。人在看板窗口完成后交还，窗口保持打开，下一轮直接沿用：
 
-```bash
-sop-board browser open --identity <身份> --headed   # 窗口里由人登录
-sop-board browser close
-```
+  ```bash
+  sop-board browser open --identity <身份> --headed   # 窗口已开着时只取得真人租约，不重启
+  sop-board browser release --identity <身份>          # 人完成后交还，窗口不关
+  ```
 
-之后的无头运行沿用同一 profile。人持有租约期间 `run prepare` 返回 `browser-busy`。真实账号登录、人机验证、二次验证由人完成；遇到 "browser may not be secure" 或登录过期，停止并记 blocked，写明哪个身份需要重新登录。合成账号登录须有用户本次明确授权。
+  人持有租约期间 `run prepare` 返回 `browser-busy`。`browser close` 会结束浏览器，人在窗口里做过的验证随之作废，只在要关掉浏览器时用。
+- **测试环境的浏览器提示**：测试环境自身地址触发的本地网络访问请求、localhost 自签名证书警告等，由执行者处理（页面上的“继续”、该浏览器的站点设置）；处理不了再按人做的部分登记。
+- 遇到 "browser may not be secure" 立即停止并记 blocked。
 
 ### 崩溃
 
@@ -56,7 +59,7 @@ sop-board identity record --identity <身份> --kind login|code --run <N>
 | 新标签页 | 点击前 `context.waitForEvent('page')` | 单独操作；启用录屏时夹具为新标签页录制 |
 | 浏览器原生对话框 | `page.on('dialog')` | 事先注册处理 |
 | 已知且与业务无关的遮挡（引导、Cookie 提示） | 项目在界面地图中声明 | `page.addLocatorHandler(定位器, 关闭动作)`，由 Playwright 在需要时触发 |
-| 人机验证、登录过期、未知遮挡 | 页面文字 | 抛出 `受阻：` 错误，等人处理 |
+| 人机验证、真实账号登录过期、未知遮挡 | 页面文字 | 抛出 `受阻：` 错误，等人处理 |
 
 连接后，跨域 iframe 要过一两秒才出现在 frame 树里；配置里的 `expect.timeout` 已放宽到 15 秒，不要再写轮询。
 
