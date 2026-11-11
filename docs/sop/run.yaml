@@ -1,12 +1,14 @@
-# v10 现行场景：运行的准备与提交、影响判定、独立性三类、run launch 启动器
+# v10 现行场景：运行的准备与提交、代码改动不改变场景状态、独立性三类、run launch 启动器
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 18（使用者 2026-11-11 决定）修订：RUN-02 由“产品变化后按影响判定保留通过”改为“代码改动不改变场景状态”，
+#   新增 RUN-02-P02（执行期间的改动只作版本记录）与 RUN-02-N02（kept 不再接受）。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W，shop#X 被预埋缺陷打败）；
 #   看板已以 sop-board serve demo --data $D --lan 启动；port_step 为 100，已有检出 wt1。
 #   “执行者”指按 run 目录提示词经演示项目真实入口执行场景、写出结果的会话或测试者。
 
 metadata:
-  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按 检出、指纹、快照 登记；产品变化后按影响判定保留通过；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行"
-  version: 1
+  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按 检出、指纹 登记并记录取证时的快照；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行"
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -16,7 +18,10 @@ metadata:
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
-  tags: ["run", "impact", "independence", "launcher"]
+    - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（代码改动不改变场景状态，删除保留通过与守护通过，守护是回归网）"
+      version: "2026-11-11"
+      confirmed_by: "blur.yin"
+  tags: ["run", "snapshot", "independence", "launcher"]
 
 sops:
   - id: RUN-01
@@ -64,33 +69,61 @@ sops:
         refs: ["docs/design.md#数据库（格式 6，board.sqlite3）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
 
   - id: RUN-02
-    title: 产品变化后按影响判定保留通过
+    title: 代码改动不改变场景状态
     actor: 执行会话
-    entry: "sop-board run prepare --scope pending、run submit，工作台历史"
+    entry: "sop-board status [--json]、run prepare --scope pending、run submit，工作台详情与历史"
     must:
-      - "通过发生在旧快照上且当前快照没有守护通过时为待复测"
-      - "按影响判定保留的通过计入“通过”，历史显示为“按影响判定保留通过”"
+      - "哪些场景需要执行由场景内容（指纹）决定：场景内容没变、最新结果为通过的场景，在产品代码提交或未提交改动后仍为通过，不进入 pending 范围"
+      - "产品快照只记录每条结果取证时的代码版本；快照变化时 run prepare 照旧重启环境"
+      - "执行期间变化的路径记在结果的 product_changed 上，只作版本记录，不影响状态、独立性、待沉淀与待人工复核"
+      - "每个范围内场景都经真实入口实际执行；results.jsonl 的表外字段（包括 kept）不合格"
       - "运行中途场景文件被改时，只作废指纹变化的场景"
     scenarios:
       - id: RUN-02-P01
         polarity: positive
-        title: 无关改动后判定不受影响，shop#A 回到通过并留下理由
+        title: 提交与未提交的代码改动后，已通过场景保持通过，pending 只含失败场景，run prepare 重启环境
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 上 shop#A、shop#B、shop#W 各有一条 Agent 独立验收通过（执行者 T1、实现者 I1），shop#X 为失败；没有守护，也没有人工标注"
+          - "main 环境在运行，记录其进程号；运行 sop-board status --json，记录快照、counts、review_queue 与 distill_queue"
+        steps:
+          - "在 lib 的 refundlib/__init__.py 末尾加一行注释并提交；在 app 的 shop/server.py 末尾加一行注释，不提交"
+          - "运行 sop-board status --json，在工作台查看 shop#A 与 shop#W 的状态、原因与徽标"
+          - "运行 sop-board run prepare --scope pending --session S2，记录环境进程号，查看 run 目录的文件清单、pending.json 与 prompt.md"
+        expected:
+          - "status --json 的快照与改动前不同；counts、review_queue 与 distill_queue 与改动前相同；queues.retest 为空"
+          - "shop#A、shop#B、shop#W 仍为通过，各自仍带“待人工复核”与“待沉淀”；状态原因中没有“产品已变化”“守护未覆盖”一类表述"
+          - "run prepare 重启了环境（进程号变化）"
+          - "pending.json 的范围只有 shop#X，原因为 failed；不含 shop#A、shop#B、shop#W"
+          - "run 目录中没有 previous-results.json、changes.json，prompt.md 中没有影响判定、保留通过或 impact.json 的要求"
+        forbidden_effects:
+          - "代码改动使 shop#A、shop#B 或 shop#W 转为待复测，或失去“待人工复核”“待沉淀”"
+          - "内容未变的已通过场景进入 pending 范围"
+          - "run 目录出现 previous-results.json 或 changes.json，或要求写 impact.json"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/reference.md#场景状态", "docs/reference.md#5. 运行", "docs/standard.md#业务变化与回归"]
+        evidence_hints: ["改动前后的 status --json 输出", "git log 与 git status", "环境进程号记录", "run 目录清单、pending.json 与 prompt.md"]
+      - id: RUN-02-P02
+        polarity: positive
+        title: 执行期间产品有变化的通过照常是独立通过，变化的路径只作版本记录
         actor: 执行会话
         priority: P1
         verify: cli
-        initial_state: ["main 上 shop#A 已通过（无守护），main 环境在运行，记录其进程号"]
+        initial_state: ["main 上 shop#B 未执行", "main 没有 prepared 运行", "运行 sop-board status --json，记录 review、distill 与 stats 中复核覆盖的分母"]
         steps:
-          - "在 app 的 README.md 加一行并提交"
-          - "在工作台查看 shop#A 的状态与原因"
-          - "运行 sop-board run prepare --scope pending --session S2，记录环境进程号"
-          - "执行者判定 README 改动不影响 shop#A，按 run.md 写出影响判定与保留通过的理由；run submit"
-          - "在工作台查看 shop#A 的状态与历史"
+          - "运行 sop-board run prepare --scope shop#B --session T1"
+          - "执行者经演示项目入口执行 shop#B；执行期间在 lib 的 refundlib/__init__.py 末尾加一行注释并提交"
+          - "执行者按实际结果写出 shop#B 的通过结果与证据，运行 sop-board run submit --run <编号> --implementer I1"
+          - "运行 sop-board status --json，GET /api/board，在工作台查看 shop#B 的状态、徽标与历史；只读查询 results 表中这条结果"
         expected:
-          - "改动后 shop#A 为待复测，原因写明产品已变化、守护未覆盖"
-          - "run prepare 重启了环境（进程号变化），范围包含 shop#A"
-          - "提交后 shop#A 为通过，绑定当前快照；历史中该条标为“按影响判定保留通过”并显示理由，原证据仍可打开"
-        forbidden_effects: ["主区域出现“沿用”字样", "丢失之前的证据"]
-        refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#看板：三栏场景工作台（问题 2）", "docs/design.md#检出与环境（问题 3）"]
+          - "submit 输出的 product_changed 列出 lib 的 refundlib/__init__.py，independence 为独立验收"
+          - "results 表中这条结果的 product_changed 记有该路径，快照为 run prepare 时的快照"
+          - "shop#B 为通过，带“待沉淀”与“待人工复核”；历史中这条结果的独立性为独立验收"
+          - "status --json 的 review 与 distill 各比执行前多 1，review_queue 与 distill_queue 包含 shop#B；/api/board 中 stats.agent_review_coverage 的 denominator 比执行前多 1"
+        forbidden_effects: ["shop#B 显示为待复测", "这条通过不计为独立通过，或不进入待沉淀、待人工复核与确认率样本"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#场景状态", "docs/reference.md#5. 运行", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["执行期间的 git log", "submit 输出", "status --json 与 /api/board 前后对照", "results 表只读查询"]
       - id: RUN-02-N01
         polarity: negative
         negative_type: stale-input
@@ -109,6 +142,24 @@ sops:
           - "shop#A 按新指纹显示为未执行"
         forbidden_effects: ["shop#A 的结果被登记到新指纹上", "整轮运行被作废"]
         refs: ["docs/design.md#实施阶段（同一分支，每个阶段结束时包都能导入，CLI 可用）", "docs/design.md#核心概念（只有这些）"]
+      - id: RUN-02-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 结果行声明保留旧通过（kept）时提交被拒绝，不复制旧证据
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 上 shop#A 有一条带证据的独立通过", "main 已运行 sop-board run prepare --scope shop#A shop#B --session S3，得到运行 R"]
+        steps:
+          - "执行者经演示项目入口实际执行 shop#B 并写出通过结果与证据；shop#A 不执行，写一行 {\"scenario\": \"shop#A\", \"status\": \"pass\", \"kept\": true, \"actual\": \"沿用上次通过\", \"executed_at\": <当前时间>, \"evidence\": [], \"note\": \"改动不影响退款接口\"}"
+          - "运行 sop-board run submit --run R --json"
+          - "只读查询 results 表中运行 R 的结果与带 reused_from 的行"
+        expected:
+          - "submit 以业务失败退出（退出码 1），problems 指出 shop#A 一行的 kept 是不接受的字段"
+          - "本次提交不登记任何结果：results 表中没有运行 R 的结果（shop#A 与 shop#B 都没有），也没有新增带 reused_from 的行；运行 R 仍为 prepared"
+        forbidden_effects: ["shop#A 不经实际执行就登记为通过", "复制 shop#A 此前的证据作为本运行的证据"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
+        evidence_hints: ["results.jsonl 原文", "submit 输出", "results 表只读查询"]
 
   - id: RUN-03
     title: 独立性按执行者与实现者分三类

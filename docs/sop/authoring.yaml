@@ -1,11 +1,16 @@
-# v10 现行场景：SOP 编写、草稿批注与确认
+# v10 现行场景：SOP 编写（含业务交叉）、从 SOP 生成场景时修改交叉的已有场景、草稿批注与确认
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 18 与 docs/sop-guide.md“业务交叉”一节（使用者 2026-11-11 决定）修订：
+#   AUT-01-P01 增加写 SOP 时核对已有 SOP、改正口径变化的已有规则并列出交叉；新增 AUT-04（生成场景时修改预期改变的已有场景，预期不变的不改）。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   “演示 PRD”指 examples/demo-shop 提供的一份需求 Markdown；草稿文件 draft-a 是 app 的 scenarios.path 下 metadata.status 为 draft 的场景文件。
+#   “refund.md”指 app 场景目录下已登记的退款 SOP（R1 申请期限、R2 退款金额与次数）；“部分退款 SOP”指由演示 PRD 写成并登记的 SOP。
+#   “退款口径答复”指使用者对 refund.md R2 口径变化的答复：不填金额时按实付金额全额退款，退款记录的类型为“全额”；
+#   填写金额时按所填金额退款，不能超过实付金额，类型为“部分”；每单只能成功退款一次；商家订单页的显示不变。
 
 metadata:
-  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，sop submit 校验结构并写入确认人；草稿是 status: draft 的场景文件，不进入执行，测试同学在看板批注，会话修订后 draft resolve，draft confirm 改为 confirmed 并写入确认人"
-  version: 2
+  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，先核对已有 SOP 的业务交叉，口径改变的已有规则经使用者确认后一并改正，sop submit 校验结构并写入确认人；从 SOP 生成场景时修改预期随之改变的已有场景（指纹变化回到未执行），预期不变的不改并写明理由，不新增影响面字段或登记文件；草稿是 status: draft 的场景文件，不进入执行，测试同学在看板批注，会话修订后 draft resolve，draft confirm 改为 confirmed 并写入确认人"
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -18,35 +23,53 @@ metadata:
     - ref: "使用者 2026-11-10 对工作台试用的反馈"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
-  tags: ["authoring", "sop", "draft"]
+    - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（业务交叉在编写时识别）；docs/sop-guide.md 业务交叉一节"
+      version: "2026-11-11"
+      confirmed_by: "blur.yin"
+  tags: ["authoring", "sop", "draft", "crossing"]
 
 sops:
   - id: AUT-01
     title: 会话编写业务 SOP
     actor: 开发者
     entry: "真实会话中运行 sop-board sop prepare --source、sop submit"
-    must: ["sop submit 校验六个标题（业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围）和规则编号，并由命令追加确认信息"]
+    must:
+      - "sop submit 校验六个标题（业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围）和规则编号，并由命令追加确认信息"
+      - "动笔前逐份核对场景目录中已有的 SOP；新 SOP 的相关规则写明交叉的已有 SOP 文件名与规则编号及共同作用"
+      - "新规则改变已有规则的口径时，先就改变后的口径向使用者提问；确认后改正已有 SOP 的该规则，删去其文末的确认记录，与新 SOP 分别 sop submit"
+      - "登记后向使用者列出全部交叉：已有 SOP 与规则编号、口径是否改变、预计要修改的已有场景"
     scenarios:
       - id: AUT-01-P01
         polarity: positive
-        title: 从演示 PRD 写出 SOP 并登记，确认人取操作者
+        title: 从演示 PRD 写出部分退款 SOP，核对出与 refund.md 的交叉，口径改变的 R2 经使用者确认后一并改正并登记
         actor: 开发者
         priority: P1
         verify: agent
-        initial_state: ["演示 PRD 在临时目录中"]
+        initial_state:
+          - "演示 PRD 在临时目录中"
+          - "记录 app 的 git status 与 shop.yaml 的 sha256"
         steps:
           - "在 app 目录新开 Claude Code 会话，请求“根据这份 PRD 写业务 SOP”并给出 PRD 路径"
-          - "会话运行 sop prepare --source <PRD>；会话就业务口径提问时按 PRD 原意回答"
-          - "会话在仓库中写 SOP Markdown 并运行 sop submit"
-          - "查看 SOP 文件头与看板 SOP 原文页"
+          - "会话运行 sop prepare --source <PRD>；会话就 refund.md R2 的口径变化提问时，按“退款口径答复”回答；就其他业务口径提问时按 PRD 原意回答，PRD 未写明的回答“本次不纳入”"
+          - "会话在仓库中写部分退款 SOP、改正 refund.md，并分别运行 sop submit"
+          - "阅读会话登记后的交叉说明；查看两份 SOP 的正文与文末、app 的 git diff，以及看板 SOP 原文页"
         expected:
           - "sop prepare 复制了资料并给出提示词"
-          - "SOP 含 业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围 六个标题"
-          - "sop submit 成功，命令追加的确认信息中确认人为操作者 N"
-          - "看板 SOP 原文页显示该 SOP"
-        forbidden_effects: ["会话询问确认人是谁", "会话把未答复的业务口径按代码现状写成规则", "会话自行在正文中填写确认信息"]
-        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
-        evidence_hints: ["会话记录", "SOP 文件", "SOP 原文页截图"]
+          - "会话记录显示它在动笔前读了 refund.md，并在改动 refund.md 之前就 R2 的口径变化提问，问题引用 refund.md R2 原文“退款金额等于实付金额”与 PRD 原文“金额不超过实付金额”"
+          - "部分退款 SOP 含 业务目标与范围、角色、业务规则、流程图、禁止的副作用、未覆盖范围 六个标题；其业务规则写明与 refund.md 的交叉，引用规则编号 R1 与 R2，并说明申请期限沿用 R1、每单只能成功退款一次与 R2 共同作用"
+          - "refund.md 的 R2 按“退款口径答复”改正（不填金额全额退款、类型“全额”；填写金额按所填金额、不超过实付、类型“部分”；每单只能成功退款一次），“不含部分退款”一类表述随之从范围与未覆盖范围中改正；R1 原文不变"
+          - "两份 SOP 的 sop submit 都成功；refund.md 原有的确认记录已删去，两份 SOP 文末各只有一节由 sop submit 追加的确认记录，确认人都为操作者 N"
+          - "登记后会话列出全部交叉：refund.md R1（口径未变）、refund.md R2（口径已变），以及预计要修改的已有场景，其中包括 shop#A"
+          - "看板 SOP 原文页显示这两份 SOP"
+          - "shop.yaml 的 sha256 不变；app 中除两份 SOP 外没有新增或改动的文件"
+        forbidden_effects:
+          - "会话询问确认人是谁"
+          - "会话把未答复的业务口径按代码现状写成规则"
+          - "会话在使用者答复之前改写 refund.md 的规则"
+          - "会话自行在正文中填写确认信息"
+          - "新增影响面字段或登记文件"
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名", "docs/design.md#已定决策（2026-11-10 用户答复）", "docs/sop-guide.md#业务交叉：新需求碰到哪些已有场景", "docs/standard.md#业务变化与回归", "docs/reference.md#业务 SOP", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
+        evidence_hints: ["会话记录", "两份 SOP 文件与 git diff", "SOP 原文页截图"]
       - id: AUT-01-N01
         polarity: negative
         negative_type: incomplete-input
@@ -114,7 +137,7 @@ sops:
         actor: 测试同学
         priority: P1
         verify: web
-        initial_state: ["场景目录下有一份业务 SOP Markdown，源文件使用普通换行，不含反斜杠加 n 两个字符；多处正文有段落内换行，例如“业务目标：退款”下一行紧接“范围：签收 7 天内”"]
+        initial_state: ["场景目录下有一份业务 SOP Markdown（演示项目中为 refund.md），源文件使用普通换行，不含反斜杠加 n 两个字符；多处正文有段落内换行，例如“买家在签收后的期限内申请退款，商家在订单页看到退款状态。”下一行紧接“范围：签收 7 天内（含第 7 天）的已签收订单；不含部分退款。”"]
         steps: ["内网打开看板 SOP 原文页，选择这份业务 SOP", "在页面文本中搜索字符 \\n，并查看含它的位置"]
         expected: ["页面文本中不出现字面的 \\n", "源文件中的段落内换行在页面上显示为换行，换行前后的文字分行显示"]
         forbidden_effects: ["页面显示反斜杠加 n 两个字符"]
@@ -135,3 +158,69 @@ sops:
         forbidden_effects: ["整份文档显示为一块未分段的文本", "页面显示反斜杠加 n 两个字符"]
         refs: ["使用者 2026-11-10 对工作台试用的反馈"]
         evidence_hints: ["SOP 原文页截图与页面文本"]
+
+  - id: AUT-04
+    title: 从 SOP 生成场景时修改业务交叉的已有场景
+    actor: 开发者
+    entry: "真实会话中依据场景目录的 SOP 编写场景草稿（sop-board 技能的草稿流程）；sop-board status --json；工作台"
+    must:
+      - "生成场景时按 SOP 写明的交叉逐个核对已有场景；预期随新规则改变的已有场景直接修改四要素，指纹变化即回到未执行，不另写重复的场景"
+      - "改已确认文件中的场景前，先向使用者说明改哪些场景、改成什么"
+      - "交叉不改变预期的已有场景不改，场景结论保持不变；会话在说明中列出因交叉修改的场景，以及有交叉但预期不变的场景和理由"
+      - "不新增影响面字段或登记文件"
+    scenarios:
+      - id: AUT-04-P01
+        polarity: positive
+        title: 依据部分退款 SOP 生成草稿，按改正后的 R2 修改 shop#A，shop#A 回到未执行，其余已有场景保持原结论
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state:
+          - "AUT-01-P01 完成后的演示项目：refund.md 的 R2 已按“退款口径答复”改正并登记，部分退款 SOP 已登记并写明与 refund.md R1、R2 的交叉"
+          - "shop.yaml 与生成演示项目时相同"
+          - "main 上 shop#A、shop#B、shop#W 各有一条 Agent 独立验收通过，shop#X 为失败（预埋缺陷）"
+          - "记录 app 的 git status"
+        steps:
+          - "在 app 目录新开 Claude Code 会话，请求“根据部分退款 SOP 生成验收场景草稿”"
+          - "会话说明要修改哪些已有场景、改成什么时，回答“同意”；会话就其他业务口径提问时按部分退款 SOP 原文回答"
+          - "会话写完后，阅读会话的说明，查看 app 的 git status 与 git diff，运行 sop-board status --json"
+          - "在工作台查看 shop#A、shop#B、shop#W、shop#X 与新草稿的场景"
+        expected:
+          - "会话在改动 shop.yaml 之前向使用者说明要修改 shop#A，及其预期改为写明退款类型为“全额”"
+          - "场景目录新增一份 metadata.status 为 draft 的场景文件，含部分退款的正向与反向场景，refs 引用部分退款 SOP 的规则"
+          - "shop.yaml 中 shop#A 的预期写明退款类型为“全额”，起点与步骤仍为签收 3 天、不填金额；shop#B、shop#X、shop#W 的四要素不变（git diff 中 shop.yaml 只有 shop#A 与 metadata 的改动）"
+          - "新草稿中没有与 shop#A 起点和步骤相同的场景"
+          - "会话的说明列出因业务交叉修改的 shop#A 及理由，以及有交叉但预期不变的已有场景和理由，其中包括 shop#B（每单只能成功退款一次的口径未变）"
+          - "status --json 的 invalid_files 为空；shop#A 按新指纹为未执行，shop#B 与 shop#W 仍为通过，shop#X 仍为失败，新草稿的场景计入草稿"
+          - "与开始前相比，app 的 git status 只多出 shop.yaml 的修改与新草稿文件，没有其他新增或改动的文件"
+        forbidden_effects:
+          - "另写一条场景代替修改 shop#A，shop#A 原样保留"
+          - "改动预期不变的 shop#B、shop#X 或 shop#W"
+          - "新增影响面字段或登记文件"
+          - "会话询问确认人是谁"
+          - "会话或看板提交 git"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/sop-guide.md#业务交叉：新需求碰到哪些已有场景", "docs/standard.md#业务变化与回归", "docs/reference.md#场景状态"]
+        evidence_hints: ["会话记录", "shop.yaml 与新草稿的 git diff", "status --json 输出", "工作台截图"]
+      - id: AUT-04-N01
+        polarity: negative
+        negative_type: duplicate
+        title: 交叉不改变已有预期时，已有场景与结论保持不变，也不另写重复场景
+        actor: 开发者
+        priority: P2
+        verify: agent
+        initial_state:
+          - "重新生成的演示项目；refund.md 的 R2 已改为“不填金额时按实付金额全额退款；填写金额时按所填金额退款，不能超过实付金额；每单只能成功退款一次”（没有退款类型），范围不再排除部分退款，并已登记"
+          - "部分退款 SOP 已登记，写明与 refund.md R1、R2 的交叉"
+          - "main 上 shop#A、shop#B、shop#W 各有一条 Agent 独立验收通过，shop#X 为失败；记录 shop.yaml 的 sha256"
+        steps:
+          - "在 app 目录新开 Codex 会话，请求“根据部分退款 SOP 生成验收场景草稿”；会话就业务口径提问时按部分退款 SOP 原文回答"
+          - "会话写完后，阅读会话的说明，计算 shop.yaml 的 sha256，运行 sop-board status --json"
+          - "在工作台查看 shop#A、shop#B、shop#W、shop#X"
+        expected:
+          - "shop.yaml 的 sha256 不变"
+          - "新草稿中没有与 shop#A（签收 3 天、不填金额、退款 99.00）、shop#B（已退款订单再次申请返回 409）或 shop#X（签收 8 天申请被拒绝）起点、步骤与预期都相同的场景"
+          - "会话的说明列出有交叉但预期不变的已有场景和理由，至少包括 shop#A（不填金额时仍按实付金额全额退款）与 shop#B（每单只能成功退款一次的口径未变）"
+          - "shop#A、shop#B、shop#W 仍为通过，shop#X 仍为失败"
+        forbidden_effects: ["修改 shop.yaml", "为交叉另写与已有场景重复的场景", "已有场景的结论因生成草稿而改变"]
+        refs: ["docs/sop-guide.md#业务交叉：新需求碰到哪些已有场景", "docs/standard.md#业务变化与回归"]
+        evidence_hints: ["会话记录", "shop.yaml 前后 sha256", "新草稿文件", "status --json 输出"]

@@ -1,11 +1,12 @@
 # v10 现行场景：修复、独立复验、fix close
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 18（使用者 2026-11-11 决定）修订：删除保留通过后，FIX-01-P01 的禁止项改为不得沿用旧结果或证据。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   main 上 shop#X 已因预埋缺陷登记为失败（独立执行），app 与 lib 没有未提交改动。
 
 metadata:
   requirement: "sop-board v10：失败场景由会话在当前检出修复，另一会话以 run prepare --fix 独立复验（实现者自动取修复会话），提交后 fix close 关闭；测试同学标注不通过的场景在修复关闭后回到待复测"
-  version: 2
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -17,6 +18,9 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "使用者 2026-11-10 对工作台试用的反馈"
       version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（删除保留通过）"
+      version: "2026-11-11"
       confirmed_by: "blur.yin"
   tags: ["fix", "retest", "independence"]
 
@@ -46,7 +50,7 @@ sops:
           - "复验运行的实现者自动为会话 F，执行者为会话 V，独立性为独立验收"
           - "shop#X 的复验结果为通过，带本次执行的新证据"
           - "提交内容与复验时一致，fix close 成功，修复记录为关闭；shop#X 为通过（待沉淀）"
-        forbidden_effects: ["复验以按影响判定保留通过代替实际执行", "复验需要手工声明实现者", "修复会话在其他检出改代码"]
+        forbidden_effects: ["复验沿用此前的结果或证据代替实际执行", "复验需要手工声明实现者", "修复会话在其他检出改代码"]
         refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#独立性（取代交接仪式）", "docs/design.md#验证", "使用者 2026-11-10 对场景集待确认问题的答复 第 9 条"]
         evidence_hints: ["两个会话记录", "修复 diff 与提交", "fixes 表与 results 表只读查询", "工作台截图"]
       - id: FIX-01-N01

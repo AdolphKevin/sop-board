@@ -1,19 +1,22 @@
 # v10 现行场景：按检出导出报告与证据包（含 Agent 独立通过的人工确认率、复核覆盖、未决、误判明细与待人工复核）
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
 #   版本 2 按 docs/design.md 已定决策 13（补回人工复核，2026-11-10 blur.yin 批准）与 docs/reference.md §10 的统计口径，由未参与实现的审核方在实现前修订。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 18（使用者 2026-11-11 决定）修订：删除守护通过与同快照配对；报告列出每条结果取证时的快照与最近一次守护运行，
+#   “混合结果”中 shop#A 现为通过并待人工复核。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动；已有检出 wt1。
-#   “混合结果”：main 上 shop#X 失败且有测试同学的不通过标注（缺陷链接 https://issues.example/DEMO-2），shop#A 守护通过，
+#   “混合结果”：main 上 shop#X 失败且有测试同学的不通过标注（缺陷链接 https://issues.example/DEMO-2），shop#A 通过且有有效守护，
 #   shop#W 独立验收通过并附截图，shop#B 未执行；wt1 上只有一条 shop#B 的实现者自检通过。
-#   main 的全部结果记录为：旧快照上 shop#A 的 Agent 独立通过（之后沉淀守护、产品变化、retest 守护通过）；当前快照上 shop#X 的 Agent 失败、
-#   shop#W 的 Agent 独立通过（执行期间产品无变化，不是保留通过）；张测 对 shop#X 的不通过标注。没有其他人工标注。由此 main 的确认率样本恰为 shop#A、shop#W 各 1 条。
-#   “复核结果”：重新生成的演示项目（预埋缺陷未修复），main 上只有运行 R5（执行者 T5、实现者 I1，独立验收，执行期间产品无变化，无保留通过）的结果：
+#   main 的全部结果记录为：旧快照上 shop#A 的 Agent 独立通过（之后沉淀守护并提交、app 再有一次产品提交、retest 为 shop#A 记一次通过的守护运行）；
+#   当前快照上 shop#X 的 Agent 失败、shop#W 的 Agent 独立通过；张测 对 shop#X 的不通过标注。没有其他人工标注。
+#   由此 main 的确认率样本恰为 shop#A、shop#W 各 1 条，两者都待人工复核。
+#   “复核结果”：重新生成的演示项目（预埋缺陷未修复），main 上只有运行 R5（执行者 T5、实现者 I1，独立验收）的结果：
 #   shop#A、shop#B、shop#W 通过，shop#X 失败；之后 张测 在当前快照上依次标注：shop#A 通过；shop#W 不通过（缺陷链接 https://issues.example/DEMO-4，
 #   说明“退款状态未显示”）；shop#B 阻塞（说明“缺商家测试账号”）。没有守护，也没有其他结果。由此确认率样本恰为 R5 的 shop#A、shop#B、shop#W 三条。
 #   比率写作“分子/分母”，只核对分子与分母的数值，不限定百分比的取整与排版。
 
 metadata:
-  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、证据、独立性、标注、守护通过、Agent 独立通过的人工确认率与复核覆盖、未决计数、误判明细、待人工复核、未执行范围）和证据 zip，只含该检出的结果；内网报告页不显示执行者"
-  version: 2
+  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、每条结果取证时的代码版本、证据、独立性、标注、最近一次守护运行、Agent 独立通过的人工确认率与复核覆盖、未决计数、误判明细、待人工复核、未执行范围）和证据 zip，只含该检出的结果；内网报告页不显示执行者"
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -22,6 +25,9 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 13：补回人工复核（待人工复核、Agent 独立通过的人工确认率、复核覆盖与误判明细）"
       version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（代码改动不改变场景状态，删除守护通过与同快照配对）"
+      version: "2026-11-11"
       confirmed_by: "blur.yin"
   tags: ["report", "review"]
 
@@ -40,13 +46,14 @@ sops:
         initial_state: ["演示项目处于“混合结果”"]
         steps: ["在 main 运行 sop-board report --file shop --zip", "阅读 Markdown 报告，解压证据 zip 并计算各文件 sha256"]
         expected:
-          - "报告逐条列出 shop 场景的状态：shop#X 失败（含 张测 的不通过标注与缺陷链接）、shop#A 守护通过、shop#W 通过、shop#B 未执行"
+          - "报告逐条列出 shop 场景的状态：shop#X 失败（含 张测 的不通过标注与缺陷链接）、shop#A 通过、shop#W 通过、shop#B 未执行"
+          - "shop#A 的结果注明取证时的快照，与报告开头的当前快照不同；shop#A 一节另列最近一次守护运行（通过），并注明它不是真实入口执行"
           - "shop#W 一条写明独立性为独立验收并引用截图证据"
-          - "报告单列未执行范围，包含 shop#B"
+          - "报告单列未执行范围，包含 shop#B，不含 shop#A"
           - "报告的 Agent 独立通过的人工确认率分母为 0（shop#X 的不通过标注针对的是 Agent 失败，不是样本），复核覆盖为 0/2；误判明细为空"
-          - "报告的待人工复核一节只列 shop#W；shop#A（守护通过）不在其中"
+          - "报告的待人工复核一节列出 shop#A 与 shop#W"
           - "zip 中包含报告所引的证据文件，sha256 与报告引用一致"
-        forbidden_effects: ["未执行或守护通过被写成经真实入口通过", "报告或 zip 中出现凭据明文", "守护通过的场景列入待人工复核"]
+        forbidden_effects: ["未执行或守护运行被写成经真实入口执行的结果", "报告把守护运行列为一种场景状态（如“守护通过”）或出现“保留通过”", "报告或 zip 中出现凭据明文"]
         refs: ["docs/design.md#保留能力的简化形态", "docs/reference.md#10. 报告与看板页面"]
         evidence_hints: ["报告全文", "zip 清单与摘要"]
       - id: RPT-01-P02
@@ -87,5 +94,5 @@ sops:
           - "shop#B 为通过且独立性为实现者自检；shop#X、shop#A、shop#W 都列为未执行"
           - "人工确认率与复核覆盖的分母都为 0（实现者自检不是样本，main 的样本不计入）；待人工复核与误判明细为空"
           - "zip 中没有 main 的证据文件"
-        forbidden_effects: ["wt1 报告出现 main 的结果、标注、守护通过、确认率样本或待人工复核"]
+        forbidden_effects: ["wt1 报告出现 main 的结果、标注、守护运行、确认率样本或待人工复核"]
         refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#检出与环境（问题 3）"]

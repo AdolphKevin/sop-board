@@ -1,12 +1,14 @@
-# v10 现行场景：守护闭环（待沉淀、沉淀登记 regression.yaml、retest 守护通过、守护失败回落、漏检使守护失效）
+# v10 现行场景：守护闭环（待沉淀、沉淀登记 regression.yaml、retest 作为回归网运行守护、守护未通过转待复测、漏检使守护失效）
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 18（使用者 2026-11-11 决定）修订：删除“守护通过”状态；retest 缺省运行全部有效守护，
+#   通过只留作证据、不改变状态，未通过的场景转待复测（原因 guard-failed），之后经真实入口通过或守护重新运行通过即回到通过。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   app 的 scenarios.path 下的 regression.yaml 声明演示项目的守护命令 unit（只用 argv，输出 junit）。
 #   “独立通过”指经演示项目真实入口执行、执行者与声明的实现者不同的通过结果。下文都在 main 检出进行。
 
 metadata:
-  requirement: "sop-board v10：独立通过 → 待沉淀 → 写测试 → 守护；产品变化后 sop-board retest 不经 AI 运行有效守护，全部通过记为守护通过；失败、缺失或过期的留在待复测交真实入口；漏检使守护失效"
-  version: 1
+  requirement: "sop-board v10：独立通过 → 待沉淀 → 写测试 → 守护；sop-board retest 不经 AI 运行全部有效守护发现代码回归：通过只留作证据、场景状态不变，未通过的场景转为待复测交真实入口，修好后守护重新运行通过或经真实入口通过即回到通过；漏检使守护失效"
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -15,6 +17,9 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（守护是回归网，删除守护通过状态）"
+      version: "2026-11-11"
       confirmed_by: "blur.yin"
   tags: ["guard", "distill", "retest", "regression"]
 
@@ -101,74 +106,96 @@ sops:
         refs: ["docs/design.md#守护与沉淀（问题 4）"]
 
   - id: GRD-03
-    title: 产品变化后用 retest 运行守护
+    title: retest 运行守护发现代码回归
     actor: 开发者
-    entry: "sop-board retest [--dry-run]"
+    entry: "sop-board retest [--scenario 键…] [--dry-run]；工作台状态与原因；sop-board status --json；run prepare --scope pending"
     must:
-      - "retest 由守护进程执行，不需要 AI；只用 argv、不经 shell"
-      - "每条命令退出码为 0、声明的测试名都在 junit 中且通过、运行前后快照不变，才写入守护通过"
-      - "其余情况把场景留在待复测并附上原因"
+      - "retest 由守护进程执行，不需要 AI；只用 argv、不经 shell；缺省取当前检出全部非草稿场景，只运行守护有效的，其余列在 not_guarded 并附原因"
+      - "每条命令退出码为 0、声明的测试名都在 junit 中且通过、运行前后快照不变，才写入一条通过的守护运行；通过只留作证据，场景状态不变"
+      - "其余情况写入一条未通过的守护运行，场景转为待复测，原因写“守护测试未通过：<原因>”，pending 范围中的原因为 guard-failed"
+      - "守护未通过之后，经真实入口通过，或修好后守护重新运行通过，场景回到通过"
+      - "守护失效（测试文件摘要不一致、漏检）时 retest 不运行它，也不因此改变场景状态"
     scenarios:
       - id: GRD-03-P01
         polarity: positive
-        title: 无关改动未提交时 retest 得到守护通过，全程不启动 AI 会话
+        title: 代码改动后 shop#A 保持通过，retest 记一次通过的守护运行，全程不启动 AI 会话
         actor: 开发者
         priority: P0
         verify: cli
-        initial_state: ["shop#A 有有效守护（GRD-02-P01 后由开发者提交）", "shop#A 当前为通过"]
+        initial_state: ["shop#A 有有效守护（GRD-02-P01 后由开发者提交），当前为通过", "shop#B 当前为通过，没有守护"]
         steps:
-          - "在 app 修改一处不影响 shop#A 业务的产品代码（不提交），在工作台查看 shop#A"
+          - "在 app 修改一处不影响 shop#A 业务的产品代码（不提交），在工作台查看 shop#A 与 shop#B"
           - "运行 sop-board retest --dry-run"
           - "运行 sop-board retest，期间用 ps 观察 codex 或 claude 进程"
-          - "在工作台查看 shop#A，只读查询 guard_runs、launches 与 results 表"
+          - "在工作台查看 shop#A，运行 sop-board status --json，只读查询 guard_runs、launches 与 results 表"
         expected:
-          - "改动后 shop#A 为待复测"
-          - "--dry-run 列出 shop#A 及将运行的守护命令，不运行任何命令、不写 guard_runs"
-          - "retest 后 guard_runs 新增一条守护通过记录，绑定当前快照并保存原始输出"
-          - "shop#A 显示守护通过，“守护通过”筛选计数包含它"
-        forbidden_effects: ["retest 启动任何 codex 或 claude 会话", "新增 kind=agent 的结果", "因有未提交改动拒绝运行"]
-        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#场景状态（按检出推导，不存储）"]
-        evidence_hints: ["retest 输出", "ps 观察记录", "表的只读查询", "工作台截图"]
-      - id: GRD-03-N01
-        polarity: negative
-        negative_type: other
-        title: 植入回归后守护失败，shop#A 回落到待复测并交真实入口重跑
-        actor: 开发者
-        priority: P0
-        verify: cli
-        initial_state: ["shop#A 当前为守护通过（GRD-03-P01）"]
-        steps:
-          - "在 app 对 shop#A 所验证的业务逻辑做一处受控改错（不提交）"
-          - "运行 sop-board retest，查看输出与工作台中的 shop#A"
-          - "运行 sop-board run prepare --scope pending --session S1，查看范围"
-        expected:
-          - "retest 输出 shop#A 的守护失败，原因写明失败的测试名"
-          - "guard_runs 没有在当前快照上为 shop#A 写入守护通过"
-          - "shop#A 状态为待复测，并附上守护失败的原因"
-          - "run prepare 的范围包含 shop#A"
-        forbidden_effects: ["shop#A 显示为通过或守护通过", "retest 自行启动 AI 会话"]
-        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#验证"]
-        evidence_hints: ["改错 diff", "retest 输出", "工作台截图", "run 目录范围"]
-      - id: GRD-03-N02
-        polarity: negative
-        negative_type: tampered-input
-        title: 测试文件被改后守护过期，场景留在待复测并重新显示待沉淀
+          - "改动后 shop#A 与 shop#B 仍为通过"
+          - "--dry-run 列出 shop#A 及将运行的守护命令，shop#B 列在 not_guarded 并写明没有守护；不运行任何命令、不写 guard_runs"
+          - "retest 后 guard_runs 新增一条 shop#A 的通过记录，带当前快照并保存原始输出；没有 shop#B 的记录"
+          - "shop#A 仍为通过；工作台的状态筛选与 status --json 的计数中都没有“守护通过”一类"
+        forbidden_effects: ["retest 启动任何 codex 或 claude 会话", "新增 kind=agent 的结果", "因有未提交改动拒绝运行", "代码改动或守护运行使 shop#A、shop#B 离开通过"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/reference.md#retest", "docs/design.md#验证"]
+        evidence_hints: ["retest 与 --dry-run 输出", "ps 观察记录", "表的只读查询", "工作台截图"]
+      - id: GRD-03-P02
+        polarity: positive
+        title: 守护未通过而待复测的场景，修好后经真实入口通过即回到通过
         actor: 开发者
         priority: P1
         verify: cli
-        initial_state: ["shop#A 有有效守护", "产品有一处无关改动，shop#A 为待复测"]
-        steps: ["修改守护引用的测试文件（使 sha256 变化），不重新沉淀", "运行 sop-board retest", "在工作台查看 shop#A"]
+        initial_state: ["shop#A 有有效守护，当前为通过", "app 对 shop#A 所验证的业务逻辑做了一处受控改错（不提交），随后 sop-board retest 使 shop#A 因守护未通过成为待复测"]
+        steps:
+          - "撤销那处改错"
+          - "运行 sop-board run prepare --scope pending --session S1，查看 pending.json 中 shop#A 的原因"
+          - "执行者经演示项目入口执行 shop#A 并按实际结果写出结果与证据，运行 sop-board run submit --run <编号> --implementer I1"
+          - "在工作台查看 shop#A 的状态与徽标，运行 sop-board status --json"
         expected:
-          - "shop#A 不写入守护通过，留在待复测，原因写明守护的测试文件摘要不一致"
-          - "shop#A 重新显示“待沉淀”徽标"
-        forbidden_effects: ["用改过的测试结果给出守护通过"]
-        refs: ["docs/design.md#守护与沉淀（问题 4）"]
+          - "pending.json 的范围包含 shop#A，原因为 guard-failed"
+          - "shop#A 的真实入口结果为通过并登记成功"
+          - "shop#A 回到通过，并带“待人工复核”；status --json 的 queues.retest 不含 shop#A"
+        forbidden_effects: ["真实入口通过之后 shop#A 仍按此前未通过的守护运行显示为待复测"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/reference.md#场景状态", "docs/reference.md#5. 运行"]
+        evidence_hints: ["pending.json", "submit 输出", "工作台截图", "status --json 输出"]
+      - id: GRD-03-N01
+        polarity: negative
+        negative_type: other
+        title: 植入回归后守护未通过，shop#A 转为待复测并进入真实入口范围；修好后守护重新运行通过即回到通过
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["shop#A 有有效守护，当前为通过，最近一次守护运行通过（GRD-03-P01）"]
+        steps:
+          - "在 app 对 shop#A 所验证的业务逻辑做一处受控改错（不提交）"
+          - "运行 sop-board retest，查看输出、工作台中 shop#A 的状态与原因，运行 sop-board status --json"
+          - "运行 sop-board run prepare --scope pending --session S1，查看 pending.json 后运行 sop-board run abandon --run <编号>"
+          - "撤销那处改错，再运行 sop-board retest，在工作台查看 shop#A"
+        expected:
+          - "retest 输出 shop#A 的守护未通过，原因写明失败的测试名；guard_runs 新增一条 shop#A 的未通过记录及原因"
+          - "shop#A 状态为待复测，原因以“守护测试未通过：”开头并写明失败的测试名；status --json 的 queues.retest 包含 shop#A"
+          - "pending.json 的范围包含 shop#A，原因为 guard-failed"
+          - "撤销改错后的 retest 为 shop#A 新增一条通过记录，shop#A 回到通过，queues.retest 不含 shop#A"
+        forbidden_effects: ["守护未通过后 shop#A 仍显示为通过", "retest 自行启动 AI 会话", "待复测原因写成产品已变化或守护未覆盖"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#验证", "docs/reference.md#场景状态", "docs/reference.md#retest"]
+        evidence_hints: ["改错 diff", "两次 retest 输出", "工作台截图", "pending.json", "guard_runs 只读查询"]
+      - id: GRD-03-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 测试文件被改后守护失效，retest 不运行它，shop#A 保持通过并重新显示待沉淀
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["shop#A 有有效守护，当前为通过"]
+        steps: ["修改守护引用的测试文件（使 sha256 变化），不重新沉淀", "运行 sop-board retest", "在工作台查看 shop#A，只读查询 guard_runs 表"]
+        expected:
+          - "retest 把 shop#A 列在 not_guarded，原因写明守护的测试文件摘要不一致；guard_runs 没有新增 shop#A 的记录"
+          - "shop#A 仍为通过，并重新显示“待沉淀”徽标"
+        forbidden_effects: ["用改过的测试为 shop#A 写入守护运行", "守护失效使 shop#A 转为待复测"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/reference.md#retest"]
 
   - id: GRD-04
     title: 漏检使守护失效，直到用新测试重新沉淀
     actor: 测试同学
     entry: "工作台复测标注或真实入口运行、sop-board retest、distill submit"
-    must: ["最近一次是守护通过、之后真实入口执行或人工复测发现失败时记一条漏检；该守护失效，直到在漏检之后取得新的独立通过、并以变化后的测试摘要重新沉淀"]
+    must: ["最近一次守护运行通过、之后真实入口执行或人工复测发现失败时记一条漏检；该守护失效，直到在漏检之后取得新的独立通过、并以变化后的测试摘要重新沉淀"]
     scenarios:
       - id: GRD-04-P01
         polarity: positive
@@ -187,17 +214,17 @@ sops:
           - "第一次 submit 被拒绝（acceptance 不是漏检之后的独立通过），regression.yaml 的 sha256 不变"
           - "第二次 submit 被拒绝（测试摘要未变化），regression.yaml 的 sha256 不变"
           - "第三次 submit 成功，regression.yaml 中 shop#A 的测试 sha256 与 acceptance 都已更新"
-          - "retest 后 shop#A 为守护通过"
+          - "retest 运行 shop#A 的守护，guard_runs 新增一条 shop#A 的通过记录；shop#A 不在 not_guarded 中，状态仍为通过"
         forbidden_effects: ["未改测试或未取得漏检后的独立通过就恢复守护有效"]
         refs: ["docs/design.md#守护与沉淀（问题 4）", "使用者 2026-11-10 对场景集待确认问题的答复 第 10 条"]
       - id: GRD-04-N01
         polarity: negative
         negative_type: other
-        title: 守护通过后测试同学复测不通过，记漏检且守护失效
+        title: 守护运行通过后测试同学复测不通过，记漏检且守护失效
         actor: 测试同学
         priority: P1
         verify: web
-        initial_state: ["shop#A 当前为守护通过", "产品中存在一个守护测试没有覆盖到的、使 shop#A 不成立的问题"]
+        initial_state: ["shop#A 当前为通过，最近一次守护运行通过", "产品中存在一个守护测试没有覆盖到的、使 shop#A 不成立的问题"]
         steps:
           - "测试同学在内网打开 shop#A，标注不通过并填缺陷链接 https://issues.example/DEMO-3"
           - "只读查询 guard_misses 表；对产品再做一处无关改动后本机运行 sop-board retest"
@@ -205,6 +232,7 @@ sops:
         expected:
           - "guard_misses 新增 shop#A 的漏检记录"
           - "shop#A 显示失败并附缺陷链接"
-          - "retest 不再为 shop#A 写入守护通过，即使守护测试本身通过"
-        forbidden_effects: ["漏检后 shop#A 仍显示守护通过"]
+          - "retest 把 shop#A 列在 not_guarded，原因写明守护已因漏检失效；guard_runs 没有新增 shop#A 的记录，即使守护测试本身仍能通过"
+          - "shop#A 仍显示失败"
+        forbidden_effects: ["漏检后 retest 仍运行 shop#A 的守护或为它写入守护运行", "漏检后 shop#A 显示为通过"]
         refs: ["docs/design.md#守护与沉淀（问题 4）"]
