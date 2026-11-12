@@ -140,32 +140,114 @@ def free_port(start):
 LISTENING = re.compile(rb'DevTools listening on ws://([^\s/]+)/devtools/browser/([0-9A-Za-z-]+)')
 
 
-def listener_pids(port):
+def listener_pids(port, *, timeout=5):
     """在 127.0.0.1:<端口> 上监听的进程号（lsof）；取不到时为空集合。"""
     try:
         result = subprocess.run([shutil.which('lsof') or '/usr/sbin/lsof', '-nP', '-t', f'-iTCP@127.0.0.1:{port}', '-sTCP:LISTEN'],
-                                capture_output=True, text=True, timeout=5)
+                                capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return set()
     return {int(item) for item in result.stdout.split() if item.isdigit()}
 
 
-def listening(log, offset):
+def listening(log, offset, *, latest=False):
     """本次启动写进 chrome.log 的 DevTools 监听地址：(主机:端口, 浏览器标识)；还没写出时返回 None。"""
     try:
         with open(log, 'rb') as stream:
             stream.seek(offset)
-            found = LISTENING.search(stream.read())
+            matches = list(LISTENING.finditer(stream.read()))
+            found = (matches[-1] if latest else matches[0]) if matches else None
     except OSError:
         return None
     return (found.group(1).decode(), found.group(2).decode()) if found else None
 
 
-def debugger_ready(port):
+def debugger_ready(port, *, timeout=1):
     try:
         opener = build_opener(ProxyHandler({}))
-        with opener.open(f'http://127.0.0.1:{port}/json/version', timeout=1) as response:
+        with opener.open(f'http://127.0.0.1:{port}/json/version', timeout=timeout) as response:
             return json.loads(response.read()).get('webSocketDebuggerUrl')
+    except (OSError, ValueError):
+        return None
+
+
+def process_snapshot(pid):
+    """只查看指定进程；启动时间、命令行一起用于防止进程号被复用。"""
+    try:
+        result = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'lstart=,stat=,command='],
+                                capture_output=True, text=True, timeout=5)
+        parts = result.stdout.strip().split(None, 6)
+        if result.returncode == 0 and len(parts) == 7 and not parts[5].startswith('Z'):
+            return ' '.join(parts[:5]), parts[6]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+class RecoveredProcess:
+    """非子进程没有 waitpid 退出码；以启动时间和命令行监视同一个进程。"""
+
+    def __init__(self, pid, snapshot):
+        self.pid, self.snapshot = pid, snapshot
+        self.verified_at = time.monotonic()
+        self.exited = False
+        self.guard = threading.Lock()
+
+    def poll(self):
+        with self.guard:
+            if self.exited:
+                return 0
+            try:
+                os.kill(self.pid, 0)
+            except ProcessLookupError:
+                self.exited = True
+            except PermissionError:
+                pass
+            if not self.exited and time.monotonic() - self.verified_at >= 5:
+                self.verified_at = time.monotonic()
+                self.exited = process_snapshot(self.pid) != self.snapshot
+            return 0 if self.exited else None
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise subprocess.TimeoutExpired(str(self.pid), timeout)
+            time.sleep(1 if remaining is None else min(1, remaining))
+        return None
+
+    def send_signal(self, sig):
+        with self.guard:
+            # 发信号前总是重新核实身份，不使用五秒缓存。
+            self.verified_at = time.monotonic()
+            self.exited = self.exited or process_snapshot(self.pid) != self.snapshot
+            if not self.exited:
+                os.kill(self.pid, sig)
+
+
+def profile_process(profile, info):
+    """锁、运行时可执行文件、完整 profile 参数都符合才返回进程与启动参数。"""
+    try:
+        host, number = os.readlink(profile / 'SingletonLock').rsplit('-', 1)
+        if host != socket.gethostname() or not number.isdigit():
+            return None
+        pid = int(number)
+        snapshot = process_snapshot(pid)
+        if not snapshot:
+            return None
+        executable = str(Path(info['executable']))
+        command = snapshot[1]
+        if not command.startswith(executable + ' '):
+            return None
+        # ps 不为含空格的路径加引号；CfT 的参数用下一个 --选项分界。
+        options = dict(re.findall(r'--([a-z-]+)(?:=(.*?))?(?= --[a-z-]+|$)', command[len(executable) + 1:]))
+        if options.get('user-data-dir') != str(profile):
+            return None
+        port = options.get('remote-debugging-port', '')
+        if not port.isdigit() or not 1 <= int(port) <= LAST_PORT:
+            return None
+        return RecoveredProcess(pid, snapshot), int(port), 'headless' not in options
     except (OSError, ValueError):
         return None
 
@@ -194,6 +276,12 @@ class Instance:
         self.started, self.stopping = 0.0, False
         self.headed = False
         self.actual = None   # 本次启动实际使用的调试端口
+        self.deferred_record = None
+        self.detached = threading.Event()
+        self.recovered = threading.Event()
+        self.recovered.set()
+        self.recovery_thread = None
+        self.recovery_error = None
 
     @property
     def project(self):
@@ -248,6 +336,7 @@ class Instance:
         argv.append(url or 'about:blank')
         log = self.log().open('ab')
         offset = log.tell()
+        self.detached.clear()
         self.stopping, self.headed, self.started, self.actual = False, headed, time.time(), port
         self.process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
         log.close()
@@ -276,7 +365,18 @@ class Instance:
         self.watcher.join(timeout=5)
         return None
 
+    def wait_recovery(self):
+        self.recovered.wait()
+        if self.recovery_error:
+            raise ValueError(f'浏览器认回核对未完成：{self.recovery_error}')
+
     def watch(self, process):
+        interval = 1 if isinstance(process, RecoveredProcess) else .2
+        while process.poll() is None:
+            if self.detached.wait(interval):
+                return
+        if self.detached.is_set():
+            return
         code = process.wait()
         if process is not self.process:
             return
@@ -289,14 +389,20 @@ class Instance:
         process = self.process
         if process.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if isinstance(process, RecoveredProcess):
+                    process.send_signal(signal.SIGTERM)
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 try:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    if isinstance(process, RecoveredProcess):
+                        process.send_signal(signal.SIGKILL)
+                    else:
+                        os.killpg(process.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
                 process.wait(timeout=5)
@@ -310,6 +416,7 @@ class Manager:
     def __init__(self, project, store):
         self.project, self.store = project, store
         self.instances = {}
+        self.pending = {}  # 数据库重建时，按 profile 所在检出名等待检出登记
         self.guard = threading.RLock()
 
     def instance(self, checkout, identity):
@@ -317,15 +424,31 @@ class Manager:
         with self.guard:
             current = self.instances.get(key)
             if current is None or current.checkout.slot != checkout.slot:
-                current = self.instances[key] = Instance(self, checkout, identity)
+                current = self.pending.get((checkout.name, identity))
+                if current:
+                    current.wait_recovery()
+                    self.pending.pop((checkout.name, identity))
+                    current.checkout = checkout
+                    self.instances[key] = current
+                    self.record(current, 'starting')
+                    state, fields = current.deferred_record or ('ready' if current.alive() else 'exited', {})
+                    self.record(current, state, **dict(fields, holder=None))
+                    current.deferred_record = None
+                else:
+                    current = self.instances[key] = Instance(self, checkout, identity)
+            current.wait_recovery()
             return current
 
     def row(self, checkout, identity):
+        self.instance(checkout, identity)
         with self.store.local() as db:
             return db.execute('SELECT * FROM browser_instances WHERE checkout=? AND identity=?',
                               (checkout.id, identity)).fetchone()
 
     def record(self, instance, state, **fields):
+        if instance.checkout.id is None:
+            instance.deferred_record = (state, fields)
+            return
         values = dict(port=instance.port(), pid=instance.process.pid if instance.process else None,
                       profile=str(instance.profile()), headed=int(instance.headed), state=state, log=str(instance.log()))
         values.update(fields)
@@ -343,9 +466,9 @@ class Manager:
 
     def exited(self, instance, code, *, expected):
         """浏览器进程退出：主动停止记为 exited；其他退出记录崩溃，并登记待人处理。"""
-        name = signal_name(code)
+        name = signal_name(code) if code is not None else '进程已退出'
         report = crash_report(instance.started)
-        row = self.row(instance.checkout, instance.identity)
+        row = self.row(instance.checkout, instance.identity) if instance.checkout.id is not None else None
         crashes = json.loads(row['crashes']) if row else []
         state = 'exited'
         if not expected:
@@ -355,7 +478,9 @@ class Manager:
                                 holder=row['holder'] if row else None))
             state = 'crashed' if len(crashes) >= 2 else 'exited'
             text = (f"身份 {instance.identity} 的 Chrome for Testing（检出 {instance.checkout.name}）"
-                    f"{moment.astimezone().strftime('%Y-%m-%d %H:%M:%S')} 因 {name or f'退出码 {code}'} 退出，日志 {instance.log()}"
+                    f"{moment.astimezone().strftime('%Y-%m-%d %H:%M:%S')} "
+                    + (f"因 {name or f'退出码 {code}'} 退出" if code is not None else '进程已退出')
+                    + f"，日志 {instance.log()}"
                     + (f'，崩溃报告 {report}' if report else ''))
             # 待人处理在业务记录库（附产出机器）；连不上共享库时只记本机的崩溃记录，不影响浏览器状态。
             from .ledger import insert_attention
@@ -365,7 +490,7 @@ class Manager:
             except Exception as error:  # noqa: BLE001
                 import sys
                 print(f'浏览器崩溃没能登记待人处理：{error}', file=sys.stderr)
-        self.record(instance, state, pid=None, exited_at=now(), exit_code=code, signal=name, crash_report=report,
+        self.record(instance, state, pid=None, exited_at=now(), exit_code=code, signal=signal_name(code), crash_report=report,
                     crashes=dumps(crashes))
 
     # ---- 租约 ----
@@ -472,6 +597,9 @@ class Manager:
             return self.status(checkout, identity)
 
     def status(self, checkout, identity=None):
+        for name, pending_identity in list(self.pending):
+            if name == checkout.name:
+                self.instance(checkout, pending_identity)
         with self.store.local() as db:
             rows = [dict(row) for row in db.execute('SELECT * FROM browser_instances WHERE checkout=? ORDER BY identity', (checkout.id,))
                     if identity is None or row['identity'] == identity]
@@ -484,29 +612,109 @@ class Manager:
                 row['default_port'] = port_for(self.project, checkout, row['identity'])
             except ValueError:
                 row['default_port'] = None
-            row['endpoint'] = f"http://127.0.0.1:{row['port']}" if row['alive'] else None
+            confirmed = instance and instance.recovered.is_set() and not instance.recovery_error
+            row['endpoint'] = f"http://127.0.0.1:{row['port']}" if row['alive'] and confirmed else None
         return dict(checkout=checkout.name, runtime=runtime_info(), browsers=rows)
 
     def recover(self):
-        """守护进程启动时结束上次遗留的浏览器（命令行含本项目 profile 路径的进程），释放租约。"""
-        root = str(self.project.data / 'browsers')
-        try:
-            listing = subprocess.run(['ps', '-axo', 'pid=,pgid=,command='], capture_output=True, text=True, timeout=5).stdout
-        except (OSError, subprocess.SubprocessError):
-            listing = ''
-        for line in listing.splitlines():
-            parts = line.split(None, 2)
-            if len(parts) == 3 and parts[0] == parts[1] and f'--user-data-dir={root}' in parts[2]:
-                try:
-                    os.killpg(int(parts[0]), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
+        """仅检查本项目 profile 的锁；认回有界面窗口，清理核实过的无头或无应答浏览器。"""
+        from . import checkouts
+        from types import SimpleNamespace
         with self.store.local_tx() as db:
+            checkouts.ensure_main(db, self.project)
+            registered = {c.name: c for c in checkouts.active(db)}
             db.execute("UPDATE browser_instances SET holder=NULL, pid=NULL, state=CASE WHEN state='crashed' THEN 'crashed' ELSE 'exited' END")
+        info = runtime_info()
+        if info is None:
+            return
+        root = self.project.data / 'browsers'
+        for profile in sorted(root.glob('*/*/profile')):
+            if any(p.is_symlink() for p in (root, profile.parent.parent, profile.parent, profile)):
+                continue
+            found = profile_process(profile, info)
+            if not found:
+                continue
+            process, port, headed = found
+            name, identity = profile.parent.parent.name, profile.parent.name
+            checkout = registered.get(name) or SimpleNamespace(id=None, name=name, slot=0)
+            instance = Instance(self, checkout, identity)
+            instance.process, instance.actual, instance.headed = process, port, headed
+            instance.started = time.time()
+            if not headed:
+                instance.stop()
+                continue
+            instance.recovered.clear()
+            if checkout.id is None:
+                self.pending[name, identity] = instance
+            else:
+                self.instances[checkout.id, identity] = instance
+                self.record(instance, 'starting')
+            instance.recovery_thread = threading.Thread(target=self.confirm_recovery, args=(instance,), daemon=True,
+                                                       name=f'browser-recover-{name}-{identity}')
+            instance.recovery_thread.start()
+
+    def confirm_recovery(self, instance):
+        """后台最多核对十五秒；不取管理器锁，等待此结果的请求可以持有该锁。"""
+        process, port = instance.process, instance.port()
+        deadline = time.monotonic() + READY_SECONDS
+        try:
+            while not instance.detached.is_set() and process.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                owners = listener_pids(port, timeout=min(1, remaining))
+                # 明确属于其他进程时，不请求它的调试接口；无输出时核对日志中的浏览器标识。
+                if not owners or owners == {process.pid}:
+                    remaining = deadline - time.monotonic()
+                    heard = listening(instance.log(), 0, latest=True) if not owners else None
+                    log_matches_port = heard and heard[0] == f'127.0.0.1:{port}'
+                    ws = (debugger_ready(port, timeout=min(1, remaining))
+                          if remaining > 0 and (owners or log_matches_port) else None)
+                    matched = (owners == {process.pid} or
+                               (heard and heard[0] == f'127.0.0.1:{port}' and
+                                ws == f'ws://127.0.0.1:{port}/devtools/browser/{heard[1]}'))
+                    if ws and matched and process.poll() is None:
+                        if instance.detached.is_set():
+                            return
+                        self.record(instance, 'ready', holder=None)
+                        print(f'已认回有界面浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                              f'进程 {process.pid}，调试端口 {port}', flush=True)
+                        instance.recovered.set()
+                        instance.watcher = threading.Thread(target=instance.watch, args=(process,), daemon=True,
+                                                           name=f'browser-{instance.checkout.name}-{instance.identity}')
+                        instance.watcher.start()
+                        return
+                if instance.detached.wait(min(.2, max(0, deadline - time.monotonic()))):
+                    return
+            if not instance.detached.is_set():
+                instance.stop()
+                self.record(instance, 'exited', pid=None, holder=None)
+        except Exception as error:  # noqa: BLE001
+            # 核对自身失败时不另起浏览器，也不结束窗口；请求明确报错。
+            instance.recovery_error = str(error)
+        finally:
+            if instance.detached.is_set() and not instance.recovered.is_set():
+                instance.recovery_error = '看板正在停止，已取消认回核对'
+            instance.recovered.set()
 
     def shutdown(self):
-        for instance in list(self.instances.values()):
-            instance.stop()
+        instances = list(self.instances.values()) + list(self.pending.values())
+        for instance in instances:
+            if instance.recovery_thread:
+                instance.detached.set()
+        for instance in instances:
+            if instance.recovery_thread:
+                instance.recovery_thread.join()
+        for instance in instances:
+            if instance.headed and instance.alive():
+                instance.stopping = True
+                instance.detached.set()
+                if instance.watcher:
+                    instance.watcher.join(timeout=5)
+                print(f'已保留有界面浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                      f'进程 {instance.process.pid}，调试端口 {instance.port()}', flush=True)
+            else:
+                instance.stop()
 
 
 # ---- 守护进程挂载与本机令牌接口 ----

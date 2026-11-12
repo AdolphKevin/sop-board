@@ -24,6 +24,8 @@
 - `sop-board env stop|start <服务>` 只在本检出有 prepared 运行时用来模拟依赖故障（见 [run.md](run.md)「依赖故障的场景」）；运行之外要恢复环境，用 `sop-board env restart`。
 - 浏览器运行时：`sop-board browser install`、`sop-board browser status`。
 
+看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
+
 ## 报告
 
 `sop-board report [--file <场景文件>] [--zip] [--out <目录>]` 导出当前检出的 Markdown 报告，`--zip` 同时打包证据。

@@ -113,6 +113,8 @@
 
 `browser close` 会结束浏览器，人做过的验证随之作废，只在使用者要关掉浏览器时用。出现 `browser may not be secure` 时停止，相关场景记受阻并照录原文。身份处于 crashed 状态时，经使用者同意后 `sop-board browser open --identity <身份> --reset-crash`。
 
+看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
+
 ## 人工复测结论
 
 使用者转述测试同学的复测结论时：`sop-board mark <场景键> pass|fail|blocked|changed [--defect <缺陷链接>] [--note <说明>]`（阻塞为 blocked、需求变更为 changed，缺陷链接与说明可选）；复测人是别人时加 `--as <姓名>`。

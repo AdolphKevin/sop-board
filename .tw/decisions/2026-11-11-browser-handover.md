@@ -4,7 +4,7 @@ scope: ["self:src/sop_board/browsers.py", "self:src/sop_board/skills/**"]
 source: ["用户 blur-yin，2026-11-11，cw2 实际使用复盘的需求", "self:docs/design.md"]
 status: "accepted"
 tags: ["浏览器", "真人登录", "人机验证", "交还", "browser close", "browser release"]
-verified: {"self": {"commit": "77908996bb22317ddde77d9f0cf3cc50d978fb94", "date": "2026-11-11"}}
+verified: {"self": {"commit": "aa7649d6d20d6129db420c527fc9ba00453e8217", "date": "2026-11-13"}}
 ---
 # 真人完成后用 browser release 交还浏览器，窗口不关
 
@@ -23,4 +23,4 @@ verified: {"self": {"commit": "77908996bb22317ddde77d9f0cf3cc50d978fb94", "date"
 
 ## 后果
 - 真人处理过的身份之后以有界面窗口运行，执行时窗口会被自动操作；使用者在运行期间不要点它。
-- 守护进程重启或 `browser close` 仍会结束浏览器：cookie 留在 profile，但与浏览器标识绑定的人机验证结果、会话内的证书例外会失效，之后可能要再验证一次。
+- `browser close` 会结束浏览器：cookie 留在 profile，但与浏览器标识绑定的人机验证结果、会话内的证书例外会失效，之后可能要再验证一次。按已定决策 26，守护进程停止保留有界面窗口、重启后认回，人做过的验证随该进程保留（见 [重启认回](2026-11-13-browser-recovery.md)）。
