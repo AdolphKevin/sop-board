@@ -4,7 +4,7 @@ scope: ["self:src/sop_board/status.py", "self:src/sop_board/runs.py", "self:src/
 source: ["用户 blur-yin，2026-11-11，对产品快照使通过失效的质疑与决定", "self:docs/design.md"]
 status: "accepted"
 tags: ["快照", "产品快照", "待复测", "产品变化", "影响面", "影响判定", "保留通过", "业务交叉", "守护", "retest", "回归"]
-related: ["decisions/2026-11-10-unbound-imported-results.md", "rules/guard-validity.md", "rules/human-review-confirmation.md"]
+related: ["decisions/2026-11-10-unbound-imported-results.md", "rules/guard-validity.md", "rules/human-review-confirmation.md", "decisions/2026-11-12-acceptance-timing-by-situation.md"]
 ---
 # 验收范围由业务变化决定，代码改动不改变场景状态
 
@@ -27,6 +27,7 @@ related: ["decisions/2026-11-10-unbound-imported-results.md", "rules/guard-valid
 - 数据库格式不变：早先写入、带 `reused_from` 的结果仍算通过，但不算经真实入口的独立通过，不进待沉淀、待人工复核与确认率样本。
 - 标准第 5、6 节改为“业务变化与回归”，交付条件改为约定范围（含因业务交叉修改的场景）全部经独立真实入口通过、没有守护未通过的待复测。
 - 风险：业务交叉漏识别时，受影响的已有场景保持通过。由守护测试和人工复核兜底，每周复盘把“业务交叉漏识别”列为漏检归因。
+- 分几步实现时，先验通过的场景被后续步骤重做了实现后同样保持通过，不进入 `--scope pending`；交付时要么守护有效且最近一次运行通过，要么统一验收时按场景键列入、重新执行，两样都没有的不能算进交付，见 decisions/2026-11-12-acceptance-timing-by-situation.md。
 
 ## 放弃过的做法
 - 产品快照一变，所有通过转待复测，再由守护通过或执行会话事后影响判定保留通过

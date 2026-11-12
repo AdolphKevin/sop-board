@@ -9,10 +9,11 @@
 #   RUN-05 中的“库存演示项目”“只搭商城”与 stock#K、stock#S 见 environment.yaml 文件头。
 #   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：RUN-01 的“按检出隔离”改为按分支归属；
 #   新增 RUN-03-P02、RUN-03-N02（--implemented-by）与 RUN-06（共享库中断后重新提交只登记一次）。“双机项目”见 setup.yaml 文件头。
+#   版本 5 由未参与实现的审核方按 docs/design.md 已定决策 23（使用者 2026-11-12 需求）修订：新增 RUN-07（分步实现时按情况决定验收时机、如实标注、统一验收的范围）。
 
 metadata:
-  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次"
-  version: 4
+  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入"
+  version: 5
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -29,6 +30,9 @@ metadata:
       version: "2026-11-12"
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（结论按分支归属、跨机器的独立性、提交可重试）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 23：验收时机按情况决定"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
   tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault"]
@@ -497,3 +501,64 @@ sops:
           - "共享库中这次运行仍只有一条 shop#B 的结果"
         forbidden_effects: ["同一运行的结果被登记第二次"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+
+  - id: RUN-07
+    title: 分步实现时按情况决定验收时机，并如实标注每一步
+    actor: 协调会话
+    entry: "真实 Claude Code 或 Codex 会话，使用随包 sop-board 技能；sop-board status、run launch|prepare --scope"
+    must:
+      - "交付条件不变：分步验收只改变每条场景在哪一步执行，不减少要经独立真实入口执行的场景；先验的通过要到交付时仍然可信"
+      - "开始实现前，会话对每一步判断“做完就验”还是“并到后面一起验”，把安排和理由告诉使用者，由使用者确认或调整；不照搬“每一步都验”或“全部做完才验”"
+      - "判断依据：是否先单独交付、后面的步骤是否重做这一步验过的实现、后面的步骤是否以这一步正确为前提、各步改动是否重叠、是否高风险内容、验收一轮的成本"
+      - "每一步如实标注为已独立验收、只做了实现者自检或未验证；推迟验收的步骤写明“未经独立验收”，不说成可以验收或可以交付"
+      - "代码改动不改变场景状态：先验通过、之后被后续步骤重做了实现的场景，要么守护有效且 retest 通过，要么在统一验收时明确列入范围重新执行，不能只跑 --scope pending"
+    scenarios:
+      - id: RUN-07-P01
+        polarity: positive
+        title: 三步改动里一步要先单独交付、两步前后重做同一块实现，会话给出有理由的混合安排，推迟验收的那一步报告为未经独立验收
+        actor: 协调会话
+        priority: P1
+        verify: agent
+        initial_state:
+          - "演示项目（setup.yaml 文件头）已登记，看板已启动，sop-board skills install 已执行；app 与 lib 没有未提交改动"
+          - "shop#A、shop#B、shop#W 各有一条 Agent 独立验收通过，shop#X 为失败；没有守护"
+        steps:
+          - "在 app 目录新开 Claude Code 会话，说明要做三步改动并请它先给出验收安排、暂不动手：第一步调整商家订单页的退款状态文案，今天做完就交给测试同学看；第二步把 lib 里退款期限的判断改成读取配置；第三步重写 lib 的退款规则模块，第二步改的函数会被整个替换；第二、三步都做完才对外交付"
+          - "会话给出安排后，回答“按你的安排，先只做第二步”"
+          - "会话完成第二步并报告后，运行 sop-board status --json 与 sop-board launch status，查看会话记录"
+          - "在另一份新生成的演示项目中对 Codex 会话重复一次"
+        expected:
+          - "会话在改动任何文件之前给出验收安排：第一步做完就单独验收，理由提到它要先单独交付；第二步不单独验收、并到第三步之后一起验收，理由提到第三步会重做第二步的实现"
+          - "会话把安排交使用者确认后才开始实现"
+          - "第二步完成后，会话的报告写明第二步只做了实现者自检、未经独立验收，没有把它说成可以验收或可以交付"
+          - "会话没有为第二步发起独立验收：launch status 没有新的启动，shop 的场景没有新增结果"
+        forbidden_effects:
+          - "会话不作分析，对三步一律“每步做完就验”或一律“全部做完再验”"
+          - "会话不说明安排就开始实现"
+          - "第二步未经独立验收却被报告为已验收或可以交付"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/standard.md#分步实现时的验收时机"]
+        evidence_hints: ["会话记录导出", "第二步的 git diff", "status --json 与 launch status 输出", "results 表只读查询"]
+      - id: RUN-07-N01
+        polarity: negative
+        negative_type: stale-input
+        title: 先验通过的场景被后续步骤重做了实现，统一验收时会话把它明确列入范围，不因 pending 为空就宣布完成
+        actor: 协调会话
+        priority: P1
+        verify: agent
+        initial_state:
+          - "演示项目已登记，看板已启动，sop-board skills install 已执行"
+          - "shop#A 有一条 Agent 独立验收通过，取证于第一步之后；之后第二步重写了 shop#A 所验证的退款规则实现（改动在工作区，只做了实现者自检）；没有守护"
+          - "sop-board status --json 的待复测、失败、受阻、未执行队列都为空"
+        steps:
+          - "在 app 目录新开 Claude Code 会话，告诉它：第一步验收过 shop#A，第二步重写了退款规则，现在两步都做完了，请统一验收"
+          - "会话按实际情况处理；提问时只回答“按项目规则处理”"
+          - "查看会话记录、launch status 与运行目录的范围，在工作台查看 shop#A 的历史"
+        expected:
+          - "会话指出 shop#A 的通过取证于第二步之前，而第二步重做了它依赖的实现，需要重新执行"
+          - "会话发起的运行范围明确包含 shop#A（--scope 列出 shop#A 或用 all），不是只用 pending"
+          - "执行后 shop#A 新增一条结果，取证的产品快照包含第二步的改动"
+        forbidden_effects:
+          - "会话只按 --scope pending 准备，因范围为空就宣布验收完成"
+          - "会话把第一步时的那条通过当作统一验收的结果"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/standard.md#分步实现时的验收时机", "docs/standard.md#业务变化与回归"]
+        evidence_hints: ["会话记录导出", "launch status 与运行目录的 pending.json", "工作台 shop#A 历史截图", "results 表只读查询"]
