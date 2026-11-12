@@ -5,7 +5,7 @@
 #   “混合结果”中 shop#A 现为通过并待人工复核。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动；已有检出 wt1。
 #   “混合结果”：main 上 shop#X 失败且有测试同学的不通过标注（缺陷链接 https://issues.example/DEMO-2），shop#A 通过且有有效守护，
-#   shop#W 独立验收通过并附截图，shop#B 未执行；wt1 上只有一条 shop#B 的实现者自检通过。
+#   shop#W 独立验收通过并附截图，shop#B 未执行；wt1（分支 wt1）上只有一条 shop#A 的实现者自检通过。
 #   main 的全部结果记录为：旧快照上 shop#A 的 Agent 独立通过（之后沉淀守护并提交、app 再有一次产品提交、retest 为 shop#A 记一次通过的守护运行）；
 #   当前快照上 shop#X 的 Agent 失败、shop#W 的 Agent 独立通过；张测 对 shop#X 的不通过标注。没有其他人工标注。
 #   由此 main 的确认率样本恰为 shop#A、shop#W 各 1 条，两者都待人工复核。
@@ -13,10 +13,15 @@
 #   shop#A、shop#B、shop#W 通过，shop#X 失败；之后 张测 在当前快照上依次标注：shop#A 通过；shop#W 不通过（缺陷链接 https://issues.example/DEMO-4，
 #   说明“退款状态未显示”）；shop#B 阻塞（说明“缺商家测试账号”）。没有守护，也没有其他结果。由此确认率样本恰为 R5 的 shop#A、shop#B、shop#W 三条。
 #   比率写作“分子/分母”，只核对分子与分母的数值，不限定百分比的取整与排版。
+#   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 22（使用者 2026-11-12 决定）修订：新增 RPT-01-P03（未执行范围写明最近一次未执行的人、时间与原因）。
+#   “库存演示项目”“只搭商城”与 stock#K 见 environment.yaml 文件头。
+#   版本 5 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：报告与看板使用同一套状态推导（结论按分支归属、本分支优先），
+#   “混合结果”中 wt1 的那条结果由 shop#B 改为 shop#A，RPT-01-N01 随之改写；新增 RPT-01-P04、RPT-01-N02（别人机器上的证据）。
+#   “双机项目”见 setup.yaml 文件头，“双机结果”见 workbench.yaml 文件头。
 
 metadata:
-  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、每条结果取证时的代码版本、证据、独立性、标注、最近一次守护运行、Agent 独立通过的人工确认率与复核覆盖、未决计数、误判明细、待人工复核、未执行范围）和证据 zip，只含该检出的结果；内网报告页不显示执行者"
-  version: 3
+  requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、每条结果取证时的代码版本、证据、独立性、标注、最近一次守护运行、Agent 独立通过的人工确认率与复核覆盖、未决计数、误判明细、待人工复核、未执行范围及最近一次未执行的人、时间与原因）和证据 zip；报告与看板使用同一套状态推导，本分支有结论的场景只用本分支的，没有的用其他分支的并标出来源，逐条写明结果的产出机器与分支；别人机器上的证据取得到就核对后放入，取不到就写明在哪台机器上；内网报告页不显示执行者"
+  version: 5
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -28,6 +33,12 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（代码改动不改变场景状态，删除守护通过与同快照配对）"
       version: "2026-11-11"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 22：环境按产品来（未执行不形成结论，报告列出最近一次未执行）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 21：多人共享验收记录（本分支优先、产出机器与分支、别人机器上的证据）"
+      version: "2026-11-12"
       confirmed_by: "blur.yin"
   tags: ["report", "review"]
 
@@ -81,18 +92,77 @@ sops:
           - "内网报告页或内网下载的报告出现执行者会话编号"
         refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#保留能力的简化形态", "docs/reference.md#10. 报告与看板页面", "docs/reference.md#3. 守护进程与访问范围", "docs/standard.md#9. 开发与测试每周共同复盘"]
         evidence_hints: ["两份报告全文", "本机与内网报告页的页面文本与下载文件", "results 表只读查询（时间、复测人、缺陷链接、of_result、产品快照）"]
+      - id: RPT-01-P03
+        polarity: positive
+        title: 报告的未执行范围写明最近一次未执行的人、时间与原因，通过的场景不因未执行改变
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "库存演示项目处于“只搭商城”：shop#A 与 shop#W 各有一条 Agent 独立验收通过；stock#K 没有结果"
+          - "最近一次运行由操作者 N 提交，其中 stock#K 写为未执行，原因为“库存服务本机未搭建”；shop#W 写为未执行，原因为“缺少凭据变量 DEMO_MERCHANT_PASSWORD”"
+        steps:
+          - "在 app 目录运行 sop-board report --zip，阅读 report.md"
+          - "另一台设备从内网地址打开 /p/demo/report 并下载 Markdown"
+        expected:
+          - "报告中 stock#K 的状态为未执行，列在未执行范围里，并写明最近一次未执行：操作者 N、时间与“库存服务本机未搭建”"
+          - "shop#W 的状态为通过，不在未执行范围里；它的条目下另注最近一次未执行的人、时间与原因"
+          - "shop#A 为通过，没有未执行的记载"
+          - "内网下载的报告内容相同，但不出现变量名 DEMO_MERCHANT_PASSWORD"
+        forbidden_effects:
+          - "未执行被写成受阻、跳过或经真实入口执行的结果"
+          - "shop#W 因最近一次未执行被列为未执行或受阻"
+          - "内网报告出现凭据变量名"
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["本机报告全文", "内网下载的报告全文"]
+      - id: RPT-01-P04
+        polarity: positive
+        title: B 的报告写明结果的产出机器与分支，A 的看板可达时证据包含 A 机器上的证据
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["双机项目处于“双机结果”；A 的看板以 --lan 运行"]
+        steps: ["在 B 运行 sop-board report --zip --json，阅读 report.md", "解压证据 zip 并计算各文件 sha256"]
+        expected:
+          - "报告逐条列出 shop#A 通过、shop#W 通过、shop#X 失败、shop#B 未执行，每条结果写明产出机器为 A 的机器、分支为 main"
+          - "zip 中包含 shop#W 的截图与录像、shop#A 的请求响应证据，sha256 与报告引用一致"
+          - "命令输出写明没有缺少的证据"
+          - "报告与输出中没有共享库的主机、端口与库名"
+        forbidden_effects: ["取回的证据未核对 sha256 就放入 zip", "报告或 zip 中出现凭据明文或共享库连接信息"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["报告全文", "命令输出", "zip 清单与摘要"]
       - id: RPT-01-N01
         polarity: negative
         negative_type: cross-tenant
-        title: wt1 的报告不含 main 的结果
+        title: wt1 的报告不把 main 分支的结论算到 wt1 自己有结论的场景上，没有结论的场景用 main 的并标出来源
         actor: 开发者
         priority: P1
         verify: cli
         initial_state: ["演示项目处于“混合结果”"]
         steps: ["在 wt1 的 app 目录运行 sop-board report --zip", "阅读报告与 zip 清单"]
         expected:
-          - "shop#B 为通过且独立性为实现者自检；shop#X、shop#A、shop#W 都列为未执行"
-          - "人工确认率与复核覆盖的分母都为 0（实现者自检不是样本，main 的样本不计入）；待人工复核与误判明细为空"
-          - "zip 中没有 main 的证据文件"
-        forbidden_effects: ["wt1 报告出现 main 的结果、标注、守护运行、确认率样本或待人工复核"]
-        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#检出与环境（问题 3）"]
+          - "shop#A 为通过且独立性为实现者自检（wt1 分支自己的结果）；报告没有把 main 分支那条 shop#A 的独立通过和守护运行列在 wt1 的 shop#A 下"
+          - "shop#X 与 shop#W 在 wt1 分支上没有结论：按 main 分支的结果列为失败（含 张测 的不通过标注）与通过，逐条标出来源分支 main；shop#B 列为未执行"
+          - "人工确认率的分母为 0，复核覆盖为 0/1（样本只有来自 main 分支的 shop#W）；待人工复核只列 shop#W"
+          - "zip 中有 wt1 上 shop#A 的证据与 shop#W 的截图，没有 main 分支那条 shop#A 通过的证据"
+        forbidden_effects:
+          - "wt1 报告把 main 分支的 shop#A 通过当作 wt1 的结果、确认率样本或待人工复核"
+          - "来自 main 分支的结果没有标出来源分支"
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["报告全文", "zip 清单与摘要"]
+      - id: RPT-01-N02
+        polarity: negative
+        negative_type: disconnect
+        title: 产出机器的看板不可达时，报告逐条写明证据在哪台机器上，不冒充齐全
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["双机项目处于“双机结果”；A 的看板已停掉"]
+        steps: ["在 B 运行 sop-board report --zip --json，阅读 report.md 并列出 zip 清单"]
+        expected:
+          - "命令成功；报告照常列出各场景的状态与结果"
+          - "A 机器上的每份证据在报告里逐条写“证据在 林甲@<主机名> 的机器上，未包含”，仍列出名称与 sha256"
+          - "命令输出写明缺少的证据条数，与报告中标注未包含的条数一致；zip 中没有这些文件"
+        forbidden_effects: ["报告或输出声称证据齐全", "zip 中用空文件或占位文件冒充证据", "因为取不到证据而整份报告导出失败"]
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["报告全文", "命令输出", "zip 清单"]

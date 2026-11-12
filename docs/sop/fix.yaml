@@ -3,10 +3,12 @@
 #   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 18（使用者 2026-11-11 决定）修订：删除保留通过后，FIX-01-P01 的禁止项改为不得沿用旧结果或证据。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   main 上 shop#X 已因预埋缺陷登记为失败（独立执行），app 与 lib 没有未提交改动。
+#   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 FIX-03（修复记录共享，修复操作只在产出它的机器和检出上进行）。
+#   “双机项目”见 setup.yaml 文件头。
 
 metadata:
-  requirement: "sop-board v10：失败场景由会话在当前检出修复，另一会话以 run prepare --fix 独立复验（实现者自动取修复会话），提交后 fix close 关闭；测试同学标注不通过的场景在修复关闭后回到待复测"
-  version: 3
+  requirement: "sop-board v10：失败场景由会话在当前检出修复，另一会话以 run prepare --fix 独立复验（实现者自动取修复会话），提交后 fix close 关闭；测试同学标注不通过的场景在修复关闭后回到待复测；多人协作时修复记录共享，修复操作只在产出它的机器和检出上进行"
+  version: 4
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -21,6 +23,9 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（删除保留通过）"
       version: "2026-11-11"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 21：多人共享验收记录（修复记录共享，修复操作只在产出机器上进行）"
+      version: "2026-11-12"
       confirmed_by: "blur.yin"
   tags: ["fix", "retest", "independence"]
 
@@ -112,3 +117,60 @@ sops:
           - "测试同学标注通过后 shop#W 为通过，历史保留不通过与通过两条标注"
         forbidden_effects: ["fix close 后 shop#W 直接显示通过而跳过测试同学复测"]
         refs: ["docs/design.md#场景状态（按检出推导，不存储）"]
+
+  - id: FIX-03
+    title: 修复记录共享，修复操作只在产出它的机器和检出上进行
+    actor: 开发者
+    entry: "A、B 两边的 sop-board fix submit|close|abandon --fix N、run prepare --fix N、run prepare --scope；两边的看板"
+    must:
+      - "修复记录（问题场景、修复会话与操作者、状态、关闭时间、产出机器与检出）共享；修复关闭使场景转待复测的规则对所有看板生效"
+      - "fix submit、run prepare --fix、fix close、fix abandon 只能在产出修复的机器和检出上执行，其他机器返回 fix-not-local 并写明产出机器"
+      - "别人要验证时，等修复提交推送后用普通的 run prepare --scope 执行；结果是共享结论，但不关闭那条修复"
+    scenarios:
+      - id: FIX-03-P01
+        polarity: positive
+        title: A 的修复关闭后，B 的看板上被标注不通过的场景同样回到待复测，在 B 的看板复测通过后两边都通过
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state:
+          - "双机项目：shop#W 有 A 的一条独立通过；测试同学 张测 在 B 的看板（内网）把 shop#W 标注为不通过，两边都显示失败"
+          - "A 已完成这次修复的 fix prepare、fix submit 与独立复验（另一会话 run prepare --fix 通过）；修复改动已提交并推送，B 已拉取"
+        steps:
+          - "在 A 运行 sop-board fix close"
+          - "在 A、B 的看板查看 shop#W，两边运行 sop-board status --json"
+          - "张测 在 B 的看板（内网）把 shop#W 标注为通过；两边再查看 shop#W 与历史"
+        expected:
+          - "fix close 成功"
+          - "两边的 shop#W 都为待复测，原因是修复已关闭、等待测试同学复测"
+          - "标注通过后两边都为通过；历史保留不通过与通过两条标注"
+        forbidden_effects:
+          - "修复关闭后只有 A 的看板显示待复测"
+          - "fix close 后 shop#W 直接显示通过而跳过测试同学复测"
+        refs: ["docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["fix close 输出", "两边的看板截图与 status --json", "标注前后的历史截图"]
+      - id: FIX-03-N01
+        polarity: negative
+        negative_type: permission
+        title: B 不能操作 A 的修复，四条命令都返回 fix-not-local；B 的普通执行登记共享结论但不关闭修复
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "双机项目：shop#X 为失败（A 的独立执行）；A 已 fix prepare 并 fix submit，得到修复 F1，修复改动在 A 的工作区、还没有提交"
+          - "B 的看板与 status 上能看到修复 F1 及其状态"
+        steps:
+          - "在 B 依次运行 sop-board fix submit --fix F1 --json、sop-board run prepare --fix F1 --session TB --json、sop-board fix close --fix F1 --json、sop-board fix abandon --fix F1 --json"
+          - "在 A 查看修复 F1 的状态"
+          - "A 把修复改动提交并推送，B 拉取；在 B 运行 sop-board run prepare --scope shop#X --session TB，执行者经演示项目入口执行并提交通过（--implemented-by 林甲）"
+          - "两边查看 shop#X 与修复 F1 的状态"
+        expected:
+          - "四条命令都以业务失败退出（退出码 1），error_code 为 fix-not-local，写明修复 F1 产出于 A 的机器的 main 检出"
+          - "B 的四条命令之后，修复 F1 的状态不变，B 没有新建 prepared 运行"
+          - "B 的普通执行登记成功，两边的 shop#X 都为通过，独立性为独立验收"
+          - "修复 F1 仍未关闭，状态与 B 执行前相同"
+        forbidden_effects:
+          - "B 提交、复验、关闭或放弃了 A 的修复"
+          - "B 的普通执行把修复 F1 记为已复验或已关闭"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["B 四条命令的输出", "A 上修复 F1 的状态", "B 的 submit 输出", "两边的 status --json"]

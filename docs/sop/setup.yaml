@@ -1,13 +1,22 @@
 # v10 现行场景：安装、登记、操作者、检出识别与创建、check
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
+#   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 20（使用者 2026-11-12 决定）修订 SET-02-P02：draft confirm 以看板上的同意人为确认人，不再有 --as。
 # 共用前置（下称“演示项目”）：
 #   - 用 examples/demo-shop 的一条生成命令在临时目录生成 app、lib 两个 Git 仓库（下称主检出），以临时数据目录 $D（所有命令带 --data $D）init 为项目 demo。
 #   - 演示场景文件 shop（app 的 scenarios.path 下）：shop#X 是会被预埋缺陷打败的 API 场景，shop#A、shop#B 是应通过的 API 场景，shop#W 是使用身份 merchant 的 Web 场景；实际编号见 docs/verification.md。
 #   - 看板守护进程已以 sop-board serve demo --data $D --lan 启动（终端或会话中均可）；“操作者 N”指在检出目录运行 git config user.name 的输出。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 SET-06（接入共享库：新建或加入产品、改绑）、SET-07（连不上共享库、表结构版本不符）。
+# 双机项目（SET-06、SET-07 使用，workbench、run、guard、fix、report、cases、authoring 引用）：
+#   - 共享库：用 docker 起一个 PostgreSQL。密码放在 PGPASSFILE 指向的文件（代替 ~/.pgpass），不写进任何配置。
+#   - 用两个 SOP_BOARD_HOME 模拟两台机器。机器 A：数据根目录 $HA，操作者 林甲，项目名 demo，仓库为生成的 app、lib。
+#     机器 B：数据根目录 $HB，操作者 周乙，项目名 shop-b，仓库为同一份 app、lib 的 clone。两边都在 main 分支、内容相同。
+#     两边的 machine.json 各自生成，显示名分别为“林甲@<主机名>”“周乙@<主机名>”，下称“A 的机器”“B 的机器”。
+#   - 两边的 config.yaml 都写了指向共享库的 shared_database（主机、端口、库名、用户名）。A 已用 init demo --new 建立产品（名称 demo，ID 记为 PID），B 已用 init shop-b --join PID 绑定。
+#   - 两边的看板各以 sop-board serve --lan 启动在不同端口，下称“A 的看板”“B 的看板”；“内网设备”指第三台设备经实际非回环地址访问。
 
 metadata:
-  requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对"
-  version: 1
+  requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对；多人协作时各机器直连同一个共享库，由 Agent 问使用者后新建或加入产品，一边的验收记录在另一边可见"
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -17,7 +26,13 @@ metadata:
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
-  tags: ["setup", "operator", "checkout", "check"]
+    - ref: "docs/design.md 已定决策 20：草稿审阅并入工作台（使用者 2026-11-12 决定）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 21：多人共享验收记录（共享库、产品与加入、连不上与版本）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+  tags: ["setup", "operator", "checkout", "check", "shared-database", "product"]
 
 sops:
   - id: SET-01
@@ -103,7 +118,7 @@ sops:
         initial_state:
           - "演示项目已登记，看板已启动，sop-board skills install 已执行"
           - "收件箱为空；演示用例文件在临时目录中"
-          - "app 中有两份草稿场景文件 draft-a、draft-b（metadata.status: draft），没有待处理批注"
+          - "app 中有两份草稿场景文件 draft-a、draft-b（metadata.status: draft），没有待处理批注；draft-a 的两条场景已由 张测、draft-b 的两条场景已由 李四 在看板上同意"
           - "会话开始前没有向会话提供任何人名"
         steps:
           - "在 app 目录分别新开一个 Claude Code 会话和一个 Codex 会话（各走一遍下列请求）"
@@ -116,13 +131,14 @@ sops:
           - "会话完成 inbox add（--kind cases）、merge prepare/submit、draft confirm、run prepare/submit，各命令退出码为 0"
           - "收件箱条目的上传人为操作者 N"
           - "合并后场景的 refs 或 metadata.sources 记录的确认人为操作者 N"
-          - "draft-a 的 metadata.status 为 confirmed，确认人为操作者 N；draft-b 的确认人为 李四，且对应命令带 --as 李四"
+          - "draft-a 与 draft-b 的 metadata.status 都为 confirmed；draft-a 的确认人为 张测，draft-b 的确认人为 李四，两条 draft confirm 命令都不带 --as"
           - "运行记录的操作者为操作者 N"
           - "会话记录中没有出现询问确认人、上传人、作者或“你是谁”的提问，也没有因等待姓名而结束一轮"
         forbidden_effects:
           - "会话询问“确认人是谁”或要求提供姓名"
           - "会话使用 --by、--author、--confirmed-by 或 --uploaded-by 参数"
           - "在用户未提及他人确认时使用 --as，或写入会话自行编造的姓名"
+          - "draft confirm 带 --as，或草稿的确认人写成操作者 N 而不是看板上的同意人"
         refs: ["docs/design.md#署名", "docs/design.md#七个问题：根因与新设计", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
         evidence_hints: ["两个会话的完整记录导出", "场景文件与草稿文件的 git diff", "work 表只读查询"]
 
@@ -239,3 +255,198 @@ sops:
           - "配置与环境两项照常给出结果"
         forbidden_effects: ["check 改用共享的 ms-playwright 缓存或用户日常 Chrome 充当运行时", "check 到 $D 下寻找运行时"]
         refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 2 条"]
+
+  - id: SET-06
+    title: 接入共享库：新建或加入产品
+    actor: 开发者
+    entry: "config.yaml 的 shared_database；sop-board init <项目> [--join <ID> | --new [--product <名称>]]；sop-board status；看板工作台"
+    must:
+      - "config.yaml 写了 shared_database 而还没绑定产品时，业务命令返回 product-unbound"
+      - "init <项目> 列出共享库里已有的产品（名称、创建人、有结果的场景数、最近写入时间）和“本机 N 条场景中，有 M 条在该产品里已有结果”，以 product-choice-required 结束，不自动绑定；由 Agent 问使用者后用 --join 或 --new 绑定，绑定关系记在本机 project.json"
+      - "绑定时提示：本机已有的结果不带入共享库，已登记的守护须重新验收后再沉淀；regression.yaml 引用、但本机没有登记的仓库别名"
+      - "改绑时重新运行 --join 或 --new，已写入原产品的记录留在原产品"
+      - "新建、加入和共享都不读取、不比对仓库的 origin，不扫描目录，不往产品仓库写东西；密码只放 ~/.pgpass，不出现在任何地方"
+    scenarios:
+      - id: SET-06-P01
+        polarity: positive
+        title: A 新建产品，B 看到产品清单后加入，随即看到 A 的结果
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "共享库是空库，没有任何表"
+          - "机器 A 的项目 demo 与机器 B 的项目 shop-b 都已登记，config.yaml 的 shared_database 都指向共享库，都还没有绑定产品（双机项目完成绑定之前的状态）"
+          - "两边的 app、lib 都在 main 分支、内容相同、没有未提交改动；记录两边的 git status"
+        steps:
+          - "在 A 运行 sop-board status --json，再运行 sop-board init demo --json"
+          - "在 A 运行 sop-board init demo --new --json；然后在 A 经演示项目入口执行 shop#A，提交一条独立验收通过（run submit --implementer I1）"
+          - "在 B 运行 sop-board init shop-b --json"
+          - "在 B 运行 sop-board init shop-b --join <上一步输出的产品 ID> --json，再运行 sop-board status --json，并在 B 的看板打开 shop#A 的详情与历史"
+          - "查看两边的 project.json 与 config.yaml；在两边的 app、lib 运行 git status"
+        expected:
+          - "绑定前 A 的 status 以业务失败退出（退出码 1），error_code 为 product-unbound"
+          - "A 的 init demo 列出的产品为空，以 product-choice-required 结束（退出码 1），project.json 中没有产品"
+          - "init demo --new 成功：在空库中建表并建立产品，名称为 demo，输出产品 ID；之后 A 的命令正常"
+          - "B 的 init shop-b 列出产品 demo：创建人 林甲、有结果的场景数 1、最近写入时间；并写明本机场景中有 1 条在该产品里已有结果；以 product-choice-required 结束，没有绑定"
+          - "--join 成功；B 的 status 中 shop#A 为通过，其余场景为未执行"
+          - "B 的看板 shop#A 详情显示这条通过，历史写明产出机器为 A 的机器、分支为 main"
+          - "两边的 project.json 记有同一个产品 ID；project.json 与 config.yaml 中都没有密码"
+          - "两边 app、lib 的 git status 与开始时相同"
+        forbidden_effects:
+          - "init 不带 --join 或 --new 时自行绑定或自行新建产品"
+          - "按仓库 origin、目录名或场景重合数自动判断并绑定"
+          - "往产品仓库写入任何文件"
+          - "密码出现在 config.yaml、project.json、命令输出或看板页面"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#核心概念（只有这些）"]
+        evidence_hints: ["各条命令的原文与输出（连接信息只保留主机以外的部分）", "两边的 project.json 与 config.yaml", "B 的看板 shop#A 详情与历史截图", "两边的 git status"]
+      - id: SET-06-P02
+        polarity: positive
+        title: 加入时提示本机旧结果不带入与没登记的仓库别名；改绑后原产品的记录留在原处
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "机器 A 已建立产品 demo（ID 记为 PID）并绑定；共享库中 demo 只有 A 的一条 shop#A 独立通过"
+          - "机器 B 的项目 shop-b 此前没有配置共享库：本机 SQLite 里有一条 shop#B 的独立通过，并为它登记了守护（regression.yaml 已提交）"
+          - "B 的 lib 工作副本目录名为 library，登记的仓库别名因此是 library；app 的 regression.yaml 引用仓库别名 lib"
+          - "B 刚在 config.yaml 写入指向共享库的 shared_database，还没有绑定产品"
+        steps:
+          - "在 B 运行 sop-board init shop-b --join PID --json，再运行 sop-board status --json"
+          - "在 B 运行 sop-board mark shop#X fail --note 改绑前的标注，然后在 A 运行 sop-board status --json"
+          - "在 B 运行 sop-board init shop-b --new --product 演练 --json，再运行 sop-board status --json"
+          - "在 A 运行 sop-board status --json；查看 B 的 project.json"
+        expected:
+          - "--join 成功，输出提示：本机已有的 1 条结果不带入共享库，已登记的守护会因验收结果不在共享库而失效，须重新验收后再沉淀；并列出 regression.yaml 引用、但本机没有登记的仓库别名 lib"
+          - "加入后 B 的 status：shop#A 为通过（A 的结果），shop#B 为未执行，shop#B 的守护无效"
+          - "B 的标注之后，A 的 status 中 shop#X 为失败"
+          - "--new --product 演练 成功，B 的 project.json 改记新产品的 ID；B 的 status 中全部场景为未执行"
+          - "改绑之后 A 的 status 不变：shop#A 通过，shop#X 仍为失败"
+        forbidden_effects:
+          - "把 B 本机 SQLite 里的旧结果写进共享库"
+          - "改绑时搬走或删除原产品里的记录"
+          - "为了让别名一致而改写 B 的 config.yaml 或产品仓库的 regression.yaml"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["各条命令的原文与输出", "B 的 project.json 前后对照", "A、B 两边的 status --json"]
+      - id: SET-06-P03
+        polarity: positive
+        title: 会话接入共享库时先把已有产品告诉使用者并询问，得到答复后才绑定
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state:
+          - "机器 A 已建立产品 demo 并绑定，共享库中 demo 有 A 的两条结果"
+          - "机器 B 的项目 shop-b 已登记，config.yaml 写了 shared_database，还没有绑定产品；B 已执行 sop-board skills install"
+        steps:
+          - "在 B 的 app 目录新开 Claude Code 会话，请求“把这个项目接到团队的共享库”，不说明新建还是加入"
+          - "会话提问时回答“加入 demo”"
+          - "运行 sop-board status --json，查看 B 的 project.json 与会话记录"
+          - "在另一份同样状态的机器 B 上对 Codex 会话重复一次"
+        expected:
+          - "会话先运行 sop-board init shop-b 取得产品清单，再向使用者说明已有产品 demo（创建人、有结果的场景数、本机场景的重合条数），并询问新建还是加入"
+          - "得到答复后会话运行 sop-board init shop-b --join <demo 的产品 ID>，绑定成功"
+          - "会话记录中没有读取仓库 origin、扫描目录或查看其他仓库来判断是不是同一个产品"
+        forbidden_effects:
+          - "会话不问使用者就绑定或新建产品"
+          - "会话把共享库密码写进文件、命令行参数或输出"
+          - "会话往产品仓库写入与绑定有关的文件"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["会话记录导出", "B 的 project.json", "status --json 输出"]
+      - id: SET-06-N01
+        polarity: negative
+        negative_type: not-found
+        title: 加入不存在的产品 ID 被拒绝，--join 与 --new 不能同时使用
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state: ["机器 A 已建立产品 demo；机器 B 的项目 shop-b 写了 shared_database，还没有绑定产品"]
+        steps:
+          - "在 B 运行 sop-board init shop-b --join no-such-product --json"
+          - "在 B 运行 sop-board init shop-b --join no-such-product --new --json"
+          - "在 B 运行 sop-board status --json，查看 B 的 project.json"
+        expected:
+          - "第一条命令以业务失败退出（退出码 1），error_code 为 product-not-found，并列出共享库里已有的产品"
+          - "第二条命令以参数错误退出（退出码 2）"
+          - "B 仍未绑定：status 的 error_code 为 product-unbound，project.json 中没有产品；共享库没有新增产品"
+        forbidden_effects: ["用不存在的 ID 新建产品", "绑定到清单里的某个产品"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+
+  - id: SET-07
+    title: 连不上共享库或表结构版本不符时明确报错
+    actor: 开发者
+    entry: "sop-board status、mark、env status；看板工作台（本机与内网）"
+    must:
+      - "连不上共享库时，凡是读写业务记录的命令和看板页面都返回 database-unreachable，本机输出写明连的是哪台主机；不做离线队列，也不做本地缓存"
+      - "主机、端口、库名只出现在本机命令输出与本机页面，不进报告、证据和内网页面"
+      - "表结构版本不符时，新旧两个方向都返回 database-version，并说明要换用与共享库匹配的 sop-board 版本；不降级，这次不提供升级命令"
+      - "只用本机状态的命令（env、browser）不受共享库影响"
+    scenarios:
+      - id: SET-07-P01
+        polarity: positive
+        title: 共享库停掉期间，只用本机状态的环境与浏览器命令照常工作
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "双机项目；B 的环境没有运行，浏览器运行时已安装"
+          - "共享库的 docker 容器已停掉"
+        steps:
+          - "在 B 运行 sop-board env up、sop-board env status --json，并 curl 商城入口首页"
+          - "在 B 运行 sop-board browser status --json"
+          - "在 B 运行 sop-board env down"
+        expected:
+          - "env up 成功，env status 显示环境就绪，商城入口首页应答 200"
+          - "browser status 照常返回各身份的浏览器状态"
+          - "env down 成功，环境停止"
+        forbidden_effects: ["这些命令因为连不上共享库而失败", "命令尝试把本机状态写进共享库"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#数据库（格式 7）"]
+        evidence_hints: ["各条命令的输出", "curl 响应", "容器状态"]
+      - id: SET-07-N01
+        polarity: negative
+        negative_type: disconnect
+        title: 共享库停掉后业务命令与看板页面返回 database-unreachable，恢复后照常，期间的操作不会补写
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "双机项目；共享库中 shop#A 有一条 A 的独立通过，shop#B 没有任何结果与标注"
+          - "B 的环境在运行"
+        steps:
+          - "停掉共享库的 docker 容器"
+          - "在 B 运行 sop-board status --json 与 sop-board mark shop#B pass --json"
+          - "在 B 运行 sop-board env status --json"
+          - "本机浏览器与内网设备分别打开 B 的看板工作台"
+          - "重新启动共享库容器，在 B 运行 sop-board status --json，并刷新两个页面"
+        expected:
+          - "status 与 mark 都以业务失败退出（退出码 1），error_code 为 database-unreachable，输出写明共享库的主机"
+          - "env status 照常返回 B 的环境状态"
+          - "本机页面说明连不上共享库并写明主机；内网页面只说明连不上共享库，不出现主机、端口与库名"
+          - "恢复后 status 正常：shop#A 为通过，shop#B 仍为未执行、没有标注；两个页面恢复显示"
+        forbidden_effects:
+          - "连不上时用本地缓存显示旧状态而不报错"
+          - "连不上期间的标注被排队，恢复后补写进共享库"
+          - "内网页面或接口出现共享库的主机、端口、库名或用户名"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#风险与说明"]
+        evidence_hints: ["容器停启记录", "各条命令的输出", "本机与内网页面截图", "恢复后共享库中 shop#B 标注的只读查询（为空）"]
+      - id: SET-07-N02
+        polarity: negative
+        negative_type: other
+        title: 共享库的表结构版本比本机新或旧时都返回 database-version，不读写也不自行升级
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "双机项目；记录共享库中的表结构版本 V 与各表的行数"
+        steps:
+          - "直接把共享库中记录的表结构版本改为 V+1，在 A 运行 sop-board status --json 与 sop-board mark shop#B pass --json"
+          - "把版本改为 V-1，在 A 再运行同样两条命令"
+          - "把版本改回 V，在 A 运行 sop-board status --json；核对共享库各表的行数"
+        expected:
+          - "版本为 V+1 与 V-1 时，两条命令都以业务失败退出（退出码 1），error_code 为 database-version，写明共享库的版本与本机支持的版本，并说明要换用与共享库匹配的 sop-board 版本"
+          - "改回 V 后 status 正常"
+          - "整个过程中共享库各表的行数不变，表结构没有被改动"
+        forbidden_effects:
+          - "版本不符时照常读写业务记录"
+          - "sop-board 自行修改共享库的表结构或版本记录"
+          - "提示运行这次并不提供的升级命令"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["版本记录的修改语句", "各条命令的输出", "共享库各表行数的前后对照"]

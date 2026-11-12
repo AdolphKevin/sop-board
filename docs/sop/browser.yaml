@@ -7,10 +7,12 @@
 #   开始前记录其进程号、profile 目录文件清单与 mtime，以及 ~/Library/Caches/ms-playwright 的清单与 mtime。
 #   演示项目没有真实账号、人机验证与二次验证：只能由真人完成的步骤用“真人在窗口中输入合成账号密码”或“未声明的账号”（BRW-06-N01）代替，
 #   各场景的 initial_state 注明替代做法与未覆盖范围。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 22（使用者 2026-11-12 决定）修订：等人处理的事（真人登录、人机验证等）由“记受阻”改为“记未执行并登记待人处理”，
+#   涉及 BRW-03-P02、BRW-06-P01、BRW-06-N01；浏览器崩溃、启动即中止与 browser may not be secure 仍记受阻。
 
 metadata:
-  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
-  version: 2
+  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人，等人处理的场景记未执行并登记待人处理；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -22,6 +24,9 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "使用者 2026-11-11 需求（cw2 实际使用复盘：左栏展开收起与隐藏、真人完成后不关浏览器、声明的测试账号即授权）"
       version: "2026-11-11"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 22：环境按产品来（未执行与受阻的分界：等人处理的事记未执行）"
+      version: "2026-11-12"
       confirmed_by: "blur.yin"
   tags: ["browser", "chrome-for-testing", "identity", "crash", "release", "declared-account"]
 
@@ -137,11 +142,11 @@ sops:
         priority: P0
         verify: web
         initial_state:
-          - "上一次运行中 shop#W 因 merchant 需要真人登录记为受阻，并有对应的待人处理（按 BRW-06-N01 产生：merchant 未声明为测试账号）"
+          - "上一次运行中 shop#W 因 merchant 需要真人登录记为未执行，并有对应的待人处理（按 BRW-06-N01 产生：merchant 未声明为测试账号）；shop#W 的状态为未执行"
           - "merchant 的 CfT 由守护进程无头运行或未运行，没有 human 租约"
           - "替代做法：演示项目没有人机验证，以“未声明账号需要真人登录”代替；演示登录写入的会话 cookie 不带过期时间，与真人在窗口里通过的人机验证、证书例外一样只在同一浏览器进程内有效。真实网站的人机验证、二次验证与证书例外未覆盖，在记录中注明"
         steps:
-          - "开发者在工作台看到 shop#W 受阻及原因、在 sop-board attention list 看到对应的待人处理后，在 main 运行 sop-board browser open --identity merchant --headed"
+          - "开发者在工作台 shop#W 的详情看到最近一次未执行及原因、在 sop-board attention list 看到对应的待人处理后，在 main 运行 sop-board browser open --identity merchant --headed"
           - "在弹出的 CfT 窗口中输入 merchant 的用户名与密码并登录，停留在订单页；用 ps 记录 merchant 的 CfT 进程号与参数"
           - "运行 sop-board browser release 与 browser status，用 ps 查看 CfT 进程；运行 sop-board attention resolve <该待人处理编号>"
           - "运行 sop-board run prepare --scope shop#W --session S2，执行者经 PW_CDP_ENDPOINT 重跑 shop#W 并 run submit；期间用 ps 查看 CfT 进程"
@@ -151,7 +156,7 @@ sops:
           - "release 后 human 租约解除，CfT 进程号不变，窗口与登录后的订单页仍然打开"
           - "重跑的 run prepare 成功，没有启动新的浏览器进程：CfT 进程号与 release 前相同，仍是有界面窗口"
           - "重跑的执行者直接看到订单页，没有出现登录页；shop#W 登记为通过并附截图"
-          - "工作台 shop#W 显示通过，历史中保留之前的受阻结果；attention list 中该待人处理已解决"
+          - "工作台 shop#W 显示通过，历史中只有这条通过，没有受阻的结果；attention list 中该待人处理已解决"
         forbidden_effects:
           - "browser release 结束浏览器进程，或关闭窗口、页面"
           - "重跑重启浏览器、改成无头，或为 merchant 另起一个 CfT"
@@ -159,7 +164,7 @@ sops:
           - "重跑的执行者自行输入 merchant 的密码登录"
           - "回退到用户日常 Chrome"
         refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
-        evidence_hints: ["工作台受阻与通过的截图", "attention list 前后输出", "各步骤的 ps 输出", "release 前后的 browser status", "重跑的订单页截图"]
+        evidence_hints: ["工作台未执行与通过的截图", "attention list 前后输出", "各步骤的 ps 输出", "release 前后的 browser status", "重跑的订单页截图"]
       - id: BRW-03-N01
         polarity: negative
         negative_type: concurrency
@@ -309,7 +314,7 @@ sops:
         forbidden_effects:
           - "会话询问使用者是否授权登录，或在得到答复前停下不登录"
           - "会话写出授权记录"
-          - "因账号登录登记待人处理、运行 browser open --headed 让使用者登录，或把 shop#W 记为受阻"
+          - "因账号登录登记待人处理、运行 browser open --headed 让使用者登录，或把 shop#W 记为未执行或受阻"
           - "不经 identity record 就登录"
           - "密码取值出现在会话记录、证据或日志中"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
@@ -317,7 +322,7 @@ sops:
       - id: BRW-06-N01
         polarity: negative
         negative_type: permission
-        title: 账号未声明时，会话不自行登录，登记待人处理并把场景记为受阻
+        title: 账号未声明时，会话不自行登录，登记待人处理并把场景记为未执行
         actor: 执行会话
         priority: P0
         verify: agent
@@ -331,10 +336,10 @@ sops:
         expected:
           - "会话没有在 CfT 中登录 merchant，也没有运行 identity record --kind login；merchant 的登录计数仍为 0"
           - "attention list 新增一条待人处理，写明 merchant 需要真人登录"
-          - "shop#W 记为受阻，finding 写明需要真人完成 merchant 登录；工作台 shop#W 显示受阻及原因"
+          - "shop#W 记为未执行，原因写明需要真人完成 merchant 登录；没有登记 shop#W 的结果，工作台 shop#W 的状态仍为未执行，详情显示最近一次未执行及原因"
         forbidden_effects:
           - "会话用环境变量、源码中的缺省值或其他途径取得的密码登录 merchant"
           - "绕过登录页取得登录态，例如直接调用登录接口后把 cookie 写进看板浏览器"
-          - "shop#W 记为通过或失败"
+          - "shop#W 记为通过、失败或受阻"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-11 需求（cw2 实际使用复盘）"]
         evidence_hints: ["替代做法的改动清单", "会话记录导出", "identity status 与 attention list 输出", "工作台截图"]

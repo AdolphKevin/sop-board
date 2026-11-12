@@ -5,10 +5,15 @@
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动。
 #   app 的 scenarios.path 下的 regression.yaml 声明演示项目的守护命令 unit（只用 argv，输出 junit）。
 #   “独立通过”指经演示项目真实入口执行、执行者与声明的实现者不同的通过结果。下文都在 main 检出进行。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 22（使用者 2026-11-12 决定）修订：守护未通过的原因写明当时本机没在运行的服务与工作区是否有未提交改动
+#   （GRD-03-N01 改写，新增 GRD-03-N03）；新增 GRD-02-P02（故障场景的守护写在不需要真实停服的层）。
+#   “库存演示项目”与 stock#K、stock#S 见 environment.yaml 文件头；其 regression.yaml 另声明守护命令 api（经商城接口下单，依赖库存服务）。
+#   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 GRD-05（沉淀登记共享与“本机未同步”、
+#   守护未通过只影响产出它的检出、本机无法运行、漏检只在同一机器同一检出内判定）。“双机项目”见 setup.yaml 文件头。
 
 metadata:
-  requirement: "sop-board v10：独立通过 → 待沉淀 → 写测试 → 守护；sop-board retest 不经 AI 运行全部有效守护发现代码回归：通过只留作证据、场景状态不变，未通过的场景转为待复测交真实入口，修好后守护重新运行通过或经真实入口通过即回到通过；漏检使守护失效"
-  version: 2
+  requirement: "sop-board v10：独立通过 → 待沉淀 → 写测试 → 守护；sop-board retest 不经 AI 运行全部有效守护发现代码回归：通过只留作证据、场景状态不变，未通过的场景转为待复测交真实入口，修好后守护重新运行通过或经真实入口通过即回到通过；retest 不判断失败原因，待复测原因写明当时本机没在运行的服务与工作区是否有未提交改动；故障场景的守护写在不需要真实停服的层；漏检使守护失效"
+  version: 4
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -20,6 +25,12 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（守护是回归网，删除守护通过状态）"
       version: "2026-11-11"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 22：环境按产品来（retest 不判断失败原因、故障场景的沉淀）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 21：多人共享验收记录（守护有效性现算、沉淀登记共享、守护未通过只影响产出它的检出）"
+      version: "2026-11-12"
       confirmed_by: "blur.yin"
   tags: ["guard", "distill", "retest", "regression"]
 
@@ -90,6 +101,30 @@ sops:
         forbidden_effects: ["会话或看板替开发者提交", "改动场景文件", "其他已通过场景变成待复测"]
         refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#检出与环境（问题 3）"]
         evidence_hints: ["会话记录", "regression.yaml 的 git diff", "工作台截图"]
+      - id: GRD-02-P02
+        polarity: positive
+        title: 故障场景 stock#S 的守护写在不需要真实停服的层，库存服务运行时 retest 也通过
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）：stock#S 有一条独立通过，执行时库存服务由 sop-board env stop 停着；stock#S 待沉淀"
+          - "环境在运行，shop 与 stock 都是运行中；app 没有未提交改动"
+        steps:
+          - "在 app 目录新开 Claude Code 会话，请求“把 stock#S 沉淀成回归测试”"
+          - "会话运行 distill prepare stock#S，在当前检出写测试与 guard.json，运行 distill submit"
+          - "查看 regression.yaml 的 git diff 与测试文件；确认 stock 为运行中后运行 sop-board retest；运行 sop-board env status --json；查看会话记录"
+        expected:
+          - "submit 成功；regression.yaml 新增 stock#S 的守护，tests 的 layer 为 unit、api 或 component"
+          - "测试用替身模拟库存查询不可用，不依赖真实的库存服务被停掉"
+          - "stock 为运行中时，retest 为 stock#S 记一条通过的守护运行"
+          - "会话记录中沉淀期间没有运行 sop-board env stop，也没有结束任何进程；沉淀与 retest 之后 stock 仍为运行中"
+        forbidden_effects:
+          - "守护测试要停掉真实的库存服务才能通过"
+          - "沉淀或 retest 使库存服务停止"
+          - "会话或看板替开发者提交"
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["会话记录", "regression.yaml 的 git diff 与测试文件", "retest 输出", "env status 输出"]
       - id: GRD-02-N01
         polarity: negative
         negative_type: incomplete-input
@@ -112,7 +147,8 @@ sops:
     must:
       - "retest 由守护进程执行，不需要 AI；只用 argv、不经 shell；缺省取当前检出全部非草稿场景，只运行守护有效的，其余列在 not_guarded 并附原因"
       - "每条命令退出码为 0、声明的测试名都在 junit 中且通过、运行前后快照不变，才写入一条通过的守护运行；通过只留作证据，场景状态不变"
-      - "其余情况写入一条未通过的守护运行，场景转为待复测，原因写“守护测试未通过：<原因>”，pending 范围中的原因为 guard-failed"
+      - "其余情况写入一条未通过的守护运行，场景转为待复测，原因写“守护测试未通过：<原因>”，并写明当时本机没在运行的服务，以及工作区是否有未提交改动；pending 范围中的原因为 guard-failed"
+      - "retest 不判断失败原因：有服务没在运行时照常运行全部有效守护，未通过就转待复测"
       - "守护未通过之后，经真实入口通过，或修好后守护重新运行通过，场景回到通过"
       - "守护失效（测试文件摘要不一致、漏检）时 retest 不运行它，也不因此改变场景状态"
     scenarios:
@@ -170,7 +206,7 @@ sops:
           - "撤销那处改错，再运行 sop-board retest，在工作台查看 shop#A"
         expected:
           - "retest 输出 shop#A 的守护未通过，原因写明失败的测试名；guard_runs 新增一条 shop#A 的未通过记录及原因"
-          - "shop#A 状态为待复测，原因以“守护测试未通过：”开头并写明失败的测试名；status --json 的 queues.retest 包含 shop#A"
+          - "shop#A 状态为待复测，原因以“守护测试未通过：”开头，写明失败的测试名，并写明工作区有未提交改动；status --json 的 queues.retest 包含 shop#A"
           - "pending.json 的范围包含 shop#A，原因为 guard-failed"
           - "撤销改错后的 retest 为 shop#A 新增一条通过记录，shop#A 回到通过，queues.retest 不含 shop#A"
         forbidden_effects: ["守护未通过后 shop#A 仍显示为通过", "retest 自行启动 AI 会话", "待复测原因写成产品已变化或守护未覆盖"]
@@ -190,6 +226,32 @@ sops:
           - "shop#A 仍为通过，并重新显示“待沉淀”徽标"
         forbidden_effects: ["用改过的测试为 shop#A 写入守护运行", "守护失效使 shop#A 转为待复测"]
         refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/reference.md#retest"]
+
+      - id: GRD-03-N03
+        polarity: negative
+        negative_type: disconnect
+        title: 库存服务没在运行时守护未通过，待复测原因写明没在运行的服务；服务恢复后重新运行守护通过即回到通过
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）：stock#K 有有效守护，守护测试经商城接口下单、依赖库存服务；shop#A 有有效守护，测试不依赖库存服务；两条场景当前都为通过"
+          - "环境在运行，app、lib、stock 都没有未提交改动；没有 prepared 的运行"
+          - "测试者已用 kill -9 结束库存服务进程，sop-board env status 中 stock 为异常退出"
+        steps:
+          - "运行 sop-board retest，查看输出；在工作台查看 stock#K 与 shop#A，运行 sop-board status --json"
+          - "运行 sop-board env restart，确认 stock 为运行中后再运行 sop-board retest，在工作台查看 stock#K"
+        expected:
+          - "第一次 retest 照常运行两条守护：stock#K 的守护未通过，shop#A 的守护通过"
+          - "stock#K 转为待复测，原因以“守护测试未通过：”开头，写明失败的测试名、当时本机没在运行的服务 stock（库存查询与扣减，异常退出），以及工作区没有未提交改动；queues.retest 包含 stock#K"
+          - "shop#A 仍为通过"
+          - "env restart 之后的 retest 为 stock#K 新增一条通过的守护运行，stock#K 回到通过，queues.retest 不含 stock#K"
+        forbidden_effects:
+          - "retest 因为有服务没在运行而拒绝运行，或跳过 stock#K 的守护"
+          - "retest 自行判断失败原因，把 stock#K 记成“未判定”或保持通过"
+          - "shop#A 因 stock 没在运行而转为待复测"
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["两次 retest 输出", "env status 输出", "工作台 stock#K 的状态与原因截图", "status --json 输出", "guard_runs 只读查询"]
 
   - id: GRD-04
     title: 漏检使守护失效，直到用新测试重新沉淀
@@ -236,3 +298,106 @@ sops:
           - "shop#A 仍显示失败"
         forbidden_effects: ["漏检后 retest 仍运行 shop#A 的守护或为它写入守护运行", "漏检后 shop#A 显示为通过"]
         refs: ["docs/design.md#守护与沉淀（问题 4）"]
+
+  - id: GRD-05
+    title: 多人协作下的守护：沉淀登记共享，守护未通过只影响产出它的检出
+    actor: 开发者
+    entry: "A、B 两边的 sop-board distill submit、retest [--dry-run]、status --json；两边的看板"
+    must:
+      - "守护是否有效由每个看板按本检出的 regression.yaml 与测试文件现算；验收结果是同指纹的独立通过、没有登记过漏检、检出能力证据有记录，这三条查共享库"
+      - "沉淀成功时把沉淀登记（场景、指纹、测试摘要、沉淀人、机器、时间）写入共享库"
+      - "共享库里有当前指纹的沉淀登记，但本检出没有这条守护或测试摘要不同时，不显示“待沉淀”，显示“已由 <沉淀人> 沉淀，本机未同步”；retest 不运行它，也不写记录"
+      - "守护引用的仓库在本机没有登记、命令跑不了时，retest 把它列为“本机无法运行”，不记作未通过"
+      - "守护未通过只让产出它的机器和检出转待复测；别的机器的状态不变，在场景详情的“其他机器上的情况”里看到"
+      - "漏检只在同一台机器的同一检出内判定；登记后的漏检各看板共用"
+    scenarios:
+      - id: GRD-05-P01
+        polarity: positive
+        title: A 沉淀后还没推送时，B 显示“已由 林甲 沉淀，本机未同步”且不运行它；B 拉到守护后有效并运行通过
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "双机项目：shop#A 有 A 的一条独立通过，两边都显示通过与“待沉淀”"
+          - "A、B 的 app 都没有未提交改动"
+        steps:
+          - "在 A 沉淀 shop#A（distill prepare、写测试、distill submit 成功），测试文件与 regression.yaml 留在 A 的工作区，不提交"
+          - "在 B 的看板查看 shop#A，在 B 运行 sop-board status --json、sop-board retest --dry-run 与 sop-board retest"
+          - "在 A 的看板查看 shop#A"
+          - "在 A 提交并推送测试文件与 regression.yaml，在 B 拉取；在 B 的看板查看 shop#A，再在 B 运行 sop-board retest"
+        expected:
+          - "A 沉淀后，A 的看板 shop#A 不再显示“待沉淀”，预期与禁止带守护覆盖标记"
+          - "B 拉取前：shop#A 仍为通过，不显示“待沉淀”，显示“已由 林甲 沉淀，本机未同步”；status --json 的 distill_queue 不含 shop#A"
+          - "B 拉取前的 retest（含 --dry-run）把 shop#A 列在 not_guarded，原因为本机未同步；共享库没有新增 shop#A 的守护运行"
+          - "B 运行 retest 前后，A 的看板 shop#A 始终显示守护有效"
+          - "B 拉取后：shop#A 带守护覆盖标记；retest 为 shop#A 记一条通过的守护运行，产出机器为 B 的机器"
+        forbidden_effects:
+          - "B 在拉取前显示 shop#A 守护有效，或仍显示“待沉淀”"
+          - "B 的检出里没有这条守护，使 A 的看板重新显示“待沉淀”"
+          - "B 的 retest 在拉取前为 shop#A 写入守护运行"
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["A 的 distill submit 输出", "B 拉取前后的看板截图、status --json 与 retest 输出", "共享库沉淀登记与守护运行的只读查询", "A 的看板截图"]
+      - id: GRD-05-P02
+        polarity: positive
+        title: B 的守护未通过只让 B 转待复测，A 保持通过并在“其他机器上的情况”里看到；B 修好后重新运行守护通过
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "双机项目：shop#A 的守护已由 A 沉淀、提交并推送，B 已拉取；两边 shop#A 都是通过且守护有效"
+          - "B 在 app 对 shop#A 所验证的业务逻辑做了一处受控改错（不提交）；A 的 app 没有改动"
+        steps:
+          - "在 B 运行 sop-board retest，查看 B 的看板的 shop#A 与 sop-board status --json"
+          - "在 A 的看板查看 shop#A，在 A 运行 sop-board status --json；再运行 sop-board run prepare --scope pending --session TA --json 查看范围后 run abandon"
+          - "在 B 撤销改错后再运行 sop-board retest；两边查看 shop#A"
+        expected:
+          - "B：shop#A 转为待复测，原因以“守护测试未通过：”开头，并写明工作区有未提交改动；queues.retest 包含 shop#A"
+          - "A：shop#A 仍为通过，queues.retest 为空，pending 范围不含 shop#A"
+          - "A 的 shop#A 详情的“其他机器上的情况”显示一条：周乙、B 的机器、时间、守护未通过及原因（含工作区有未提交改动）"
+          - "B 撤销改错后的 retest 通过，B 的 shop#A 回到通过"
+        forbidden_effects:
+          - "B 的守护未通过使 A 的 shop#A 转为待复测"
+          - "A 的看板上完全看不到 B 的这次守护未通过"
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["B 的改错 diff 与两次 retest 输出", "两边的看板截图与 status --json", "A 的 pending.json"]
+      - id: GRD-05-N01
+        polarity: negative
+        negative_type: not-found
+        title: 守护引用的仓库本机没有登记时，retest 列为“本机无法运行”，不记未通过
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "机器 A 已建立产品并绑定；shop#A 的守护已由 A 沉淀、提交并推送，守护命令在 lib 仓库运行（regression.yaml 中该命令的 repo 为 lib）"
+          - "机器 B 的项目只登记了 app，没有登记 lib；已加入同一产品并拉到这条守护；B 上 shop#A 为通过"
+        steps:
+          - "在 B 运行 sop-board retest --dry-run 与 sop-board retest"
+          - "在 B 的看板查看 shop#A，在 B 运行 sop-board status --json；在 A 的看板查看 shop#A"
+        expected:
+          - "B 的 retest（含 --dry-run）把 shop#A 列为“本机无法运行”，写明没有登记的仓库别名 lib；共享库没有新增 shop#A 的守护运行"
+          - "B 的 shop#A 仍为通过，不显示“待沉淀”，queues.retest 为空"
+          - "A 的看板 shop#A 不受影响，仍显示守护有效"
+        forbidden_effects:
+          - "为 shop#A 记一条未通过的守护运行"
+          - "shop#A 在任何一边转为待复测"
+          - "要求 B 登记 lib 仓库后才能运行其他守护"
+        refs: ["docs/design.md#守护与沉淀（问题 4）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["B 的 retest 输出", "两边的看板截图", "共享库守护运行的只读查询"]
+      - id: GRD-05-N02
+        polarity: negative
+        negative_type: other
+        title: 别的机器上的失败不记本机守护的漏检
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "双机项目：shop#A 的守护有效并已同步到两边；B 最近一次 retest 为 shop#A 记了一条通过的守护运行；A 没有运行过 retest"
+        steps:
+          - "在 A 的 app 把 shop#A 所验证的业务逻辑改坏（不提交），在 A 经演示项目入口执行 shop#A，按实际结果提交（失败）"
+          - "两边查看 shop#A 的状态与守护覆盖标记；只读查询共享库的漏检记录"
+        expected:
+          - "两边的 shop#A 都为失败（A 的失败是共享结论）"
+          - "共享库没有新增漏检；两边 shop#A 的守护仍显示有效"
+        forbidden_effects: ["因为 B 的守护运行通过而把 A 机器上的失败记为漏检，使守护失效"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）"]
+        evidence_hints: ["A 的 submit 输出", "两边的看板截图", "共享库漏检记录的只读查询"]

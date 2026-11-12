@@ -3,10 +3,21 @@
 # 共用前置：演示项目同 setup.yaml 文件头（app、lib 两仓，项目 demo，数据目录 $D，场景 shop#X/A/B/W）。
 #   另需：已用 checkout create wt1 建立检出 wt1（槽位记为 s1）；看板已以 sop-board serve demo --data $D --lan 启动；
 #   演示 adapter 的 env.py 按 SOP_PORT_OFFSET 偏移端口并在 ready 输出里给出入口地址。基础端口记为 P。
+#   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 22（使用者 2026-11-12 决定）修订：新增 ENV-05（服务状态与部分就绪）、ENV-06（停启服务与自动恢复）。
+#   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：ENV-02 的“结果按检出隔离”改为结果按分支归属、本分支有结论的场景不受其他检出影响。
+# 库存演示项目（ENV-05、ENV-06 使用，run.yaml、guard.yaml、workbench.yaml、report.yaml 引用）：
+#   - 生成命令加 --with-stock，在临时目录生成 app、lib、stock 三个 Git 仓库。stock 是库存服务，商城下单依赖它。
+#     以另一个临时数据目录 $S init 为项目 demo，登记三个仓库（下称“三个仓库都已登记”），看板以 sop-board serve demo --data $S --lan 启动。
+#   - config.yaml 的 adapter.services 声明两个服务：shop（about 为“商城网页与接口”，stoppable: false）、stock（about 为“库存查询与扣减”，stoppable: true）。
+#     演示 env.py 按契约把状态写到 SOP_ENV_LOG_DIR/services/<名称>.state，并响应同目录的 <名称>.request；ready 输出另给出库存服务地址。
+#   - app 的场景目录除 shop 外另有场景文件 stock：stock#K 是库存服务可用时下单成功并扣减库存的 API 场景；
+#     stock#S 是起点为“库存查询不可用”的 API 场景，预期下单接口返回降级提示“库存服务暂不可用，请稍后再试”且不生成订单。实际编号见 docs/verification.md。
+#   - “只搭商城”：同一份生成结果只登记 app、lib 两个仓库（数据目录 $T，项目 demo）。services 声明相同，stock 的状态为本机未搭建。
+#   - 演示 env.py 的两个验收开关（取自启动守护进程时的环境）：DEMO_STOCK_IGNORE_STOP=1 时忽略对 stock 的停止请求；DEMO_STOCK_CRASH=1 时库存服务启动后立即异常退出。
 
 metadata:
-  requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时按租约轮流使用，冲突时返回 env-busy 并写明占用者"
-  version: 1
+  requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时按租约轮流使用，冲突时返回 env-busy 并写明占用者；adapter 声明并上报各服务的状态，环境不要求所有服务都在运行；运行中可用 env stop|start 停启声明为可停的服务，提交或放弃运行时自动恢复"
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -16,7 +27,13 @@ metadata:
     - ref: "使用者 2026-11-10 对场景集待确认问题的答复"
       version: "2026-11-10"
       confirmed_by: "blur.yin"
-  tags: ["environment", "checkout", "ports", "lease"]
+    - ref: "docs/design.md 已定决策 22：环境按产品来（adapter 契约、部分就绪、故障模拟与自动恢复）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 21：多人共享验收记录（结论按分支归属、本分支优先）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+  tags: ["environment", "checkout", "ports", "lease", "services", "fault"]
 
 sops:
   - id: ENV-01
@@ -67,7 +84,7 @@ sops:
     title: 两个检出同时验证互不串扰
     actor: 开发者
     entry: "两个检出各自运行 sop-board run prepare/submit，看板工作台 /p/demo?checkout=<名称>"
-    must: ["场景文件、快照、结果、环境和端口都按检出隔离"]
+    must: ["场景文件、快照、环境和端口都按检出隔离；结果按分支归属，本分支有结论的场景不受其他检出影响"]
     negative_exempt: "检出之间争用同一组端口的拒绝分支见 ENV-03-N01"
     scenarios:
       - id: ENV-02-P01
@@ -164,3 +181,191 @@ sops:
           - "env up 成功使用端口 P"
         forbidden_effects: ["结束与项目无关的 http.server 进程", "孤儿进程继续占用端口导致 env up 失败"]
         refs: ["docs/design.md#检出与环境（问题 3）"]
+
+  - id: ENV-05
+    title: 服务状态与部分就绪
+    actor: 开发者
+    entry: "sop-board env up|status、check、run prepare；本机看板的服务状态"
+    must:
+      - "adapter.services 声明服务的名称、业务说明与是否可停；adapter 把各服务的状态写到 SOP_ENV_LOG_DIR/services/<名称>.state，取值为运行中、已停止、本机未搭建、异常退出，异常退出附日志路径"
+      - "adapter 输出就绪即环境可用；check 与 run prepare 不要求所有服务都在运行，只列出没在运行的服务和缺失的入口地址"
+      - "env status、本机看板和运行目录列出各服务的状态与业务说明"
+      - "没声明 services 的 adapter 照旧工作，只有整体就绪与否"
+    scenarios:
+      - id: ENV-05-P01
+        polarity: positive
+        title: 只搭商城时环境、check 与 run prepare 都可用，库存服务显示本机未搭建
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "库存演示项目处于“只搭商城”：只登记 app、lib，services 声明 shop 与 stock"
+          - "环境没有运行，没有 prepared 的运行；浏览器运行时已安装"
+        steps:
+          - "在 app 目录运行 sop-board env up，再运行 sop-board env status --json，并 curl 商城入口首页"
+          - "运行 sop-board check --json"
+          - "运行 sop-board run prepare --scope all --session S1 --json，查看运行目录中的服务清单"
+          - "本机浏览器打开看板，查看本检出的服务状态"
+        expected:
+          - "env up 成功（退出码 0），商城入口首页应答 200"
+          - "env status 列出两个服务：shop 为运行中，stock 为本机未搭建，分别带业务说明“商城网页与接口”“库存查询与扣减”"
+          - "check 以退出码 0 结束，配置、环境、浏览器运行时三项都通过，并列出没在运行的服务 stock（本机未搭建）"
+          - "run prepare 成功并得到运行编号，输出列出没在运行的服务 stock；运行目录的服务清单写明 shop 运行中、stock 本机未搭建及两者的业务说明"
+          - "本机看板显示 shop 运行中、stock 本机未搭建"
+        forbidden_effects:
+          - "check 或 run prepare 因 stock 没在运行而失败"
+          - "stock 显示为运行中、已停止或异常退出"
+          - "为了让环境就绪而要求登记 stock 仓库"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["env status 与 check 的输出", "run prepare 输出与运行目录的服务清单", "services 目录下的状态文件", "本机看板截图"]
+      - id: ENV-05-P02
+        polarity: positive
+        title: 没声明 services 的演示项目照旧工作，不出现服务清单
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["演示项目（setup.yaml 文件头，config.yaml 没有 adapter.services）已登记，环境没有运行"]
+        steps:
+          - "在 main 的 app 目录运行 sop-board env up 与 sop-board env status --json"
+          - "运行 sop-board check --json"
+        expected:
+          - "env up 成功，env status 的环境状态为就绪，服务清单为空"
+          - "check 三项都通过，不列出没在运行的服务"
+        forbidden_effects: ["因为没有声明 services 而报错或要求补声明"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+      - id: ENV-05-N01
+        polarity: negative
+        negative_type: interrupted
+        title: 库存服务异常退出后显示异常退出并给出日志，商城与环境照常可用
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）的环境在运行，shop 与 stock 都是运行中"
+          - "记录 adapter 进程号、商城进程号与库存服务进程号"
+        steps:
+          - "用 kill -9 结束库存服务进程（不经 sop-board）"
+          - "运行 sop-board env status --json，curl 商城入口首页与库存服务地址"
+          - "运行 sop-board check --json"
+        expected:
+          - "env status 中 stock 为异常退出并给出日志路径，shop 仍为运行中；环境整体仍为就绪"
+          - "商城入口首页照常应答，adapter 进程号与商城进程号不变；库存服务地址不再应答"
+          - "check 以退出码 0 结束，并列出没在运行的服务 stock（异常退出）"
+        forbidden_effects:
+          - "单个服务退出使整个环境停止或重启"
+          - "stock 显示为已停止或本机未搭建"
+          - "输出里没有 stock 的日志位置"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["kill 前后的 ps 输出", "env status 与 check 的输出", "curl 响应", "stock 的状态文件与日志"]
+
+  - id: ENV-06
+    title: 运行中停启服务，提交或放弃时自动恢复
+    actor: 执行会话
+    entry: "sop-board env stop <服务>、env start <服务>、env status、env restart；run submit、run abandon"
+    must:
+      - "只能停 stoppable 为真的服务；命令等状态变为目标值才返回，超过 adapter.service_timeout（缺省 60 秒）返回 service-timeout"
+      - "两条命令只在本检出有 prepared 运行时可用，否则返回 run-required；运行之外要恢复环境，用 env restart"
+      - "每次停启记进本轮运行：谁、什么时候、哪个服务、停还是启；run submit 或 run abandon 时还停着的服务自动恢复并记录"
+      - "没声明 services 返回 service-not-declared，名称不在声明里返回 service-unknown，不可停返回 service-not-stoppable"
+    scenarios:
+      - id: ENV-06-P01
+        polarity: positive
+        title: 运行中停掉库存服务再启动，只影响库存服务，停启都记进运行
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）的环境在运行，shop 与 stock 都是运行中；记录商城进程号"
+          - "已运行 sop-board run prepare --scope stock#S --session S1，得到运行 R1"
+        steps:
+          - "运行 sop-board env stop stock --json，随即运行 sop-board env status --json，curl 库存服务地址与商城入口首页"
+          - "运行 sop-board env start stock --json，随即运行 sop-board env status --json，curl 库存服务地址"
+          - "只读查询运行 R1 的停启记录"
+        expected:
+          - "env stop 以退出码 0 返回，返回时 stock 的状态已是已停止；库存服务地址不再应答"
+          - "shop 仍为运行中，商城进程号不变，商城入口首页照常应答"
+          - "env start 以退出码 0 返回，返回时 stock 的状态已是运行中；库存服务地址应答"
+          - "运行 R1 有两条停启记录，依次为停止 stock、启动 stock，各带操作者与时间"
+        forbidden_effects:
+          - "停启 stock 时商城被重启或停止"
+          - "命令在状态变为目标值之前返回"
+          - "停启没有记进运行 R1"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["两条命令的输出", "各步骤的 env status 与 curl 响应", "商城进程号前后对照", "运行 R1 停启记录的只读查询"]
+      - id: ENV-06-P02
+        polarity: positive
+        title: 放弃运行时还停着的库存服务被自动恢复并留下记录
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）有 prepared 的运行 R1；stock 已由 sop-board env stop stock 停止，shop 为运行中"
+        steps:
+          - "运行 sop-board run abandon --run R1 --json"
+          - "运行 sop-board env status --json，curl 库存服务地址"
+          - "只读查询运行 R1 的停启记录"
+        expected:
+          - "run abandon 成功，输出写明自动恢复了 stock"
+          - "env status 中 stock 为运行中，库存服务地址应答"
+          - "运行 R1 的停启记录在“停止 stock”之后多一条自动恢复 stock 的记录，带时间"
+        forbidden_effects: ["放弃运行后库存服务仍停着", "自动恢复没有留下记录", "恢复 stock 时商城被重启"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["run abandon 输出", "env status 与 curl 响应", "运行 R1 停启记录的只读查询"]
+      - id: ENV-06-N01
+        polarity: negative
+        negative_type: other
+        title: 没有 prepared 运行时不能停启服务，返回 run-required
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state: ["库存演示项目（三个仓库都已登记）的环境在运行，shop 与 stock 都是运行中；本检出没有 prepared 的运行"]
+        steps:
+          - "运行 sop-board env stop stock --json"
+          - "运行 sop-board env start stock --json"
+          - "运行 sop-board env status --json，curl 库存服务地址"
+        expected:
+          - "两条命令都以业务失败退出（退出码 1），error_code 为 run-required，并说明运行之外恢复环境用 sop-board env restart"
+          - "stock 仍为运行中，库存服务地址照常应答"
+        forbidden_effects: ["没有运行时服务被停掉", "写出停启请求文件"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+      - id: ENV-06-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 不可停的服务、没声明的服务名和没声明 services 的项目，各返回对应的错误
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）有 prepared 的运行 R1，shop 与 stock 都是运行中"
+          - "演示项目（setup.yaml 文件头，没有 adapter.services）的 main 也有一个 prepared 的运行 R2，环境在运行"
+        steps:
+          - "在库存演示项目运行 sop-board env stop shop --json，再运行 sop-board env stop nosuch --json"
+          - "在演示项目的 main 运行 sop-board env stop stock --json"
+          - "在两个项目分别运行 sop-board env status --json，curl 各自的商城入口首页"
+        expected:
+          - "env stop shop 以业务失败退出（退出码 1），error_code 为 service-not-stoppable"
+          - "env stop nosuch 以业务失败退出，error_code 为 service-unknown，并列出已声明的服务名"
+          - "演示项目的 env stop stock 以业务失败退出，error_code 为 service-not-declared"
+          - "两个项目的服务与环境状态都不变，商城入口首页照常应答；R1 与 R2 没有新增停启记录"
+        forbidden_effects: ["商城被停掉", "被拒绝的请求记进运行的停启记录"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+      - id: ENV-06-N03
+        polarity: negative
+        negative_type: timeout
+        title: adapter 不响应停止请求时返回 service-timeout，并撤回请求
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）的 config.yaml 中 adapter.service_timeout 为 5；启动守护进程的环境中设有 DEMO_STOCK_IGNORE_STOP=1"
+          - "环境在运行，shop 与 stock 都是运行中；已有 prepared 的运行 R1"
+        steps:
+          - "运行 sop-board env stop stock --json 并计时"
+          - "运行 sop-board env status --json，查看 services 目录；再等待 10 秒后 curl 库存服务地址"
+        expected:
+          - "命令约 5 秒后以业务失败退出（退出码 1），error_code 为 service-timeout，写明服务 stock 与等待的秒数"
+          - "stock 仍为运行中；services 目录中没有留下 stock 的停止请求"
+          - "10 秒后库存服务地址仍然应答"
+        forbidden_effects: ["命令一直等待不返回", "超时后停止请求仍留着，库存服务稍后被停掉", "把 stock 记为已停止"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["命令输出与耗时", "services 目录清单", "env status 输出", "curl 响应"]

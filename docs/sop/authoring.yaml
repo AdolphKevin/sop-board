@@ -2,15 +2,20 @@
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
 #   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 18 与 docs/sop-guide.md“业务交叉”一节（使用者 2026-11-11 决定）修订：
 #   AUT-01-P01 增加写 SOP 时核对已有 SOP、改正口径变化的已有规则并列出交叉；新增 AUT-04（生成场景时修改预期改变的已有场景，预期不变的不改）。
+#   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 20（使用者 2026-11-12 决定）修订：AUT-02 改为在工作台审阅草稿（检查清单、SOP 规则原文、
+#   批注、同意、本组同意、文件面板），删除草稿批注页，draft confirm 要求全部同意并以同意人为确认人；新增 AUT-02-N02～N04。
+#   版本 5 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 AUT-02-P03（批注与同意在同一产品的各台机器上可见）。
+#   “双机项目”见 setup.yaml 文件头。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D）；看板已以 sop-board serve demo --data $D --lan 启动。
-#   “演示 PRD”指 examples/demo-shop 提供的一份需求 Markdown；草稿文件 draft-a 是 app 的 scenarios.path 下 metadata.status 为 draft 的场景文件。
+#   “演示 PRD”指 examples/demo-shop 提供的一份需求 Markdown；草稿文件 draft-a、draft-b 是 app 的 scenarios.path 下 metadata.status 为 draft 的场景文件，
+#   各有一个节点（DRAFT-A-1、DRAFT-B-1）、两条场景（P01 正向、N01 反向），每条场景的 refs 为 refund.md#R2。
 #   “refund.md”指 app 场景目录下已登记的退款 SOP（R1 申请期限、R2 退款金额与次数）；“部分退款 SOP”指由演示 PRD 写成并登记的 SOP。
 #   “退款口径答复”指使用者对 refund.md R2 口径变化的答复：不填金额时按实付金额全额退款，退款记录的类型为“全额”；
 #   填写金额时按所填金额退款，不能超过实付金额，类型为“部分”；每单只能成功退款一次；商家订单页的显示不变。
 
 metadata:
-  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，先核对已有 SOP 的业务交叉，口径改变的已有规则经使用者确认后一并改正，sop submit 校验结构并写入确认人；从 SOP 生成场景时修改预期随之改变的已有场景（指纹变化回到未执行），预期不变的不改并写明理由，不新增影响面字段或登记文件；草稿是 status: draft 的场景文件，不进入执行，测试同学在看板批注，会话修订后 draft resolve，draft confirm 改为 confirmed 并写入确认人"
-  version: 3
+  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，先核对已有 SOP 的业务交叉，口径改变的已有规则经使用者确认后一并改正，sop submit 校验结构并写入确认人；从 SOP 生成场景时修改预期随之改变的已有场景（指纹变化回到未执行），预期不变的不改并写明理由，不新增影响面字段或登记文件；草稿是 status: draft 的场景文件，不进入执行；测试同学在工作台对照检查清单与 SOP 规则原文审阅草稿，批注或逐条、按节点同意，会话按批注修订后 draft resolve；每条场景在当前指纹上都已同意且没有未处理批注时，draft confirm 改为 confirmed 并以同意人为确认人"
+  version: 5
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -26,7 +31,13 @@ metadata:
     - ref: "docs/design.md 已定决策 18：验收范围由业务变化决定（业务交叉在编写时识别）；docs/sop-guide.md 业务交叉一节"
       version: "2026-11-11"
       confirmed_by: "blur.yin"
-  tags: ["authoring", "sop", "draft", "crossing"]
+    - ref: "docs/design.md 已定决策 20：草稿审阅并入工作台（使用者 2026-11-12 决定）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 21：多人共享验收记录（草稿批注与同意共享）"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
+  tags: ["authoring", "sop", "draft", "crossing", "review"]
 
 sops:
   - id: AUT-01
@@ -84,31 +95,113 @@ sops:
         refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 11 条"]
 
   - id: AUT-02
-    title: 草稿批注、修订与确认
+    title: 测试同学在工作台审阅草稿（批注、同意、本组同意、文件面板），全部同意后会话确认
     actor: 测试同学
-    entry: "内网工作台“草稿”筛选与批注；sop-board draft annotations|resolve|confirm <文件>"
-    must: ["草稿不进入执行；批注存数据库；确认后状态为 confirmed 并写入确认人"]
+    entry: "内网与本机工作台“草稿”筛选：草稿场景详情、草稿文件与节点行的「审阅」按钮打开的面板；sop-board draft annotations|resolve|confirm <文件>；sop-board status --json"
+    must:
+      - "草稿不进入执行；“草稿批注”页与导航项不再提供，/p/<项目>/drafts 不可访问；草稿只在工作台“草稿”筛选中审阅"
+      - "草稿场景详情依次为：“文件 › 节点”路径、四要素、refs 指向的 SOP 规则原文、检查清单、批注表单、「同意」按钮；不显示复测表单"
+      - "检查清单五项：场景是否忠实于 SOP 规则；预期能否直接观察并带具体值；禁止副作用是否写全；起点数据是否具体；是否漏了反向、边界或与已有业务交叉的场景（核对含义，不限措辞）"
+      - "审阅状态只有 待审、有批注、已同意 三种：已同意 = 当前指纹上有同意且该场景没有未处理的批注；有未处理批注时不能同意；指纹变化后原有同意失效"
+      - "同意按 文件 + 场景 + 指纹 记在看板数据库，不写场景文件，不区分检出，配了共享库时同一产品的各台机器共用；内网须署名，本机缺省以操作者署名；只能撤销自己的同意"
+      - "同意后自动打开同一文件中下一条待审场景，没有时停留并提示"
+      - "节点面板完整列出组内场景四要素，“同意本组 N 条待审场景”跳过有未处理批注的场景并列出原因；文件面板显示需求、来源、审阅进度与文件级批注，不提供整份同意"
+      - "draft confirm 要求每条场景在当前指纹上已同意且文件没有未处理批注；confirmed_by 写同意人（去重，按首次同意时间排序，用“、”连接）；没有 --as"
     scenarios:
       - id: AUT-02-P01
         polarity: positive
-        title: 测试同学批注草稿，会话修订后确认，草稿场景转为未执行
+        title: 测试同学看着检查清单与 SOP 规则原文逐条审阅，批注经会话修订后同意，全部同意后会话确认，确认人为同意人
+        actor: 测试同学
+        priority: P0
+        verify: web
+        initial_state:
+          - "draft-a 的两条场景 DRAFT-A-1-P01、DRAFT-A-1-N01 都没有批注与同意"
+          - "内网设备浏览器已存有姓名 张测"
+        steps:
+          - "在内网设备打开工作台，点“草稿”筛选，查看左栏 draft-a 文件行、DRAFT-A-1 节点行与两条场景的状态点"
+          - "打开 DRAFT-A-1-P01，从上到下阅读右栏，展开 SOP 规则原文"
+          - "点「同意」"
+          - "在随后打开的 DRAFT-A-1-N01 上批注“预期应写明拒绝时的提示：退款金额不能超过实付金额”，查看「同意」按钮"
+          - "本机在会话中请求处理草稿批注：会话运行 draft annotations，按批注修订 DRAFT-A-1-N01 的预期，运行 draft resolve"
+          - "内网刷新页面，打开 DRAFT-A-1-N01，点「同意」"
+          - "点 draft-a 文件行的「审阅」查看文件面板；本机同时打开 draft-a 的文件面板对照"
+          - "本机在会话中请求确认 draft-a：会话运行 draft confirm draft-a"
+          - "查看 draft-a 文件头、git diff、工作台与 run prepare --scope all 的范围"
+        expected:
+          - "左栏 draft-a 文件行与 DRAFT-A-1 节点行显示“已同意 0/2”并各有常显的「审阅」按钮；两条场景的状态点为待审"
+          - "DRAFT-A-1-P01 的右栏依次为：标题上方的“draft-a › DRAFT-A-1”路径；起点、步骤、预期、禁止；refund.md R2 的原文（含“退款金额等于实付金额”）；五项检查清单；批注表单；「同意」按钮；右栏没有复测表单"
+          - "点「同意」后 DRAFT-A-1-P01 为已同意、署名 张测，页面自动打开 DRAFT-A-1-N01；左栏进度为“已同意 1/2”"
+          - "批注后 DRAFT-A-1-N01 为有批注，「同意」不可点并说明有未处理的批注"
+          - "draft annotations 输出 张测 的批注，并列出 DRAFT-A-1-P01 已同意（张测）、DRAFT-A-1-N01 有批注；批注与同意都不出现在 draft-a 文件中"
+          - "resolve 后 DRAFT-A-1-N01 为待审；同意后为已同意，左栏进度为“已同意 2/2”，页面停留在 DRAFT-A-1-N01 并提示 draft-a 没有待审场景"
+          - "文件面板显示需求说明、来源、审阅进度（待审 0、有批注 0、已同意 2）与“可以确认”；本机面板附 sop-board draft confirm draft-a 命令，内网面板不显示命令"
+          - "confirm 成功；draft-a 的 metadata.status 为 confirmed，sources 首项的 confirmed_by 为 张测"
+          - "工作台中 draft-a 的场景离开“草稿”筛选，显示为未执行；run prepare --scope all 的范围包含它们"
+        forbidden_effects:
+          - "看板把批注或同意写进场景文件"
+          - "有未处理批注时仍能同意"
+          - "confirmed_by 写成操作者 N 而不是同意人"
+          - "会话询问确认人是谁，或使用 --as"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#保留能力的简化形态", "使用者 2026-11-12 需求（草稿页与工作台割裂、不知道批注什么、没有快速同意）"]
+        evidence_hints: ["内网与本机各步骤截图与页面文本", "会话记录", "draft annotations 输出", "draft-a 的 git diff", "run 目录范围"]
+      - id: AUT-02-P02
+        polarity: positive
+        title: 节点面板同意本组待审场景并跳过有批注的场景，文件面板写文件级批注，同意在内容相同的其他检出中同样有效
         actor: 测试同学
         priority: P1
         verify: web
-        initial_state: ["draft-a 有两条场景，没有批注"]
+        initial_state:
+          - "draft-b 的两条场景 DRAFT-B-1-P01、DRAFT-B-1-N01 都没有批注与同意"
+          - "已用 checkout create wt1 建立检出 wt1，wt1 中 draft-b 的内容与 main 相同"
+          - "内网设备浏览器已存有姓名 李测"
         steps:
-          - "测试同学在内网工作台点“草稿”筛选，打开 draft-a 的一条场景，批注“预期金额应为 99.00 元”（姓名 张测）"
-          - "本机在会话中请求处理草稿批注：会话运行 draft annotations，修订文件，运行 draft resolve"
-          - "会话运行 draft confirm draft-a"
-          - "查看 draft-a 文件头、git diff、工作台与 run prepare --scope all 的范围"
+          - "在内网设备查看看板导航；用浏览器与 curl 分别请求 /p/demo/drafts"
+          - "打开工作台，点“草稿”筛选，打开 DRAFT-B-1-N01，批注“预期应写明拒绝时的提示文字”"
+          - "点 DRAFT-B-1 节点行的「审阅」，查看节点面板"
+          - "点“同意本组待审场景”按钮"
+          - "点 DRAFT-B-1-P01 详情标题上方路径中的 draft-b，查看文件面板"
+          - "在文件面板提交文件级批注“缺少已全额退款的订单再申请部分退款的反向场景”"
+          - "查看左栏 draft-b 文件行、DRAFT-B-1 节点行与两条场景的状态点；用检出切换选 wt1 再查看一次"
+          - "本机运行 sop-board draft annotations draft-b"
         expected:
-          - "draft annotations 输出 张测 的批注；批注不出现在 draft-a 文件中"
-          - "resolve 后该批注显示为已处理"
-          - "confirm 后 draft-a 的 metadata.status 为 confirmed，确认人为操作者 N"
-          - "工作台中 draft-a 的场景离开“草稿”筛选，显示为未执行；run prepare --scope all 的范围包含它们"
-        forbidden_effects: ["看板把批注写进场景文件", "会话询问确认人是谁"]
-        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#署名"]
-        evidence_hints: ["内网批注截图", "会话记录", "git diff", "run 目录范围"]
+          - "导航中没有“草稿批注”；/p/demo/drafts 返回 404，没有跳转"
+          - "节点面板完整列出 DRAFT-B-1-P01 与 DRAFT-B-1-N01 的起点、步骤、预期、禁止；按钮文字为“同意本组 1 条待审场景”"
+          - "点击后 DRAFT-B-1-P01 为已同意、署名 李测；DRAFT-B-1-N01 仍为有批注，面板列出它被跳过，原因是有未处理的批注"
+          - "文件面板显示 draft-b 的需求说明与来源、审阅进度（待审 0、有批注 1、已同意 1）与文件级批注表单；没有整份同意的按钮，也没有“可以确认”"
+          - "文件级批注提交后出现在文件面板的批注列表中；DRAFT-B-1-P01 仍为已同意"
+          - "main 与 wt1 的左栏中 draft-b 文件行与 DRAFT-B-1 节点行都显示“已同意 1/2”，DRAFT-B-1-P01 的状态点为已同意，DRAFT-B-1-N01 为有批注"
+          - "draft annotations 输出两条批注（一条针对 DRAFT-B-1-N01，一条针对整个文件，均署名 李测），并列出 DRAFT-B-1-P01 已同意（李测）、DRAFT-B-1-N01 有批注"
+        forbidden_effects:
+          - "本组同意把有批注的 DRAFT-B-1-N01 记为已同意"
+          - "页面上出现整份文件一键同意的入口"
+          - "/p/demo/drafts 返回草稿页面或跳转到工作台"
+          - "看板把批注或同意写进场景文件"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-12 需求（草稿页与工作台割裂、不知道批注什么、没有快速同意）"]
+        evidence_hints: ["内网各步骤截图与页面文本", "/p/demo/drafts 的 curl 响应原文", "draft annotations 输出"]
+      - id: AUT-02-P03
+        polarity: positive
+        title: 测试同学在 B 的看板上批注与同意，A 的会话照样读到并据此修订、确认
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state:
+          - "双机项目；草稿文件 draft-a 已由 A 提交并推送，B 已拉取，两边内容相同"
+          - "draft-a 的两条场景都是待审，没有批注；内网设备的浏览器已存有姓名 张测"
+        steps:
+          - "张测 从 B 的看板的内网地址打开“草稿”筛选，对 DRAFT-A-1-P01 写一条批注，对 DRAFT-A-1-N01 点「同意」"
+          - "在 A 运行 sop-board draft annotations draft-a --json，并在 A 的看板查看 draft-a 的审阅进度"
+          - "A 的会话按批注修订 DRAFT-A-1-P01 并运行 draft resolve；A 提交并推送，B 拉取"
+          - "张测 在 B 的看板对修订后的 DRAFT-A-1-P01 点「同意」；在 A 运行 sop-board draft confirm draft-a，查看 draft-a 的文件头"
+        expected:
+          - "A 的 draft annotations 列出 张测 的批注；DRAFT-A-1-N01 的审阅状态为已同意，同意人为 张测"
+          - "A 的看板显示 draft-a“已同意 1/2”，DRAFT-A-1-P01 为有批注"
+          - "修订并同步后，B 的看板上 DRAFT-A-1-P01 为待审；张测 同意后两边都显示“已同意 2/2”"
+          - "draft confirm 成功，draft-a 的 metadata.status 为 confirmed，confirmed_by 为 张测"
+        forbidden_effects:
+          - "在 B 的看板上的批注或同意只存在 B 的机器上，A 读不到"
+          - "A 的 draft confirm 把确认人写成操作者 林甲"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#保留能力的简化形态"]
+        evidence_hints: ["B 的看板内网各步骤截图", "A 的 draft annotations 输出与看板截图", "draft-a 的 git diff 与文件头"]
       - id: AUT-02-N01
         polarity: negative
         negative_type: invalid-input
@@ -121,6 +214,83 @@ sops:
         expected: ["命令以业务失败退出（退出码 1），error_code 为 draft-not-runnable", "没有生成包含该草稿场景的 prepared 运行"]
         forbidden_effects: ["草稿场景得到执行结果"]
         refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+      - id: AUT-02-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 还有场景未同意时不能确认草稿，命令行按审阅状态分别计数
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "draft-a 中只有 DRAFT-A-1-P01 由 张测 同意，DRAFT-A-1-N01 待审；两份草稿都没有批注"
+          - "draft-b 的两条场景都没有批注与同意"
+        steps:
+          - "运行 sop-board status --json"
+          - "运行 sop-board draft confirm draft-a --json"
+          - "运行 sop-board draft confirm draft-a --as 李四 --json"
+          - "查看 draft-a 文件头与 git status"
+        expected:
+          - "status --json 的草稿计数按审阅状态分开：待审 3、有批注 0、已同意 1"
+          - "draft confirm 以业务失败退出（退出码 1），列出未同意的 DRAFT-A-1-N01"
+          - "带 --as 的命令以参数错误退出（退出码 2）"
+          - "draft-a 的 metadata.status 仍为 draft，git status 中 draft-a 没有改动"
+        forbidden_effects: ["有场景未同意时 draft-a 被确认", "--as 被接受并写入确认人"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-12 需求（没人看过也能确认）"]
+        evidence_hints: ["命令原文、输出与退出码", "draft-a 的 git status"]
+      - id: AUT-02-N03
+        polarity: negative
+        negative_type: stale-input
+        title: 场景被修改后原有同意失效，同意后又有人批注时以批注为准，未修改的其他检出仍显示已同意
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state:
+          - "draft-a 的两条场景都由 张测 同意，没有批注"
+          - "已用 checkout create wt1 建立检出 wt1，wt1 中 draft-a 的内容与 main 相同"
+          - "内网设备浏览器已存有姓名 李测"
+        steps:
+          - "在 main 的 draft-a 中把 DRAFT-A-1-N01 的预期改为“返回 422，提示退款金额不能超过实付金额”（不提交）"
+          - "内网打开 main 的工作台“草稿”筛选，查看 draft-a 的两条场景与进度；用检出切换选 wt1 再查看"
+          - "切回 main，打开 DRAFT-A-1-P01，批注“起点应写明订单 E 的签收日期”"
+          - "查看 DRAFT-A-1-P01 的审阅状态与左栏进度"
+          - "本机运行 sop-board draft confirm draft-a --json"
+        expected:
+          - "main 中 DRAFT-A-1-N01 回到待审，DRAFT-A-1-P01 仍为已同意，进度为“已同意 1/2”"
+          - "wt1 中 draft-a 未修改，两条场景都仍为已同意，进度为“已同意 2/2”"
+          - "批注提交后 DRAFT-A-1-P01 为有批注，进度为“已同意 0/2”；张测 的同意记录仍在历史中"
+          - "draft confirm 以业务失败退出（退出码 1），列出未同意的 DRAFT-A-1-N01 与未处理的批注"
+        forbidden_effects:
+          - "修改后的 DRAFT-A-1-N01 仍显示已同意"
+          - "同意后又有批注的 DRAFT-A-1-P01 仍显示已同意"
+          - "main 的修改让 wt1 中内容未变的场景失去同意"
+          - "draft-a 被确认"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["main 与 wt1 的工作台截图与页面文本", "命令原文与输出"]
+      - id: AUT-02-N04
+        polarity: negative
+        negative_type: permission
+        title: 内网同意须署名，只能撤销自己的同意，跨源或非 JSON 的同意请求被拒绝；本机缺省以操作者署名
+        actor: 测试同学
+        priority: P1
+        verify: web
+        initial_state:
+          - "draft-a 中 DRAFT-A-1-P01 由 张测 在内网设备 A 上同意，DRAFT-A-1-N01 待审，没有批注"
+          - "内网设备 B 的浏览器已存有姓名 李测；内网设备 C 的浏览器 localStorage 为空"
+        steps:
+          - "设备 C 打开 DRAFT-A-1-N01，不填姓名，点「同意」"
+          - "设备 B 打开 DRAFT-A-1-P01，查看同意记录与可用的操作；从设备 B 的地址用 curl 以同源 JSON、署名 李测 请求撤销 张测 的同意"
+          - "从内网地址用 curl 以跨源 Origin，或以非 JSON 内容类型，请求同意 DRAFT-A-1-N01"
+          - "设备 A 打开 DRAFT-A-1-P01，撤销自己的同意"
+          - "本机浏览器（未在顶栏填姓名）打开 DRAFT-A-1-N01，点「同意」"
+        expected:
+          - "设备 C 提示先填写姓名并打开署名输入，没有记录同意，DRAFT-A-1-N01 仍为待审"
+          - "设备 B 看到 张测 的同意记录，但没有撤销它的操作；curl 撤销请求被拒绝，DRAFT-A-1-P01 仍为已同意"
+          - "跨源与非 JSON 的同意请求都被拒绝，DRAFT-A-1-N01 仍为待审"
+          - "设备 A 撤销后 DRAFT-A-1-P01 回到待审"
+          - "本机的同意署名为操作者 N，DRAFT-A-1-N01 为已同意"
+        forbidden_effects: ["未署名的内网同意被记录", "撤销了别人的同意", "跨源或非 JSON 的请求写入同意记录"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#看板：三栏场景工作台（问题 2）"]
+        evidence_hints: ["三台设备各步骤截图", "curl 请求与响应原文", "同意记录的只读查询"]
 
   - id: AUT-03
     title: 看板展示业务 SOP 与待确认问题
