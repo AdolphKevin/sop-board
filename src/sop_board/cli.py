@@ -34,7 +34,7 @@ GROUPS = {
              'launch': '查看或停止本机无头会话'},
     '修复与沉淀': {'fix': '修复、独立复验与关闭', 'distill': '把独立通过的场景沉淀为守护测试'},
     '编写': {'inbox': '处理测试同学上传的用例与 SOP', 'merge': '合并用例到场景文件', 'ask': '向测试同学提问',
-             'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '草稿批注与确认'},
+             'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '读取草稿的批注与审阅状态、处理批注、确认'},
     '其他': {'atlas': '交互地图', 'specs': 'Web spec 保真检查', 'fixtures': '前置数据配方', 'identity': '身份使用计数',
              'attention': '待人处理', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
 }
@@ -168,6 +168,7 @@ def cmd_status(args):
         result.update(snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
                                     changed=snapshot['changed'][:50]),
                       counts=derived['counts'], distill=derived['distill'], review=derived['review'], total=derived['total'],
+                      draft_review=derived['draft_review'],
                       queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state)
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
@@ -192,6 +193,8 @@ def cmd_status(args):
     parts = [f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s]] + [
         f"待沉淀 {result['distill']}", f"待人工复核 {result['review']}"]
     print(f"场景 {result['total']} 条：" + '；'.join(parts))
+    if counts['draft']:
+        print('草稿审阅：' + '；'.join(f"{status.DRAFT_REVIEW[s]} {n}" for s, n in result['draft_review'].items()))
     for name, problems in result['invalid_files'].items():
         print(f'场景文件 {name} 不合格：' + '；'.join(p['problem'] for p in problems[:3]))
     daemon_state = result['daemon']
@@ -503,11 +506,14 @@ def cmd_draft(args):
     from . import authoring
     context = load(args)
     if args.action == 'annotations':
-        emit(dict(ok=True, annotations=authoring.annotations(context.store, file=args.target, include_resolved=args.all)))
+        emit(dict(ok=True, annotations=authoring.annotations(context.store, file=args.target, include_resolved=args.all),
+                  drafts=authoring.review_files(context, args.target)))
     elif args.action == 'resolve':
         emit(authoring.resolve_annotation(context.store, int(args.target), reject_it=args.reject, note=args.note))
     else:
-        emit(authoring.draft_confirm(context, args.target, by=signer(args)))
+        if not args.target:
+            return fail('file-required', [dict(field='file', problem='请给出草稿文件名')], 2)
+        emit(authoring.draft_confirm(context, args.target))
     return 0
 
 
@@ -606,7 +612,7 @@ def parser():
     p.add_argument('--project', '-p')
     p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
     p.add_argument('--port', type=int, default=8787)
-    p.add_argument('--lan', action='store_true', help='同时在内网地址上开放（内网只能查看、复测标注、答复、批注、上传）')
+    p.add_argument('--lan', action='store_true', help='同时在内网地址上开放（内网只能查看、复测标注、答复、批注与同意草稿、上传）')
     p.set_defaults(handler=cmd_serve)
 
     p = common(sub.add_parser('env'))
@@ -721,11 +727,11 @@ def parser():
 
     p = common(sub.add_parser('draft'))
     p.add_argument('action', choices=('annotations', 'resolve', 'confirm'))
-    p.add_argument('target', nargs='?', help='annotations：场景文件名（可省）；resolve：批注编号；confirm：草稿文件名')
+    p.add_argument('target', nargs='?', help='annotations：场景文件名（可省）；resolve：批注编号；confirm：草稿文件名'
+                                              '（确认人是在看板上同意的人）')
     p.add_argument('--all', action='store_true', help='annotations：包含已处理的批注')
     p.add_argument('--reject', action='store_true', help='resolve：不采纳')
     p.add_argument('--note')
-    p.add_argument('--as', dest='as_name', metavar='姓名', help='confirm：别人确认时写他的姓名')
     p.set_defaults(handler=cmd_draft)
 
     p = common(sub.add_parser('atlas'))

@@ -29,7 +29,7 @@ python3 examples/demo-shop/make_demo.py $T --data $D    # 另外 init 为项目 
 | `shop#B` | `shop#SHOP-R1-N02`：已退款订单再次申请返回 409 |
 | `shop#W` | `shop#SHOP-W1-P01`：商家在订单页看到退款状态；Web 入口，身份 merchant |
 | 预埋缺陷与修复 | lib `refundlib.can_apply` 写成 `<= APPLY_DAYS + 1`；修复为 `<= APPLY_DAYS` |
-| `draft-a`、`draft-b` | app `docs/sop/` 下 `metadata.status: draft` 的两份场景文件，各两条场景 |
+| `draft-a`、`draft-b` | app `docs/sop/` 下 `metadata.status: draft` 的两份场景文件，各一个节点（`DRAFT-A-1`、`DRAFT-B-1`）、两条场景（P01 正向、N01 反向），每条场景的 `refs` 为 `refund.md#R2` |
 | 演示 PRD | `examples/demo-shop/materials/prd-partial-refund.md`（部分退款需求） |
 | 业务 SOP 与待确认问题（AUT-03） | app `docs/sop/refund.md`（含段落内换行与 Mermaid 流程图）与 `docs/sop/refund-待确认问题.md`（Q1 已答复，Q2、Q3 待答复） |
 | 演示用例文件 | `materials/cases.yaml`（一条与 shop 对应的细节用例、一条新流程用例）；`materials/cases-invalid.yaml` 缺 expected_results |

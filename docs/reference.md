@@ -38,6 +38,8 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 
 **待人工复核**也是徽标，可与待沉淀并存：状态为通过，且当前指纹最新一条结果是经真实入口的 Agent 独立通过。之后有任一人工标注即消失。
 
+**草稿审阅状态**只用于草稿场景，状态仍是草稿：**有批注**（该场景有未处理的批注）、**已同意**（当前指纹上有未撤销的同意，且该场景没有未处理的批注）、**待审**（其余）。同意按“文件 + 场景 + 指纹”记录，不区分检出；场景四要素一改，原有同意失效；批注不采纳、场景未改时原有同意仍有效。文件级批注不影响单条场景的审阅状态，但阻止确认。
+
 待复测的原因写在状态旁，例如“守护测试未通过：<原因>”“修复已关闭，等待复测”“修复已关闭，等待测试同学复测”。
 
 ## 2. 安装与搭建
@@ -134,7 +136,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 | 访问级别 | 谁可以调用 | 用于 |
 | --- | --- | --- |
-| `lan` | 任何连接（`--lan` 时监听 0.0.0.0） | 查看工作台与页面、人工复测标注、答复问题、批注草稿、上传用例或 SOP |
+| `lan` | 任何连接（`--lan` 时监听 0.0.0.0） | 查看工作台与页面、人工复测标注、答复问题、批注草稿、同意草稿场景或撤销自己的同意、上传用例或 SOP |
 | `local` | 只接受实际回环连接 | 工作台的“AI 重跑”“运行守护”“沉淀”按钮、启动日志 |
 | `token` | 回环连接 + `Authorization: Bearer <daemon.token>` | `/local/*`：CLI 调用的环境、浏览器、retest、distill submit、launch |
 
@@ -149,7 +151,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - 除 `status`（缺省文字，`--json` 输出 JSON）、`guide`、`playwright guide` 外，所有命令都输出 JSON，`--json` 可省。
 - 退出码：0 成功；1 业务失败（`{"ok": false, "error_code", "problems": [{field, problem}]}`）；2 参数错误；`run wait` 超时为 3。
 - 大多数命令接受 `--project/-p`、`--data`、`--checkout/-c`。
-- 署名：登记自动用本机操作者（`~/.sop-board/operator`，否则 `git config user.name`）；别人确认或上传时用 `--as <姓名>`。没有操作者时要求先 `operator set`。
+- 署名：登记自动用本机操作者（`~/.sop-board/operator`，否则 `git config user.name`）；别人确认或上传时用 `--as <姓名>`。没有操作者时要求先 `operator set`。`draft confirm` 例外：确认人是在看板上同意草稿场景的人，没有 `--as`。
 
 | 分组 | 命令 | 要点 |
 | --- | --- | --- |
@@ -158,7 +160,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `operator [show\|set <姓名>]` | 查看来源或设置本机操作者（单行，最长 64） |
 | | `skills install` | 安装随包技能链接 |
 | | `serve [项目] [--port] [--lan]` | 见 §3 |
-| | `status [项目] [--json]` | 检出、操作者、快照、各状态计数、待沉淀数（顶层 `distill`）、待人工复核数（顶层 `review`）、`queues`（retest/fail/blocked/not-run）、`distill_queue`、`review_queue`、不合格场景文件、守护进程、待人处理；文字输出的场景行末尾总是列出“待沉淀 N；待人工复核 N” |
+| | `status [项目] [--json]` | 检出、操作者、快照、各状态计数、待沉淀数（顶层 `distill`）、待人工复核数（顶层 `review`）、草稿按审阅状态的计数（`draft_review`：`pending` 待审、`annotated` 有批注、`approved` 已同意）、`queues`（retest/fail/blocked/not-run）、`distill_queue`、`review_queue`、不合格场景文件、守护进程、待人处理；文字输出的场景行末尾总是列出“待沉淀 N；待人工复核 N”，有草稿时另起一行“草稿审阅：待审 N；有批注 N；已同意 N” |
 | | `check` | 见 §2 |
 | 检出 | `checkout list` | 全部检出及槽位、偏移、路径 |
 | | `checkout show [名称]` | 含场景目录与各仓分支 |
@@ -184,7 +186,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `merge prepare [--inbox N]...`、`merge submit [--work N]` | |
 | | `ask --about <inbox:N\|键\|文件名> --text … [--work] [--as]`、`answers [--about] [--unanswered]` | |
 | | `sop prepare --source 文件...`、`sop submit --file <md> [--work] [--as]` | |
-| | `draft annotations [文件] [--all]`、`draft resolve <批注编号> [--reject] [--note]`、`draft confirm <文件> [--as]` | |
+| | `draft annotations [文件] [--all]`、`draft resolve <批注编号> [--reject] [--note]`、`draft confirm <文件>` | 见 §9“草稿”；`draft confirm` 没有 `--as`（带上即参数错误） |
 | 其他 | `atlas prepare --entry E [--mode full\|stale]`、`atlas submit --entry E [--work]`、`atlas stale [--entry]` | |
 | | `specs check --repo 别名 <路径> [--ledger 账本.json]` | spec 断言保真检查，违规退出 1 |
 | | `fixtures run <配方> [--param 名=值]... [--run N] [--scenario]`、`fixtures exec --reason … [--run] -- <命令>` | |
@@ -386,7 +388,16 @@ sops:
 
 ### 草稿
 
-带 `metadata.status: draft` 的场景文件就是草稿，不进入执行与复测。会话由 SOP 写草稿或合并用例时核对已有场景：业务交叉改变已有场景预期的，直接修改这些场景（指纹变化后回到未执行），不另写重复场景。测试同学在内网批注（目标为整个文件或某个场景，≤4000 字，须填姓名），批注存数据库。会话按批注修订后 `draft resolve <编号> [--reject]`。`draft confirm <文件>` 要求没有未处理批注、metadata 中有单独一行 `status: draft` 与块格式 `sources:`，把状态改为 `confirmed` 并在 sources 首项插入 `{ref: "sop-board draft confirm", version: <日期>, confirmed_by: <确认人>}`。
+带 `metadata.status: draft` 的场景文件就是草稿，不进入执行与复测。会话由 SOP 写草稿或合并用例时核对已有场景：业务交叉改变已有场景预期的，直接修改这些场景（指纹变化后回到未执行），不另写重复场景。预期只来自 SOP 原文与使用者的答复；场景的 `refs` 写 `<SOP 文件名>#R<n>`。
+
+- **审阅**只在工作台“草稿”筛选中进行（没有单独的草稿页）。草稿场景详情依次为：标题上方的“文件 › 节点”路径（点哪一级打开哪一级的面板）；四要素；`refs` 指向的 SOP 规则原文（可展开，按场景目录中 SOP 的 `R<n>` 标题取整节）；固定的五项检查清单（场景是否忠实于 SOP 规则；预期能否直接观察并带具体值；禁止副作用是否写全；起点数据是否具体；是否漏了反向、边界或与已有业务交叉的场景）；批注表单；「同意」；审阅记录（同意、撤销、旧内容上的同意与批注）。草稿不显示复测表单与本机按钮。
+- **批注**：目标为整个文件或某个场景，≤4000 字，须填姓名（本机不填时为操作者），存数据库，不写场景文件。会话用 `draft annotations` 读取，修订后 `draft resolve <编号> [--reject]`。
+- **同意**：按“文件 + 场景 + 指纹”记在数据库（`draft_approvals`），不写场景文件，不区分检出：任何检出中内容相同的场景都显示已同意。内网须署名（顶栏姓名），本机不填时以操作者署名；同一人在同一指纹上重复同意不重复登记。场景有未处理的批注时「同意」不可点，接口返回 `draft-annotations-open`；请求带的指纹与当前内容不符时返回 `draft-changed`。只能撤销自己的同意（`approval-not-own`），撤销只记时间，记录保留。同意后页面自动打开同一文件中下一条待审场景，没有时停留在当前场景并提示。
+- **左栏**：草稿场景的状态点按审阅状态显示（空心为待审）；草稿文件行与节点行显示“已同意 x/y”和常显的「审阅」按钮（点它不展开或收起分组）。“草稿”筛选的计数是全部草稿场景。
+- **节点面板**：完整列出组内每条场景的四要素、审阅状态与同意记录（自己的同意可逐条撤销），“同意本组 N 条待审场景”逐条登记组内待审场景，有未处理批注或内容已变化的跳过并列出原因。
+- **文件面板**：需求说明与来源、审阅进度（待审、有批注、已同意的条数）与各节点进度、文件级批注列表与表单；全部已同意且没有未处理的批注时显示“可以确认”，本机页面附 `sop-board draft confirm <文件>`，内网不显示命令。不提供整份文件一键同意。
+- **`draft annotations [文件]`** 输出批注（`--all` 含已处理）与 `drafts`：每份草稿的审阅进度、每条场景的审阅状态与同意人（如“已同意（张测）”）、未处理的批注、能否确认。
+- **`draft confirm <文件>`** 要求每条场景在当前指纹上已同意、文件没有未处理的批注（含文件级），否则以业务失败退出：有未同意的场景时 `draft-not-approved`，只剩未处理批注时 `draft-annotations-open`，`problems` 逐条列出未同意的场景与未处理的批注。metadata 中须有单独一行 `status: draft` 与块格式 `sources:`；把状态改为 `confirmed` 并在 sources 首项插入 `{ref: "sop-board draft confirm", version: <日期>, confirmed_by: <同意人>}`，同意人去重、按首次同意的先后、用“、”连接。
 
 ### 交互地图
 
@@ -431,18 +442,21 @@ fixtures:
 | 路由 | 级别 | 内容 |
 | --- | --- | --- |
 | `GET /` | lan | 跳转到 `/p/<项目>` |
-| `GET /p/<项目>?checkout=<名称>#<场景键>` | lan | 场景工作台：左侧检出切换、搜索、状态筛选（含待沉淀、待人工复核与计数；待复测、失败、待人工复核、未执行、通过在计数为 0 时也显示）与 文件→节点→场景 树；不带 `#场景键` 时右栏是概况，显示各状态与徽标计数、Agent 独立通过的人工确认率与复核覆盖；右侧标题与徽标、状态与原因、四要素（附守护覆盖）、最新结果与证据（截图、视频、trace、文本）、复测标注、本机按钮、历史 |
+| `GET /p/<项目>?checkout=<名称>#<场景键>` | lan | 场景工作台：左侧检出切换、搜索、状态筛选（含待沉淀、待人工复核与计数；待复测、失败、待人工复核、未执行、通过在计数为 0 时也显示）与 文件→节点→场景 树；不带 `#场景键` 时右栏是概况，显示各状态与徽标计数、Agent 独立通过的人工确认率与复核覆盖；右侧标题与徽标、状态与原因、四要素（附守护覆盖）、最新结果与证据（截图、视频、trace、文本）、复测标注、本机按钮、历史。草稿场景的详情与 `#review:<文件>`（文件面板）、`#review:<文件>#<节点>`（节点面板）见 §9“草稿” |
+| （左栏，工作台与业务 SOP 页共用） | | 「全部展开 / 全部收起」切换与手动展开收起一样按项目与页面记在浏览器 localStorage；「隐藏左栏」后右栏占满，左侧窄栏里的「显示左栏」恢复，隐藏状态两页共用。左栏右边缘的手柄拖拽调宽，范围 240px 到窗口宽度的 60%，双击恢复 360px；宽度记在 localStorage（`sop-board-sidebar-width`），两页共用、不分项目，刷新、轮询、隐藏再显示后保持，窗口变窄时按新边界显示。文件、节点与场景标题悬停显示全文。这些都只改本浏览器，不向看板写入 |
 | `GET /p/<项目>/runs` | lan | 启动记录与运行记录 |
 | `GET /p/<项目>/report[?file=&download=1]` | lan | 报告预览与 Markdown 下载 |
 | `GET /p/<项目>/attention` | lan | 待人处理 |
 | `GET /p/<项目>/inbox` | lan | 上传用例/SOP、待答复问题 |
-| `GET /p/<项目>/drafts` | lan | 草稿与批注 |
 | `GET /p/<项目>/sop` | lan | 场景目录下的 SOP 原文渲染 |
 | `GET /p/<项目>/atlas` | lan | 交互地图与过期页面 |
 | `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据；`/api/board` 的每个场景带 `distill`、`review` 徽标，`counts` 含 `distill`、`review`，`stats` 含 `agent_confirm_rate`、`agent_review_coverage`（numerator、denominator、value） |
 | `GET /evidence/<sha256>/<文件名>` | lan | 证据下载；视频支持 Range；trace zip 允许 trace.playwright.dev 跨域读取 |
 | `POST /api/mark` | lan | 复测标注：`verdict` 取 pass/fail/blocked/changed，`defect`、`note`、`by` 都可不填（本机缺省为操作者，内网不填记为未署名） |
-| `POST /api/inbox`、`/api/answer`、`/api/annotate` | lan | 上传、答复、批注；须有姓名（顶栏署名填一次，浏览器 localStorage 记住，各页面共用） |
+| `POST /api/inbox`、`/api/answer`、`/api/annotate` | lan | 上传、答复、批注；须有姓名（顶栏署名填一次，浏览器 localStorage 记住，各页面共用；批注在本机不填时为操作者） |
+| `GET /api/draft?file=<草稿>` | lan | 文件面板与节点面板的数据：需求说明、来源、审阅进度、各节点场景的四要素与审阅状态、文件级批注、能否确认；确认命令只在本机响应中 |
+| `POST /api/approve` | lan | 同意草稿场景：`file` 加 `scenario`（单条，可带 `fingerprint`）或 `node`（本组全部待审，可带 `fingerprints`）；`by` 内网必填（`signer-required`），本机缺省为操作者 |
+| `POST /api/unapprove` | lan | 撤销自己的同意：`approval`（同意编号）或 `file` 加 `scenario`；`by` 须与同意人相同 |
 | `GET /p/<项目>/sop`、`GET /api/sop?checkout=<名称>` | lan | 业务 SOP：场景目录下的 Markdown 按 1～3 级标题分节，左树右文；含“答复”小节的节标出已答复 / 待答复 |
 | `POST /api/launch`、`/api/retest`、`/api/distill` | local | AI 重跑此场景、运行守护、沉淀 |
 | `GET /api/launches/<编号>/log` | local | 启动日志末尾 512 KiB |
@@ -484,7 +498,10 @@ fixtures:
 | `cases-invalid` / `sop-invalid` / `upload-invalid` / `upload-too-large` | 上传或提交内容不合格 |
 | `nothing-to-merge` / `inbox-invalid` / `inbox-state-invalid` | 合并范围不对 |
 | `work-not-found` / `work-state-invalid` | 没有进行中的 merge/author/atlas 工作 |
-| `draft-not-found` / `draft-annotations-open` / `draft-format` | 草稿确认条件不满足 |
+| `draft-not-found` / `draft-not-approved` / `draft-annotations-open` / `draft-format` | 草稿确认条件不满足：不是草稿 / 有场景未在当前内容上同意 / 有未处理的批注（同意单条场景时也用它拒绝） / 文件头格式不符 |
+| `draft-changed` / `draft-node-not-found` / `approval-invalid` | 同意请求带的指纹与当前内容不符（刷新后重新审阅）/ 节点不存在 / 请求缺场景或节点 |
+| `signer-required` | 内网同意或撤销没有署名（先在顶栏填写姓名） |
+| `approval-not-found` / `approval-not-own` / `approval-revoked` | 没有可撤销的同意 / 只能撤销自己的同意 / 这条同意已撤销 |
 | `atlas-not-declared` / `atlas-invalid` | 入口未声明 atlas/spec_library / 地图不合格 |
 | `fixtures-not-declared` / `recipe-not-found` / `adhoc-not-allowed` / `fixture-failed` | 前置数据问题 |
 | `identity-not-found` / `identity-limit` | 身份未声明 / 计数达上限（已登记待人处理） |
@@ -493,7 +510,7 @@ fixtures:
 
 ### 数据库表
 
-`board.sqlite3`，格式 6（`PRAGMA user_version=6`），共 18 张表，没有任务状态机：
+`board.sqlite3`，格式 6（`PRAGMA user_version=6`），共 19 张表，没有任务状态机。格式 6 之后只新增过表（`draft_approvals`），格式号不变：打开已有的格式 6 库时补建缺失的新表，其余表与数据不动。
 
 | 表 | 内容 |
 | --- | --- |
@@ -508,6 +525,7 @@ fixtures:
 | `environments` | 各检出 adapter 环境：状态 starting/ready/failed/stopped、pid、端口、ready 变量、快照、日志 |
 | `browser_instances` | 检出×身份浏览器：端口、pid、profile、有无界面、状态、租约持有者、退出码/信号、日志、崩溃报告、近期崩溃 |
 | `inbox`、`questions`、`annotations` | 上传、提问与答复、草稿批注 |
+| `draft_approvals` | 草稿场景的同意：文件、场景、指纹、同意人、时间、撤销时间；同一人在同一指纹上只有一条未撤销的同意 |
 | `attention`、`identity_events`、`fixture_runs` | 待人处理、身份登录与验证码计数、前置数据留痕 |
 
 端口租约不在数据库中：守护进程用 `/tmp/sop-board-port-<uid>-<端口>.lock` 文件锁跨项目、跨检出租用端口，并在锁文件里记录占用的项目与检出。

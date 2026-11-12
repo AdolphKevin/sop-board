@@ -238,6 +238,24 @@ CREATE TABLE IF NOT EXISTS fixture_runs(
   finished_at TEXT);
 """
 
+# 格式 6 之后新增的表：只新增、不改已有表，格式号不变。新库随 SCHEMA 建立；已有的格式 6 库在打开时补建。
+ADDED_TABLES = {
+    # 草稿场景的同意按 文件 + 场景 + 指纹 记录，不区分检出；撤销只记时间，记录留在历史中。
+    'draft_approvals': """
+CREATE TABLE IF NOT EXISTS draft_approvals(
+  id INTEGER PRIMARY KEY,
+  file TEXT NOT NULL,
+  scenario TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  approved_by TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  revoked_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS draft_approvals_active ON draft_approvals(file, scenario, fingerprint, approved_by)
+  WHERE revoked_at IS NULL;
+""",
+}
+SCHEMA += ''.join(ADDED_TABLES.values())
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -301,6 +319,12 @@ class Store:
                 with self.lock:
                     db.executescript('BEGIN IMMEDIATE;\n' + SCHEMA + f"\nINSERT INTO meta VALUES ('format','{VERSION}');"
                                      f'\nPRAGMA user_version={VERSION};\nCOMMIT;')
+                return
+            present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            missing = [ddl for name, ddl in ADDED_TABLES.items() if name not in present]
+            if missing:
+                with self.lock:
+                    db.executescript('BEGIN IMMEDIATE;\n' + ''.join(missing) + '\nCOMMIT;')
 
     @contextmanager
     def connection(self):

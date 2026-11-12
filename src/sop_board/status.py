@@ -9,6 +9,10 @@
 另有两个徽标，可与状态并存：
 - distill 待沉淀：同一指纹上已有经真实入口的 Agent 独立通过，但没有有效守护。
 - review 待人工复核：状态为通过，且最新结果是经真实入口的 Agent 独立通过，之后还没有人工标注。
+草稿场景另有审阅状态（draft_review）：
+- annotated 有批注：该场景有未处理的批注；
+- approved 已同意：当前指纹上有同意，且没有未处理的批注；
+- pending 待审：其余情况。同意按 文件 + 场景 + 指纹 记录，不区分检出；文件级批注不影响单条场景。
 """
 from datetime import datetime, timezone
 import json
@@ -17,6 +21,7 @@ LABELS = {'not-run': '未执行', 'pass': '通过', 'retest': '待复测',
           'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'skip': '跳过', 'draft': '草稿'}
 ORDER = ('retest', 'fail', 'blocked', 'changed', 'not-run', 'pass', 'skip', 'draft')
 MANUAL = {'pass': '通过', 'fail': '不通过', 'blocked': '阻塞', 'changed': '需求变更'}
+DRAFT_REVIEW = {'pending': '待审', 'annotated': '有批注', 'approved': '已同意'}
 
 
 def manual_reason(row):
@@ -102,13 +107,37 @@ def independent_pass(results):
     return next((row for row in results if accepted(row)), None)
 
 
+def draft_reviews(db, scenes):
+    """草稿场景的审阅状态：场景键 → {state, label, approvers, approvals}。
+
+    approvals 是当前指纹上未撤销的同意（按登记先后），approvers 是其中的同意人（去重）。
+    """
+    drafts = {key: scene for key, scene in scenes.items() if scene.get('status') == 'draft'}
+    if not drafts:
+        return {}
+    annotated = {(row['file'], row['target']) for row in db.execute("SELECT file, target FROM annotations WHERE status='open'")}
+    active = {}
+    for row in db.execute('SELECT id, file, scenario, fingerprint, approved_by, approved_at FROM draft_approvals '
+                          'WHERE revoked_at IS NULL ORDER BY id'):
+        active.setdefault((row['file'], row['scenario'], row['fingerprint']), []).append(dict(row))
+    result = {}
+    for key, scene in drafts.items():
+        approvals = active.get((scene['file'], scene['id'], scene['fingerprint']), [])
+        state = 'annotated' if (scene['file'], scene['id']) in annotated else 'approved' if approvals else 'pending'
+        result[key] = dict(state=state, label=DRAFT_REVIEW[state], approvals=approvals,
+                           approvers=list(dict.fromkeys(a['approved_by'] for a in approvals)))
+    return result
+
+
 def board(db, checkout_id, scenes, *, guard_validity=None):
     """全部场景的状态与计数。guard_validity：场景键 → (有效, 原因)。"""
     grouped = latest_results(db, checkout_id)
     runs = guard_runs(db, checkout_id)
     fixes = closed_fixes(db, checkout_id)
+    reviews = draft_reviews(db, scenes)
     guard_validity = guard_validity or {}
     items, counts = {}, {state: 0 for state in ORDER}
+    draft_counts = {state: 0 for state in DRAFT_REVIEW}
     distill = review = 0
     for scene_key, scene in scenes.items():
         identity = (scene['file'], scene['id'], scene['fingerprint'])
@@ -122,11 +151,14 @@ def board(db, checkout_id, scenes, *, guard_validity=None):
         info['guard'] = dict(valid=valid, reason=guard_reason,
                              last=dict(id=run['id'], status=run['status'], reason=run['reason'], ran_at=run['ran_at'],
                                        product_digest=run['product_digest']) if run else None)
+        if scene_key in reviews:
+            info['draft_review'] = reviews[scene_key]
+            draft_counts[reviews[scene_key]['state']] += 1
         counts[info['state']] += 1
         distill += info['distill']
         review += info['review']
         items[scene_key] = info
-    return dict(items=items, counts=counts, distill=distill, review=review, total=len(scenes))
+    return dict(items=items, counts=counts, distill=distill, review=review, total=len(scenes), draft_review=draft_counts)
 
 
 def confirmation(rows):

@@ -13,7 +13,9 @@ sops:
     scenarios:
       - {id: DRAFT-A-1-P01, polarity: positive, title: 申请部分退款成功, actor: 买家, priority: P1, verify: api,
          initial_state: ["订单 E 实付 99.00 元，已签收 2 天"], steps: ["POST /api/refunds，订单 E，金额 40"],
-         expected: ["返回 201，金额 40.00"], forbidden_effects: ["退款金额超过实付"]}
+         expected: ["返回 201，金额 40.00"], forbidden_effects: ["退款金额超过实付"],
+         refs: ["refund.md#R2"]}
       - {id: DRAFT-A-1-N01, polarity: negative, negative_type: invalid-input, title: 金额超过实付被拒绝, actor: 买家, priority: P1, verify: api,
          initial_state: ["订单 F 实付 20.00 元，已签收 2 天"], steps: ["POST /api/refunds，订单 F，金额 25"],
-         expected: ["返回 422"], forbidden_effects: ["生成订单 F 的退款记录"]}
+         expected: ["返回 422"], forbidden_effects: ["生成订单 F 的退款记录"],
+         refs: ["refund.md#R2"]}

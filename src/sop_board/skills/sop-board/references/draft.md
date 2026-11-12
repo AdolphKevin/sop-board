@@ -1,6 +1,6 @@
-# 验收场景草稿：生成、批注与确认
+# 验收场景草稿：生成、审阅与确认
 
-草稿是场景目录下 `metadata.status: draft` 的场景 YAML。草稿不进入执行（`run prepare` 返回 `draft-not-runnable`），确认后才进入运行范围。
+草稿是场景目录下 `metadata.status: draft` 的场景 YAML。草稿不进入执行（`run prepare` 返回 `draft-not-runnable`），确认后才进入运行范围。测试同学在看板工作台“草稿”筛选中对照五项检查清单与 `refs` 指向的 SOP 规则原文审阅每条场景：有问题写批注，没有问题点「同意」。
 
 ## 生成草稿
 
@@ -38,14 +38,18 @@
            refs: ["<SOP 文件>#R1"]
    ```
 
-5. 运行 `sop-board status --json`，`invalid_files` 列出的问题全部修正（草稿计入 `counts.draft`）。告诉使用者草稿位置、因业务交叉修改的已有场景，以及有交叉但预期不变的场景和理由；测试同学可在看板“草稿”筛选中批注。
+   每条场景的 `refs` 写 `<SOP 文件名>#R<n>`：看板据此在审阅页展开该规则的原文。
+5. 运行 `sop-board status --json`，`invalid_files` 列出的问题全部修正（草稿计入 `counts.draft`，`draft_review` 按待审、有批注、已同意分开计数）。告诉使用者草稿位置、因业务交叉修改的已有场景，以及有交叉但预期不变的场景和理由；测试同学在看板“草稿”筛选中审阅。
 
 ## 处理批注
 
-1. `sop-board draft annotations [<文件名>]` 读取未处理的批注（`--all` 含已处理）。
-2. 按批注修订场景文件；批注涉及的业务口径不清时问使用者。
-3. 采纳：`sop-board draft resolve <批注编号> --note <怎么改的>`；不采纳：`sop-board draft resolve <批注编号> --reject --note <理由>`。
+1. `sop-board draft annotations [<文件名>]` 读取未处理的批注（`--all` 含已处理）；`drafts` 列出每条场景的审阅状态（待审、有批注、已同意）与同意人。
+2. 按批注修订场景文件；批注涉及的业务口径不清时问使用者。场景的四要素一改，它原有的同意就失效，回到待审，由测试同学重新审阅。
+3. 采纳：`sop-board draft resolve <批注编号> --note <怎么改的>`；不采纳：`sop-board draft resolve <批注编号> --reject --note <理由>`（场景没改时原有同意仍有效）。
 
 ## 确认
 
-使用者确认草稿内容后，运行 `sop-board draft confirm <文件名>`（不带 `.yaml`）：状态改为 confirmed，并在 sources 写入确认人（操作者；使用者说明是别人确认的，加 `--as <姓名>`）。返回 `draft-annotations-open` 时先处理列出的批注。确认后的场景显示为未执行，按 [run.md](run.md) 执行。
+使用者要确认草稿时，运行 `sop-board draft confirm <文件名>`（不带 `.yaml`）。确认人取自看板上同意这些场景的人（去重，按首次同意的先后），命令只有文件名这一个参数；使用者说某人确认了草稿，也照样直接运行。
+
+- 成功：状态改为 confirmed，sources 首项写入同意人；向使用者报告 `confirmed_by`。确认后的场景显示为未执行，按 [run.md](run.md) 执行。
+- `draft-not-approved`：列出的场景还没在当前内容上被同意（待审或有批注）；`draft-annotations-open`：还有未处理的批注（含整个文件的批注）。把列出的场景与批注告诉使用者：批注按上一节处理，未同意的场景请测试同学在看板“草稿”筛选中审阅并同意，之后再确认。

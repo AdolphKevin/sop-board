@@ -11,7 +11,7 @@ from .status import ORDER
 
 ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E"
         "%3Cpath d='M9 11h14M9 16h14M9 21h9' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E")
-NAV = (('', '工作台'), ('/sop', '业务 SOP'), ('/inbox', '收件箱与待答复'), ('/drafts', '草稿批注'),
+NAV = (('', '工作台'), ('/sop', '业务 SOP'), ('/inbox', '收件箱与待答复'),
        ('/runs', '运行记录'), ('/attention', '待人处理'), ('/report', '报告'), ('/atlas', '交互地图'))
 
 
@@ -42,10 +42,13 @@ def page_head(title, lead=''):
 
 
 def tree_page(kind, search, empty):
-    """左栏树加右栏的两栏外壳。左栏可隐藏（隐藏后左侧留一条窄栏用来恢复），树可一键全部展开或收起；状态由 board.js 记在 localStorage。"""
+    """左栏树加右栏的两栏外壳。左栏可隐藏（隐藏后左侧留一条窄栏用来恢复）、可拖右边缘的手柄调宽，树可一键全部展开或收起；
+    状态由 board.js 记在 localStorage。"""
     return f'''
 <section class="workbench{kind}">
   <aside id="sidebar" class="sidebar">
+    <div class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar" tabindex="0"
+         aria-label="调整左栏宽度" title="拖动调整左栏宽度，双击恢复 360px"></div>
     <div class="sidebar-head">
       <div class="sidebar-top">
         <label class="field compact"><span>检出</span><select id="checkout"></select></label>
@@ -160,29 +163,6 @@ def inbox(project, items, questions, *, local, operator=None):
   <div class="card"><h2>待答复</h2><div class="questions">{''.join(cards) or '<p class="muted">没有问题</p>'}</div></div>
 </section>'''
     return layout(project, '收件箱与待答复', body, local=local, active='/inbox', page='inbox', operator=operator)
-
-
-def drafts(project, checkout, files, notes, *, local, operator=None):
-    blocks = []
-    for item in files:
-        own = [n for n in notes if n['file'] == item['name']]
-        listed = ''.join(f'<li><span class="mono">#{n["id"]}</span> <span class="chip">{escape(n["target"])}</span> {escape(n["text"])}'
-                         f'<span class="muted">（{escape(n["author"])}，{STATUS.get(n["status"], n["status"])}）</span></li>' for n in own)
-        targets = ''.join(f'<option value="{escape(s)}">{escape(s)}</option>' for node in item['nodes'] for s in node['scenarios'])
-        blocks.append(f'''<article class="card"><h2>{escape(item["name"])} <span class="pill draft">草稿</span></h2>
-  <p class="muted">{escape(item.get("requirement") or "")}</p>
-  <p><a href="/p/{quote(project)}?checkout={quote(checkout)}">在工作台查看场景</a>（筛选“草稿”）</p>
-  <ul class="notes">{listed or '<li class="muted">没有批注</li>'}</ul>
-  <form class="annotate stack" data-file="{escape(item["name"])}">
-    <label class="field"><span>批注对象</span><select name="target"><option value="file">整个文件</option>{targets}</select></label>
-    <label class="field"><span>批注内容</span><textarea name="text" rows="3" placeholder="例如：预期金额应为 99.00 元" required></textarea></label>
-    {signer_line()}
-    <div class="form-actions"><button class="primary" type="submit">提交批注</button><span class="message"></span></div>
-  </form></article>''')
-    body = f'''<section class="page">{page_head('草稿批注', '草稿场景不进入执行；批注由开发者的会话处理后再确认。')}
-{"".join(blocks) or '<div class="card"><p class="muted">没有草稿场景文件</p></div>'}</section>'''
-    return layout(project, '草稿批注', body, local=local, active='/drafts', page='drafts', operator=operator,
-                  data=dict(checkout=checkout))
 
 
 def atlas(project, checkout, entries, *, local, operator=None):

@@ -1,4 +1,4 @@
-"""工作台接口：场景树与状态、场景详情（四要素、证据、历史）、证据下载、复测标注、本机 AI 重跑。
+"""工作台接口：场景树与状态、场景详情（四要素、证据、历史）、证据下载、复测标注、草稿审阅（批注、同意、文件与节点面板）、本机 AI 重跑。
 
 内网响应只含业务字段：不返回会话编号、本机路径、命令与凭据变量名（server 另做遮蔽）。
 """
@@ -44,6 +44,9 @@ def board(app, request):
         items[key] = dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
                           review=info['review'], id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
+        if 'draft_review' in info:
+            draft = info['draft_review']
+            items[key]['draft_review'] = dict(state=draft['state'], label=draft['label'], approvers=draft['approvers'])
     counts = dict(derived['counts'])
     counts['distill'] = derived['distill']
     counts['review'] = derived['review']
@@ -108,20 +111,34 @@ def detail(app, request):
                                           'ORDER BY id DESC LIMIT 10',
                                           (context.checkout.id, scene['file'], scene['id'], scene['fingerprint']))]
     latest = next((h for h in history if h['current'] and h['kind'] == 'agent'), None)
-    notes = []
-    if scene.get('status') == 'draft':
-        from . import authoring
-        notes = [dict(id=a['id'], text=a['text'], author=a['author'], status=a['status'], created_at=local_time(a['created_at']))
-                 for a in authoring.annotations(app.store, file=scene['file'], include_resolved=True) if a['target'] in (scene['id'], 'file')]
     fields = {name: scene.get(name, []) for name in (*scenarios.CONTENT_FIELDS, 'refs', 'evidence_hints')}
-    return dict(ok=True, key=key, local=request.local, checkout=context.checkout.name,
-                scene=dict(id=scene['id'], file=scene['file'], node=scene['node'], node_title=scene['node_title'],
-                           title=scene['title'], actor=scene['actor'], priority=scene['priority'], verify=scene['verify'],
-                           polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
-                           **fields),
-                state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                           review=info['review'], guard=info['guard']),
-                coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=notes)
+    result = dict(ok=True, key=key, local=request.local, checkout=context.checkout.name,
+                  scene=dict(id=scene['id'], file=scene['file'], node=scene['node'], node_title=scene['node_title'],
+                             title=scene['title'], actor=scene['actor'], priority=scene['priority'], verify=scene['verify'],
+                             polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
+                             fingerprint=scene['fingerprint'], **fields),
+                  state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
+                             review=info['review'], guard=info['guard']),
+                  coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=[])
+    if scene.get('status') == 'draft':
+        result.update(draft_detail(app, context, scene, info['draft_review']))
+    return result
+
+
+def note_entry(note):
+    return dict(id=note['id'], target=note['target'], text=note['text'], author=note['author'], status=note['status'],
+                note=note['note'], created_at=local_time(note['created_at']),
+                resolved_at=local_time(note['resolved_at']) if note['resolved_at'] else None)
+
+
+def draft_detail(app, context, scene, review):
+    """草稿场景详情：审阅状态与同意记录、refs 指向的 SOP 规则原文、检查清单、本场景与整个文件的批注。"""
+    from . import authoring
+    notes = [note_entry(a) for a in authoring.annotations(app.store, file=scene['file'], include_resolved=True)
+             if a['target'] in (scene['id'], 'file')]
+    return dict(annotations=notes, checklist=list(authoring.CHECKLIST), rules=authoring.rule_texts(context, scene.get('refs')),
+                draft=dict(state=review['state'], label=review['label'], approvers=review['approvers'],
+                           approvals=authoring.approval_history(app.store, scene['file'], scene['id'], scene['fingerprint'])))
 
 
 @route('GET', '/', 'lan')
@@ -259,7 +276,7 @@ def attach(app):
     pass
 
 
-# ---- 收件箱、答复、草稿批注、SOP 原文、交互地图 ----
+# ---- 收件箱、答复、草稿审阅、SOP 原文、交互地图 ----
 
 @route('GET', r'/p/([^/]+)/inbox', 'lan')
 def inbox_page(app, request):
@@ -295,7 +312,7 @@ def annotate_api(app, request):
     from . import authoring
     context = context_for(app, request.json_field('checkout'))
     return json_response(authoring.annotate(context, request.json_field('file'), request.json_field('target') or 'file',
-                                            request.json_field('text'), by=request.json_field('by')))
+                                            request.json_field('text'), by=signer_for(request)))
 
 
 @route('GET', '/api/annotations', 'lan')
@@ -306,16 +323,72 @@ def annotations_api(app, request):
     return json_response(dict(ok=True, annotations=[a for a in items if target is None or a['target'] == target]))
 
 
-@route('GET', r'/p/([^/]+)/drafts', 'lan')
-def drafts_page(app, request):
+# 草稿只在工作台“草稿”筛选中审阅：场景详情、节点面板与文件面板。内网可以批注、同意或撤销自己的同意（须署名）。
+
+def signer_for(request):
+    """内网须署名；本机不填时以本机操作者署名。"""
+    from . import config
+    by = request.json_field('by')
+    if request.local and not (isinstance(by, str) and by.strip()):
+        by = config.operator()
+    return by
+
+
+@route('GET', '/api/draft', 'lan')
+def draft_api(app, request):
+    """文件面板与节点面板：需求说明与来源、审阅进度、各节点场景的四要素与审阅状态、文件级批注、能否确认。"""
     from . import authoring
-    from .pages import drafts as page
     context = context_for(app, request.query.get('checkout'))
-    found = scenarios.scan(context.checkout.scenarios_dir(app.project))
-    drafts = [dict(name=name, nodes=info['nodes'], requirement=info.get('requirement'))
-              for name, info in sorted(found['files'].items()) if info.get('status') == 'draft']
-    notes = authoring.annotations(app.store, include_resolved=True)
-    return html_response(page(app.project.name, context.checkout.name, drafts, notes, local=request.local, operator=operator_for(request)))
+    name = request.query.get('file', '')
+    found = authoring.draft_scan(context)
+    info = authoring.draft_info(found, name)
+    review = authoring.review_files(context, name)[0]
+    states = {item['scenario']: item for item in review['scenarios']}
+    nodes = []
+    for node in info['nodes']:
+        rows = []
+        for sid in node['scenarios']:
+            scene = found['scenarios'][scenarios.key(name, sid)]
+            state = states[sid]
+            rows.append(dict({field: scene.get(field) for field in (
+                'id', 'title', 'actor', 'priority', 'verify', 'polarity', 'negative_type', *scenarios.CONTENT_FIELDS)},
+                key=scenarios.key(name, sid), fingerprint=scene['fingerprint'], review=state['review'], label=state['label'],
+                approvers=state['approvers'],
+                approvals=[dict(id=a['id'], by=a['by'], at=local_time(a['at'])) for a in state['approvals']]))
+        nodes.append(dict(id=node['id'], title=node['title'], actor=node['actor'], entry=node['entry'], scenarios=rows))
+    notes = [note_entry(a) for a in authoring.annotations(app.store, file=name, include_resolved=True) if a['target'] == 'file']
+    result = dict(ok=True, local=request.local, checkout=context.checkout.name, file=name, requirement=info.get('requirement'),
+                  version=info.get('version'), sources=info.get('sources'), progress=review['progress'], total=review['total'],
+                  open_annotations=review['open_annotations'], ready=review['ready'], nodes=nodes, annotations=notes)
+    if request.local:
+        result['command'] = f'sop-board draft confirm {name}'
+    return json_response(result)
+
+
+@route('POST', '/api/approve', 'lan')
+def approve_api(app, request):
+    """同意一条草稿场景（scenario），或同意一个节点中的全部待审场景（node）；fingerprints 为页面上看到的指纹。"""
+    from . import authoring
+    context = context_for(app, request.json_field('checkout'))
+    scenario, node = request.json_field('scenario'), request.json_field('node')
+    if node is not None and not isinstance(node, str):
+        reject(422, 'approval-invalid', 'node', '节点编号应为文字')
+    if node is None and not (isinstance(scenario, str) and scenario):
+        reject(422, 'approval-invalid', 'scenario', '须给出场景编号或节点编号')
+    fingerprints = request.json_field('fingerprints') or {}
+    if request.json_field('fingerprint') and scenario:
+        fingerprints = {scenario: request.json_field('fingerprint')}
+    return json_response(authoring.approve(context, request.json_field('file') or '', [scenario] if node is None else [],
+                                           by=signer_for(request), fingerprints=fingerprints, node=node))
+
+
+@route('POST', '/api/unapprove', 'lan')
+def unapprove_api(app, request):
+    """撤销自己的同意：approval 为同意编号，或给出 file 与 scenario。"""
+    from . import authoring
+    context = context_for(app, request.json_field('checkout'))
+    return json_response(authoring.revoke_approval(context, by=signer_for(request), approval=request.json_field('approval'),
+                                                   file=request.json_field('file'), scenario=request.json_field('scenario')))
 
 
 @route('GET', r'/p/([^/]+)/sop', 'lan')
