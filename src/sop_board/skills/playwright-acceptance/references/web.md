@@ -28,6 +28,8 @@
 
 看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
 
+窗口未认回时，`browser status` 显示进程号与原因，租约、`run prepare` 和 `browser open` 返回 `browser-unrecovered`，不会另起浏览器。窗口恢复应答后再次请求会重新核对；确实不要这个窗口时，用 `sop-board browser close --identity <身份>` 结束。看板停止仍保留未认回窗口。
+
 ### 崩溃
 
 - 浏览器进程在运行中退出：`run submit` 把该身份相关且未通过的 Web 场景记为 blocked（已写出的 pass 保留），finding 含信号与 chrome.log 路径，并登记待人处理。

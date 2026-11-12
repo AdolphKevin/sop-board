@@ -70,9 +70,11 @@ class Launcher:
                     "INSERT INTO launches(checkout,kind,agent,scope,log,status,requested_by,started_at) VALUES (?,?,?,?,?,'running',?,?)",
                     (checkout.id, kind, agent['runner'], dumps(scope), '', requested_by, now()))
                 launch_id = cursor.lastrowid
-            log = directory / f'{launch_id}.jsonl'
+            from . import workdirs
+            directory = workdirs.create(directory, launch_id)
+            log = directory / 'output.jsonl'
             prompt = prompt_for(self.project, checkout, kind, scope, implementer, fix, implemented_by)
-            (directory / f'{launch_id}.prompt.md').write_text(prompt, encoding='utf-8')
+            log.with_suffix('.prompt.md').write_text(prompt, encoding='utf-8')
             session = str(uuid.uuid4()) if agent['runner'] == 'claude' else None
             env = dict(os.environ, SOP_BOARD_LAUNCH=str(launch_id), SOP_BOARD_CHECKOUT=checkout.name)
             env.pop('SOP_BOARD_SESSION', None)

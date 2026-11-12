@@ -130,8 +130,8 @@ def create_work(context, kind, *, session=None, scope=()):
         cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,dir,scope,created_at) VALUES (?,?,'prepared',?,?,'',?,?)",
                             (kind, context.checkout.id, session, operator, dumps(list(scope)), now()))
         work_id = cursor.lastrowid
-    directory = work_dir(context.project, kind, work_id)
-    directory.mkdir(parents=True)
+    from . import workdirs
+    directory = workdirs.create(work_dir(context.project, kind, work_id).parent, work_id)
     with context.store.local_tx() as db:
         db.execute('UPDATE local_work SET dir=? WHERE id=?', (str(directory), work_id))
     return work_id, directory, operator

@@ -100,7 +100,10 @@
 | `run-prepared` | 本检出已有 prepared 运行：报告编号；是本会话的就完成并 submit；使用者同意放弃后 `sop-board run abandon --run <编号>` |
 | `env-busy` | 端口被另一检出的环境占用，输出写明占用者与 `env down` 命令：转告使用者，由他决定 |
 | `browser-busy` | 该身份正被真人占用：使用者说完成后 `sop-board browser release --identity <身份>` 交还，再准备 |
+| `browser-unrecovered` | 窗口仍保留：查看进程号与原因，恢复应答后重试；只有确实不要窗口时才用 `browser close --identity <身份>` 结束 |
 | `draft-not-runnable` | 范围含草稿场景：先按 [draft.md](draft.md) 确认 |
+
+运行目录使用 `run prepare` 返回的 `directory`，重号时会顺延目录名称；不要按运行编号拼路径。
 
 ## 账号与真人操作
 
@@ -114,6 +117,8 @@
 `browser close` 会结束浏览器，人做过的验证随之作废，只在使用者要关掉浏览器时用。出现 `browser may not be secure` 时停止，相关场景记受阻并照录原文。身份处于 crashed 状态时，经使用者同意后 `sop-board browser open --identity <身份> --reset-crash`。
 
 看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
+
+窗口未认回时，`browser status` 显示进程号与原因，租约、`run prepare` 和 `browser open` 返回 `browser-unrecovered`，不会另起浏览器。窗口恢复应答后再次请求会重新核对；确实不要这个窗口时，用 `sop-board browser close --identity <身份>` 结束。看板停止仍保留未认回窗口。
 
 ## 人工复测结论
 

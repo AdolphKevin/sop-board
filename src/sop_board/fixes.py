@@ -12,15 +12,11 @@ fix close、fix abandon 只能在产出修复的机器上执行，其他机器�
 import json
 from pathlib import Path
 
-from . import config, gitops, guards, scenarios
+from . import config, gitops, guards, scenarios, workdirs
 from .errors import reject
 from .store import dumps, loads, now
 
 OPEN = ('open', 'submitted', 'verified')
-
-
-def fix_dir(project, fix_id):
-    return project.data / 'fixes' / str(fix_id)
 
 
 def load(context, fix_id):
@@ -104,11 +100,10 @@ def prepare(context, scope, *, session):
                            "VALUES (?,?,?,?,?,?,'open',?,?)",
                            (store.product, store.machine['id'], context.checkout.name, branch_of(context.project, context.checkout),
                             executor, operator, dumps(problems), now()))
-    directory = fix_dir(context.project, fix_id)
+    directory = workdirs.create(context.project.data / 'fixes', fix_id)
     with store.local_tx() as db:
         db.execute('INSERT INTO local_fixes(fix, product, checkout, dir, base_files) VALUES (?,?,?,?,?)',
                    (fix_id, store.product, context.checkout.id, str(directory), dumps(base)))
-    directory.mkdir(parents=True)
     import yaml
     (directory / 'problems.json').write_text(dumps(local_problems(store, problems)), encoding='utf-8')
     (directory / 'scenarios.yaml').write_text(yaml.safe_dump([dict(scenes[k], key=k) for k in keys], allow_unicode=True, sort_keys=False),

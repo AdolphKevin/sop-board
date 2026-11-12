@@ -383,8 +383,8 @@ def run_guards(app, checkout, index, keys, *, holder):
     for key in keys:
         for test in index['guards'][key]['tests']:
             commands.setdefault(test['command'], index['commands'][test['command']])
-    out = project.data / 'retests' / f"{datetime_stamp()}-{checkout.name}"
-    out.mkdir(parents=True, exist_ok=True)
+    from . import workdirs
+    out = workdirs.create(project.data / 'retests', f"{datetime_stamp()}-{checkout.name}")
     before = _gitops.snapshot(checkout.paths, project.exclusions(test_exclusions_for(project, checkout)))['product_digest']
     notes = circumstances(app, checkout)
     results = {}
@@ -575,8 +575,8 @@ def distill_prepare(context, scope, *, session):
                             "VALUES ('distill',?,'prepared',?,?,'',?,?)",
                             (context.checkout.id, executor, operator, dumps([dict(scenario=k) for k in keys]), now()))
         work_id = cursor.lastrowid
-    directory = context.project.data / 'distills' / str(work_id)
-    directory.mkdir(parents=True)
+    from . import workdirs
+    directory = workdirs.create(context.project.data / 'distills', work_id)
     (directory / 'scenarios.yaml').write_text(yaml.safe_dump([dict(scenes[k], key=k) for k in keys], allow_unicode=True,
                                                              sort_keys=False), encoding='utf-8')
     (directory / 'acceptance.json').write_text(dumps(acceptance), encoding='utf-8')

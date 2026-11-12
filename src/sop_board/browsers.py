@@ -175,7 +175,7 @@ def process_snapshot(pid):
     """只查看指定进程；启动时间、命令行一起用于防止进程号被复用。"""
     try:
         result = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'lstart=,stat=,command='],
-                                capture_output=True, text=True, timeout=5)
+                                capture_output=True, text=True, timeout=5, env=dict(os.environ, LC_ALL='C'))
         parts = result.stdout.strip().split(None, 6)
         if result.returncode == 0 and len(parts) == 7 and not parts[5].startswith('Z'):
             return ' '.join(parts[:5]), parts[6]
@@ -189,6 +189,7 @@ class RecoveredProcess:
 
     def __init__(self, pid, snapshot):
         self.pid, self.snapshot = pid, snapshot
+        self.started = datetime.strptime(snapshot[0], '%a %b %d %H:%M:%S %Y').astimezone().timestamp()
         self.verified_at = time.monotonic()
         self.exited = False
         self.guard = threading.Lock()
@@ -267,6 +268,15 @@ def signal_name(code):
         return signal.Signals(-code).name
     except ValueError:
         return f'SIG{-code}'
+
+
+def exit_description(at, code, name, log):
+    moment = datetime.fromisoformat(at).astimezone().strftime('%Y-%m-%d %H:%M:%S')
+    if code is None and (not name or name == '进程已退出'):
+        reason = '已退出（取不到退出信号）'
+    else:
+        reason = f"因 {name or f'退出码 {code}'} 退出"
+    return f'浏览器进程 {moment} {reason}，日志 {log}'
 
 
 class Instance:
@@ -367,8 +377,6 @@ class Instance:
 
     def wait_recovery(self):
         self.recovered.wait()
-        if self.recovery_error:
-            raise ValueError(f'浏览器认回核对未完成：{self.recovery_error}')
 
     def watch(self, process):
         interval = 1 if isinstance(process, RecoveredProcess) else .2
@@ -458,7 +466,7 @@ class Manager:
             assignments = ', '.join(f'{name}=?' for name in values)
             if state == 'starting':
                 assignments += ', started_at=?, exited_at=NULL, exit_code=NULL, signal=NULL, crash_report=NULL'
-                parameters = list(values.values()) + [now()]
+                parameters = list(values.values()) + [datetime.fromtimestamp(instance.started, timezone.utc).isoformat()]
             else:
                 parameters = list(values.values())
             db.execute(f'UPDATE browser_instances SET {assignments} WHERE checkout=? AND identity=?',
@@ -466,7 +474,7 @@ class Manager:
 
     def exited(self, instance, code, *, expected):
         """浏览器进程退出：主动停止记为 exited；其他退出记录崩溃，并登记待人处理。"""
-        name = signal_name(code) if code is not None else '进程已退出'
+        name = signal_name(code)
         report = crash_report(instance.started)
         row = self.row(instance.checkout, instance.identity) if instance.checkout.id is not None else None
         crashes = json.loads(row['crashes']) if row else []
@@ -478,9 +486,7 @@ class Manager:
                                 holder=row['holder'] if row else None))
             state = 'crashed' if len(crashes) >= 2 else 'exited'
             text = (f"身份 {instance.identity} 的 Chrome for Testing（检出 {instance.checkout.name}）"
-                    f"{moment.astimezone().strftime('%Y-%m-%d %H:%M:%S')} "
-                    + (f"因 {name or f'退出码 {code}'} 退出" if code is not None else '进程已退出')
-                    + f"，日志 {instance.log()}"
+                    + exit_description(moment.isoformat(), code, name, str(instance.log()))
                     + (f'，崩溃报告 {report}' if report else ''))
             # 待人处理在业务记录库（附产出机器）；连不上共享库时只记本机的崩溃记录，不影响浏览器状态。
             from .ledger import insert_attention
@@ -503,6 +509,7 @@ class Manager:
         result = {}
         with self.guard:
             for identity in identities:
+                self.ensure_recovered(self.instance(checkout, identity))
                 row = self.row(checkout, identity)
                 if row and row['state'] == 'crashed':
                     raise APIError(409, 'browser-crashed', [dict(field=identity, problem=
@@ -550,6 +557,7 @@ class Manager:
 
     def open(self, checkout, identity, *, headed, reset_crash=False, url=None):
         with self.guard:
+            self.ensure_recovered(self.instance(checkout, identity))
             row = self.row(checkout, identity)
             if row and row['state'] == 'crashed' and not reset_crash:
                 raise APIError(409, 'browser-crashed', [dict(field=identity, problem='浏览器处于 crashed，加 --reset-crash 重置')])
@@ -593,6 +601,9 @@ class Manager:
             if row and row['holder'] and row['holder'] != 'human':
                 raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
             instance.stop()
+            instance.recovery_error = None
+            if not instance.alive():
+                self.record(instance, 'exited', pid=None, holder=None)
             self.release_identity(checkout, identity)
             return self.status(checkout, identity)
 
@@ -612,12 +623,15 @@ class Manager:
                 row['default_port'] = port_for(self.project, checkout, row['identity'])
             except ValueError:
                 row['default_port'] = None
+            if instance and instance.recovery_error and row['alive']:
+                row['state'] = 'unrecovered'
+                row['reason'] = instance.recovery_error
             confirmed = instance and instance.recovered.is_set() and not instance.recovery_error
             row['endpoint'] = f"http://127.0.0.1:{row['port']}" if row['alive'] and confirmed else None
         return dict(checkout=checkout.name, runtime=runtime_info(), browsers=rows)
 
     def recover(self):
-        """仅检查本项目 profile 的锁；认回有界面窗口，清理核实过的无头或无应答浏览器。"""
+        """仅检查本项目 profile 的锁；认回有界面窗口，保留未认回窗口，清理核实过的无头浏览器。"""
         from . import checkouts
         from types import SimpleNamespace
         with self.store.local_tx() as db:
@@ -639,7 +653,7 @@ class Manager:
             checkout = registered.get(name) or SimpleNamespace(id=None, name=name, slot=0)
             instance = Instance(self, checkout, identity)
             instance.process, instance.actual, instance.headed = process, port, headed
-            instance.started = time.time()
+            instance.started = process.started
             if not headed:
                 instance.stop()
                 continue
@@ -649,20 +663,44 @@ class Manager:
             else:
                 self.instances[checkout.id, identity] = instance
                 self.record(instance, 'starting')
-            instance.recovery_thread = threading.Thread(target=self.confirm_recovery, args=(instance,), daemon=True,
-                                                       name=f'browser-recover-{name}-{identity}')
-            instance.recovery_thread.start()
+            self.start_recovery(instance)
+
+    def start_recovery(self, instance):
+        instance.recovered.clear()
+        instance.recovery_error = None
+        instance.recovery_thread = threading.Thread(target=self.confirm_recovery, args=(instance,), daemon=True,
+                                                   name=f'browser-recover-{instance.checkout.name}-{instance.identity}')
+        instance.recovery_thread.start()
+
+    def ensure_recovered(self, instance):
+        instance.wait_recovery()
+        if not instance.recovery_error:
+            return
+        if not instance.alive():
+            instance.recovery_error = None
+            self.record(instance, 'exited', pid=None, holder=None)
+            return
+        self.start_recovery(instance)
+        instance.wait_recovery()
+        if instance.recovery_error:
+            raise APIError(409, 'browser-unrecovered', [dict(field=instance.identity, problem=
+                f'身份 {instance.identity} 的有界面浏览器未认回（进程 {instance.process.pid}）：{instance.recovery_error}；'
+                f'窗口恢复应答后再次请求会重新核对并认回；确实不要这个窗口了，用 '
+                f'sop-board browser close --identity {instance.identity} 结束它')])
 
     def confirm_recovery(self, instance):
         """后台最多核对十五秒；不取管理器锁，等待此结果的请求可以持有该锁。"""
         process, port = instance.process, instance.port()
         deadline = time.monotonic() + READY_SECONDS
+        reason = f'调试端口 {port} 没有应答'
         try:
             while not instance.detached.is_set() and process.poll() is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 owners = listener_pids(port, timeout=min(1, remaining))
+                reason = (f'调试端口 {port} 被其他进程占用（监听进程：{", ".join(map(str, sorted(owners)))}）'
+                          if owners and owners != {process.pid} else f'调试端口 {port} 没有应答或应答来源尚未确认')
                 # 明确属于其他进程时，不请求它的调试接口；无输出时核对日志中的浏览器标识。
                 if not owners or owners == {process.pid}:
                     remaining = deadline - time.monotonic()
@@ -687,11 +725,17 @@ class Manager:
                 if instance.detached.wait(min(.2, max(0, deadline - time.monotonic()))):
                     return
             if not instance.detached.is_set():
-                instance.stop()
-                self.record(instance, 'exited', pid=None, holder=None)
+                if process.poll() is None:
+                    instance.recovery_error = reason
+                    self.record(instance, 'starting', holder=None)
+                    print(f'有界面浏览器未认回：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                          f'进程 {process.pid}，原因：{reason}', flush=True)
+                else:
+                    self.record(instance, 'exited', pid=None, holder=None)
         except Exception as error:  # noqa: BLE001
             # 核对自身失败时不另起浏览器，也不结束窗口；请求明确报错。
-            instance.recovery_error = str(error)
+            instance.recovery_error = f'核对失败：{error}'
+            self.record(instance, 'starting', holder=None)
         finally:
             if instance.detached.is_set() and not instance.recovered.is_set():
                 instance.recovery_error = '看板正在停止，已取消认回核对'

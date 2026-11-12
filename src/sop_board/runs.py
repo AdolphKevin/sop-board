@@ -13,7 +13,7 @@ import shutil
 
 import yaml
 
-from . import config, daemon, gitops, guards, scenarios, status
+from . import config, daemon, gitops, guards, scenarios, status, workdirs
 from .defect_links import normalize as normalize_defect
 from .entries import identities as entry_identities, web_evidence
 from .errors import APIError, reject
@@ -31,10 +31,6 @@ def session_id(explicit):
     if not value or not value.strip():
         reject(422, 'session-required', 'session', '取不到执行者会话编号：请用 --session <会话编号> 指定（Claude Code 用会话的 session_id）')
     return value.strip()
-
-
-def run_dir(project, work_id):
-    return project.data / 'runs' / str(work_id)
 
 
 def web_entry(entry):
@@ -167,7 +163,7 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
                             (checkout.id, executor, operator, fix['session'] if fix else None, fix_id, launch,
                              dumps(scope), branch_of(project, checkout), now()))
         work_id = cursor.lastrowid
-    directory = run_dir(project, work_id)
+    directory = None
     holder = f'run:{work_id}'
     try:
         browsers, browser_problems = {}, {}
@@ -177,13 +173,14 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
                                  dict(checkout=checkout.name, identities=identities, holder=holder), timeout=120)['browsers']
             browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
             browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
-        directory.mkdir(parents=True, exist_ok=False)
+        directory = workdirs.create(project.data / 'runs', work_id)
         materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix)
     except BaseException:
         with store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
             db.execute('DELETE FROM local_work WHERE id=?', (work_id,))
-        shutil.rmtree(directory, ignore_errors=True)
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
         raise
     product = {k: v for k, v in snapshot.items() if k != 'files'}
     with store.local_tx() as db:
@@ -581,8 +578,8 @@ def crash_findings(context, work, prepared):
     for row in rows:
         for crash in json.loads(row['crashes']):
             if crash.get('holder') == holder and crash['at'] >= work['created_at']:
-                moment = datetime.fromisoformat(crash['at']).astimezone().strftime('%Y-%m-%d %H:%M:%S')
-                text = f"浏览器进程 {moment} 因 {crash.get('signal') or '退出码 ' + str(crash.get('code'))} 退出，日志 {crash['log']}"
+                from .browsers import exit_description
+                text = exit_description(crash['at'], crash.get('code'), crash.get('signal'), crash['log'])
                 report = crash.get('report')
                 if not report:
                     from .browsers import crash_report

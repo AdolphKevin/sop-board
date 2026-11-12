@@ -21,7 +21,6 @@ from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 HERE = Path(__file__).resolve().parent
-SESSIONS = {}
 STOCK_UNAVAILABLE = '库存服务暂不可用，请稍后再试'
 
 
@@ -32,7 +31,8 @@ def connect(path):
                           paid REAL NOT NULL, delivered_days_ago INTEGER NOT NULL);
                         CREATE TABLE IF NOT EXISTS refunds(id INTEGER PRIMARY KEY, order_id TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
                           status TEXT NOT NULL DEFAULT '已退款');
-                        CREATE TABLE IF NOT EXISTS order_items(order_id TEXT PRIMARY KEY, sku TEXT NOT NULL, qty INTEGER NOT NULL);''')
+                        CREATE TABLE IF NOT EXISTS order_items(order_id TEXT PRIMARY KEY, sku TEXT NOT NULL, qty INTEGER NOT NULL);
+                        CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, shop TEXT NOT NULL);''')
     return db
 
 
@@ -121,10 +121,11 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(raw or b'{}')
         return {k: v[-1] for k, v in parse_qs(raw.decode()).items()}
 
-    def user(self):
+    def user(self, db):
         cookie = SimpleCookie(self.headers.get('Cookie', ''))
         token = cookie['shop_session'].value if 'shop_session' in cookie else None
-        return SESSIONS.get(token)
+        row = db.execute('SELECT shop FROM sessions WHERE token=?', (token,)).fetchone()
+        return row['shop'] if row else None
 
     def do_GET(self):
         path = urlsplit(self.path).path
@@ -137,10 +138,11 @@ class Handler(BaseHTTPRequestHandler):
                              '<label>密码 <input name="password" type="password"></label><button>登录</button></form></body></html>',
                              'text/html; charset=utf-8')
         if path == '/orders':
-            if not self.user():
+            user = self.user(db)
+            if not user:
                 return self.send(302, '', headers=[('Location', '/login')])
             rows = db.execute('SELECT o.id, o.paid, r.status FROM orders o LEFT JOIN refunds r ON r.order_id=o.id WHERE o.shop=? ORDER BY o.id',
-                              (self.user(),)).fetchall()
+                              (user,)).fetchall()
             items = ''.join(f'<tr><td>{html.escape(r["id"])}</td><td>{r["paid"]:.2f}</td><td>{html.escape(r["status"] or "未退款")}</td></tr>' for r in rows)
             return self.send(200, f'<!doctype html><html><head><meta charset="utf-8"><title>订单</title></head><body><h1>订单</h1>'
                              f'<table><thead><tr><th>订单</th><th>实付</th><th>退款状态</th></tr></thead><tbody>{items}</tbody></table></body></html>',
@@ -167,9 +169,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/login':
             if data.get('user') == 'merchant' and data.get('password') == os.environ.get('DEMO_MERCHANT_PASSWORD', 'merchant-pass'):
                 token = secrets.token_hex(16)
-                SESSIONS[token] = 'demo'
+                db.execute("INSERT INTO sessions(token,shop) VALUES (?,'demo')", (token,))
+                db.commit()
                 return self.send(302, '', headers=[('Location', '/orders'), ('Set-Cookie', f'shop_session={token}; HttpOnly; Path=/')])
             return self.send(401, '<p>账号或密码错误</p>', 'text/html; charset=utf-8')
+        if path == '/logout':
+            cookie = SimpleCookie(self.headers.get('Cookie', ''))
+            if 'shop_session' in cookie:
+                db.execute('DELETE FROM sessions WHERE token=?', (cookie['shop_session'].value,))
+                db.commit()
+            return self.send(302, '', headers=[('Location', '/login'),
+                                               ('Set-Cookie', 'shop_session=; HttpOnly; Path=/; Max-Age=0')])
         if path == '/api/orders':
             db.execute('INSERT OR REPLACE INTO orders(id, paid, delivered_days_ago) VALUES (?,?,?)',
                        (data['id'], float(data['paid']), int(data['delivered_days_ago'])))

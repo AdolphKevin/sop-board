@@ -15,10 +15,12 @@
 #   起点改为由执行者用声明的凭据登录；日常 Chrome 开着时它自己会写 profile，预期改为没有 CfT 进程打开或写入它。
 #   版本 6 由未参与实现的审核方按 docs/design.md 已定决策 26（使用者 2026-11-13 决定）修订：新增 BRW-07（看板重启后保留有界面的浏览器窗口）。
 #   BRW-07 的有界面窗口由执行者用 browser open --headed 打开，并用声明的合成账号登录，不需要真人；窗口会出现在执行机器的屏幕上。
+#   版本 7 由未参与实现的审核方按决策 26 独立验收（2026-11-13）的结果修订：有界面的窗口核对不通过时不再结束（新增 BRW-07-N03）；
+#   BRW-07-P02 写明环境先停掉、原有运行目录不得被删除。BRW-07-P01、P02 的“不出现登录表单”依赖演示商城的登录会话在商城进程重启后仍然有效。
 
 metadata:
   requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人，等人处理的场景记未执行并登记待人处理；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
-  version: 6
+  version: 7
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -389,7 +391,8 @@ sops:
     must:
       - "看板守护进程正常停止时不结束有界面的浏览器进程，窗口与页面保持打开，并在输出里写明保留了哪些；无头浏览器与环境照旧随看板停止"
       - "启动时按 profile 目录认回：进程还在、是运行时的 Chrome for Testing、--user-data-dir 是这个 profile、调试端口有应答且来自这个进程；认回后沿用它的调试端口，租约、status、open、release、close 与崩溃规则照常"
-      - "遗留的无头浏览器和调试端口没有应答的浏览器，启动时结束并清理；进程已经不在的不认回也不报错"
+      - "遗留的无头浏览器启动时结束并清理；进程已经不在的不认回也不报错"
+      - "有界面的窗口核对不通过时不结束：登记为未认回并写明原因，这个身份的请求返回 browser-unrecovered，不另起浏览器；窗口恢复应答后再次请求即认回，browser close 才结束它"
       - "认回不依赖本机数据库里的记录：看板被强杀或本机数据库重建后照样认回"
     scenarios:
       - id: BRW-07-P01
@@ -430,19 +433,22 @@ sops:
         initial_state:
           - "浏览器运行时已安装，看板在运行"
           - "main 上 merchant 的有界面窗口已打开、已登录并已 browser release（同 BRW-07-P01 的起点）；wt1 上 merchant 的无头浏览器也在运行。记录两个 CfT 的进程号与调试端口"
+          - "main 与 wt1 的环境都已用 sop-board env down 停掉（看板被强杀并且数据库重建时，遗留的环境进程不会被清理）"
         steps:
           - "用 kill -9 结束 sop-board serve 进程，用 ps 确认两个 CfT 进程都还在"
-          - "把 $D/demo/board.sqlite3 连同它的 -wal、-shm 文件移到别处，模拟本机数据库重建"
+          - "把 $D/demo/board.sqlite3（以及存在的 -wal、-shm 文件）移到别处，模拟本机数据库重建；$D/demo/runs 下已有的运行目录保持原样"
           - "重新运行 sop-board serve demo --data $D --lan；运行 sop-board browser status --json，用 ps 查看两个 CfT 进程"
           - "在 main 运行 sop-board run prepare --scope shop#W --session S2，执行者经 PW_CDP_ENDPOINT 打开入口；期间用 ps 查看 CfT 进程"
         expected:
           - "重新启动后 main 的 merchant 有界面窗口被认回：browser status 显示运行中、有界面，进程号与调试端口不变"
           - "遗留的无头 CfT 进程已被结束"
-          - "run prepare 没有启动新的浏览器进程，PW_CDP_ENDPOINT 指向原来的调试端口；执行者看到的仍是登录后的页面"
+          - "run prepare 成功，没有启动新的浏览器进程，PW_CDP_ENDPOINT 指向原来的调试端口；执行者看到的仍是登录后的页面"
+          - "$D/demo/runs 下原有的运行目录及其中的文件都还在，新的运行用了没有被占用的目录"
         forbidden_effects:
           - "因为本机数据库里没有这个浏览器的记录而不认回，或为 merchant 另起一个浏览器"
           - "遗留的无头浏览器继续运行"
           - "认回过程结束或重启了有界面窗口"
+          - "run prepare 删除或覆盖了数据库重建之前留下的运行目录"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）"]
         evidence_hints: ["kill 前后的 ps 输出", "数据库文件移走前后的目录清单", "browser status 输出", "run.env（凭据脱敏）", "入口页面截图"]
       - id: BRW-07-N01
@@ -491,3 +497,27 @@ sops:
           - "租约持有期间自动重启了浏览器"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）"]
         evidence_hints: ["kill 前后的 ps 输出", "submit 输出", "browser status 与 attention list 输出", "工作台截图"]
+      - id: BRW-07-N03
+        polarity: negative
+        negative_type: timeout
+        title: 有界面窗口的调试端口一直不应答时不结束它，登记为未认回；恢复应答后再次请求即认回
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "浏览器运行时已安装，看板在运行；main 上 merchant 的有界面窗口已打开、已登录并已 browser release，记录它的进程号与调试端口"
+        steps:
+          - "向 sop-board serve 进程发 SIGTERM，等它退出；用 kill -STOP 暂停那个有界面的 CfT 进程，使它的调试端口不再应答"
+          - "重新运行 sop-board serve demo --data $D --lan，等待 20 秒；运行 sop-board browser status --json，用 ps 查看那个 CfT 进程"
+          - "在 main 运行 sop-board run prepare --scope shop#W --session S1 --json，用 ps 查看是否有新的 CfT 进程"
+          - "用 kill -CONT 恢复那个 CfT 进程，再次运行 sop-board run prepare --scope shop#W --session S1 --json 与 sop-board browser status --json"
+        expected:
+          - "20 秒后那个 CfT 进程仍在，进程号不变，没有被结束；browser status 显示 merchant 为未认回，并写明原因是调试端口没有应答"
+          - "第一次 run prepare 以业务失败退出（退出码 1），error_code 为 browser-unrecovered，写明进程号、原因，以及恢复应答后重试或用 browser close 结束这两条出路；没有新的 CfT 进程，没有新建 prepared 运行"
+          - "恢复后第二次 run prepare 成功，沿用原来的进程号与调试端口；browser status 显示 merchant 为运行中、有界面"
+        forbidden_effects:
+          - "看板结束、重启或替换了那个有界面的窗口"
+          - "看板在窗口未认回期间为 merchant 另起一个浏览器"
+          - "窗口恢复应答后仍然不能认回，只能关掉重来"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）"]
+        evidence_hints: ["各步骤的 ps 输出（进程号与状态）", "两次 run prepare 的输出", "browser status 输出", "serve 的启动输出"]
