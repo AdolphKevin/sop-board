@@ -5,6 +5,7 @@
 #   - 用 examples/demo-shop 的一条生成命令在临时目录生成 app、lib 两个 Git 仓库（下称主检出），以临时数据目录 $D（所有命令带 --data $D）init 为项目 demo。
 #   - 演示场景文件 shop（app 的 scenarios.path 下）：shop#X 是会被预埋缺陷打败的 API 场景，shop#A、shop#B 是应通过的 API 场景，shop#W 是使用身份 merchant 的 Web 场景；实际编号见 docs/verification.md。
 #   - 看板守护进程已以 sop-board serve demo --data $D --lan 启动（终端或会话中均可）；“操作者 N”指在检出目录运行 git config user.name 的输出。
+#   版本 4 由未参与实现的审核方按决策 21 实现者指出的问题修订 SET-01：数据库格式随决策 21 升为 7（项目标记不变）。
 #   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 SET-06（接入共享库：新建或加入产品、改绑）、SET-07（连不上共享库、表结构版本不符）。
 # 双机项目（SET-06、SET-07 使用，workbench、run、guard、fix、report、cases、authoring 引用）：
 #   - 共享库：用 docker 起一个 PostgreSQL。密码放在 PGPASSFILE 指向的文件（代替 ~/.pgpass），不写进任何配置。
@@ -16,7 +17,7 @@
 
 metadata:
   requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对；多人协作时各机器直连同一个共享库，由 Agent 问使用者后新建或加入产品，一边的验收记录在另一边可见"
-  version: 3
+  version: 4
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -40,7 +41,7 @@ sops:
     actor: 开发者
     entry: "安装后的 sop-board 命令：skills install、init、status"
     must:
-      - "init 生成格式 6 的项目目录：config.yaml、board.sqlite3 与项目标记 sop-board-project-6"
+      - "init 生成项目目录：config.yaml、格式 7 的 board.sqlite3 与项目标记 sop-board-project-6"
       - "旧版数据目录直接拒读，不迁移，也不改动"
     scenarios:
       - id: SET-01-P01
@@ -55,7 +56,7 @@ sops:
           - "按 sop-board guide 的指引运行 sop-board init demo --data $D，登记 app、lib 两个仓库"
           - "运行 sop-board status demo --data $D 与 sop-board status demo --data $D --json"
         expected:
-          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；board.sqlite3 的 meta 记录格式 6"
+          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；board.sqlite3 的 meta 记录格式 7"
           - "config.yaml 中两个仓库的身份是规范化后的 origin 地址"
           - "status 列出 shop 文件中的全部场景，状态都是未执行；并显示守护进程未运行及启动命令"
           - "除 status 的文字输出外，各命令输出 JSON 且退出码为 0"

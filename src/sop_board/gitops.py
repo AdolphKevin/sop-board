@@ -155,7 +155,7 @@ def snapshot(paths, exclusions=None, *, files=False):
         current = manifest(root, prefixes)
         committed = head_manifest(root, prefixes)
         dirty = changed_paths(committed, current)
-        repos[alias] = dict(commit=head(root), digest=digest(current), dirty=len(dirty))
+        repos[alias] = dict(commit=head(root), branch=branch(root), digest=digest(current), dirty=len(dirty))
         changed += [alias + '/' + path for path in dirty]
         manifests[alias] = current
     result = dict(repos=repos, product_digest=digest({alias: info['digest'] for alias, info in repos.items()}),

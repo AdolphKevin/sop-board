@@ -79,31 +79,50 @@ def load(args, *, require=True):
     project = config.Project(data)
     if require:
         project.require()
-    store = Store(project.data)
+    store = Store(project)
     checkout = checkouts.current(store, project, name=getattr(args, 'checkout', None))
     return Context(project, store, checkout)
 
 
 def scene_board(context):
-    """当前检出的场景、快照与状态。"""
+    """当前检出的场景、快照与状态（按本检出的分支，从业务记录库推导）。"""
     from . import guards
     project, checkout = context.project, context.checkout
     found = scenarios.scan(checkout.scenarios_dir(project), set(project.entries))
-    validity = guards.validity(context, found['scenarios'])
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)))
-    with context.store.connection() as db:
-        derived = status.board(db, checkout.id, found['scenarios'], guard_validity=validity)
+    view = status.viewer(context)
+    with context.store.records() as db:
+        book = status.Book(db, view)
+        validity = guards.validity(context, found['scenarios'], db)
+        reviews = status.draft_reviews(db, context.store.product, found['scenarios'])
+    derived = status.board(book, found['scenarios'], guard_validity=validity, reviews=reviews)
     return found, snapshot, derived
 
 
 # ---- 命令 ----
 
 def cmd_init(args):
-    data, identities = config.initialize(args.name, args.repos, args.data)
-    Store(data)
-    emit(dict(ok=True, project=args.name, data=str(data), repositories=identities,
-              next=f'在 {data}/config.yaml 写好 scenarios、skill、entries 与 adapter，启动 sop-board serve 后运行 sop-board check'))
-    return 0
+    """init <名称> <仓库>…：登记新项目。init <项目> [--join <ID> | --new [--product 名称]]：对已登记、写了 shared_database 的项目
+    列出共享库里的产品，或加入、新建产品（绑定记在本机 project.json）。"""
+    if args.join and args.new:
+        return fail('invalid-arguments', [dict(field='join', problem='--join 与 --new 只能给一个：加入已有产品用 --join <ID>，新建用 --new')], 2)
+    if args.product and not args.new:
+        return fail('invalid-arguments', [dict(field='product', problem='--product 只配合 --new 使用')], 2)
+    if args.repos:
+        if args.join or args.new:
+            return fail('invalid-arguments', [dict(field='repos', problem=(
+                '登记新项目时不能同时绑定产品：先登记，在 config.yaml 写好 shared_database，再运行 sop-board init <项目> --join|--new'))], 2)
+        data, identities = config.initialize(args.name, args.repos, args.data)
+        Store(config.Project(data))
+        emit(dict(ok=True, project=args.name, data=str(data), repositories=identities,
+                  next=f'在 {data}/config.yaml 写好 scenarios、skill、entries 与 adapter，启动 sop-board serve 后运行 sop-board check；'
+                       '多人共享验收记录时再写 shared_database 并运行 sop-board init <项目> 选择产品'))
+        return 0
+    from . import products
+    project = config.Project(config.resolve_data(args.name, args.data))
+    result, code = products.init(project, join=args.join, new=args.new, name=args.product)
+    emit(result)
+    return code
 
 
 def cmd_guide(args):
@@ -128,13 +147,13 @@ def cmd_checkout(args):
         if not args.name:
             return fail('checkout-name-required', [dict(field='name', problem='请写出检出名称')], 2)
         project = config.Project(config.resolve_data(args.project, args.data)).require()
-        store = Store(project.data)
+        store = Store(project)
         log = project.data / 'checkouts' / (args.name + '.log')
         created = checkouts.build(project, store, args.name, aliases=args.repo or None, base=args.base_ref, log=log)
         emit(dict(ok=True, checkout=created.public(local=True), log=str(log)))
         return 0
     context = load(args, require=False)
-    with context.store.connection() as db:
+    with context.store.local() as db:
         rows = checkouts.active(db)
     if args.action == 'list':
         emit(dict(ok=True, current=context.checkout.name, checkouts=[
@@ -165,7 +184,10 @@ def cmd_status(args):
                   configured=project.configured, problems=project.problems)
     if project.configured:
         found, snapshot, derived = scene_board(context)
-        result.update(snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
+        store = context.store
+        result.update(product=dict(id=store.product, name=store.product_name(), shared=bool(store.shared)),
+                      machine=store.machine['name'], branch=checkouts.branch_of(project, context.checkout),
+                      snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
                                     changed=snapshot['changed'][:50]),
                       counts=derived['counts'], distill=derived['distill'], review=derived['review'], total=derived['total'],
                       draft_review=derived['draft_review'],
@@ -173,16 +195,22 @@ def cmd_status(args):
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
                       review_queue=sorted(k for k, v in derived['items'].items() if v['review']),
+                      from_other_branch={k: v['source_branch'] for k, v in sorted(derived['items'].items()) if v.get('source_branch')},
+                      distilled_elsewhere={k: v['guard']['reason'] for k, v in sorted(derived['items'].items())
+                                           if v['guard'].get('unsynced')},
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
         from . import daemon
         result['daemon'] = dict(daemon.describe(project), command=project.serve_command())
-        from . import ledger
-        with context.store.connection() as db:
-            result['attention'] = ledger.open_attention(db, context.checkout.id, local=True)
+        from . import fixes, ledger
+        with context.store.records() as db:
+            result['attention'] = ledger.open_attention(db, context.store, local=True)
+            result['fixes'] = fixes.active(db, context.store)
     if args.json:
         emit(result)
         return 0
-    print(f"项目 {project.name} · 检出 {context.checkout.name} · 操作者 {result['operator'] or '未设置'}")
+    print(f"项目 {project.name} · 检出 {context.checkout.name} · 操作者 {result['operator'] or '未设置'}"
+          + (f" · 产品 {result['product']['name']}（{result['product']['id']}，共享库）" if result.get('product', {}).get('shared') else '')
+          + (f" · 分支 {result['branch']}" if result.get('branch') else ''))
     if not project.configured:
         print('守护进程启动命令：' + project.serve_command())
         print('配置不合格：')
@@ -195,6 +223,12 @@ def cmd_status(args):
     print(f"场景 {result['total']} 条：" + '；'.join(parts))
     if counts['draft']:
         print('草稿审阅：' + '；'.join(f"{status.DRAFT_REVIEW[s]} {n}" for s, n in result['draft_review'].items()))
+    if result['from_other_branch']:
+        print('本分支没有结论、用其他分支结论的场景：' + '；'.join(f'{k}（来源分支 {b}）' for k, b in result['from_other_branch'].items()))
+    for key, reason in result['distilled_elsewhere'].items():
+        print(f'{key}：{reason}')
+    for item in result['fixes']:
+        print(f"修复 #{item['id']}（{item['status']}，{item['machine']} 的 {item['checkout']} 检出）：{'、'.join(item['scenarios'])}")
     for name, problems in result['invalid_files'].items():
         print(f'场景文件 {name} 不合格：' + '；'.join(p['problem'] for p in problems[:3]))
     daemon_state = result['daemon']
@@ -292,15 +326,22 @@ def cmd_run(args):
             return fail('scope-invalid', [dict(field='scope', problem='--fix 复验的范围由修复决定，不能再写 --scope')], 2)
         emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix))
     elif args.action == 'submit':
-        emit(runs.submit(context, args.run, implementer=args.implementer))
+        problem = implementer_problem(args)
+        if problem:
+            return fail('invalid-arguments', [problem], 2)
+        emit(runs.submit(context, args.run, implementer=args.implementer, implemented_by=args.implemented_by))
     elif args.action == 'abandon':
         emit(runs.abandon(context, args.run))
     elif args.action == 'launch':
         from . import daemon
+        problem = implementer_problem(args)
+        if problem:
+            return fail('invalid-arguments', [problem], 2)
         scope = args.scope or ['pending']
         if args.fix is not None:
             from . import fixes
             fix = fixes.load(context, args.fix)
+            fixes.require_local(context, fix)
             scope = [scenarios.key(p['file'], p['scenario']) for p in json.loads(fix['problems'])]
         elif scope == ['pending']:
             from .runs import scope_for
@@ -309,11 +350,26 @@ def cmd_run(args):
             if not scope:
                 return fail('nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')])
         emit(daemon.call(context.project, 'POST', '/local/launch', dict(
-            checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer, fix=args.fix,
-            requested_by=config.operator() or '本机')))
+            checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
+            implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机')))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
     return 0
+
+
+def implementer_problem(args):
+    """--implementer 与 --implemented-by 二选一；--implemented-by 填本机操作者时要求改填会话编号（参数错误）。"""
+    if args.implementer and args.implemented_by:
+        return dict(field='implemented-by', problem='--implementer <会话编号> 与 --implemented-by <操作者> 只能给一个')
+    if args.implemented_by is not None:
+        name = args.implemented_by.strip()
+        if not name:
+            return dict(field='implemented-by', problem='--implemented-by 须写实现者的操作者姓名')
+        if name == (config.operator() or ''):
+            return dict(field='implemented-by', problem=(
+                f'实现者 {name} 就是本机操作者：同一台机器上的验收须改填实现者的会话编号 --implementer <会话编号>，'
+                '由会话编号判断是独立验收还是实现者自检'))
+    return None
 
 
 def wait(context, *, launch=None, run=None, timeout=1800):
@@ -322,7 +378,7 @@ def wait(context, *, launch=None, run=None, timeout=1800):
     from . import launcher
     deadline = time.monotonic() + timeout if timeout else None
     while True:
-        with context.store.connection() as db:
+        with context.store.local() as db:
             if launch is None and run is None:
                 row = db.execute('SELECT id FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 1', (context.checkout.id,)).fetchone()
                 if row is None:
@@ -332,12 +388,12 @@ def wait(context, *, launch=None, run=None, timeout=1800):
                 row = db.execute('SELECT * FROM launches WHERE id=?', (launch,)).fetchone()
                 if row is None:
                     return fail('launch-not-found', [dict(field='launch', problem=f'启动不存在：#{launch}')], 2)
-                runs_ = [dict(r) for r in db.execute('SELECT id, kind, status, session, result FROM work WHERE launch=?', (launch,))]
+                runs_ = [dict(r) for r in db.execute('SELECT id, kind, status, session, result FROM local_work WHERE launch=?', (launch,))]
                 done = row['status'] != 'running'
                 value = dict(launch=launcher.public(row, runs_, local=True),
                              results=[dict(run=r['id'], status=r['status'], result=json.loads(r['result']) if r['result'] else None) for r in runs_])
             else:
-                row = db.execute('SELECT * FROM work WHERE id=?', (run,)).fetchone()
+                row = db.execute('SELECT * FROM local_work WHERE id=?', (run,)).fetchone()
                 if row is None:
                     return fail('run-not-found', [dict(field='run', problem=f'运行不存在：#{run}')], 2)
                 done = row['status'] != 'prepared'
@@ -357,9 +413,9 @@ def cmd_launch(args):
     if args.action == 'stop':
         emit(daemon.call(context.project, 'POST', '/local/launch/stop', dict(launch=args.launch)))
         return 0
-    with context.store.connection() as db:
+    with context.store.local() as db:
         rows = db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 20', (context.checkout.id,)).fetchall()
-        items = [launcher.public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM work WHERE launch=?', (row['id'],))],
+        items = [launcher.public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM local_work WHERE launch=?', (row['id'],))],
                                  local=True) for row in rows]
     emit(dict(ok=True, checkout=context.checkout.name, launches=items))
     return 0
@@ -416,8 +472,8 @@ def cmd_distill(args):
     report = args.report
     work = args.work
     if work is None:
-        with context.store.connection() as db:
-            row = db.execute("SELECT id, dir FROM work WHERE checkout=? AND kind='distill' AND status='prepared'",
+        with context.store.local() as db:
+            row = db.execute("SELECT id, dir FROM local_work WHERE checkout=? AND kind='distill' AND status='prepared'",
                              (context.checkout.id,)).fetchone()
         if row:
             work = row['id']
@@ -472,8 +528,8 @@ def cmd_inbox(args):
             return fail('upload-invalid', [dict(field='content', problem='文件不是 UTF-8 文本')])
         emit(authoring.inbox_add(context.store, args.kind, path.name, content, by=signer(args)))
     elif args.action == 'list':
-        with context.store.connection() as db:
-            emit(dict(ok=True, inbox=authoring.inbox_rows(db, status=None if args.all else 'pending')))
+        with context.store.records() as db:
+            emit(dict(ok=True, inbox=authoring.inbox_rows(db, context.store.product, status=None if args.all else 'pending')))
     elif args.action == 'show':
         emit(dict(ok=True, item=authoring.inbox_show(context.store, int(args.file))))
     else:
@@ -574,10 +630,10 @@ def cmd_attention(args):
     from . import ledger
     context = load(args, require=False)
     if args.action == 'list':
-        with context.store.connection() as db:
-            emit(dict(ok=True, attention=ledger.open_attention(db, context.checkout.id, local=True)))
+        with context.store.records() as db:
+            emit(dict(ok=True, attention=ledger.open_attention(db, context.store, local=True)))
     elif args.action == 'add':
-        emit(ledger.attention_add(context.store, context.checkout.id, args.kind, args.text, by=signer(args),
+        emit(ledger.attention_add(context.store, context.checkout.name, args.kind, args.text, by=signer(args),
                                   scenarios=args.scenario or [], work=args.run))
     else:
         emit(ledger.attention_resolve(context.store, args.id, by=signer(args), note=args.note))
@@ -598,8 +654,11 @@ def parser():
     p = sub.add_parser('init', help=GROUPS['搭建']['init'])
     p.add_argument('--json', action='store_true')
     p.add_argument('name')
-    p.add_argument('repos', nargs='+')
+    p.add_argument('repos', nargs='*', help='登记新项目时的仓库目录；对已登记的项目不写，列出或绑定共享库里的产品')
     p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board），项目建在 <根目录>/<名称>')
+    p.add_argument('--join', metavar='ID', help='加入共享库里已有的产品（ID 取自 init <项目> 列出的清单）')
+    p.add_argument('--new', action='store_true', help='在共享库里新建产品（空库时先建表）')
+    p.add_argument('--product', metavar='名称', help='--new 时的产品名称（缺省为本机项目名）')
     p.set_defaults(handler=cmd_init)
 
     sub.add_parser('guide').set_defaults(handler=cmd_guide)
@@ -647,6 +706,8 @@ def parser():
     p.add_argument('--fix', type=int, help='prepare / launch：修复的独立复验，范围为该修复的问题场景')
     p.add_argument('--run', type=int, help='submit / abandon / wait：运行编号')
     p.add_argument('--implementer', help='submit / launch：实现者会话编号；不填记为独立性未声明')
+    p.add_argument('--implemented-by', dest='implemented_by', metavar='操作者',
+                   help='submit / launch：实现者是别的操作者（跨机器验收），与 --implementer 二选一；记独立验收')
     p.add_argument('--launch', type=int, help='wait：启动编号（缺省为本检出最近一次启动）')
     p.add_argument('--timeout', type=int, default=1800, help='wait：最长等待秒数，0 不限时（缺省 1800）')
     p.set_defaults(handler=cmd_run)
@@ -808,6 +869,15 @@ def usage():
     return '\n'.join(lines)
 
 
+def database_errors():
+    import sqlite3
+    try:
+        import psycopg
+        return (sqlite3.Error, psycopg.Error)
+    except ImportError:
+        return (sqlite3.Error,)
+
+
 def daemon_module():
     from . import daemon
     return daemon
@@ -838,6 +908,8 @@ def main(argv=None):
         return fail('daemon-not-running', [dict(field='daemon', problem=str(error))])
     except APIError as error:
         return fail(error.code, error.problems)
+    except database_errors() as error:
+        return fail('database-error', [dict(field='database', problem=f'{type(error).__name__}: {error}')])
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         return fail('invalid', [dict(field='command', problem=str(error))])
 

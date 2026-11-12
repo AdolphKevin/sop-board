@@ -46,21 +46,22 @@ def validate_upload(kind, filename, content):
 
 def inbox_add(store, kind, filename, content, *, by):
     validate_upload(kind, filename, content)
-    with store.transaction() as db:
-        cursor = db.execute("INSERT INTO inbox(kind,filename,sha256,content,uploaded_by,status,created_at) VALUES (?,?,?,?,?,'pending',?)",
-                            (kind, filename, hashlib.sha256(content.encode()).hexdigest(), content, by, now()))
-    return dict(ok=True, inbox=cursor.lastrowid, kind=kind, filename=filename, uploaded_by=by, status='待合并')
+    with store.records_tx() as db:
+        number = db.insert("INSERT INTO inbox(product,kind,filename,sha256,content,uploaded_by,status,created_at) VALUES (?,?,?,?,?,?,'pending',?)",
+                           (store.product, kind, filename, hashlib.sha256(content.encode()).hexdigest(), content, by, now()))
+    return dict(ok=True, inbox=number, kind=kind, filename=filename, uploaded_by=by, status='待合并')
 
 
-def inbox_rows(db, *, status=None):
-    query = 'SELECT id, kind, filename, uploaded_by, status, work, note, created_at FROM inbox'
-    rows = db.execute(query + (' WHERE status=?' if status else '') + ' ORDER BY id', (status,) if status else ())
+def inbox_rows(db, product, *, status=None):
+    """收件箱（业务记录库，同一产品的各台机器共用一份）。"""
+    query = 'SELECT id, kind, filename, uploaded_by, status, work, note, created_at FROM inbox WHERE product=?'
+    rows = db.execute(query + (' AND status=?' if status else '') + ' ORDER BY id', (product, status) if status else (product,))
     return [dict(row) for row in rows]
 
 
 def inbox_show(store, item_id):
-    with store.connection() as db:
-        row = db.execute('SELECT * FROM inbox WHERE id=?', (item_id,)).fetchone()
+    with store.records() as db:
+        row = db.one('SELECT * FROM inbox WHERE id=? AND product=?', (item_id, store.product))
     if row is None:
         reject(404, 'inbox-not-found', 'inbox', f'收件箱没有 #{item_id}')
     return dict(row)
@@ -70,22 +71,26 @@ def inbox_close(store, item_id, status, note=None):
     row = inbox_show(store, item_id)
     if row['status'] != 'pending':
         reject(409, 'inbox-state-invalid', 'inbox', f"#{item_id} 已是 {row['status']}")
-    with store.transaction() as db:
-        db.execute('UPDATE inbox SET status=?, note=?, ended_at=? WHERE id=?', (status, note, now(), item_id))
+    with store.records_tx() as db:
+        # 条件更新：别的机器同时处理同一条时只有一次生效。
+        if db.execute("UPDATE inbox SET status=?, note=?, ended_at=? WHERE id=? AND status='pending'",
+                      (status, note, now(), item_id)).rowcount == 0:
+            reject(409, 'inbox-state-invalid', 'inbox', f'#{item_id} 已被处理')
     return dict(ok=True, inbox=item_id, status=status)
 
 
 # ---- 提问与答复 ----
 
 def ask(store, about, text, *, by, work=None):
+    """向测试同学提问：挂在业务记录库，同一产品的各台机器的看板“待答复”都能看到。work 是本机的工作编号。"""
     if not re.fullmatch(r'inbox:[0-9]+|[A-Za-z0-9][A-Za-z0-9._-]*#[A-Za-z0-9][A-Za-z0-9_.-]*|[A-Za-z0-9][A-Za-z0-9._-]*', about or ''):
         reject(422, 'question-invalid', 'about', '问题须关联 inbox:<编号>、<文件>#<场景编号> 或场景文件名')
     if not isinstance(text, str) or not text.strip():
         reject(422, 'question-invalid', 'text', '问题不能为空')
-    with store.transaction() as db:
-        cursor = db.execute('INSERT INTO questions(work,about,text,asked_by,asked_at) VALUES (?,?,?,?,?)',
-                            (work, about, text.strip(), by, now()))
-    return dict(ok=True, question=cursor.lastrowid, about=about)
+    with store.records_tx() as db:
+        number = db.insert('INSERT INTO questions(product,machine,work,about,text,asked_by,asked_at) VALUES (?,?,?,?,?,?,?)',
+                           (store.product, store.machine['id'], work, about, text.strip(), by, now()))
+    return dict(ok=True, question=number, about=about)
 
 
 def answer(store, question_id, text, *, by):
@@ -93,8 +98,8 @@ def answer(store, question_id, text, *, by):
         reject(422, 'answer-invalid', 'answer', '答复不能为空')
     if not isinstance(by, str) or not by.strip() or len(by) > 64:
         reject(422, 'answer-invalid', 'by', '请填写答复人姓名')
-    with store.transaction() as db:
-        row = db.execute('SELECT * FROM questions WHERE id=?', (question_id,)).fetchone()
+    with store.records_tx() as db:
+        row = db.one('SELECT * FROM questions WHERE id=? AND product=?', (question_id, store.product))
         if row is None:
             reject(404, 'question-not-found', 'question', f'问题不存在：#{question_id}')
         db.execute('UPDATE questions SET answer=?, answered_by=?, answered_at=? WHERE id=?', (text.strip(), by.strip(), now(), question_id))
@@ -102,8 +107,8 @@ def answer(store, question_id, text, *, by):
 
 
 def answers(store, *, about=None, unanswered=False):
-    with store.connection() as db:
-        rows = [dict(r) for r in db.execute('SELECT * FROM questions ORDER BY id')]
+    with store.records() as db:
+        rows = [dict(r) for r in db.execute('SELECT * FROM questions WHERE product=? ORDER BY id', (store.product,))]
     return [r for r in rows if (about is None or r['about'] == about) and (not unanswered or r['answer'] is None)]
 
 
@@ -119,25 +124,26 @@ def work_dir(project, kind, work_id):
 
 
 def create_work(context, kind, *, session=None, scope=()):
+    """编写类工作的本机部分；提交时由 works.finish 把业务部分登记进业务记录库。"""
     operator = config.require_operator()
-    with context.store.transaction() as db:
-        cursor = db.execute("INSERT INTO work(kind,checkout,status,session,operator,dir,scope,created_at) VALUES (?,?,'prepared',?,?,'',?,?)",
+    with context.store.local_tx() as db:
+        cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,dir,scope,created_at) VALUES (?,?,'prepared',?,?,'',?,?)",
                             (kind, context.checkout.id, session, operator, dumps(list(scope)), now()))
         work_id = cursor.lastrowid
     directory = work_dir(context.project, kind, work_id)
     directory.mkdir(parents=True)
-    with context.store.transaction() as db:
-        db.execute('UPDATE work SET dir=? WHERE id=?', (str(directory), work_id))
+    with context.store.local_tx() as db:
+        db.execute('UPDATE local_work SET dir=? WHERE id=?', (str(directory), work_id))
     return work_id, directory, operator
 
 
 def load_work(context, kind, work_id=None):
-    with context.store.connection() as db:
+    with context.store.local() as db:
         if work_id is None:
-            row = db.execute("SELECT * FROM work WHERE kind=? AND checkout=? AND status='prepared' ORDER BY id DESC LIMIT 1",
+            row = db.execute("SELECT * FROM local_work WHERE kind=? AND checkout=? AND status='prepared' ORDER BY id DESC LIMIT 1",
                              (kind, context.checkout.id)).fetchone()
         else:
-            row = db.execute('SELECT * FROM work WHERE id=? AND kind=?', (work_id, kind)).fetchone()
+            row = db.execute('SELECT * FROM local_work WHERE id=? AND kind=?', (work_id, kind)).fetchone()
     if row is None:
         reject(404, 'work-not-found', 'work', '没有进行中的工作；先运行对应的 prepare')
     if row['status'] != 'prepared':
@@ -147,8 +153,8 @@ def load_work(context, kind, work_id=None):
 
 def merge_prepare(context, inbox_ids):
     project = context.project
-    with context.store.connection() as db:
-        pending = inbox_rows(db, status='pending')
+    with context.store.records() as db:
+        pending = inbox_rows(db, context.store.product, status='pending')
     chosen = [r for r in pending if r['kind'] == 'cases' and (not inbox_ids or r['id'] in inbox_ids)]
     missing = sorted(set(inbox_ids or []) - {r['id'] for r in chosen})
     if missing:
@@ -195,10 +201,17 @@ def merge_submit(context, work_id=None):
     inbox_ids = [int(item.split(':', 1)[1]) for item in json.loads(work['scope'])]
     diff = dict(added=added, removed=removed, changed=changed, attribute_changes=attributes,
                 total_before=len(before), total_after=len(after))
-    with context.store.transaction() as db:
+    from . import works
+    from .checkouts import branch_of
+    store = context.store
+    with store.records_tx() as db:
+        record, _ = works.publish(db, store, work, checkout=context.checkout.name, branch=branch_of(project, context.checkout), result=diff)
         for item_id in inbox_ids:
-            db.execute("UPDATE inbox SET status='merged', work=?, ended_at=? WHERE id=? AND status='pending'", (work['id'], now(), item_id))
-        db.execute("UPDATE work SET status='submitted', ended_at=?, result=? WHERE id=?", (now(), dumps(diff), work['id']))
+            db.execute("UPDATE inbox SET status='merged', work=?, ended_at=? WHERE id=? AND product=? AND status='pending'",
+                       (record, now(), item_id, store.product))
+    with store.local_tx() as db:
+        db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, record=? WHERE id=?",
+                   (now(), dumps(diff), record, work['id']))
     return dict(ok=True, work=work['id'], inbox=inbox_ids, scenario_diff=diff,
                 next='场景与用例文件的改动留在仓库中，请审核后提交')
 
@@ -256,9 +269,10 @@ def sop_submit(context, file, *, by, work_id=None):
     record = [CONFIRMATION, '', f'- 确认人：{by}（{stamp}，sop-board sop submit）'] + \
              [f"- 资料 {s['id']}：{s['name']}（sha256 {s['sha256'][:16]}）" for s in listing]
     path.write_text(text.rstrip() + '\n\n' + '\n'.join(record) + '\n', encoding='utf-8')
-    with context.store.transaction() as db:
-        db.execute("UPDATE work SET status='submitted', ended_at=?, result=? WHERE id=?",
-                   (now(), dumps(dict(file=str(path), confirmed_by=by)), work['id']))
+    from . import works
+    from .checkouts import branch_of
+    works.finish(context.store, work, checkout=context.checkout.name, branch=branch_of(context.project, context.checkout),
+                 result=dict(file=path.name, confirmed_by=by))
     return dict(ok=True, work=work['id'], file=str(path), confirmed_by=by)
 
 
@@ -298,9 +312,10 @@ def review_files(context, file=None):
     names = [name for name, info in sorted(found['files'].items())
              if info.get('status') == 'draft' and not info['problems'] and file in (None, name)]
     scenes = {k: s for k, s in found['scenarios'].items() if s['file'] in names}
-    with context.store.connection() as db:
-        reviews = status.draft_reviews(db, scenes)
-        notes = [dict(r) for r in db.execute("SELECT * FROM annotations WHERE status='open' ORDER BY id")]
+    with context.store.records() as db:
+        reviews = status.draft_reviews(db, context.store.product, scenes)
+        notes = [dict(r) for r in db.execute("SELECT * FROM annotations WHERE product=? AND status='open' ORDER BY id",
+                                             (context.store.product,))]
     result = []
     for name in names:
         items = []
@@ -335,8 +350,9 @@ def approve(context, file, ids, *, by, fingerprints=None, node=None):
         reject(422, 'approval-invalid', 'scenario', '须给出要同意的场景')
     fingerprints = fingerprints if isinstance(fingerprints, dict) else {}
     approved, skipped, already = [], [], []
-    with context.store.transaction() as db:
-        reviews = status.draft_reviews(db, {scenarios.key(file, sid): found['scenarios'].get(scenarios.key(file, sid))
+    store = context.store
+    with store.records_tx() as db:
+        reviews = status.draft_reviews(db, store.product, {scenarios.key(file, sid): found['scenarios'].get(scenarios.key(file, sid))
                                             for sid in ids if scenarios.key(file, sid) in found['scenarios']})
         for sid in ids:
             scene = found['scenarios'].get(scenarios.key(file, sid))
@@ -361,8 +377,11 @@ def approve(context, file, ids, *, by, fingerprints=None, node=None):
             if by in review['approvers']:
                 already.append(sid)
                 continue
-            db.execute('INSERT INTO draft_approvals(file,scenario,fingerprint,approved_by,approved_at) VALUES (?,?,?,?,?)',
-                       (file, sid, scene['fingerprint'], by, now()))
+            # 唯一约束兜底：别的机器上同一人同时同意同一条，只登记一次。
+            if db.insert('INSERT INTO draft_approvals(product,file,scenario,fingerprint,approved_by,approved_at) VALUES (?,?,?,?,?,?) '
+                         'ON CONFLICT DO NOTHING', (store.product, file, sid, scene['fingerprint'], by, now())) is None:
+                already.append(sid)
+                continue
             approved.append(sid)
     return dict(ok=True, file=file, node=node, approved=approved, already=already, skipped=skipped, approved_by=by)
 
@@ -370,32 +389,34 @@ def approve(context, file, ids, *, by, fingerprints=None, node=None):
 def revoke_approval(context, *, by, approval=None, file=None, scenario=None):
     """撤销自己的同意：按同意编号，或按 文件 + 场景（当前指纹上自己的同意）。只能撤销自己的。"""
     by = signer_name(by)
-    with context.store.transaction() as db:
+    store = context.store
+    with store.records_tx() as db:
         if approval is not None:
             if type(approval) is not int:
                 reject(422, 'approval-invalid', 'approval', '同意编号应为整数')
-            row = db.execute('SELECT * FROM draft_approvals WHERE id=?', (approval,)).fetchone()
+            row = db.one('SELECT * FROM draft_approvals WHERE id=? AND product=?', (approval, store.product))
         else:
             found = draft_scan(context)
             scene = found['scenarios'].get(scenarios.key(file or '', scenario or ''))
             if scene is None or scene.get('status') != 'draft':
                 reject(404, 'scenario-not-found', 'scenario', f'草稿场景不存在：{file}#{scenario}')
-            row = db.execute('SELECT * FROM draft_approvals WHERE file=? AND scenario=? AND fingerprint=? AND approved_by=? '
-                             'AND revoked_at IS NULL', (file, scenario, scene['fingerprint'], by)).fetchone()
+            row = db.one('SELECT * FROM draft_approvals WHERE product=? AND file=? AND scenario=? AND fingerprint=? AND approved_by=? '
+                         'AND revoked_at IS NULL', (store.product, file, scenario, scene['fingerprint'], by))
         if row is None:
             reject(404, 'approval-not-found', 'approval', '没有可撤销的同意')
         if row['approved_by'] != by:
             reject(403, 'approval-not-own', 'approval', f"只能撤销自己的同意：这条同意属于 {row['approved_by']}")
         if row['revoked_at']:
             reject(409, 'approval-revoked', 'approval', '这条同意已撤销')
-        db.execute('UPDATE draft_approvals SET revoked_at=? WHERE id=?', (now(), row['id']))
+        db.execute('UPDATE draft_approvals SET revoked_at=? WHERE id=? AND revoked_at IS NULL', (now(), row['id']))
     return dict(ok=True, approval=row['id'], file=row['file'], scenario=row['scenario'], revoked_by=by)
 
 
 def approval_history(store, file, scenario, fingerprint):
     """某场景的全部同意记录（含已撤销与旧内容上的），新到旧。"""
-    with store.connection() as db:
-        rows = db.execute('SELECT * FROM draft_approvals WHERE file=? AND scenario=? ORDER BY id DESC', (file, scenario)).fetchall()
+    with store.records() as db:
+        rows = db.all('SELECT * FROM draft_approvals WHERE product=? AND file=? AND scenario=? ORDER BY id DESC',
+                      (store.product, file, scenario))
     return [dict(id=r['id'], by=r['approved_by'], at=local_time(r['approved_at']), current=r['fingerprint'] == fingerprint,
                  active=r['revoked_at'] is None and r['fingerprint'] == fingerprint,
                  revoked_at=local_time(r['revoked_at']) if r['revoked_at'] else None) for r in rows]
@@ -463,21 +484,22 @@ def annotate(context, file, target, text, *, by):
         reject(422, 'annotation-invalid', 'text', '批注不能为空，最长 4000 字')
     if not isinstance(by, str) or not by.strip() or len(by) > 64:
         reject(422, 'annotation-invalid', 'by', '请填写批注人姓名')
-    with context.store.transaction() as db:
-        cursor = db.execute("INSERT INTO annotations(file,target,text,author,status,created_at) VALUES (?,?,?,?,'open',?)",
-                            (file, target, text.strip(), by.strip(), now()))
-    return dict(ok=True, annotation=cursor.lastrowid)
+    store = context.store
+    with store.records_tx() as db:
+        number = db.insert("INSERT INTO annotations(product,file,target,text,author,status,created_at) VALUES (?,?,?,?,?,'open',?)",
+                           (store.product, file, target, text.strip(), by.strip(), now()))
+    return dict(ok=True, annotation=number)
 
 
 def annotations(store, *, file=None, include_resolved=False):
-    with store.connection() as db:
-        rows = [dict(r) for r in db.execute('SELECT * FROM annotations ORDER BY id')]
+    with store.records() as db:
+        rows = [dict(r) for r in db.execute('SELECT * FROM annotations WHERE product=? ORDER BY id', (store.product,))]
     return [r for r in rows if (file is None or r['file'] == file) and (include_resolved or r['status'] == 'open')]
 
 
 def resolve_annotation(store, annotation_id, *, reject_it=False, note=None):
-    with store.transaction() as db:
-        row = db.execute('SELECT * FROM annotations WHERE id=?', (annotation_id,)).fetchone()
+    with store.records_tx() as db:
+        row = db.one('SELECT * FROM annotations WHERE id=? AND product=?', (annotation_id, store.product))
         if row is None:
             reject(404, 'annotation-not-found', 'annotation', f'批注不存在：#{annotation_id}')
         db.execute('UPDATE annotations SET status=?, note=?, resolved_at=? WHERE id=?',

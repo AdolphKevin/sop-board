@@ -68,8 +68,10 @@ class Request:
 
 
 class Response:
-    def __init__(self, status, raw, content_type, headers=()):
+    def __init__(self, status, raw, content_type, headers=(), *, verbatim=False):
         self.status, self.raw, self.content_type, self.headers = status, raw, content_type, list(headers)
+        # verbatim：对等读取证据时原样返回（内网遮蔽会改变内容，使 sha256 对不上）；只用于须带对等令牌的 /peer/ 接口。
+        self.verbatim = verbatim
 
 
 def json_response(value, status=200):
@@ -87,6 +89,9 @@ class App:
         from . import envs
         self.project, self.store = project, store
         self.port, self.lan = port, lan
+        self.addresses, self.registered = [], False
+        # 对等令牌：带 --lan 时登记到业务记录库，别的看板凭它读取本机证据。
+        self.peer_token = __import__('secrets').token_urlsafe(24) if lan else None
         self.envs = envs.Manager(project, store)
         self.token = None
         self.config_stamp = None
@@ -107,13 +112,13 @@ class App:
 
     def checkout(self, name=None):
         self.reload()
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             main = checkouts.ensure_main(db, self.project)
             return checkouts.by_name(db, name) if name else main
 
     def checkouts(self):
         self.reload()
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             checkouts.ensure_main(db, self.project)
             return checkouts.active(db)
 
@@ -154,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, response, request):
         raw, headers = response.raw, response.headers
-        if not request.local and not request.path.startswith('/assets/'):
+        if not request.local and not request.path.startswith('/assets/') and not response.verbatim:
             app = self.server.app
             names_ = app.credential_names()
             roots = app.local_roots()
@@ -196,7 +201,12 @@ class Handler(BaseHTTPRequestHandler):
             reject(404, 'not-found', 'path', '页面或接口不存在')
         except APIError as error:
             request = request or Request(self, None)
-            self.send(json_response(dict(ok=False, error_code=error.code, problems=error.problems), error.status), request)
+            # 业务记录库的错误：本机写明连的是哪台主机，内网只说明连不上，不出现主机、端口与库名。
+            problems = error.problems if request.local else getattr(error, 'lan_problems', error.problems)
+            if self.command == 'GET' and path.startswith('/p/'):
+                self.send(html_response(error_page(error.code, problems), error.status), request)
+            else:
+                self.send(json_response(dict(ok=False, error_code=error.code, problems=problems), error.status), request)
         except (ValueError, OSError) as error:
             request = request or Request(self, None)
             code = 'env-busy' if type(error).__name__ == 'EnvBusy' else 'invalid'
@@ -253,6 +263,35 @@ class Handler(BaseHTTPRequestHandler):
             request.body = json.loads(raw.decode('utf-8'))
         except (UnicodeError, ValueError):
             reject(400, 'invalid-request', 'body', '应为 UTF-8 JSON')
+
+
+def error_page(code, problems):
+    from html import escape
+    text = ''.join(f'<p>{escape(p.get("problem", ""))}</p>' for p in problems)
+    return (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Flow Board</title>'
+            f'<link rel="stylesheet" href="/assets/board.css"></head><body class="plain"><main><section class="page">'
+            f'<div class="card"><h1>页面暂时无法显示</h1>{text}<p class="muted">{escape(code)}</p></div></section></main></body></html>')
+
+
+# ---- 对等接口：别的看板读取本机的证据 ----
+
+@route('GET', '/peer/hello', 'lan')
+def peer_hello(app, request):
+    from . import peers
+    if not peers.allowed(app, request):
+        reject(403, 'peer-token-required', 'peer', '需要业务记录库中登记的对等令牌')
+    return json_response(dict(ok=True, machine=app.store.machine['id']))
+
+
+@route('GET', r'/peer/evidence/([0-9a-f]{64})', 'lan')
+def peer_evidence(app, request):
+    from . import peers
+    if not peers.allowed(app, request):
+        reject(403, 'peer-token-required', 'peer', '需要业务记录库中登记的对等令牌')
+    sha = request.arg(1)
+    if not app.store.has_evidence(sha):
+        reject(404, 'evidence-not-found', 'evidence', '本机没有这份证据')
+    return Response(200, app.store.read_evidence(sha), 'application/octet-stream', verbatim=True)
 
 
 # ---- 本机令牌接口：环境 ----
@@ -319,7 +358,7 @@ def serve(project, *, port=8787, lan=False):
     state = daemon.describe(project)
     if state['running']:
         raise ValueError(f"项目 {project.name} 的守护进程已在运行：{state['url']}（pid {state['pid']}）")
-    store = Store(project.data)
+    store = Store(project)
     app = App(project, store, port=port, lan=lan)
     extensions.attach(app)
     host = '0.0.0.0' if lan else '127.0.0.1'
@@ -328,9 +367,13 @@ def serve(project, *, port=8787, lan=False):
     server.app = app
     actual = server.server_address[1]
     addresses = [f'http://{address}:{actual}' for address in local_ipv4_addresses()] if lan else []
+    app.addresses = addresses
     app.envs.recover()
     for recover in extensions.RECOVER:
         recover(app)
+    # 登记本机（带 --lan 时含内网地址与对等令牌）；业务记录库此刻不可用时，之后的页面请求再登记。
+    from . import peers
+    peers.ensure_registered(app)
     app.token = daemon.write_state(project, os.getpid(), actual, addresses, app.started_at)
     def shutdown(*_):
         # serve_forever 在主线程；信号处理只抛出中断，由 finally 统一清理，避免在信号处理中等待其他线程。
@@ -352,6 +395,9 @@ def serve(project, *, port=8787, lan=False):
         for close in extensions.CLOSE:
             close(app)
         app.envs.close()
+        from . import peers
+        peers.withdraw(app)
+        store.close()
         server.server_close()
         daemon.clear_state(project, os.getpid())
     return 0

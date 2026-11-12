@@ -39,6 +39,13 @@ class Checkout:
         return result
 
 
+def branch_of(project, checkout):
+    """检出的分支：场景文件所在仓库的当前分支（结论按它归属）；不在任何分支上（游离 HEAD）时为 None。"""
+    if not project.scenario_repo or project.scenario_repo not in checkout.paths:
+        return None
+    return gitops.branch(checkout.paths[project.scenario_repo])
+
+
 def from_row(row):
     return Checkout(row['id'], row['name'], row['slot'], row['kind'],
                     {alias: Path(path) for alias, path in json.loads(row['paths']).items()}, json.loads(row['env']))
@@ -150,7 +157,7 @@ def register(db, project, kind, base, paths):
 
 def current(store, project, *, name=None, cwd=None):
     """命令所在的检出：显式名称优先，其次按当前目录识别，都不在项目仓库内时为 main。"""
-    with store.transaction() as db:
+    with store.local_tx() as db:
         main = ensure_main(db, project)
         if name:
             return by_name(db, name)
@@ -222,7 +229,7 @@ def build(project, store, name, *, aliases=None, base=None, log=None):
     unknown = [alias for alias in aliases if alias not in project.repos]
     if unknown:
         raise ValueError('未登记的仓库别名：' + '、'.join(unknown))
-    with store.connection() as db:
+    with store.local() as db:
         if db.execute('SELECT 1 FROM checkouts WHERE name=? AND removed_at IS NULL', (name,)).fetchone():
             raise ValueError(f'检出 {name} 已存在')
     branch = 'sop-board/' + name
@@ -251,7 +258,7 @@ def build(project, store, name, *, aliases=None, base=None, log=None):
             paths[alias] = validate_path(project, alias, target, branch)
     full = dict(project.repos)
     full.update(paths)
-    with store.transaction() as db:
+    with store.local_tx() as db:
         ensure_main(db, project)
         slot = _free_slot(db)
         cursor = db.execute("INSERT INTO checkouts(name,slot,kind,paths,env,created_at) VALUES (?,?,'worktree',?,?,?)",
@@ -277,5 +284,5 @@ def destroy(project, store, checkout, *, log=None):
     leftovers = [str(path) for path in owned.values() if path.exists()]
     if leftovers:
         raise ValueError('清理后工作树目录仍存在：' + '、'.join(leftovers))
-    with store.transaction() as db:
+    with store.local_tx() as db:
         remove(db, checkout)

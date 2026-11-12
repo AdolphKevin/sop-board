@@ -5,7 +5,7 @@
 #   “混合结果”中 shop#A 现为通过并待人工复核。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，场景 shop#X/A/B/W）；看板已以 sop-board serve demo --data $D --lan 启动；已有检出 wt1。
 #   “混合结果”：main 上 shop#X 失败且有测试同学的不通过标注（缺陷链接 https://issues.example/DEMO-2），shop#A 通过且有有效守护，
-#   shop#W 独立验收通过并附截图，shop#B 未执行；wt1（分支 wt1）上只有一条 shop#A 的实现者自检通过。
+#   shop#W 独立验收通过并附截图，shop#B 未执行；wt1 上只有一条 shop#A 的实现者自检通过（它所在的分支下称 wt1 分支，实际分支名以 checkout create 建立的为准）。
 #   main 的全部结果记录为：旧快照上 shop#A 的 Agent 独立通过（之后沉淀守护并提交、app 再有一次产品提交、retest 为 shop#A 记一次通过的守护运行）；
 #   当前快照上 shop#X 的 Agent 失败、shop#W 的 Agent 独立通过；张测 对 shop#X 的不通过标注。没有其他人工标注。
 #   由此 main 的确认率样本恰为 shop#A、shop#W 各 1 条，两者都待人工复核。

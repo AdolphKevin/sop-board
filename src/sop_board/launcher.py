@@ -30,7 +30,7 @@ def work_directory(project, checkout):
     return checkout.paths[project.scenario_repo]
 
 
-def prompt_for(project, checkout, kind, scope, implementer, fix=None):
+def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemented_by=None):
     if fix is not None:
         command = f'sop-board run prepare --fix {fix}'
     elif kind == 'run':
@@ -40,7 +40,8 @@ def prompt_for(project, checkout, kind, scope, implementer, fix=None):
     text = Template(files('sop_board').joinpath('prompts', 'launch.md').read_text(encoding='utf-8')).substitute(
         project=project.name, checkout=checkout.name, directory=work_directory(project, checkout),
         kind='场景执行' if kind == 'run' else '回归沉淀', scope='、'.join(scope), command=command,
-        implementer=f'提交时加 --implementer {implementer}。' if implementer else '')
+        implementer=f'提交时加 --implementer {implementer}。' if implementer
+        else f'提交时加 --implemented-by {implemented_by}（实现者是别的操作者，跨机器验收）。' if implemented_by else '')
     return text
 
 
@@ -50,7 +51,7 @@ class Launcher:
         self.processes = {}
         self.guard = threading.Lock()
 
-    def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None):
+    def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None, implemented_by=None):
         if kind not in KINDS:
             raise ValueError('启动类型应为 run 或 distill')
         if not scope:
@@ -60,7 +61,7 @@ class Launcher:
         directory = self.project.data / 'launches'
         directory.mkdir(exist_ok=True)
         with self.guard:
-            with self.store.transaction() as db:
+            with self.store.local_tx() as db:
                 running = db.execute("SELECT id FROM launches WHERE checkout=? AND status='running'", (checkout.id,)).fetchone()
                 if running:
                     raise APIError(409, 'launch-running', [dict(field='launch', problem=
@@ -70,27 +71,32 @@ class Launcher:
                     (checkout.id, kind, agent['runner'], dumps(scope), '', requested_by, now()))
                 launch_id = cursor.lastrowid
             log = directory / f'{launch_id}.jsonl'
-            prompt = prompt_for(self.project, checkout, kind, scope, implementer, fix)
+            prompt = prompt_for(self.project, checkout, kind, scope, implementer, fix, implemented_by)
             (directory / f'{launch_id}.prompt.md').write_text(prompt, encoding='utf-8')
             session = str(uuid.uuid4()) if agent['runner'] == 'claude' else None
             env = dict(os.environ, SOP_BOARD_LAUNCH=str(launch_id), SOP_BOARD_CHECKOUT=checkout.name)
             env.pop('SOP_BOARD_SESSION', None)
             if session:
                 env['SOP_BOARD_SESSION'] = session
+            env.pop('SOP_BOARD_IMPLEMENTER', None)
+            env.pop('SOP_BOARD_IMPLEMENTED_BY', None)
             if implementer:
                 env['SOP_BOARD_IMPLEMENTER'] = implementer
+            elif implemented_by:
+                env['SOP_BOARD_IMPLEMENTED_BY'] = implemented_by
             work = work_directory(self.project, checkout)
-            writable = [str(self.project.data), str(browsers.runtime_dir())]
+            # 数据根目录（证据目录与 machine.json 在这里）也要可写。
+            writable = [str(self.project.data), str(self.project.data.parent / 'evidence'), str(browsers.runtime_dir())]
             argv = self.argv(agent, prompt, work, writable, session)
             try:
                 with log.open('wb') as output:
                     process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=output,
                                                stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as error:
-                with self.store.transaction() as db:
+                with self.store.local_tx() as db:
                     db.execute("UPDATE launches SET status='failed', log=?, ended_at=? WHERE id=?", (str(log), now(), launch_id))
                 raise ValueError(f"无法启动 {agent['runner']}：{error}") from error
-            with self.store.transaction() as db:
+            with self.store.local_tx() as db:
                 db.execute('UPDATE launches SET pid=?, log=?, session=? WHERE id=?', (process.pid, str(log), session, launch_id))
             self.processes[launch_id] = process
             threading.Thread(target=self.watch, args=(launch_id, process, log), daemon=True, name=f'launch-{launch_id}').start()
@@ -121,12 +127,12 @@ class Launcher:
             if session is None:
                 session = self.session_from_log(log)
                 if session:
-                    with self.store.transaction() as db:
+                    with self.store.local_tx() as db:
                         db.execute('UPDATE launches SET session=COALESCE(session, ?) WHERE id=?', (session, launch_id))
             time.sleep(1)
         code = process.returncode
         session = session or self.session_from_log(log)
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             row = db.execute('SELECT status FROM launches WHERE id=?', (launch_id,)).fetchone()
             status = 'stopped' if row and row['status'] == 'stopped' else ('exited' if code == 0 else 'failed')
             db.execute('UPDATE launches SET status=?, exit_code=?, ended_at=?, session=COALESCE(session, ?) WHERE id=?',
@@ -152,7 +158,7 @@ class Launcher:
         return None
 
     def stop(self, launch_id):
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             row = db.execute('SELECT * FROM launches WHERE id=?', (launch_id,)).fetchone()
             if row is None:
                 raise APIError(404, 'launch-not-found', [dict(field='launch', problem=f'启动不存在：#{launch_id}')])
@@ -168,15 +174,15 @@ class Launcher:
         return self.read(launch_id)
 
     def read(self, launch_id, *, local=True):
-        with self.store.connection() as db:
+        with self.store.local() as db:
             row = db.execute('SELECT * FROM launches WHERE id=?', (launch_id,)).fetchone()
-            runs = [dict(r) for r in db.execute('SELECT id, kind, status, session FROM work WHERE launch=?', (launch_id,))]
+            runs = [dict(r) for r in db.execute('SELECT id, kind, status, session FROM local_work WHERE launch=?', (launch_id,))]
         return public(row, runs, local=local) if row else None
 
     def recover(self):
         """守护进程启动时：上次运行中的启动若进程已不在，记为 failed。"""
         from .daemon import alive
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             for row in db.execute("SELECT id, pid FROM launches WHERE status='running'").fetchall():
                 if not row['pid'] or not alive(row['pid']):
                     db.execute("UPDATE launches SET status='failed', ended_at=? WHERE id=?", (now(), row['id']))
@@ -214,7 +220,7 @@ def _register():
         return json_response(dict(ok=True, launch=app.launcher.start(
             checkout, request.json_field('kind') or 'run', request.json_field('scope') or [],
             requested_by=request.json_field('requested_by') or '本机', implementer=request.json_field('implementer'),
-            fix=request.json_field('fix'))))
+            implemented_by=request.json_field('implemented_by'), fix=request.json_field('fix'))))
 
     @route('POST', '/local/launch/stop', 'token')
     def stop(app, request):

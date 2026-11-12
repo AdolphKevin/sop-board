@@ -171,48 +171,86 @@ def test_file(checkout, test):
     return path
 
 
-def check(context, db, scene_key, scene, guard, commands):
-    """单个守护是否有效；返回 (True, '') 或 (False, 原因)。"""
+def invalid(reason):
+    return dict(valid=False, reason=reason)
+
+
+def missing_repos(project, guard, commands):
+    """守护引用、但本机项目没有登记的仓库别名。"""
+    aliases = []
+    for test in guard['tests']:
+        command = commands.get(test['command']) or {}
+        for alias in (command.get('repo'), test.get('repo')):
+            if alias and alias not in project.repos and alias not in aliases:
+                aliases.append(alias)
+    return aliases
+
+
+def check(context, db, scene_key, scene, guard, commands, registrations=()):
+    """单个守护的判定（由本检出的 regression.yaml 与测试文件现算，三条查业务记录库）：
+    {valid, reason}，另有 unsynced（别人已沉淀、本机未同步）或 unrunnable（引用的仓库本机没有登记）。"""
+    product = context.store.product
+    if guard is None:
+        if registrations:
+            latest = registrations[-1]
+            return dict(valid=False, unsynced=dict(by=latest['distilled_by'], at=latest['registered_at']),
+                        reason=f"已由 {latest['distilled_by']} 沉淀，本机未同步")
+        return invalid('没有守护')
     if guard['fingerprint'] != scene['fingerprint']:
-        return False, '场景内容已变化，守护过期'
+        return invalid('场景内容已变化，守护过期')
+    if registrations and tests_digest(guard) not in {r['tests_digest'] for r in registrations}:
+        latest = registrations[-1]
+        return dict(valid=False, unsynced=dict(by=latest['distilled_by'], at=latest['registered_at']),
+                    reason=f"已由 {latest['distilled_by']} 沉淀，本机未同步（本检出的守护测试摘要不同）")
+    absent = missing_repos(context.project, guard, commands)
+    if absent:
+        return dict(valid=False, unrunnable=absent, reason='本机无法运行：没有登记的仓库别名 ' + '、'.join(absent))
     for test in guard['tests']:
         command = commands.get(test['command'])
         if command is None or command['repo'] not in context.checkout.paths:
-            return False, f"命令 {test['command']} 不可用"
+            return invalid(f"命令 {test['command']} 不可用")
         try:
             path = test_file(context.checkout, test)
         except ValueError as error:
-            return False, str(error)
+            return invalid(str(error))
         if hashlib.sha256(path.read_bytes()).hexdigest() != test['sha256']:
-            return False, f"测试文件已改动：{test['repo']}:{test['path']}"
+            return invalid(f"测试文件已改动：{test['repo']}:{test['path']}（守护的测试文件摘要不一致）")
     for part in ('expected', 'forbidden_effects'):
         items = guard['coverage'][part]
         if [(item['index'], item['text']) for item in items] != list(enumerate(scene[part])):
-            return False, f'coverage 没有逐条覆盖当前的 {part}'
-    if not context.store.evidence_path(guard['detection']['evidence']).is_file():
-        return False, '检出能力证据不存在'
-    row = db.execute('SELECT * FROM results WHERE id=?', (guard['acceptance']['result'],)).fetchone()
+            return invalid(f'coverage 没有逐条覆盖当前的 {part}')
+    if not db.one('SELECT 1 FROM evidence WHERE product=? AND sha256=?', (product, guard['detection']['evidence'])):
+        return invalid('检出能力证据在证据索引里没有记录')
+    row = db.one('SELECT * FROM results WHERE id=? AND product=?', (guard['acceptance']['result'], product))
     file, scenario = split_key(scene_key)
     if (row is None or row['kind'] != 'agent' or row['status'] != 'pass' or row['independence'] != 'independent'
             or row['fingerprint'] != scene['fingerprint'] or row['file'] != file or row['scenario'] != scenario):
-        return False, 'acceptance 不是同指纹的独立真实入口通过'
-    if db.execute('SELECT 1 FROM guard_misses WHERE file=? AND scenario=? AND fingerprint=? AND tests_digest=?',
-                  (file, scenario, scene['fingerprint'], tests_digest(guard))).fetchone():
-        return False, '曾经漏检，须重新沉淀'
-    return True, ''
+        return invalid('acceptance 不是同指纹的独立真实入口通过')
+    if db.one('SELECT 1 FROM guard_misses WHERE product=? AND file=? AND scenario=? AND fingerprint=? AND tests_digest=?',
+              (product, file, scenario, scene['fingerprint'], tests_digest(guard))):
+        return invalid('守护已因漏检失效，须重新沉淀')
+    return dict(valid=True, reason='')
 
 
-def validity(context, scenes):
-    """场景键 → (有效, 原因)。索引不合格时全部无效并给出原因。"""
+def registrations_of(db, product):
+    """沉淀登记：(文件, 场景, 指纹) → [登记]（按登记先后）。"""
+    result = {}
+    for row in db.execute('SELECT * FROM distillations WHERE product=? ORDER BY id', (product,)):
+        result.setdefault((row['file'], row['scenario'], row['fingerprint']), []).append(dict(row))
+    return result
+
+
+def validity(context, scenes, db):
+    """场景键 → 守护判定。索引不合格时全部无效并给出原因。db 是业务记录库。"""
     try:
         index = load_index(index_path(context))
     except ValueError as error:
-        return {key: (False, str(error)) for key in scenes}
+        return {key: invalid(str(error)) for key in scenes}
+    registered = registrations_of(db, context.store.product)
     result = {}
-    with context.store.connection() as db:
-        for key in scenes:
-            guard = index['guards'].get(key)
-            result[key] = (False, '没有守护') if guard is None else check(context, db, key, scenes[key], guard, index['commands'])
+    for key, scene in scenes.items():
+        result[key] = check(context, db, key, scene, index['guards'].get(key), index['commands'],
+                            registered.get((scene['file'], scene['id'], scene['fingerprint']), []))
     return result
 
 
@@ -233,23 +271,25 @@ def test_exclusions_for(project, checkout):
     return result
 
 
-def after_result(db, checkout, scene, verdict, result_id):
-    """真实入口或人工复测不通过、而该场景同一指纹上最近一次守护运行是通过（其后没有更晚的通过）时，
-    记一条漏检：该守护失效，直到重新沉淀。最近一次守护运行未通过时，守护已经发现了问题，不算漏检。"""
-    from .status import instant
+def after_result(db, store, checkout_name, scene, verdict, result_id):
+    """真实入口或人工复测不通过、而该场景同一指纹上本机本检出最近一次守护运行是通过（其后本检出没有更晚的通过）时，
+    记一条漏检：该守护失效，直到重新沉淀。漏检只在同一台机器的同一检出内判定（守护运行与失败出自同一份工作副本）；
+    最近一次守护运行未通过时，守护已经发现了问题，不算漏检。登记后按 文件 + 场景 + 指纹 + 测试摘要 共享。"""
     if verdict != 'fail':
         return
-    run = db.execute('SELECT * FROM guard_runs WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? '
-                     'ORDER BY id DESC LIMIT 1', (checkout.id, scene['file'], scene['id'], scene['fingerprint'])).fetchone()
+    product, machine = store.product, store.machine['id']
+    run = db.one('SELECT * FROM guard_runs WHERE product=? AND machine=? AND checkout=? AND file=? AND scenario=? AND fingerprint=? '
+                 'ORDER BY seq DESC LIMIT 1', (product, machine, checkout_name, scene['file'], scene['id'], scene['fingerprint']))
     if run is None or run['status'] != 'pass':
         return
-    passed = db.execute("SELECT executed_at FROM results WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? "
-                        "AND status='pass' AND id<>? ORDER BY id DESC LIMIT 1",
-                        (checkout.id, scene['file'], scene['id'], scene['fingerprint'], result_id)).fetchone()
-    if passed and instant(passed['executed_at']) > instant(run['ran_at']):
+    passed = db.one("SELECT seq FROM results WHERE product=? AND machine=? AND checkout=? AND file=? AND scenario=? AND fingerprint=? "
+                    "AND status='pass' AND id<>? ORDER BY seq DESC LIMIT 1",
+                    (product, machine, checkout_name, scene['file'], scene['id'], scene['fingerprint'], result_id))
+    if passed and passed['seq'] > run['seq']:
         return
-    db.execute('INSERT OR IGNORE INTO guard_misses(file,scenario,fingerprint,tests_digest,result,recorded_at) VALUES (?,?,?,?,?,?)',
-               (scene['file'], scene['id'], scene['fingerprint'], run['tests_digest'], result_id, now()))
+    db.execute('INSERT INTO guard_misses(product,file,scenario,fingerprint,tests_digest,result,machine,checkout,recorded_at) '
+               'VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING',
+               (product, scene['file'], scene['id'], scene['fingerprint'], run['tests_digest'], result_id, machine, checkout_name, now()))
 
 
 # ---- 运行守护命令（retest 与 distill submit 共用；在守护进程中执行，不启动 AI） ----
@@ -367,7 +407,8 @@ def run_guards(app, checkout, index, keys, *, holder):
         app.browsers.release(holder)
     after = _gitops.snapshot(checkout.paths, project.exclusions(test_exclusions_for(project, checkout)))['product_digest']
     outputs = {}
-    with store.transaction() as db:
+    # 原始输出存为证据：文件进本机证据目录，证据索引进业务记录库。
+    with store.records_tx() as db:
         for name, result in results.items():
             items = []
             for path in (result.get('log'), result.get('junit')):
@@ -425,19 +466,23 @@ def datetime_stamp():
     return datetime.now().strftime('%Y%m%d-%H%M%S-%f')
 
 
-def record_runs(store, checkout, scenes, index, verdicts, digest, operator):
-    with store.transaction() as db:
+def record_runs(store, checkout, scenes, index, verdicts, digest, operator, *, branch):
+    """守护运行写进业务记录库：带统一序号、产出机器、检出与分支。"""
+    with store.records_tx() as db:
         for key, (ok, reason, evidence) in verdicts.items():
             scene = scenes[key]
-            db.execute('INSERT INTO guard_runs(checkout,file,scenario,fingerprint,product_digest,tests_digest,status,reason,output,operator,ran_at) '
-                       'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                       (checkout.id, scene['file'], scene['id'], scene['fingerprint'], digest, tests_digest(index['guards'][key]),
-                        'pass' if ok else 'fail', reason or None, _json.dumps(evidence, ensure_ascii=False), operator, now()))
+            db.execute('INSERT INTO guard_runs(product,seq,machine,checkout,branch,file,scenario,fingerprint,product_digest,'
+                       'tests_digest,status,reason,output,operator,ran_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (store.product, db.next_seq(), store.machine['id'], checkout.name, branch, scene['file'], scene['id'],
+                        scene['fingerprint'], digest, tests_digest(index['guards'][key]), 'pass' if ok else 'fail', reason or None,
+                        _json.dumps(evidence, ensure_ascii=False), operator, now()))
 
 
 def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
     """运行有效守护发现代码回归：缺省取全部非草稿场景，只运行守护有效的。
-    每个场景记一条守护运行；通过不改变状态，未通过的场景转为待复测（见 status.derive）。"""
+    每个场景记一条守护运行；通过不改变状态，未通过的场景在本检出转为待复测（见 status.derive）。
+    别人已沉淀而本机未同步的列在 not_guarded；引用的仓库本机没有登记的列为“本机无法运行”（cannot_run），都不运行、不写记录。"""
+    from .checkouts import branch_of
     from .cli import Context, scene_board
     context = Context(app.project, app.store, checkout)
     found, snapshot, derived = scene_board(context)
@@ -449,7 +494,8 @@ def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
     else:
         keys = sorted(k for k, v in derived['items'].items() if v['state'] != 'draft')
     runnable = [k for k in keys if derived['items'][k]['guard']['valid']]
-    skipped = {k: derived['items'][k]['guard']['reason'] for k in keys if k not in runnable}
+    cannot = {k: derived['items'][k]['guard']['reason'] for k in keys if derived['items'][k]['guard'].get('unrunnable')}
+    skipped = {k: derived['items'][k]['guard']['reason'] for k in keys if k not in runnable and k not in cannot}
     plan = {}
     for key in runnable:
         for test in index['guards'][key]['tests']:
@@ -458,15 +504,16 @@ def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
             if key not in plan[test['command']]['scenarios']:
                 plan[test['command']]['scenarios'].append(key)
     result = dict(ok=True, checkout=checkout.name, dry_run=dry_run, scenarios=runnable, commands=plan,
-                  not_guarded={k: v for k, v in skipped.items()})
+                  not_guarded=skipped, cannot_run=cannot)
     if dry_run or not runnable:
         return result
     verdicts, digest = run_guards(app, checkout, index, runnable, holder=f'retest:{checkout.name}')
-    record_runs(app.store, checkout, scenes, index, verdicts, digest, operator)
+    record_runs(app.store, checkout, scenes, index, verdicts, digest, operator, branch=branch_of(app.project, checkout))
     result['results'] = {k: dict(status='pass' if ok else 'fail', label='守护运行通过' if ok else '守护运行未通过，转为待复测',
                                  reason=reason) for k, (ok, reason, _) in verdicts.items()}
     passed = sum(1 for ok, _, _ in verdicts.values() if ok)
-    result['summary'] = f'守护运行通过 {passed}，未通过 {len(verdicts) - passed}（转为待复测），没有有效守护 {len(skipped)}'
+    result['summary'] = (f'守护运行通过 {passed}，未通过 {len(verdicts) - passed}（转为待复测），没有有效守护 {len(skipped)}'
+                         + (f'，本机无法运行 {len(cannot)}' if cannot else ''))
     return result
 
 
@@ -497,23 +544,24 @@ def distill_prepare(context, scope, *, session):
     if not keys:
         from .errors import reject
         reject(409, 'nothing-to-distill', 'scope', '没有待沉淀的场景')
-    from .status import independent_pass, latest_results
-    with context.store.connection() as db:
-        grouped = latest_results(db, context.checkout.id)
+    from .status import independent_pass
+    from . import works
+    book = derived['book']
+    with context.store.records() as db:
         acceptance = {}
         for key in keys:
             scene = scenes[key]
-            row = independent_pass(grouped.get((scene['file'], scene['id'], scene['fingerprint']), []))
-            work = db.execute('SELECT dir FROM work WHERE id=?', (row['work'],)).fetchone()
+            row = independent_pass(book.select((scene['file'], scene['id'], scene['fingerprint'])).records)
             acceptance[key] = dict(result=row['id'], executor=row['executor'], executed_at=row['executed_at'],
-                                   run_dir=work['dir'] if work else None)
-        running = db.execute("SELECT id FROM work WHERE checkout=? AND kind='distill' AND status='prepared'",
+                                   machine=book.machine_name(row['machine']), branch=row['branch'],
+                                   run_dir=works.local_dir(context.store, db, row['work']))
+    with context.store.local_tx() as db:
+        running = db.execute("SELECT id FROM local_work WHERE checkout=? AND kind='distill' AND status='prepared'",
                              (context.checkout.id,)).fetchone()
-    if running:
-        from .errors import reject
-        reject(409, 'distill-prepared', 'work', f"检出 {context.checkout.name} 已有进行中的沉淀 #{running['id']}")
-    with context.store.transaction() as db:
-        cursor = db.execute("INSERT INTO work(kind,checkout,status,session,operator,dir,scope,created_at) "
+        if running:
+            from .errors import reject
+            reject(409, 'distill-prepared', 'work', f"检出 {context.checkout.name} 已有进行中的沉淀 #{running['id']}")
+        cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,dir,scope,created_at) "
                             "VALUES ('distill',?,'prepared',?,?,'',?,?)",
                             (context.checkout.id, executor, operator, dumps([dict(scenario=k) for k in keys]), now()))
         work_id = cursor.lastrowid
@@ -527,22 +575,23 @@ def distill_prepare(context, scope, *, session):
     prompt = Template(files('sop_board').joinpath('prompts', 'distill.md').read_text(encoding='utf-8')).substitute(
         work=work_id, directory=directory, skill=skill, index=index_path(context), checkout=context.checkout.name)
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
-    with context.store.transaction() as db:
-        db.execute('UPDATE work SET dir=? WHERE id=?', (str(directory), work_id))
+    with context.store.local_tx() as db:
+        db.execute('UPDATE local_work SET dir=? WHERE id=?', (str(directory), work_id))
     return dict(ok=True, work=work_id, directory=str(directory), prompt=str(directory / 'prompt.md'),
                 report=str(directory / 'guard.json'), scenarios=keys, acceptance={k: v['result'] for k, v in acceptance.items()})
 
 
-def browser_fidelity(db, checkout, test, acceptance, ledger):
-    """浏览器层 spec 的保真检查：基线为 git HEAD 中的同一文件；HEAD 还没有时，以产生独立通过的那份 spec 为基线。"""
-    from . import specs
+def browser_fidelity(store, db, checkout, test, acceptance, ledger):
+    """浏览器层 spec 的保真检查：基线为 git HEAD 中的同一文件；HEAD 还没有时，以产生独立通过的那份 spec 为基线
+    （独立通过出自别的机器时，本机没有那份运行目录，不设基线）。"""
+    from . import specs, works
     repo = checkout.paths[test['repo']]
     if specs.baseline_from_git(repo, test['path']) is not None:
         return specs.check_file(repo, test['path'], ledger=ledger)
-    work = db.execute('SELECT dir FROM work WHERE id=?', (acceptance['work'],)).fetchone() if acceptance['work'] else None
-    candidates = sorted(Path(work['dir']).rglob(Path(test['path']).name)) if work and work['dir'] else []
+    directory = works.local_dir(store, db, acceptance['work'])
+    candidates = sorted(Path(directory).rglob(Path(test['path']).name)) if directory else []
     if candidates:
-        return specs.check(repo / test['path'], repo, baseline=candidates[0], baseline_root=Path(work['dir']), ledger=ledger)
+        return specs.check(repo / test['path'], repo, baseline=candidates[0], baseline_root=Path(directory), ledger=ledger)
     return specs.check(repo / test['path'], repo, ledger=ledger)
 
 
@@ -553,9 +602,10 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
     from .errors import reject
     from . import specs
     context = Context(app.project, app.store, checkout)
+    work = None
     if work_id:
-        with app.store.connection() as db:
-            work = db.execute("SELECT status FROM work WHERE id=? AND kind='distill'", (work_id,)).fetchone()
+        with app.store.local() as db:
+            work = db.execute("SELECT * FROM local_work WHERE id=? AND kind='distill'", (work_id,)).fetchone()
         if work is None or work['status'] != 'prepared':
             reject(409, 'work-state-invalid', 'work', f'沉淀 #{work_id} 不是进行中的沉淀')
     report_path = Path(report_path)
@@ -575,7 +625,8 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
             reject(422, 'report-invalid', f'commands.{name}', '与 regression.yaml 中同名命令不同；换一个命令编号')
         commands[name] = command
     problems, entries = [], {}
-    with app.store.connection() as db:
+    product = app.store.product
+    with app.store.records() as db:
         for key, guard in report['guards'].items():
             if key not in scenes:
                 problems.append(f'{key}：场景不存在')
@@ -585,7 +636,7 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
                 problems.append(f'{key}：守护须为对象')
                 continue
             result_id = (guard.get('acceptance') or {}).get('result')
-            row = db.execute('SELECT * FROM results WHERE id=?', (result_id,)).fetchone() if type(result_id) is int else None
+            row = db.one('SELECT * FROM results WHERE id=? AND product=?', (result_id, product)) if type(result_id) is int else None
             if (row is None or row['kind'] != 'agent' or row['status'] != 'pass' or row['independence'] != 'independent'
                     or row['reused_from'] or row['fingerprint'] != scene['fingerprint'] or row['file'] != scene['file']
                     or row['scenario'] != scene['id']):
@@ -607,11 +658,12 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
             entry = dict(fingerprint=scene['fingerprint'],
                          acceptance=dict(result=row['id'], executor=row['executor'], product_digest=row['product_digest']),
                          tests=tests, coverage=guard.get('coverage'), detection=None, ledger=guard.get('ledger', []))
-            misses = db.execute('SELECT * FROM guard_misses WHERE file=? AND scenario=? AND fingerprint=?',
-                                (scene['file'], scene['id'], scene['fingerprint'])).fetchall()
+            misses = db.all('SELECT * FROM guard_misses WHERE product=? AND file=? AND scenario=? AND fingerprint=?',
+                            (product, scene['file'], scene['id'], scene['fingerprint']))
             if misses and tests:
-                latest_miss = max(m['recorded_at'] for m in misses)
-                if row['executed_at'] <= latest_miss:
+                # 漏检之后的独立通过：比较序号（漏检时记下的失败结果的序号）。
+                miss_seq = max((db.value('SELECT seq FROM results WHERE id=?', (m['result'],)) or 0) for m in misses)
+                if row['seq'] <= miss_seq:
                     problems.append(f'{key}：曾经漏检，acceptance 不是漏检之后的独立通过')
                     continue
                 if tests_digest(entry) in {m['tests_digest'] for m in misses}:
@@ -630,13 +682,14 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
             if detection.get('method') not in ('mutation', 'known-defect') or not detection.get('assertion') or not evidence_file.is_file():
                 problems.append(f'{key}：detection 须写明 method、assertion 与检出能力证据文件')
             else:
-                with app.store.transaction() as tx:
+                # 检出能力证据：文件进本机证据目录，索引进业务记录库（别的机器据此判守护有效，文件留在本机）。
+                with app.store.records_tx() as tx:
                     sha = app.store.save_evidence(tx, evidence_file.read_bytes(), evidence_file.name)
                 entry['detection'] = dict(method=detection['method'], assertion=detection['assertion'], evidence=sha)
             for test in tests:
                 if test['layer'] == 'browser':
                     try:
-                        specs.qualified(browser_fidelity(db, checkout, test, row, entry['ledger']))
+                        specs.qualified(browser_fidelity(app.store, db, checkout, test, row, entry['ledger']))
                     except ValueError as error:
                         problems.append(f"{key}：{test['path']} {error}")
             entries[key] = entry
@@ -651,12 +704,27 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
     if failed:
         reject(422, 'distill-tests-failed', 'tests', '守护命令实际运行未通过：' + '；'.join(f'{k} {r}' for k, r in failed.items()))
     path.write_text(yaml.safe_dump(merged, allow_unicode=True, sort_keys=False), encoding='utf-8')
-    record_runs(app.store, checkout, scenes, merged, verdicts, digest, operator)
-    if work_id:
-        from .store import dumps
-        with app.store.transaction() as db:
-            db.execute("UPDATE work SET status='submitted', ended_at=?, result=? WHERE id=? AND kind='distill'",
-                       (now(), dumps(dict(guards=sorted(entries))), work_id))
+    from .checkouts import branch_of
+    branch = branch_of(app.project, checkout)
+    record_runs(app.store, checkout, scenes, merged, verdicts, digest, operator, branch=branch)
+    # 沉淀登记（场景、指纹、测试摘要、沉淀人、机器、时间）写进业务记录库：别的机器据此显示“已由 <沉淀人> 沉淀，本机未同步”。
+    from . import works
+    from .store import dumps
+    with app.store.records_tx() as db:
+        record = None
+        if work is not None:
+            record, _ = works.publish(db, app.store, work, checkout=checkout.name, branch=branch,
+                                      result=dict(guards=sorted(entries)))
+        for key, entry in entries.items():
+            scene = scenes[key]
+            db.execute('INSERT INTO distillations(product,work,file,scenario,fingerprint,tests_digest,distilled_by,machine,checkout,'
+                       'branch,registered_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (app.store.product, record, scene['file'], scene['id'], scene['fingerprint'], tests_digest(entry), operator,
+                        app.store.machine['id'], checkout.name, branch, now()))
+    if work is not None:
+        with app.store.local_tx() as db:
+            db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, record=? WHERE id=? AND kind='distill'",
+                       (now(), dumps(dict(guards=sorted(entries))), record, work_id))
     return dict(ok=True, checkout=checkout.name, index=str(path), guards=sorted(entries),
                 runs={k: '实际运行通过' for k in verdicts}, next='测试文件与 regression.yaml 为未提交改动，请审核后提交')
 

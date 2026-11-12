@@ -16,7 +16,9 @@ from .entries import validate_entries, verification_skills, skill_files
 
 FORMAT = 'sop-board-project-6'
 HOME = Path(os.environ.get('SOP_BOARD_HOME', str(Path.home() / '.sop-board'))).expanduser()
-TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents'}
+TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents',
+              'shared_database'}
+SHARED_FIELDS = {'host', 'port', 'dbname', 'user'}
 ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout', 'services', 'service_timeout'}
 SERVICE_NAME = re.compile(r'[a-z][a-z0-9_-]{0,63}\Z')
 AGENT_KINDS = ('default', 'run', 'fix', 'distill', 'merge', 'author', 'draft', 'atlas')
@@ -204,6 +206,61 @@ def validate_services(value, problem):
     return result
 
 
+def validate_shared(value, problem):
+    """shared_database：{host, port（缺省 5432）, dbname, user}。密码只放 ~/.pgpass（或 PGPASSFILE），不写进配置。"""
+    if not isinstance(value, dict):
+        problem('shared_database', '须为含 host、port、dbname、user 的对象')
+        return None
+    for extra in value.keys() - SHARED_FIELDS:
+        problem('shared_database.' + extra, '密码只放 ~/.pgpass，不写进 config.yaml' if extra in ('password', 'passwd', 'pass')
+                else '格式外字段')
+    result = {}
+    for field in ('host', 'dbname', 'user'):
+        item = value.get(field)
+        if not isinstance(item, str) or not item.strip() or len(item) > 255 or any(c.isspace() for c in item.strip()):
+            problem('shared_database.' + field, '须为不含空白的非空文字')
+        else:
+            result[field] = item.strip()
+    port = value.get('port', 5432)
+    if type(port) is not int or not 1 <= port <= 65535:
+        problem('shared_database.port', '须为 1–65535 的端口')
+    else:
+        result['port'] = port
+    return result if len(result) == 4 and not (value.keys() - SHARED_FIELDS) else None
+
+
+_machines = {}
+
+
+def machine(root):
+    """机器：数据根目录下的 machine.json，保存生成一次的随机标识和显示名（缺省“操作者@主机名”）。"""
+    root = Path(root).expanduser().resolve()
+    cached = _machines.get(root)
+    if cached:
+        return cached
+    path = root / 'machine.json'
+    try:
+        value = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        import socket
+        import uuid
+        host = socket.gethostname().removesuffix('.local') or 'localhost'
+        value = dict(id=uuid.uuid4().hex, name=f'{operator() or os.environ.get("USER") or "unknown"}@{host}')
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                stream.write(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+        except FileExistsError:
+            value = json.loads(path.read_text(encoding='utf-8'))
+    except ValueError as error:
+        raise ValueError(f'machine.json 无法解析：{path}') from error
+    if not isinstance(value, dict) or not isinstance(value.get('id'), str) or not isinstance(value.get('name'), str):
+        raise ValueError(f'machine.json 须含 id 与 name：{path}')
+    _machines[root] = dict(id=value['id'], name=value['name'])
+    return _machines[root]
+
+
 def root_of(data_root=None):
     """项目数据目录的上级目录：--data 指定，缺省为 SOP_BOARD_HOME（~/.sop-board）。"""
     return Path(data_root).expanduser().resolve() if data_root else HOME.resolve()
@@ -321,12 +378,32 @@ class Project:
         if not isinstance(registered, dict) or registered.get('format') != FORMAT or name_problem(registered.get('name')):
             raise ProjectFormat('数据目录不是当前格式（' + FORMAT + '）；用 sop-board init 新建项目')
         self.name = registered['name']
+        self.marker = marker
         self.config_path = self.data / 'config.yaml'
         self.reload()
+
+    def binding(self):
+        """project.json 里绑定的产品 {id, name}；没有绑定时返回 None。每次现读，看板进程也能看到 init 写入的绑定。"""
+        try:
+            value = json.loads(self.marker.read_text(encoding='utf-8')).get('product')
+        except (OSError, ValueError, AttributeError):
+            return None
+        if isinstance(value, dict) and isinstance(value.get('id'), str) and value['id']:
+            return dict(id=value['id'], name=value.get('name') or value['id'])
+        return None
+
+    def bind(self, product):
+        """把产品绑定写进本机 project.json（改绑时覆盖）；不写产品仓库。"""
+        value = json.loads(self.marker.read_text(encoding='utf-8'))
+        value['product'] = dict(id=product['id'], name=product['name'])
+        temporary = self.marker.with_suffix('.json.tmp')
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        os.replace(temporary, self.marker)
 
     def reload(self):
         self.repos, self.identities, self.entries, self.adapter = {}, {}, {}, {}
         self.snapshot_exclude, self.fixtures, self.agents = {}, None, {}
+        self.shared, self.shared_invalid = None, False
         self.scenario_repo, self.scenario_path = None, None
         self.skill, self.driver_paths = None, {}
         problems = []
@@ -346,6 +423,9 @@ class Project:
             return
         for field in config.keys() - TOP_FIELDS:
             problem(field, '格式外字段')
+        if 'shared_database' in config:
+            self.shared = validate_shared(config['shared_database'], problem)
+            self.shared_invalid = self.shared is None
         values = config.get('repos')
         if not isinstance(values, dict) or not values:
             problem('repos', '至少声明一个仓库')

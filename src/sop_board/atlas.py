@@ -11,7 +11,7 @@ import re
 from string import Template
 
 from .errors import reject
-from .store import dumps, now
+
 
 SCHEMA = json.loads(files('sop_board').joinpath('prompts', 'atlas.schema.json').read_text(encoding='utf-8'))
 SOURCE = re.compile(r'([a-z][a-z0-9-]*):([^:\n]+?)(?::([0-9]+))?\Z')
@@ -153,9 +153,10 @@ def submit(context, entry, *, work_id=None):
     names = sorted({name for page in document['pages'] for name in source_files(page)})
     sidecar.write_text(json.dumps(dict(files={name: digest(checkout, name) for name in names}), ensure_ascii=False, indent=2) + '\n',
                        encoding='utf-8')
-    with context.store.transaction() as db:
-        db.execute("UPDATE work SET status='submitted', ended_at=?, result=? WHERE id=?",
-                   (now(), dumps(dict(entry=entry, pages=len(document['pages']))), work['id']))
+    from . import works
+    from .checkouts import branch_of
+    works.finish(context.store, work, checkout=checkout.name, branch=branch_of(project, checkout),
+                 result=dict(entry=entry, pages=len(document['pages'])))
     return dict(ok=True, entry=entry, file=str(target), digests=str(sidecar), pages=len(document['pages']), sources=len(names))
 
 

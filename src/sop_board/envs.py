@@ -100,7 +100,7 @@ class EnvBusy(ValueError):
 
 
 def require_stopped(context, checkout):
-    with context.store.connection() as db:
+    with context.store.local() as db:
         row = db.execute('SELECT * FROM environments WHERE checkout=?', (checkout.id,)).fetchone()
     if row and row['state'] in ('starting', 'ready') and row['pid'] and daemon.alive(row['pid']):
         raise ValueError(f'检出 {checkout.name} 的环境仍在运行；先运行 sop-board env down --checkout {checkout.name}')
@@ -362,7 +362,7 @@ class Manager:
         self.stopping = threading.Event()
 
     def record(self, checkout, state, *, pid, ports, log, digest, env=None, error=None, ended=False):
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             db.execute('''INSERT INTO environments(checkout,state,pid,ports,env,product_digest,log,error,started_at,ended_at)
                           VALUES (?,?,?,?,?,?,?,?,?,?)
                           ON CONFLICT(checkout) DO UPDATE SET state=excluded.state, pid=excluded.pid, ports=excluded.ports,
@@ -407,8 +407,8 @@ class Manager:
         with self.lock(checkout):
             owner = self.busy_owner(checkout)
             if owner is not None:
-                with self.store.connection() as db:
-                    run = db.execute("SELECT id FROM work WHERE checkout=? AND kind='run' AND status='prepared'", (owner.id,)).fetchone()
+                with self.store.local() as db:
+                    run = db.execute("SELECT id FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'", (owner.id,)).fetchone()
                 using = f'（运行 #{run["id"]} 正在使用）' if run else ''
                 raise EnvBusy(f'各检出共用端口（port_step 为 0），检出 {owner.name} 的环境正在运行{using}；'
                               f'先运行 sop-board env down --checkout {owner.name}',
@@ -430,7 +430,7 @@ class Manager:
 
     def status(self, checkout):
         environment = self.environments.get(checkout.id)
-        with self.store.connection() as db:
+        with self.store.local() as db:
             row = db.execute('SELECT * FROM environments WHERE checkout=?', (checkout.id,)).fetchone()
         result = dict(checkout=checkout.name, state='stopped', ports=[], log=None, error=None)
         if row:
@@ -469,12 +469,12 @@ class Manager:
     # ---- 服务停启（故障模拟）：只在本检出有 prepared 运行时可用，停启记进该运行 ----
 
     def prepared_run(self, checkout):
-        with self.store.connection() as db:
-            return db.execute("SELECT id FROM work WHERE checkout=? AND kind='run' AND status='prepared'",
+        with self.store.local() as db:
+            return db.execute("SELECT id FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
                               (checkout.id,)).fetchone()
 
     def record_service(self, checkout, work_id, name, action, operator, *, ok=True, note=None):
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             cursor = db.execute('INSERT INTO service_events(work,checkout,service,action,ok,operator,at,note) VALUES (?,?,?,?,?,?,?,?)',
                                 (work_id, checkout.id, name, action, 1 if ok else 0, operator, now(), note))
             return cursor.lastrowid
@@ -550,7 +550,7 @@ class Manager:
 
     def restore(self, checkout, work_id, *, operator, reason):
         """运行提交或放弃时，恢复本轮停着的服务并逐个记录。返回 [{service, ok, state, note}]。"""
-        with self.store.connection() as db:
+        with self.store.local() as db:
             events = [dict(r) for r in db.execute('SELECT service, action FROM service_events WHERE work=? ORDER BY id', (work_id,))]
         last = {}
         for event in events:
@@ -587,7 +587,7 @@ class Manager:
 
     def recover(self):
         """守护进程启动时清理上次遗留的环境进程组（只处理记录在案、组长仍是适配命令的进程）。"""
-        with self.store.connection() as db:
+        with self.store.local() as db:
             rows = list(db.execute("SELECT * FROM environments WHERE state IN ('starting','ready') AND pid IS NOT NULL"))
         script = Path(self.project.adapter.get('env', [''])[-1]).name if self.project.adapter.get('env') else ''
         for row in rows:
@@ -598,7 +598,7 @@ class Manager:
                 found = ''
             if found and found.split()[0] == str(pid) and (not script or script in found):
                 stop_group(pid)
-            with self.store.transaction() as db:
+            with self.store.local_tx() as db:
                 db.execute("UPDATE environments SET state='stopped', pid=NULL, ended_at=? WHERE checkout=?", (now(), row['checkout']))
         self.recover_services()
 
@@ -611,7 +611,7 @@ class Manager:
 
 def withdraw(project, store, checkout, work_id, *, operator, reason):
     """守护进程没有运行时（它退出时已停掉全部环境）：撤回本轮留下的停止请求并逐个记录，下次启动环境时服务照常启动。"""
-    with store.connection() as db:
+    with store.local() as db:
         events = [dict(r) for r in db.execute('SELECT service, action FROM service_events WHERE work=? ORDER BY id', (work_id,))]
     last = {}
     for event in events:
@@ -621,7 +621,7 @@ def withdraw(project, store, checkout, work_id, *, operator, reason):
     for name in [n for n, action in last.items() if action == 'stop']:
         (directory / f'{name}.request').unlink(missing_ok=True)
         note = f'{reason}时自动恢复：看板守护进程没有运行（环境也已停止），已撤回停止请求，下次启动环境时照常启动'
-        with store.transaction() as db:
+        with store.local_tx() as db:
             db.execute('INSERT INTO service_events(work,checkout,service,action,ok,operator,at,note) VALUES (?,?,?,?,?,?,?,?)',
                        (work_id, checkout.id, name, 'restore', 1, operator, now(), note))
         result.append(dict(service=name, ok=True, state='down', label=SERVICE_LABELS['down'], note=note))
@@ -629,17 +629,21 @@ def withdraw(project, store, checkout, work_id, *, operator, reason):
 
 
 def stopped_during(db, work_ids):
-    """结果执行时停着的服务：运行编号 → {场景键: [服务名]}，取自该运行停止事件记下的场景。"""
+    """结果执行时停着的服务：业务记录库的运行编号 → {场景键: [服务名]}，取自运行记录的服务停启记录（work.services）
+    中停止事件记下的场景。db 是业务记录库。"""
     result = {}
     ids = sorted({w for w in work_ids if w})
     if not ids:
         return result
     marks = ','.join('?' * len(ids))
-    for row in db.execute(f"SELECT work, service, scenarios FROM service_events WHERE action='stop' AND work IN ({marks}) ORDER BY id", ids):
-        for key in json.loads(row['scenarios'] or '[]'):
-            names_ = result.setdefault(row['work'], {}).setdefault(key, [])
-            if row['service'] not in names_:
-                names_.append(row['service'])
+    for row in db.execute(f'SELECT id, services FROM work WHERE id IN ({marks})', ids):
+        for event in json.loads(row['services'] or '[]'):
+            if event.get('action') != 'stop':
+                continue
+            for key in event.get('scenarios') or []:
+                names_ = result.setdefault(row['id'], {}).setdefault(key, [])
+                if event['service'] not in names_:
+                    names_.append(event['service'])
     return result
 
 

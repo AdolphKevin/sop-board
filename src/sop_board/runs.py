@@ -150,8 +150,8 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
     scope = scope_for(context, scenes, derived, requested, fix)
     if not scope:
         reject(409, 'nothing-to-run', 'scope', '没有需要执行的场景')
-    with store.connection() as db:
-        running = db.execute("SELECT id, session FROM work WHERE checkout=? AND kind='run' AND status='prepared'",
+    with store.local() as db:
+        running = db.execute("SELECT id, session FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
                              (checkout.id,)).fetchone()
     if running:
         reject(409, 'run-prepared', 'run', f"检出 {checkout.name} 已有准备好的运行 #{running['id']}（会话 {running['session']}）；"
@@ -160,11 +160,12 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)
     selected = [scenes[item['scenario']] for item in scope]
     entries = {name: project.entries[name] for name in sorted({scene['verify'] for scene in selected})}
-    with store.transaction() as db:
-        cursor = db.execute("INSERT INTO work(kind,checkout,status,session,operator,implementer,fix,launch,dir,scope,created_at) "
-                            "VALUES ('run',?,'prepared',?,?,?,?,?,'',?,?)",
+    from .checkouts import branch_of
+    with store.local_tx() as db:
+        cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,implementer,fix,launch,dir,scope,branch,"
+                            "created_at) VALUES ('run',?,'prepared',?,?,?,?,?,'',?,?,?)",
                             (checkout.id, executor, operator, fix['session'] if fix else None, fix_id, launch,
-                             dumps(scope), now()))
+                             dumps(scope), branch_of(project, checkout), now()))
         work_id = cursor.lastrowid
     directory = run_dir(project, work_id)
     holder = f'run:{work_id}'
@@ -179,14 +180,14 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
         directory.mkdir(parents=True, exist_ok=False)
         materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix)
     except BaseException:
-        with store.transaction() as db:
+        with store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
-            db.execute('DELETE FROM work WHERE id=?', (work_id,))
+            db.execute('DELETE FROM local_work WHERE id=?', (work_id,))
         shutil.rmtree(directory, ignore_errors=True)
         raise
     product = {k: v for k, v in snapshot.items() if k != 'files'}
-    with store.transaction() as db:
-        db.execute('UPDATE work SET dir=?, snapshot=?, product_digest=? WHERE id=?',
+    with store.local_tx() as db:
+        db.execute('UPDATE local_work SET dir=?, snapshot=?, product_digest=? WHERE id=?',
                    (str(directory), dumps(product), snapshot['product_digest'], work_id))
     # 部分就绪：adapter 输出就绪即可执行；没在运行的服务与缺失的入口地址只列出，由执行会话按场景判断。
     return dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
@@ -284,15 +285,14 @@ def atlas_excerpt(context, entries):
 # ---- 提交 ----
 
 def load_work(context, run_id, kind='run'):
-    with context.store.connection() as db:
-        row = db.execute('SELECT * FROM work WHERE id=? AND kind=?', (run_id, kind)).fetchone()
-    if row is None:
-        reject(404, 'run-not-found', 'run', f'运行不存在：#{run_id}')
-    if row['checkout'] != context.checkout.id:
-        from . import checkouts
-        with context.store.connection() as db:
-            other = checkouts.by_id(db, row['checkout'])
-        context.checkout = other
+    """本机运行（本机状态库）；运行属于另一个检出时切到那个检出。"""
+    with context.store.local() as db:
+        row = db.execute('SELECT * FROM local_work WHERE id=? AND kind=?', (run_id, kind)).fetchone()
+        if row is None:
+            reject(404, 'run-not-found', 'run', f'运行不存在：#{run_id}')
+        if row['checkout'] != context.checkout.id:
+            from . import checkouts
+            context.checkout = checkouts.by_id(db, row['checkout'])
     return dict(row)
 
 
@@ -371,13 +371,18 @@ def validate_row(directory, key, row):
         raise ValueError(f'{key} 实际执行的 pass、fail 至少要有一份真实证据')
 
 
-def submit(context, run_id, *, implementer=None):
-    from . import checkouts
+def submit(context, run_id, *, implementer=None, implemented_by=None):
+    """提交运行，依次三步（已定决策 21）：
+    1. 证据文件存进本机证据目录（按内容寻址，幂等）；
+    2. 一个事务把运行记录、结果与证据索引写进业务记录库；运行以“机器标识 + 本机库标识 + 本机运行编号”唯一，
+       已登记过（第三步失败后重新提交）就跳过这一步；这一步失败时运行保持 prepared，结果留在运行目录；
+    3. 更新本机运行状态、释放租约、恢复停着的服务。"""
+    from . import checkouts, works
     work = load_work(context, run_id)
     if work['status'] != 'prepared':
         reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}，不能提交")
     project, store = context.project, context.store
-    with store.connection() as db:
+    with store.local() as db:
         checkout = checkouts.by_id(db, work['checkout'])
     context.checkout = checkout
     directory = Path(work['dir'])
@@ -388,7 +393,6 @@ def submit(context, run_id, *, implementer=None):
     current = scenarios.scan(checkout.scenarios_dir(project), set(project.entries))['scenarios']
     voided = sorted(key for key in scope if key not in current or current[key]['fingerprint'] != prepared[key]['fingerprint'])
     crashed = crash_findings(context, work, prepared)
-    not_executed, recorded = [], []
     for key in scope:
         if key in voided:
             continue
@@ -407,53 +411,100 @@ def submit(context, run_id, *, implementer=None):
     after = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)['files']
     product_changed = gitops.changed_between(before, after)
     executor = work['session']
-    implementer = work['implementer'] or implementer or os.environ.get('SOP_BOARD_IMPLEMENTER') or None
-    independence = status.independence(executor, implementer)
+    if work['implementer']:
+        # 修复复验：实现者自动取修复会话。
+        implementer, implemented_by = work['implementer'], None
+    else:
+        implementer = implementer or (None if implemented_by else os.environ.get('SOP_BOARD_IMPLEMENTER')) or None
+        implemented_by = implemented_by or (None if implementer else os.environ.get('SOP_BOARD_IMPLEMENTED_BY')) or None
+    # 跨机器验收：实现者是别的操作者，记独立验收（与本机操作者相同的已在命令行以参数错误拒绝）。
+    independence = 'independent' if implemented_by else status.independence(executor, implementer)
     operator = config.operator() or work['operator']
-    with store.connection() as db:
+    branch = work['branch']
+    with store.local() as db:
         events = [dict(r) for r in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (run_id,))]
     executed = {key: row for key, row in rows.items()
                 if key in scope and key not in voided and row.get('status') != 'not-executed' and row.get('executed_at')}
     while_stopped = scenarios_while_stopped(events, executed)
-    with store.transaction() as db:
-        for event_id, keys in while_stopped.items():
-            db.execute('UPDATE service_events SET scenarios=? WHERE id=?', (dumps(keys), event_id))
-        for key, row in rows.items():
-            if key in voided or key not in scope:
-                continue
-            if row.get('status') == 'not-executed':
-                # 未执行不登记结果、不改变状态；记在运行上（谁、什么时候、缺什么），场景详情与报告显示最近一次。
-                not_executed.append(dict(scenario=key, finding=row['finding'], fingerprint=prepared[key]['fingerprint']))
-                continue
-            scene = prepared[key]
-            cursor = db.execute(
-                'INSERT INTO results(work,checkout,file,scenario,fingerprint,product_digest,product_changed,kind,status,actual,'
-                'finding,note,executor,implementer,independence,executed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                (run_id, checkout.id, scene['file'], scene['id'], scene['fingerprint'], work['product_digest'],
-                 dumps(product_changed), 'agent', row['status'], row['actual'], row.get('finding'), row.get('note'),
-                 executor, implementer, independence, row['executed_at']))
-            result_id = cursor.lastrowid
-            evidence = [(Path(name).name, (directory / name).read_bytes()) for name in row.get('evidence', [])]
-            for ordinal, (name, raw) in enumerate(evidence):
-                sha = store.save_evidence(db, raw, name)
-                db.execute('INSERT INTO result_evidence VALUES (?,?,?,?)', (result_id, ordinal, name, sha))
-            recorded.append(dict(scenario=key, status=row['status'], result=result_id))
-            guards.after_result(db, checkout, scene, row['status'], result_id)
-        summary = dict(recorded=recorded, voided=voided, not_executed=not_executed, product_changed=product_changed,
-                       browser_crashes=sorted(crashed), independence=independence, submitted_by=operator)
-        db.execute("UPDATE work SET status='submitted', ended_at=?, result=?, implementer=? WHERE id=?",
-                   (now(), dumps(summary), implementer, run_id))
+    if while_stopped:
+        with store.local_tx() as db:
+            for event_id, keys in while_stopped.items():
+                db.execute('UPDATE service_events SET scenarios=? WHERE id=?', (dumps(keys), event_id))
+        for event in events:
+            event['scenarios'] = dumps(while_stopped.get(event['id'], json.loads(event['scenarios'])))
+    # 第一步：证据文件进本机证据目录。
+    files_of = {}
+    for key, row in rows.items():
+        if key in voided or key not in scope or row.get('status') == 'not-executed':
+            continue
+        files_of[key] = []
+        for name in row.get('evidence', []):
+            raw = (directory / name).read_bytes()
+            files_of[key].append((Path(name).name, store.put_evidence(raw), len(raw)))
+    not_executed = [dict(scenario=key, finding=row['finding'], fingerprint=prepared[key]['fingerprint'])
+                    for key, row in rows.items() if key in scope and key not in voided and row.get('status') == 'not-executed']
+    summary = dict(recorded=[], voided=voided, not_executed=not_executed, product_changed=product_changed,
+                   browser_crashes=sorted(crashed), independence=independence, submitted_by=operator,
+                   implementer=implemented_by or implementer)
+    # 第二步：一个事务登记运行记录、结果与证据索引。
+    with store.records_tx() as db:
+        record, fresh = works.publish(db, store, work, checkout=checkout.name, branch=branch, result=summary,
+                                      services=[service_event(e) for e in events], implementer=implementer,
+                                      implemented_by=implemented_by, independence=independence)
+        if fresh:
+            for key, row in rows.items():
+                if key in voided or key not in scope or row.get('status') == 'not-executed':
+                    continue
+                scene = prepared[key]
+                result_id = db.insert(
+                    'INSERT INTO results(product,seq,work,machine,checkout,branch,file,scenario,fingerprint,product_digest,'
+                    'product_changed,kind,status,actual,finding,note,executor,implementer,implemented_by,independence,executed_at) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (store.product, db.next_seq(), record, store.machine['id'], checkout.name, branch, scene['file'], scene['id'],
+                     scene['fingerprint'], work['product_digest'], dumps(product_changed), 'agent', row['status'], row['actual'],
+                     row.get('finding'), row.get('note'), executor, implementer, implemented_by, independence, row['executed_at']))
+                for ordinal, (name, sha, size) in enumerate(files_of.get(key, [])):
+                    store.index_evidence(db, sha, size, name)
+                    db.execute('INSERT INTO result_evidence(result, ordinal, name, sha256) VALUES (?,?,?,?)', (result_id, ordinal, name, sha))
+                summary['recorded'].append(dict(scenario=key, status=row['status'], result=result_id))
+                guards.after_result(db, store, checkout.name, scene, row['status'], result_id)
+            db.execute('UPDATE work SET result=? WHERE id=?', (dumps(summary), record))
+            if fixing:
+                from . import fixes
+                fixes.after_verify(db, store, work, summary['recorded'])
+        else:
+            summary['recorded'] = [dict(scenario=scenarios.key(r['file'], r['scenario']), status=r['status'], result=r['id'])
+                                   for r in db.all('SELECT id, file, scenario, status FROM results WHERE work=? ORDER BY id', (record,))]
+            summary['resubmitted'] = True
+    # 第三步：本机运行状态、租约与停着的服务。
+    with store.local_tx() as db:
+        db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, implementer=?, record=? WHERE id=?",
+                   (now(), dumps(summary), implementer or implemented_by, record, run_id))
         db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
-        if fixing:
-            from . import fixes
-            fixes.after_verify(db, work, recorded)
+    if fixing:
+        from . import fixes
+        fixes.after_verify_local(context, work, summary['recorded'])
     # 结果登记之后再恢复停着的服务：等待服务恢复期间不占用数据库。
     services = finish_services(context, work, reason='提交', operator=operator, crashes=True)
     if services:
         summary.update(services)
-        with store.transaction() as db:
-            db.execute('UPDATE work SET result=? WHERE id=?', (dumps(summary), run_id))
+        with store.local_tx() as db:
+            db.execute('UPDATE local_work SET result=? WHERE id=?', (dumps(summary), run_id))
+        # 自动恢复的记录补进业务记录里的服务停启记录；连不上共享库时只留在本机，不影响已登记的结果。
+        try:
+            with store.records_tx() as db:
+                db.execute('UPDATE work SET services=? WHERE id=?',
+                           (dumps([service_event(e) for e in services.get('service_events', [])]), record))
+        except APIError as error:
+            summary['services_problem'] = '；'.join(p.get('problem', '') for p in error.problems)
     return dict(ok=True, run=run_id, checkout=checkout.name, **summary)
+
+
+def service_event(event):
+    """服务停启记录的业务部分：谁、什么时候、停启了哪个服务、停着期间执行了哪些场景。"""
+    scenarios_ = event['scenarios']
+    return dict(service=event['service'], action=event['action'], ok=bool(event['ok']), operator=event['operator'],
+                at=event['at'], note=event.get('note'), scenarios=json.loads(scenarios_) if isinstance(scenarios_, str) else scenarios_)
 
 
 def scenarios_while_stopped(events, rows):
@@ -485,7 +536,7 @@ def finish_services(context, work, *, reason, operator, crashes=False):
     from . import envs
     project, checkout, store = context.project, context.checkout, context.store
     declared = project.adapter.get('services') or {}
-    with store.connection() as db:
+    with store.local() as db:
         stopped_any = db.execute("SELECT 1 FROM service_events WHERE work=? AND action='stop' LIMIT 1", (work['id'],)).fetchone()
     if not declared and not stopped_any:
         return {}
@@ -511,7 +562,7 @@ def finish_services(context, work, *, reason, operator, crashes=False):
         result['crashed_services'] = [dict(service=s['name'], about=s['about'], log=s.get('log'),
                                            during_run=prepared.get(s['name']) != 'crashed')
                                       for s in (current or {}).get('services', []) if s['state'] == 'crashed']
-    with store.connection() as db:
+    with store.local() as db:
         result['service_events'] = [dict(service=r['service'], action=r['action'], ok=bool(r['ok']), operator=r['operator'],
                                          at=r['at'], note=r['note'], scenarios=json.loads(r['scenarios']))
                                     for r in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (work['id'],))]
@@ -524,7 +575,7 @@ def crash_findings(context, work, prepared):
     """租约期间浏览器异常退出：受影响身份的 Web 场景 → 受阻说明。"""
     project = context.project
     holder = f"run:{work['id']}"
-    with context.store.connection() as db:
+    with context.store.local() as db:
         rows = list(db.execute('SELECT identity, crashes FROM browser_instances WHERE checkout=?', (work['checkout'],)))
     crashed = {}
     for row in rows:
@@ -553,13 +604,14 @@ def abandon(context, run_id):
     work = load_work(context, run_id)
     if work['status'] != 'prepared':
         reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}")
-    with context.store.transaction() as db:
-        db.execute("UPDATE work SET status='abandoned', ended_at=? WHERE id=?", (now(), run_id))
+    # 放弃的运行只在本机：不写业务记录。
+    with context.store.local_tx() as db:
+        db.execute("UPDATE local_work SET status='abandoned', ended_at=? WHERE id=?", (now(), run_id))
         db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
     services = finish_services(context, work, reason='放弃', operator=config.operator() or work['operator'])
     if services.get('service_events'):
-        with context.store.transaction() as db:
-            db.execute('UPDATE work SET result=? WHERE id=?', (dumps(dict(abandoned_by=config.operator() or work['operator'], **services)), run_id))
+        with context.store.local_tx() as db:
+            db.execute('UPDATE local_work SET result=? WHERE id=?', (dumps(dict(abandoned_by=config.operator() or work['operator'], **services)), run_id))
     return dict(ok=True, run=run_id, status='abandoned', **services)
 
 
@@ -588,14 +640,18 @@ def mark(context, scene_key, verdict, *, by=None, defect=None, note=None):
     scene = found['scenarios'][key]
     if scene.get('status') == 'draft':
         reject(409, 'draft-not-runnable', 'scenario', '草稿场景确认后才能复测')
-    with context.store.transaction() as db:
-        latest = db.execute("SELECT id FROM results WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? AND kind='agent' "
-                            'ORDER BY id DESC LIMIT 1', (context.checkout.id, scene['file'], scene['id'], scene['fingerprint'])).fetchone()
-        cursor = db.execute(
-            'INSERT INTO results(checkout,file,scenario,fingerprint,product_digest,kind,status,actual,defect,note,of_result,'
-            'marked_by,executed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (context.checkout.id, scene['file'], scene['id'], scene['fingerprint'], snapshot['product_digest'], 'manual',
-             verdict, '人工复测' + status.MANUAL[verdict], defect, note, latest['id'] if latest else None, by, now()))
-        guards.after_result(db, context.checkout, scene, verdict, cursor.lastrowid)
-    return dict(ok=True, scenario=key, status=verdict, label=status.MANUAL[verdict], result=cursor.lastrowid,
+    store = context.store
+    from .checkouts import branch_of
+    book = derived['book']
+    # of_result：本看板当时针对的那条 Agent 结果（当前指纹上参与推导的最新一条 Agent 结果）。
+    latest = next((r for r in book.select((scene['file'], scene['id'], scene['fingerprint'])).records if r['kind'] == 'agent'), None)
+    with store.records_tx() as db:
+        result_id = db.insert(
+            'INSERT INTO results(product,seq,machine,checkout,branch,file,scenario,fingerprint,product_digest,kind,status,actual,'
+            'defect,note,of_result,marked_by,executed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (store.product, db.next_seq(), store.machine['id'], context.checkout.name, branch_of(context.project, context.checkout),
+             scene['file'], scene['id'], scene['fingerprint'], snapshot['product_digest'], 'manual', verdict,
+             '人工复测' + status.MANUAL[verdict], defect, note, latest['id'] if latest else None, by, now()))
+        guards.after_result(db, store, context.checkout.name, scene, verdict, result_id)
+    return dict(ok=True, scenario=key, status=verdict, label=status.MANUAL[verdict], result=result_id,
                 marked_by=by, defect=defect, note=note)

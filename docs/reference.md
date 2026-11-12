@@ -6,36 +6,45 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 
 | 概念 | 含义 | 存放 |
 | --- | --- | --- |
-| 项目 | 名称 + 若干 Git 仓库。仓库身份是规范化后的 origin（`host/path`，去掉 `.git`） | `~/.sop-board/<名称>/`（`project.json`、`config.yaml`、`board.sqlite3`） |
+| 项目 | 名称 + 若干 Git 仓库，是一台机器上对一个产品的搭建。仓库身份是规范化后的 origin（`host/path`，去掉 `.git`） | `~/.sop-board/<名称>/`（`project.json`、`config.yaml`、`board.sqlite3`） |
+| 产品 | 共享的单位：多人协作时各机器的项目绑定到共享库里的同一个产品（ID + 名称）；没配共享库时项目自己就是产品（ID `local`） | 共享库 `products`；绑定在本机 `project.json` 的 `product` |
+| 机器 | 一个数据根目录：生成一次的随机标识与显示名（缺省“操作者@主机名”）；记录里的“产出机器”都指它 | `<数据根目录>/machine.json` |
+| 业务记录库 | 结果、标注、守护运行、沉淀登记、修复、运行记录的业务部分、证据索引、收件箱、问答、批注、同意、待人处理：配了 `shared_database` 时是共享的 PostgreSQL，否则是本机 `board.sqlite3`，两者同一套表与 SQL | 见“数据库表” |
 | 检出 | 项目各仓库的一套工作副本。`main` 是 config.yaml 登记的路径，槽位固定为 0；worktree 检出各有槽位 ≥1 | `checkouts` 表 |
 | 场景文件 | 产品仓库 `scenarios.path` 下的 `*.yaml`，是场景的唯一真相。看板从检出目录现读（按 mtime 与大小缓存），从不回写 | 产品仓库 |
 | 场景键 | `<文件名去掉 .yaml>#<场景编号>`。场景编号在全部文件中唯一时，命令可只写编号 | 计算得出 |
 | 指纹 | `initial_state`、`steps`、`expected`、`forbidden_effects` 四要素的 sha256（换行统一为 `\n`）。改标题、优先级等不改变指纹 | 计算得出 |
 | 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要，记录取证时的代码版本，不参与状态判定。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
-| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者；提交后记下未执行清单及原因、服务停启记录 | `work` 表（kind=run）+ `runs/<编号>/`；停启在 `service_events` |
+| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者；提交后记下未执行清单及原因、服务停启记录。运行编号由本机分配 | 本机 `local_work` + `runs/<编号>/`；提交时写进业务记录库 `work`（机器标识 + 本机库标识 + 本机编号唯一），停启随之写进 `work.services` |
 | 未执行 | 某次运行里某场景因本机暂时不具备条件没有执行：谁、什么时候、缺什么。不是结果，不参与状态推导，场景详情与报告显示最近一次 | 运行摘要（`work.result.not_executed`） |
-| 结果 | 运行中某场景的结论与证据，绑定指纹，记录准备时的快照；证据按 sha256 存储。从旧看板导入的结果 `product_digest` 为空，即代码版本未记录 | `results`（kind=agent）、`evidence/` |
-| 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人） | `results`（kind=manual） |
+| 结果 | 运行中某场景的结论与证据，绑定指纹，记录准备时的快照、产出机器、检出与分支（场景文件所在仓库的当前分支）。通过与失败是结论，受阻与跳过是非结论。证据文件按 sha256 存在产出机器上。从旧看板导入的结果 `product_digest` 为空，即代码版本未记录 | `results`（kind=agent）；证据文件在数据根目录 `evidence/`，索引在 `evidence` 表 |
+| 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人），都是结论，记下标注时看板的机器、检出与分支 | `results`（kind=manual） |
 | 守护 | 场景到低成本测试的关联，绑定场景指纹与测试文件摘要 | 产品仓库 `<scenarios.path>/regression.yaml` |
-| 守护运行 | 一次在某快照上运行守护命令的结果 | `guard_runs` 表 + 输出证据 |
-| 修复 | 失败场景 → 会话改产品 → 另一会话独立复验 → 提交后关闭 | `fixes` 表 + `fixes/<编号>/` |
+| 守护运行 | 一次在某快照上运行守护命令的结果，记下产出机器、检出与分支；未通过是非结论，只影响产出它的检出 | `guard_runs` 表 + 输出证据 |
+| 沉淀登记 | 某场景某指纹已由谁、在哪台机器、用哪份测试（测试摘要）沉淀为守护 | `distillations` 表 |
+| 修复 | 失败场景 → 会话改产品 → 另一会话独立复验 → 提交后关闭。记录共享，操作只在产出它的机器上 | `fixes` 表（业务部分）+ 本机 `local_fixes` 与 `fixes/<编号>/` |
 
 ### 场景状态
 
-状态按检出推导，不存储。只看当前指纹的结果，从新到旧。哪些场景需要执行由场景内容（指纹）决定，代码改动不改变状态。
+状态按检出推导，不存储，只看当前指纹的记录。哪些场景需要执行由场景内容（指纹）决定，代码改动不改变状态。参与推导的记录：
+
+- **结论**（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。**本分支优先**：当前指纹在本检出的分支上有结论时只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，状态旁标出来源分支（`source_branch`）。
+- **非结论**（Agent 的受阻与跳过、守护未通过）只取本机本检出产出的；别的机器与检出的显示在场景详情的“其他机器上的情况”，不改变本机状态。
+- 先后只比较业务记录库分配的统一序号（结果、标注、守护运行、修复关闭与运行记录共用一串），执行时间只用于显示。
+- 历史列出参与本看板推导的记录（每个指纹上选出的结论加本检出的非结论），每条写明产出机器与分支。没配共享库的单机项目用同一规则。
 
 | 状态 | 键 | 条件 |
 | --- | --- | --- |
 | 草稿 | `draft` | 文件 `metadata.status: draft`；不进入执行与复测 |
 | 未执行 | `not-run` | 当前指纹没有结果 |
 | 通过 | `pass` | 最新结果为通过，且没有更晚的未通过守护运行 |
-| 待复测 | `retest` | 当前指纹最近一次守护运行未通过，且晚于最新结果的执行时间；或最新为失败/受阻、之后修复已关闭；或人工不通过后修复已关闭、尚无新的人工通过 |
+| 待复测 | `retest` | 本检出当前指纹最近一次守护运行未通过，且晚于最新结果；或最新为失败/受阻、之后修复已关闭；或人工不通过后修复已关闭、尚无新的人工通过 |
 | 失败 / 受阻 / 跳过 | `fail` / `blocked` / `skip` | 最新结果如此；人工标注不通过按失败、阻塞按受阻显示 |
 | 需求变更 | `changed` | 最新结果是人工标注的需求变更；场景文件按新需求修改后指纹变化，回到未执行 |
 
 **经真实入口的 Agent 独立通过**指 kind=agent、`independent`、`reused_from` 为空的通过。执行期间产品有变化的通过也算，变化的路径只作版本记录。
 
-**待沉淀**是徽标，可与其他状态并存：非草稿，同一指纹上有经真实入口的 Agent 独立通过，且没有有效守护。
+**待沉淀**是徽标，可与其他状态并存：非草稿，选出的记录中有经真实入口的 Agent 独立通过，且没有有效守护。共享库里有当前指纹的沉淀登记、而本检出没有这条守护或测试摘要不同时，不显示待沉淀，显示“已由 <沉淀人> 沉淀，本机未同步”；守护引用的仓库本机没有登记时显示“本机无法运行”，也不显示待沉淀。
 
 **待人工复核**也是徽标，可与待沉淀并存：状态为通过，且当前指纹最新一条结果是经真实入口的 Agent 独立通过。之后有任一人工标注即消失。
 
@@ -49,15 +58,19 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 uv tool install <sop-board 检出或包地址>
 sop-board skills install          # 把 sop-board、regression-distill、playwright-acceptance 链接到 ~/.agents/skills 与 ~/.claude/skills
 sop-board init <名称> <仓库目录>...
+# 多人共享时：config.yaml 写 shared_database，密码放 ~/.pgpass，然后
+sop-board init <名称>             # 列出共享库里的产品，以 product-choice-required 结束
+sop-board init <名称> --join <ID> # 或 --new [--product <产品名称>]
 sop-board serve <名称>            # 另开终端或在会话中启动守护进程
 sop-board browser install         # 有 Web 入口时
 sop-board check
 ```
 
 - `skills install` 只更新本安装器拥有的链接（记录在各目录 `.sop-board-links.json`），其他来源的同名目录列出并跳过。
-- `init`：每个目录须是 Git 工作树根目录、有可规范化的 origin、不能重复；数据目录 `<根目录>/<名称>` 不能已存在，也不能位于仓库内。名称以字母或数字开头，只含字母、数字、`.`、`_`、`-`，最长 64。别名取目录名小写化（不以字母开头时加 `r-`，重复时加 `-2`…）。写出 `project.json`（`{"format": "sop-board-project-6", "name": …}`）与只含 `repos` 的 `config.yaml`。
+- `init`：每个目录须是 Git 工作树根目录、有可规范化的 origin、不能重复；数据目录 `<根目录>/<名称>` 不能已存在，也不能位于仓库内。名称以字母或数字开头，只含字母、数字、`.`、`_`、`-`，最长 64。别名取目录名小写化（不以字母开头时加 `r-`，重复时加 `-2`…）。写出 `project.json`（`{"format": "sop-board-project-6", "name": …}`，绑定产品后另有 `product: {id, name}`）与只含 `repos`、`identities` 的 `config.yaml`。对已登记的项目不写仓库目录时，`init <项目> [--join <ID> | --new [--product 名称]]` 列出或绑定共享库里的产品，见 §12。
 - 运行时根目录是 `SOP_BOARD_HOME`（缺省 `~/.sop-board`）；`--data` 指定项目所在的根目录。本机操作者文件 `~/.sop-board/operator` 与浏览器运行时 `~/.sop-board/runtime/` 也在这里。
-- 旧格式数据目录（含 `workspace.json` / `workspace.sqlite3`、`project.json` 格式不符、数据库 `user_version` 不是 6）一律返回 `project-format`，不读取、不迁移。
+- 旧格式数据目录（含 `workspace.json` / `workspace.sqlite3`、`project.json` 格式不符、数据库 `user_version` 不是 7）一律返回 `project-format`，不读取、不迁移。
+- 数据根目录（`SOP_BOARD_HOME` 或 `--data`）下另有 `machine.json`（本机标识与显示名，第一次需要时生成一次）与 `evidence/`（本机产出的证据文件，按 sha256 存放，不随项目数据目录重建而丢失）。共享库的搭建、产品的新建与加入见 §12。
 
 ### 项目与检出的识别
 
@@ -78,6 +91,7 @@ sop-board check
 | `adapter` | 是 | 见下文；至少要有 `env` |
 | `snapshot_exclude` | 否 | 别名 → 仓内相对路径数组，不计入产品快照 |
 | `fixtures` | 否 | 前置数据配方（见 §9） |
+| `shared_database` | 否 | 多人共享验收记录时的共享库 `{host, port（缺省 5432）, dbname, user}`；密码只放 `~/.pgpass`（或 `PGPASSFILE`），写了密码字段即不合格。不写时业务记录在本机 `board.sqlite3`，见 §12 |
 | `agents` | 否 | 工作类型 → `{runner: codex\|claude, model?, effort?, args?}`。类型：`default`、`run`、`fix`、`distill`、`merge`、`author`、`draft`、`atlas`；`effort` 取 `low/medium/high/xhigh/max`。启动器只用 `run`、`distill`，缺省回落 `default`，再回落 codex |
 
 入口字段：
@@ -189,14 +203,14 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `browser release [--identity]` | 真人完成后交还：只释放真人租约，窗口保持打开，之后的运行沿用；见 §6 |
 | | `browser close [--identity]` | 结束浏览器并释放真人租约 |
 | 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
-| | `run submit --run N [--implementer X]` | 见 §5 |
+| | `run submit --run N [--implementer X \| --implemented-by 操作者]` | 见 §5 |
 | | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`） |
-| | `run launch [--scope …] [--fix N] [--implementer X]` | 由守护进程启动无头执行会话；`pending` 在 CLI 侧展开为具体场景；`--fix` 启动修复的独立复验 |
+| | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者]` | 由守护进程启动无头执行会话；`pending` 在 CLI 侧展开为具体场景；`--fix` 启动修复的独立复验 |
 | | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
 | | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
 | | `mark <键> pass\|fail\|blocked\|changed [--defect 链接] [--note 说明] [--as 姓名]` | 人工复测：通过、不通过、阻塞、需求变更；缺陷链接与说明可选；草稿拒绝 |
 | | `launch status` / `launch stop --launch N` | 最近 20 次启动；停止发 SIGTERM 给进程组 |
-| 修复 | `fix prepare [键…] [--session]`、`fix submit\|close\|abandon [--fix N]` | 见 §8；省略 `--fix` 时取本检出最近一个状态相符的修复 |
+| 修复 | `fix prepare [键…] [--session]`、`fix submit\|close\|abandon [--fix N]` | 见 §8；省略 `--fix` 时取本机本检出最近一个状态相符的修复；别的机器产出的修复返回 `fix-not-local` |
 | 沉淀 | `distill prepare [键…] [--session]`、`distill submit [--report guard.json] [--work N]` | 见 §7 |
 | 编写 | `inbox add <文件> [--kind cases\|sop] [--as]`、`inbox list [--all]`、`inbox show\|done\|reject <编号> [--note]` | 见 §9 |
 | | `merge prepare [--inbox N]...`、`merge submit [--work N]` | |
@@ -275,7 +289,9 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 ### 独立性
 
-实现者依次取：修复复验时的修复会话；`run submit --implementer`；`SOP_BOARD_IMPLEMENTER`（`run launch --implementer` 注入）。没有实现者记 `undeclared`（独立性未声明）；执行者等于实现者记 `self-check`（实现者自检）；否则 `independent`（独立验收）。只有 `independent` 的真实入口通过能作为沉淀与守护的依据。
+实现者依次取：修复复验时的修复会话；`run submit --implementer <会话编号>` 或 `--implemented-by <操作者>`（二选一，同时给是参数错误）；`SOP_BOARD_IMPLEMENTER` / `SOP_BOARD_IMPLEMENTED_BY`（`run launch` 的同名参数注入）。没有实现者记 `undeclared`（独立性未声明）；执行者等于实现者会话记 `self-check`（实现者自检）；否则 `independent`（独立验收）。`--implemented-by` 用于跨机器验收（执行会话拿不到实现者的会话编号）：与本机操作者不同记 `independent`，相同则以参数错误（退出码 2）拒绝，要求改填会话编号；历史里写“实现者 <操作者>”。实现者由使用者在任务里说明，没说明的照旧记未声明。只有 `independent` 的真实入口通过能作为沉淀与守护的依据。
+
+提交分三步：证据文件存进本机证据目录；一个事务把运行记录、结果、证据索引写进业务记录库（运行以“机器标识 + 本机库标识 + 本机运行编号”唯一）；更新本机运行状态、释放浏览器租约、恢复停着的服务。第二步失败（如 `database-unreachable`）时运行保持 prepared，结果与证据留在运行目录，恢复后重新 `run submit`，只登记一次；第三步失败后重新提交只补做第三步（输出 `resubmitted: true`）。
 
 ### launch / wait
 
@@ -364,6 +380,8 @@ guards:
 | 放弃 | `fix abandon --fix N` | open/submitted/verified 可放弃 |
 
 修复状态：`open` → `submitted` → `verified` → `closed`，或 `abandoned`。
+
+修复记录（问题场景、修复会话与操作者、状态、关闭时间、产出机器与检出）在业务记录库，各看板与 `status --json` 的 `fixes` 都看得到进行中的修复；修复关闭是结论（取统一序号，按修复所在检出的分支归属），使问题场景转待复测的规则对所有看板生效。修复目录、文件基线与复验摘要只在产出机器上：`fix submit`、`run prepare --fix`、`fix close`、`fix abandon` 在其他机器返回 `fix-not-local` 并写明产出机器与检出。别人要验证时，等修复提交推送后用普通的 `run prepare --scope` 执行：结果是共享结论，但不关闭那条修复。
 
 ## 9. 编写
 
@@ -487,7 +505,17 @@ fixtures:
 | 错误码 | 含义 / 处理 |
 | --- | --- |
 | `project-not-found` | 找不到项目或当前仓库未登记；`init` 或写 `--project` |
-| `project-format` | 旧格式数据目录或数据库；用 `init` 新建项目，不迁移 |
+| `project-format` | 旧格式数据目录或数据库（本机库格式不是 7）；用 `init` 新建项目，不迁移 |
+| `product-unbound` | config.yaml 写了 `shared_database`，项目还没绑定产品；`init <项目>` 列出产品，问使用者后 `--join` 或 `--new` |
+| `product-choice-required` | `init <项目>` 只列出产品（名称、创建人、有结果的场景数、最近写入时间、本机场景的重合条数），不自动绑定 |
+| `product-not-found` | `--join` 的 ID 在共享库里不存在（输出列出已有产品），或绑定的产品已不在共享库 |
+| `shared-database-required` / `shared-database-invalid` | 对没写 `shared_database` 的项目选择产品 / `shared_database` 不合格（例如写了密码） |
+| `database-unreachable` | 连不上共享库：本机输出写明主机、端口、库名与用户，内网只说明连不上；没有离线队列与本地缓存，恢复后重新运行（HTTP 503） |
+| `database-version` | 共享库的表结构版本与本机 sop-board 不一致（新旧两个方向都拒绝）；换用匹配的 sop-board 版本，没有升级命令 |
+| `fix-not-local` | 修复产出于别的机器（写明机器与检出）：`fix submit`、`run prepare --fix`、`fix close`、`fix abandon` 只在产出机器上执行 |
+| `evidence-elsewhere` | 证据在别的机器上，产出机器的看板没开、没加 `--lan` 或地址已失效 |
+| `invalid-arguments` | 参数组合不合格（`--join` 与 `--new` 同用、`--implementer` 与 `--implemented-by` 同用、`--implemented-by` 是本机操作者），退出码 2 |
+| `database-error` | 数据库返回了未预期的错误，见 problems |
 | `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …` |
 | `invalid` | 其他参数或配置问题（含配置不合格、检出不存在等），见 problems |
 | `env-busy` | 端口被其他检出或项目的环境租用（`port_step: 0` 时写明占用的检出、正在使用的运行编号与 `env down` 命令），或端口已被其他进程监听（附 lsof 信息） |
@@ -536,23 +564,59 @@ fixtures:
 
 ### 数据库表
 
-`board.sqlite3`，格式 6（`PRAGMA user_version=6`），共 20 张表，没有任务状态机。格式 6 之后只新增过表（`draft_approvals`、`service_events`），格式号不变：打开已有的格式 6 库时补建缺失的新表，其余表与数据不动。
+两组表（已定决策 21）。业务记录在业务记录库：配了 `shared_database` 时是共享的 PostgreSQL，否则在本机 `board.sqlite3`；两种库同一套表与 SQL（`?` 占位、`RETURNING id`、`ON CONFLICT DO NOTHING`），只有自增主键的写法、连接、事务与加锁按库分开（SQLite 用本机文件锁串行，PostgreSQL 靠事务、唯一约束与序号行锁）。本机状态始终在 `board.sqlite3`。本机库格式 7（`PRAGMA user_version=7`，`meta.format`），格式不符直接拒读；共享库在 `meta.format` 记表结构版本，不符时返回 `database-version`。
+
+**业务记录**（每条带产品 `product`）：
 
 | 表 | 内容 |
 | --- | --- |
-| `meta` | 格式号 |
+| `meta`、`counters` | 表结构版本；统一序号（`seq`） |
+| `products` | 产品：ID、名称、创建人、创建机器 |
+| `machines` | 机器标识、显示名、带 `--lan` 的看板登记的内网地址与对等令牌（别的看板凭它读取本机证据） |
+| `work` | 运行记录的业务部分：kind run/fix/distill/merge/author/draft/atlas、机器标识 + 本机库标识 + 本机编号（唯一）、序号、检出名与分支、会话、操作者、实现者（会话或操作者）、独立性、修复、范围、快照、运行摘要（未执行清单及原因、提交人）、服务停启记录 |
+| `results` | agent 与 manual 结果：序号、运行、产出机器、检出名与分支、文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人；同一运行 + 文件 + 场景唯一 |
+| `evidence`、`result_evidence` | 证据索引（sha256、大小、名称、产出机器）与结果引用；文件在产出机器的 `<数据根目录>/evidence/<前两位>/<sha256>` |
+| `guard_runs`、`guard_misses` | 守护运行（序号、产出机器、检出名与分支、快照、测试摘要、pass/fail、原因、输出证据）与漏检（文件 + 场景 + 指纹 + 测试摘要唯一，各看板共用） |
+| `distillations` | 沉淀登记：场景、指纹、测试摘要、沉淀人、机器、检出与分支、时间 |
+| `fixes` | 修复的业务部分：问题场景（含指纹）、修复会话与操作者、状态、fix.json、关闭序号与关闭人、产出机器与检出名；同一机器同一检出只能有一个 open |
+| `inbox`、`questions`、`annotations`、`draft_approvals` | 上传、提问与答复（带提问机器）、草稿批注、草稿场景的同意（同一人在同一指纹上只有一条未撤销的同意） |
+| `attention` | 待人处理（附产出机器与检出名） |
+
+**本机状态**（只在 `board.sqlite3`）：
+
+| 表 | 内容 |
+| --- | --- |
+| `meta` | 格式号与本机库标识（`instance`，运行在业务记录库里的唯一性用它区分同一机器上重建过的项目） |
 | `checkouts` | 名称、槽位（均唯一）、kind main/worktree、路径、adapter 返回的变量、移除时间 |
-| `work` | run/fix/distill/merge/author/draft/atlas 工作：检出、会话、操作者、实现者、修复、启动、目录、范围、快照、状态 prepared/submitted/abandoned；同一检出的 run 与 distill 各只能有一个 prepared |
-| `results` | agent 与 manual 结果：文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from（只出现在早先的保留通过上，现行运行不再写入）、of_result、执行者、实现者、独立性、复测人 |
-| `evidence`、`result_evidence` | 按 sha256 存储的证据（文件在 `evidence/<前两位>/<sha256>`）及结果引用 |
-| `guard_runs`、`guard_misses` | 守护运行（快照、测试摘要、pass/fail、原因、输出证据）与漏检 |
-| `fixes` | 修复：会话、状态、问题、基线文件清单、fix.json、改动、复验运行与文件摘要 |
+| `local_work` | 运行与编写工作的本机部分：检出、会话、操作者、修复、启动、目录、范围、快照、分支、状态 prepared/submitted/abandoned、对应的业务记录编号；同一检出的 run 与 distill 各只能有一个 prepared |
+| `local_fixes` | 修复目录、文件基线、改动、复验运行与文件摘要 |
 | `launches` | 无头启动：类型、runner、范围、会话、pid、日志、状态；同一检出只能有一个 running |
-| `environments` | 各检出 adapter 环境：状态 starting/ready/failed/stopped、pid、端口、ready 变量、快照、日志 |
+| `environments` | 各检出 adapter 环境：状态、pid、端口、ready 变量、快照、日志 |
 | `browser_instances` | 检出×身份浏览器：端口、pid、profile、有无界面、状态、租约持有者、退出码/信号、日志、崩溃报告、近期崩溃 |
-| `inbox`、`questions`、`annotations` | 上传、提问与答复、草稿批注 |
-| `draft_approvals` | 草稿场景的同意：文件、场景、指纹、同意人、时间、撤销时间；同一人在同一指纹上只有一条未撤销的同意 |
-| `service_events` | 运行中服务的停启：运行、检出、服务、`stop`/`start`/`restore`（提交或放弃时的自动恢复）、是否完成、操作者、时间、说明、停着期间执行的场景（提交时写入） |
-| `attention`、`identity_events`、`fixture_runs` | 待人处理、身份登录与验证码计数、前置数据留痕 |
+| `service_events` | 运行中服务的停启与自动恢复；提交时随运行记录写进 `work.services` |
+| `identity_events`、`fixture_runs` | 身份登录与验证码计数（不跨机器合并）、前置数据留痕 |
 
 端口租约不在数据库中：守护进程用 `/tmp/sop-board-port-<uid>-<端口>.lock` 文件锁跨项目、跨检出租用端口，并在锁文件里记录占用的项目与检出。
+
+## 12. 多人共享：共享库、产品与机器
+
+**搭建共享库**：内网没有现成的 PostgreSQL 时，在一台常驻机器上用 docker 起一个，数据放在具名卷里；sop-board 自己不做备份，由维护的人按需要做每日 `pg_dump`：
+
+```sh
+docker volume create sopboard-pgdata
+docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
+  -e POSTGRES_USER=sopboard -e POSTGRES_DB=sopboard -e POSTGRES_PASSWORD="$SOPBOARD_PG_PASSWORD" \
+  -v sopboard-pgdata:/var/lib/postgresql/data postgres:16
+# 每日备份（crontab 示例，凌晨 3 点；密码由 ~/.pgpass 提供）
+0 3 * * * pg_dump -h <主机> -U sopboard -d sopboard -Fc -f ~/sopboard-backups/sopboard-$(date +\%F).dump
+```
+
+**每台机器**：`config.yaml` 写 `shared_database: {host: <主机>, port: 5432, dbname: sopboard, user: sopboard}`（不写密码，写了以 `shared-database-invalid` 拒绝），密码放 `~/.pgpass`（`<主机>:5432:sopboard:sopboard:<密码>`，权限 600；也可用 `PGPASSFILE` 指向别的文件）。主机、端口、库名只出现在本机命令输出与本机页面，不进报告、证据和内网页面。驱动 `psycopg[binary]` 随包安装。
+
+**新建与加入产品**：写了 `shared_database` 而没绑定产品时，业务命令返回 `product-unbound`。`init <项目>` 列出共享库里的产品（名称、创建人、有结果的场景数、最近写入时间）和“本机 N 条场景中，有 M 条在该产品里已有结果（内容一致）”，以 `product-choice-required` 结束；由会话问使用者后，用 `init <项目> --join <ID>` 加入或 `init <项目> --new [--product <名称>]` 新建（名称缺省为本机项目名；空库时按当前版本建表）。`--join` 的 ID 不存在返回 `product-not-found`。绑定写在本机 `project.json`。绑定时另外提示两件事：本机已有的结果不带入共享库，已登记的守护会因验收结果不在共享库而失效、须重新验收后再沉淀；`regression.yaml` 引用、但本机没有登记的仓库别名。改绑重新运行 `--join` 或 `--new`，已写入原产品的记录留在原产品。新建、加入和共享都不读取、不比对仓库的 origin，不扫描目录，不往产品仓库写东西。
+
+**连不上与版本**：连不上共享库时，读写业务记录的命令与看板页面返回 `database-unreachable`（本机写明主机），只用本机状态的命令（`env`、`browser`、`checkout`、`check` 的环境与运行时两项）照常工作；不做离线队列与本地缓存。版本不符时新旧两个方向都返回 `database-version`；这次没有升级命令。
+
+**证据在别的机器上**：证据文件只在产出它的机器上。带 `--lan` 启动的看板把机器标识、显示名、内网地址与对等令牌登记到 `machines`（不带 `--lan` 或退出时撤下本端口的登记）。别的看板的证据地址仍是本看板的 `/evidence/<sha256>/<名称>`：本机没有文件时，看板凭登记的令牌从产出机器看板的 `/peer/evidence/<sha256>` 读取，核对 sha256 后转给页面，不在本机保存；读不到时场景详情写“证据在 <机器显示名> 的机器上”。`report --zip` 同样取回并核对；取不到的逐条写“证据在 <机器显示名> 的机器上，未包含”，输出 `missing_evidence` 为缺少的条数。
+
+**机器与检出**：非结论按“机器标识 + 检出名”归属。同一个数据根目录（同一台机器）上绑定同一产品的两个项目，若检出名相同，会被当成同一个检出。

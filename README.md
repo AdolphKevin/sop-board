@@ -38,6 +38,15 @@ sop-board serve demo --lan                  # 看板守护进程：工作台、�
 sop-board check
 ```
 
+多人共享验收记录（一个研发验证过的场景，另一个研发用 sop-board 启动同一个产品后也能看到）：在一台常驻机器上起一个 PostgreSQL（docker 与每日 `pg_dump` 的示例见 [docs/reference.md §12](docs/reference.md#12-多人共享共享库产品与机器)），每台机器的 `config.yaml` 写 `shared_database`（主机、端口、库名、用户名），密码放 `~/.pgpass`，然后：
+
+```sh
+sop-board init demo                         # 列出共享库里的产品（不自动绑定）
+sop-board init demo --new                   # 第一个人新建产品；其他人 sop-board init <项目> --join <产品 ID>
+```
+
+结论（Agent 通过与失败、人工标注、修复关闭）在产品内共享并按分支归属；受阻、跳过与守护未通过只影响产出它的机器和检出；证据文件留在产出机器上，别的看板经产出机器的看板（`--lan`）读取。没配共享库时一切照旧在本机 SQLite。
+
 之后在产品仓库的 Codex / Claude Code 会话中直接说“执行 SOP 验收”“这几步改动怎么安排验收”“修复这个失败场景”“把通过的场景沉淀成回归测试”“合并收件箱里的用例”即可，随包 `sop-board` 技能会调用对应命令。
 
 ## 角色与入口
@@ -61,6 +70,8 @@ sop-board check
 | worktree | `sop-board checkout list`，`sop-board checkout create <名称>` |
 | 真人登录与验证 | `sop-board browser open --identity <身份> --headed`，完成后 `browser release` 交还（窗口不关） |
 | 看各服务状态、模拟依赖故障 | `sop-board env status`；运行中 `sop-board env stop <服务>` / `env start <服务>` |
+| 接入共享库 | `sop-board init <项目>` 列出产品 → 问使用者 → `init <项目> --join <ID>` 或 `--new` |
+| 验收别人实现的功能 | `sop-board run submit --run N --implemented-by <实现者的操作者>` |
 
 ## 文档
 

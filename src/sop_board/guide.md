@@ -111,6 +111,28 @@ sop-board status
 
 向开发者报告：已验证的事实、推断及依据、待回答的问题、适配依赖的外部工具、验证技能摘要。开发者确认后开始使用。
 
+## 7. 多人共享验收记录（可选）
+
+团队要共用验收记录时，各机器直连同一个 PostgreSQL；没有现成的，就在一台常驻机器上用 docker 起一个：
+
+```sh
+docker volume create sopboard-pgdata
+docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
+  -e POSTGRES_USER=sopboard -e POSTGRES_DB=sopboard -e POSTGRES_PASSWORD="$SOPBOARD_PG_PASSWORD" \
+  -v sopboard-pgdata:/var/lib/postgresql/data postgres:16
+# 每日备份（crontab）：0 3 * * * pg_dump -h <主机> -U sopboard -d sopboard -Fc -f ~/sopboard-backups/sopboard-$(date +\%F).dump
+```
+
+每台机器：
+
+1. `config.yaml` 加 `shared_database: {host: <主机>, port: 5432, dbname: sopboard, user: sopboard}`，不写密码。
+2. 密码写进 `~/.pgpass`（`<主机>:5432:sopboard:sopboard:<密码>`，`chmod 600`）。
+3. 运行 `sop-board init <项目>`：列出共享库里的产品（名称、创建人、有结果的场景数、最近写入时间、本机场景里有几条在该产品里已有结果），以 `product-choice-required` 结束，不自动绑定。**问使用者**是加入哪个已有产品还是新建，再运行 `sop-board init <项目> --join <ID>` 或 `--new [--product <名称>]`。不要按仓库 origin、目录名或场景重合数自行判断。
+4. 绑定提示的两件事照实告诉使用者：本机已有的结果不带入共享库（已登记的守护要在共享库里重新验收后再沉淀）；`regression.yaml` 引用、但本机没有登记的仓库别名。
+5. 看板以 `sop-board serve <项目> --lan` 启动，别的机器才能读取本机产出的证据。
+
+连不上共享库时业务命令与页面返回 `database-unreachable`，`env`、`browser` 照常；表结构版本不符时返回 `database-version`，换用匹配的 sop-board 版本。
+
 ## 产品仓库约定（写进产品仓库的 AGENTS.md）
 
 > 新需求写 SOP 或场景前，先核对已有 SOP 与场景的业务交叉，预期随之改变的已有场景一并修改。分几步实现时，开工前按事实定下每一步做完就验还是并到后面一起验，告诉使用者并由其确认；推迟验收的步骤报告为未经独立验收；先前通过、但被后续步骤重做了实现的场景，交付时要么守护有效且最近一次运行通过，要么在统一验收时列入范围重新执行。宣布可以验收之前，运行 `sop-board status`，说明待复测、失败与未执行的场景数，由独立会话经真实入口执行（`sop-board run launch`）；有沉淀的守护时先运行 `sop-board retest` 检查代码回归。场景文件在 `docs/sop/`，改场景要经使用者确认；登记由本机操作者自动署名，不必询问确认人。

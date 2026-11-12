@@ -29,6 +29,8 @@ def context_for(app, name):
 
 
 def board(app, request):
+    from . import peers
+    peers.ensure_registered(app)
     context = context_for(app, request.query.get('checkout'))
     found, snapshot, derived = scene_board(context)
     files = []
@@ -44,56 +46,82 @@ def board(app, request):
         items[key] = dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
                           review=info['review'], id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
+        if info.get('source_branch'):
+            items[key]['source_branch'] = info['source_branch']
+        if info['guard'].get('unsynced'):
+            items[key]['unsynced'] = info['guard']['reason']
         if 'draft_review' in info:
             draft = info['draft_review']
             items[key]['draft_review'] = dict(state=draft['state'], label=draft['label'], approvers=draft['approvers'])
     counts = dict(derived['counts'])
     counts['distill'] = derived['distill']
     counts['review'] = derived['review']
-    with app.store.connection() as db:
-        stats = status.statistics(db, context.checkout.id)
+    stats = status.statistics(derived['book'])
+    store = context.store
     result = dict(ok=True, project=app.project.name, local=request.local, checkout=context.checkout.name,
+                  branch=derived['book'].viewer.branch, machine=store.machine['name'],
+                  product=dict(name=store.product_name(), shared=bool(store.shared)),
                   checkouts=[dict(name=c.name, kind=c.kind) for c in app.checkouts()],
                   labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items,
                   stats=dict(agent_confirm_rate=stats['agent_confirm_rate'], agent_review_coverage=stats['agent_review_coverage']),
-                  product=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
+                  product_snapshot=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
                   configured=app.project.configured)
     if request.local:
-        # 本检出的环境与各服务状态只在本机页面显示，内网不返回。
+        # 本检出的环境与各服务状态只在本机页面显示，内网不返回；共享库的位置也只在本机页面显示。
         environment = app.envs.status(context.checkout)
         result['environment'] = dict(state=environment['state'], services=[
             dict(name=s['name'], about=s['about'], state=s['state'], label=s['label'], stoppable=s['stoppable'])
             for s in environment['services']])
+        if store.shared:
+            result['product']['database'] = f"{store.shared['host']}:{store.shared['port']}/{store.shared['dbname']}"
     return result
 
 
-def evidence_items(db, result_id):
-    return [dict(name=row['name'], sha256=row['sha256'], type=content_type(row['name']),
-                 url=f"/evidence/{row['sha256']}/{quote(row['name'])}")
-            for row in db.execute('SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (result_id,))]
+def evidence_items(db, store, result_id, machine, names, availability):
+    """结果的证据：本机有文件的直接读取；在别的机器上的，从产出机器的看板读取，读不到写明在哪台机器上。"""
+    from . import peers
+    items = []
+    for row in db.execute('SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (result_id,)):
+        item = dict(name=row['name'], sha256=row['sha256'], type=content_type(row['name']),
+                    url=f"/evidence/{row['sha256']}/{quote(row['name'])}")
+        if not store.has_evidence(row['sha256']):
+            if machine not in availability:
+                availability[machine] = bool(peers.reachable(db, machine))
+            item['machine'] = names.get(machine, machine)
+            item['remote'] = True
+            if not availability[machine]:
+                item['available'] = False
+                item['where'] = f"证据在 {item['machine']} 的机器上"
+        items.append(item)
+    return items
 
 
-def history_entry(db, row, *, local, stopped=None, project=None):
+def history_entry(db, store, book, row, *, local, stopped=None, project=None, availability=None):
+    availability = {} if availability is None else availability
+    viewer = book.viewer
     item = dict(id=row['id'], kind=row['kind'], status=row['status'], executed_at=local_time(row['executed_at']),
-                actual=row['actual'], finding=row['finding'], note=row['note'], defect=row['defect'])
+                actual=row['actual'], finding=row['finding'], note=row['note'], defect=row['defect'],
+                machine=book.machine_name(row['machine']), branch=status.branch_label(row['branch']), checkout=row['checkout'],
+                here=row['machine'] == viewer.machine, other_branch=bool(viewer.branch != row['branch'] and status.conclusion(row)))
     if row['kind'] == 'manual':
         item.update(label='人工复测' + status.MANUAL[row['status']], marked_by=row['marked_by'] or '未署名')
     else:
         label = status.LABELS.get(row['status'], row['status'])
         if row['reused_from']:
             label += '（沿用早先结果的证据，未实际执行）'
-        item.update(label=label, independence=INDEPENDENCE.get(row['independence'], '独立性未声明'), run=row['work'],
+        work = book.works.get(row['work']) or {}
+        item.update(label=label, independence=INDEPENDENCE.get(row['independence'], '独立性未声明'), run=work.get('local_id'),
                     snapshot=row['product_digest'][:12] if row['product_digest'] else None,
-                    product_changed=json.loads(row['product_changed']))
+                    product_changed=json.loads(row['product_changed']), submitted_by=work.get('submitted_by'),
+                    implemented_by=row['implemented_by'])
         names_ = ((stopped or {}).get(row['work']) or {}).get(scenarios.key(row['file'], row['scenario']), [])
         if names_ and project is not None:
             from .envs import stopped_labels
             item['stopped_services'] = stopped_labels(project, names_)
-        work = db.execute('SELECT launch FROM work WHERE id=?', (row['work'],)).fetchone() if row['work'] else None
-        item['launch'] = work['launch'] if work else None
+        item['launch'] = work.get('launch') if item['here'] else None
         if local:
             item.update(executor=row['executor'], implementer=row['implementer'])
-    item['evidence'] = evidence_items(db, row['id'])
+    item['evidence'] = evidence_items(db, store, row['id'], row['machine'], book.names, availability)
     return item
 
 
@@ -104,39 +132,48 @@ def detail(app, request):
     if key not in found['scenarios']:
         reject(404, 'scenario-not-found', 'key', f'场景不存在：{key}')
     scene, info = found['scenarios'][key], derived['items'][key]
+    book = derived['book']
     coverage = {'expected': {}, 'forbidden_effects': {}}
     if info['guard']['valid']:
         guard = guards.load_index(guards.index_path(context))['guards'][key]
         for part in coverage:
             coverage[part] = {item['index']: item['tests'] for item in guard['coverage'][part]}
     from .envs import stopped_during
-    with app.store.connection() as db:
-        rows = db.execute('SELECT * FROM results WHERE checkout=? AND file=? AND scenario=? ORDER BY id DESC',
-                          (context.checkout.id, scene['file'], scene['id'])).fetchall()
+    from . import fixes
+    identity = (scene['file'], scene['id'], scene['fingerprint'])
+    rows = book.history(scene)
+    availability = {}
+    with app.store.records() as db:
         stopped = stopped_during(db, [row['work'] for row in rows])
-        history = [dict(history_entry(db, row, local=request.local, stopped=stopped, project=app.project),
+        history = [dict(history_entry(db, app.store, book, row, local=request.local, stopped=stopped, project=app.project,
+                                      availability=availability),
                         current=row['fingerprint'] == scene['fingerprint'])
                    for row in rows]
-        skipped = status.latest_not_executed(status.not_executed(db, context.checkout.id), scene)
-        guard_runs = [dict(status=r['status'], reason=r['reason'], ran_at=local_time(r['ran_at']), operator=r['operator'],
-                           snapshot=r['product_digest'][:12],
-                           evidence=[dict(name=o['name'], url=f"/evidence/{o['sha256']}/{quote(o['name'])}", type='text/plain')
-                                     for o in json.loads(r['output'])])
-                      for r in db.execute('SELECT * FROM guard_runs WHERE checkout=? AND file=? AND scenario=? AND fingerprint=? '
-                                          'ORDER BY id DESC LIMIT 10',
-                                          (context.checkout.id, scene['file'], scene['id'], scene['fingerprint']))]
+        active_fixes = [f for f in fixes.active(db, app.store) if key in f['scenarios']]
+    skipped = book.not_executed(scene)
+    guard_runs = [dict(status=r['status'], reason=r['reason'], ran_at=local_time(r['ran_at']), operator=r['operator'],
+                       snapshot=r['product_digest'][:12],
+                       evidence=[dict(name=o['name'], url=f"/evidence/{o['sha256']}/{quote(o['name'])}", type='text/plain')
+                                 for o in json.loads(r['output'])])
+                  for r in book.own_guard_runs(identity)]
+    elsewhere = [dict(item, at=local_time(item['at']) if item['at'] else None, branch=status.branch_label(item['branch'])
+                      if item['branch'] is not None else None)
+                 for item in book.elsewhere(scene)]
     latest = next((h for h in history if h['current'] and h['kind'] == 'agent'), None)
     fields = {name: scene.get(name, []) for name in (*scenarios.CONTENT_FIELDS, 'refs', 'evidence_hints')}
-    result = dict(ok=True, key=key, local=request.local, checkout=context.checkout.name,
+    result = dict(ok=True, key=key, local=request.local, checkout=context.checkout.name, branch=book.viewer.branch,
                   scene=dict(id=scene['id'], file=scene['file'], node=scene['node'], node_title=scene['node_title'],
                              title=scene['title'], actor=scene['actor'], priority=scene['priority'], verify=scene['verify'],
                              polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
                              fingerprint=scene['fingerprint'], **fields),
                   state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                             review=info['review'], guard=info['guard']),
+                             review=info['review'], guard=info['guard'], source_branch=info.get('source_branch')),
                   coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=[],
                   # 最近一次未执行（谁、什么时候、缺什么）：不是结果，不改变状态，也不进历史。
-                  not_executed=dict(skipped, at=local_time(skipped['at'])) if skipped else None)
+                  not_executed=dict(skipped, at=local_time(skipped['at'])) if skipped else None,
+                  # 其他机器（及本机其他检出）上的情况：受阻、跳过、未执行与守护未通过，不改变本看板的状态。
+                  elsewhere=elsewhere,
+                  fixes=[dict(id=f['id'], status=f['status'], machine=f['machine'], checkout=f['checkout']) for f in active_fixes])
     if scene.get('status') == 'draft':
         result.update(draft_detail(app, context, scene, info['draft_review']))
     return result
@@ -183,12 +220,22 @@ def scenario_api(app, request):
 
 @route('GET', r'/evidence/([0-9a-f]{64})/([^/]+)', 'lan')
 def evidence(app, request):
+    """证据：本机有文件时直接读取；在别的机器上的，从产出机器的看板读取并核对 sha256（不在本机保存）。"""
+    from . import peers
     sha, name = request.arg(1), request.arg(2)
-    with app.store.connection() as db:
-        known = db.execute('SELECT 1 FROM result_evidence WHERE sha256=? LIMIT 1', (sha,)).fetchone()
-    if not known or not app.store.evidence_path(sha).is_file():
-        reject(404, 'evidence-not-found', 'evidence', '证据不存在')
-    raw = app.store.read_evidence(sha)
+    store = app.store
+    with store.records() as db:
+        machines = peers.producers(db, store.product, sha)
+        if not machines:
+            reject(404, 'evidence-not-found', 'evidence', '证据不存在')
+        if store.has_evidence(sha):
+            raw = store.read_evidence(sha)
+        else:
+            raw = peers.fetch(db, sha, [m for m in machines if m != store.machine['id']])
+            if raw is None:
+                names = {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
+                where = '、'.join(names.get(m, m) for m in machines)
+                reject(404, 'evidence-elsewhere', 'evidence', f'证据在 {where} 的机器上（那台看板没开、没加 --lan 或地址已失效）')
     kind = content_type(name)
     headers = [('Content-Disposition', "inline; filename*=UTF-8''" + quote(name))]
     if kind.startswith('video/'):
@@ -225,12 +272,12 @@ def launch_api(app, request):
 def runs_api(app, request):
     from .launcher import public
     context = context_for(app, request.query.get('checkout'))
-    with app.store.connection() as db:
-        launches = [public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM work WHERE launch=?', (row['id'],))],
+    with app.store.local() as db:
+        launches = [public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM local_work WHERE launch=?', (row['id'],))],
                            local=request.local)
                     for row in db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 50', (context.checkout.id,))]
         works = []
-        for row in db.execute("SELECT * FROM work WHERE checkout=? AND kind IN ('run','distill') ORDER BY id DESC LIMIT 50",
+        for row in db.execute("SELECT * FROM local_work WHERE checkout=? AND kind IN ('run','distill') ORDER BY id DESC LIMIT 50",
                               (context.checkout.id,)):
             item = dict(id=row['id'], kind=row['kind'], status=row['status'], launch=row['launch'], fix=row['fix'],
                         created_at=local_time(row['created_at']), ended_at=local_time(row['ended_at']) if row['ended_at'] else None,
@@ -254,7 +301,7 @@ def runs_api(app, request):
 
 @route('GET', r'/api/launches/([0-9]+)/log', 'local')
 def launch_log(app, request):
-    with app.store.connection() as db:
+    with app.store.local() as db:
         row = db.execute('SELECT log FROM launches WHERE id=?', (int(request.arg(1)),)).fetchone()
     if row is None or not row['log']:
         reject(404, 'launch-not-found', 'launch', '启动不存在')
@@ -275,7 +322,7 @@ def report_page(app, request):
     from . import reports
     from .pages import report as page
     context = context_for(app, request.query.get('checkout'))
-    markdown, evidence = reports.build(context, file=request.query.get('file') or None, local=request.local)
+    markdown, evidence, _, _ = reports.build(context, file=request.query.get('file') or None, local=request.local)
     if request.query.get('download'):
         return Response(200, markdown.encode(), 'text/markdown; charset=utf-8',
                         [('Content-Disposition', f"attachment; filename*=UTF-8''{quote(context.checkout.name)}-report.md")])
@@ -287,8 +334,8 @@ def attention_page(app, request):
     from . import ledger
     from .pages import attention as page
     context = context_for(app, request.query.get('checkout'))
-    with app.store.connection() as db:
-        items = ledger.open_attention(db, context.checkout.id, local=request.local)
+    with app.store.records() as db:
+        items = ledger.open_attention(db, app.store, local=request.local)
     return html_response(page(app.project.name, context.checkout.name, items, local=request.local, operator=operator_for(request)))
 
 
@@ -302,8 +349,10 @@ def attach(app):
 def inbox_page(app, request):
     from . import authoring
     from .pages import inbox as page
-    with app.store.connection() as db:
-        items = authoring.inbox_rows(db, status='pending')
+    with app.store.records() as db:
+        # 收件箱列出全部条目（待合并在前），同一产品各台机器看到的是同一份；待答复只列还没答复的问题。
+        items = authoring.inbox_rows(db, app.store.product)
+    items = [i for i in items if i['status'] == 'pending'] + [i for i in reversed(items) if i['status'] != 'pending'][:20]
     questions = authoring.answers(app.store)
     return html_response(page(app.project.name, items, questions, local=request.local, operator=operator_for(request)))
 

@@ -73,44 +73,58 @@ ATTENTION_KINDS = ('人机验证', 'OAuth 授权', '账号登录', '第三方后
                    '环境问题', '前置数据', '浏览器崩溃', '其他')
 
 
-def open_attention(db, checkout_id, *, local):
-    rows = db.execute('SELECT * FROM attention WHERE resolved_at IS NULL AND (checkout IS NULL OR checkout=?) ORDER BY id',
-                      (checkout_id,))
+def open_attention(db, store, *, local):
+    """产品内未解决的待人处理（业务记录库），每条附产出机器与检出。"""
+    names = machine_names(db)
+    rows = db.execute('SELECT * FROM attention WHERE product=? AND resolved_at IS NULL ORDER BY id', (store.product,))
     result = []
     for row in rows:
         item = dict(id=row['id'], kind=row['kind'], text=row['text'], scenarios=json.loads(row['scenarios']),
-                    created_by=row['created_by'], created_at=row['created_at'])
+                    created_by=row['created_by'], created_at=row['created_at'],
+                    machine=names.get(row['machine'], row['machine']), checkout=row['checkout'],
+                    here=row['machine'] == store.machine['id'])
         if local:
             item['work'] = row['work']
         result.append(item)
     return result
 
 
+def machine_names(db):
+    """机器标识 → 显示名。"""
+    return {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
+
+
+def insert_attention(db, store, checkout_name, kind, text, *, by, scenarios=(), work=None):
+    from .store import dumps, now
+    return db.insert('INSERT INTO attention(product,machine,checkout,kind,text,scenarios,work,created_by,created_at) '
+                     'VALUES (?,?,?,?,?,?,?,?,?)',
+                     (store.product, store.machine['id'], checkout_name, kind, text, dumps(list(scenarios)), work, by, now()))
+
+
 # ---- 待人处理 ----
 
-def attention_add(store, checkout_id, kind, text, *, by, scenarios=(), work=None):
+def attention_add(store, checkout_name, kind, text, *, by, scenarios=(), work=None):
     from .errors import reject
-    from .store import dumps, now
     if kind not in ATTENTION_KINDS:
         reject(422, 'attention-invalid', 'kind', '种类应为 ' + '、'.join(ATTENTION_KINDS))
     if not isinstance(text, str) or not text.strip():
         reject(422, 'attention-invalid', 'text', '内容不能为空')
-    with store.transaction() as db:
-        cursor = db.execute('INSERT INTO attention(checkout,kind,text,scenarios,work,created_by,created_at) VALUES (?,?,?,?,?,?,?)',
-                            (checkout_id, kind, text.strip(), dumps(list(scenarios)), work, by, now()))
-    return dict(ok=True, attention=cursor.lastrowid)
+    with store.records_tx() as db:
+        number = insert_attention(db, store, checkout_name, kind, text.strip(), by=by, scenarios=scenarios, work=work)
+    return dict(ok=True, attention=number)
 
 
 def attention_resolve(store, item_id, *, by, note=None):
     from .errors import reject
     from .store import now
-    with store.transaction() as db:
-        row = db.execute('SELECT * FROM attention WHERE id=?', (item_id,)).fetchone()
+    with store.records_tx() as db:
+        row = db.one('SELECT * FROM attention WHERE id=? AND product=?', (item_id, store.product))
         if row is None:
             reject(404, 'attention-not-found', 'attention', f'待人处理不存在：#{item_id}')
-        if row['resolved_at']:
+        # 条件更新：别的机器同时处理同一条时只有一次生效。
+        if db.execute('UPDATE attention SET resolved_by=?, resolved_at=?, note=? WHERE id=? AND resolved_at IS NULL',
+                      (by, now(), note, item_id)).rowcount == 0:
             return dict(ok=True, attention=item_id, duplicate=True)
-        db.execute('UPDATE attention SET resolved_by=?, resolved_at=?, note=? WHERE id=?', (by, now(), note, item_id))
     return dict(ok=True, attention=item_id, resolved_by=by)
 
 
@@ -139,33 +153,33 @@ def identity_counts(db, checkout_id, identity):
 def identity_record(project, store, checkout, identity, kind, *, by, work=None):
     """真实登录或请求验证码之前记一次；达到上限时拒绝并登记待人处理。"""
     from .errors import reject
-    from .store import dumps, now
+    from .store import now
     if kind not in ('login', 'code'):
         reject(422, 'identity-invalid', 'kind', '应为 login 或 code')
     entry, spec = identity_spec(project, identity)
     limits = spec.get('limits', {})
-    with store.transaction() as db:
+    # 使用次数是本机状态（不跨机器合并）；到上限时登记的待人处理在业务记录库。
+    with store.local_tx() as db:
         counts = identity_counts(db, checkout.id, identity)
         keys = ('logins_per_day',) if kind == 'login' else ('codes_per_hour', 'codes_per_day')
         over = [key for key in keys if key in limits and counts[key] >= limits[key]]
-        if over:
-            label = {'logins_per_day': '每天登录', 'codes_per_hour': '每小时验证码', 'codes_per_day': '每天验证码'}
-            text = f"身份 {identity} 的{'、'.join(label[k] for k in over)}次数已达上限（" + \
-                   '、'.join(f'{counts[k]}/{limits[k]}' for k in over) + '），需要人处理后再继续'
-            db.execute('INSERT INTO attention(checkout,kind,text,scenarios,work,created_by,created_at) VALUES (?,?,?,?,?,?,?)',
-                       (checkout.id, '账号登录' if kind == 'login' else '邮箱验证', text, dumps([]), work, by, now()))
-        else:
+        if not over:
             db.execute('INSERT INTO identity_events(checkout,entry,identity,kind,work,recorded_at) VALUES (?,?,?,?,?,?)',
                        (checkout.id, entry, identity, kind, work, now()))
     if over:
+        label = {'logins_per_day': '每天登录', 'codes_per_hour': '每小时验证码', 'codes_per_day': '每天验证码'}
+        text = f"身份 {identity} 的{'、'.join(label[k] for k in over)}次数已达上限（" + \
+               '、'.join(f'{counts[k]}/{limits[k]}' for k in over) + '），需要人处理后再继续'
+        with store.records_tx() as db:
+            insert_attention(db, store, checkout.name, '账号登录' if kind == 'login' else '邮箱验证', text, by=by, work=work)
         reject(409, 'identity-limit', 'identity', text)
-    with store.connection() as db:
+    with store.local() as db:
         return dict(ok=True, identity=identity, kind=kind, counts=identity_counts(db, checkout.id, identity), limits=limits)
 
 
 def identity_status(project, store, checkout):
     result = []
-    with store.connection() as db:
+    with store.local() as db:
         for name, entry in project.entries.items():
             if isinstance(entry, dict) and entry.get('surface') == 'web':
                 for item in entry.get('identities') or []:
@@ -223,14 +237,14 @@ def fixture_run(project, store, checkout, *, recipe=None, argv=None, reason=None
     record = dict(kind=kind, name=name, reason=reason, scenario=scenario, params=values, command=command, exit_code=result.returncode,
                   output=output, check=check_output, operator=by, started_at=started, finished_at=now())
     shown = json.loads(redact(json.dumps(record, ensure_ascii=False).encode(), secrets))
-    with store.transaction() as db:
+    with store.local_tx() as db:
         cursor = db.execute('INSERT INTO fixture_runs(work,kind,name,scenario,params,command,exit_code,output,operator,started_at,finished_at) '
                             'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                             (run, kind, name, scenario, dumps(shown['params']), dumps(shown['command']), result.returncode,
                              shown['output'], by, started, shown['finished_at']))
         number = cursor.lastrowid
         if run:
-            row = db.execute('SELECT dir FROM work WHERE id=?', (run,)).fetchone()
+            row = db.execute('SELECT dir FROM local_work WHERE id=?', (run,)).fetchone()
             if row and row['dir']:
                 directory = Path(row['dir']) / 'fixtures'
                 directory.mkdir(exist_ok=True)

@@ -332,3 +332,10 @@ ul.links { margin: 0; padding-left: 18px; }
   .detail-grid, .doc-view { padding: 16px; }
   nav.tabs { display: none; }
 }
+/* 多人共享（已定决策 21）：来源分支、产出机器、其他机器上的情况、证据位置与读取失败提示 */
+.tag.branch { background: var(--notrun-bg); color: var(--text, inherit); border: 1px dashed var(--muted); }
+.origin { margin: 2px 0 0; font-size: 12px; }
+.block.elsewhere .event { opacity: .9; }
+.evidence-elsewhere { padding: 10px; border: 1px dashed var(--muted); border-radius: 6px; margin: 0; }
+.fixes-note { margin: 6px 0; font-size: 13px; }
+.board-problem { margin: 8px 16px; }

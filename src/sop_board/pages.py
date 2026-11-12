@@ -105,13 +105,14 @@ def report(project, checkout, markdown, evidence, *, local, operator=None):
 def attention(project, checkout, items, *, local, operator=None):
     rows = ''.join(f'<tr><td class="mono">#{item["id"]}</td><td><span class="chip">{escape(item["kind"])}</span></td>'
                    f'<td>{escape(item["text"])}</td><td class="mono">{escape("、".join(item["scenarios"]))}</td>'
-                   f'<td>{escape(item["created_by"])}</td></tr>' for item in items)
-    hint = '处理后在本机运行 sop-board attention resolve --id &lt;编号&gt;。' if local else '需要本机开发者处理的事项。'
+                   f'<td>{escape(item["created_by"])}</td><td>{escape(item.get("machine") or "")}'
+                   f'{escape(" · 检出 " + item["checkout"]) if item.get("checkout") else ""}</td></tr>' for item in items)
+    hint = '处理后运行 sop-board attention resolve &lt;编号&gt;。' if local else '需要开发者处理的事项。'
     body = f'''
 <section class="page">
-  {page_head('待人处理', f'检出 {escape(checkout)}。{hint}')}
-  <div class="card flush"><table><thead><tr><th>编号</th><th>种类</th><th>内容</th><th>场景</th><th>登记人</th></tr></thead>
-  <tbody>{rows or '<tr><td colspan=5 class="muted center">没有待处理事项</td></tr>'}</tbody></table></div>
+  {page_head('待人处理', f'本产品各台机器登记的待人处理，每条写明产出机器。{hint}')}
+  <div class="card flush"><table><thead><tr><th>编号</th><th>种类</th><th>内容</th><th>场景</th><th>登记人</th><th>产出机器</th></tr></thead>
+  <tbody>{rows or '<tr><td colspan=6 class="muted center">没有待处理事项</td></tr>'}</tbody></table></div>
 </section>'''
     return layout(project, '待人处理', body, local=local, active='/attention', page='attention', operator=operator)
 
@@ -133,7 +134,8 @@ def inbox(project, items, questions, *, local, operator=None):
                    f'<td>{escape(i["filename"])}</td><td>{escape(i["uploaded_by"])}</td>'
                    f'<td><span class="chip">{STATUS.get(i["status"], i["status"])}</span></td></tr>' for i in items)
     cards = []
-    for q in questions:
+    answered = [q for q in questions if q['answer']]
+    for q in [q for q in questions if not q['answer']]:
         if q['answer']:
             answer = (f'<div class="answer-done"><span class="pill pass">已答复</span><p>{escape(q["answer"])}</p>'
                       f'<p class="muted">答复人 {escape(q["answered_by"])}</p></div>')
@@ -144,7 +146,8 @@ def inbox(project, items, questions, *, local, operator=None):
                       f'<span class="message"></span></div></form>')
         pending = '' if q['answer'] else '<span class="pill retest">待答复</span>'
         cards.append(f'<article class="question"><header><span class="mono">#{q["id"]}</span>'
-                     f'<span class="chip">关于 {escape(q["about"])}</span>{pending}</header>'
+                     f'<span class="chip">关于 {escape(q["about"])}</span>{pending}'
+                     f'<span class="muted">提问人 {escape(q["asked_by"])}</span></header>'
                      f'<p class="question-text">{escape(q["text"])}</p>{answer}</article>')
     body = f'''
 <section class="page">
@@ -157,10 +160,11 @@ def inbox(project, items, questions, *, local, operator=None):
     <div class="form-actions"><button class="primary" type="submit">上传</button><span class="message"></span></div>
   </form>
   <div id="upload-problems" class="problems"></div></div>
-  <div class="card flush"><h2 class="pad">收件箱（待合并）</h2>
+  <div class="card flush"><h2 class="pad">收件箱</h2>
   <table><thead><tr><th>编号</th><th>类型</th><th>文件</th><th>上传人</th><th>状态</th></tr></thead>
-  <tbody>{rows or '<tr><td colspan=5 class="muted center">没有待合并的条目</td></tr>'}</tbody></table></div>
-  <div class="card"><h2>待答复</h2><div class="questions">{''.join(cards) or '<p class="muted">没有问题</p>'}</div></div>
+  <tbody>{rows or '<tr><td colspan=5 class="muted center">收件箱为空</td></tr>'}</tbody></table></div>
+  <div class="card"><h2>待答复</h2><div class="questions">{''.join(cards) or '<p class="muted">没有待答复的问题</p>'}</div>
+  {f'<p class="muted">已答复 {len(answered)} 条，由开发者的会话读取。</p>' if answered else ''}</div>
 </section>'''
     return layout(project, '收件箱与待答复', body, local=local, active='/inbox', page='inbox', operator=operator)
 

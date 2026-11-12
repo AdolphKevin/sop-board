@@ -249,7 +249,7 @@ class Manager:
             return current
 
     def row(self, checkout, identity):
-        with self.store.connection() as db:
+        with self.store.local() as db:
             return db.execute('SELECT * FROM browser_instances WHERE checkout=? AND identity=?',
                               (checkout.id, identity)).fetchone()
 
@@ -257,7 +257,7 @@ class Manager:
         values = dict(port=instance.port(), pid=instance.process.pid if instance.process else None,
                       profile=str(instance.profile()), headed=int(instance.headed), state=state, log=str(instance.log()))
         values.update(fields)
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             db.execute('INSERT OR IGNORE INTO browser_instances(checkout,identity,port,profile,state) VALUES (?,?,?,?,?)',
                        (instance.checkout.id, instance.identity, values['port'], values['profile'], state))
             assignments = ', '.join(f'{name}=?' for name in values)
@@ -285,9 +285,14 @@ class Manager:
             text = (f"身份 {instance.identity} 的 Chrome for Testing（检出 {instance.checkout.name}）"
                     f"{moment.astimezone().strftime('%Y-%m-%d %H:%M:%S')} 因 {name or f'退出码 {code}'} 退出，日志 {instance.log()}"
                     + (f'，崩溃报告 {report}' if report else ''))
-            with self.store.transaction() as db:
-                db.execute('INSERT INTO attention(checkout,kind,text,created_by,created_at) VALUES (?,?,?,?,?)',
-                           (instance.checkout.id, '浏览器崩溃', text, 'sop-board', now()))
+            # 待人处理在业务记录库（附产出机器）；连不上共享库时只记本机的崩溃记录，不影响浏览器状态。
+            from .ledger import insert_attention
+            try:
+                with self.store.records_tx() as db:
+                    insert_attention(db, self.store, instance.checkout.name, '浏览器崩溃', text, by='sop-board')
+            except Exception as error:  # noqa: BLE001
+                import sys
+                print(f'浏览器崩溃没能登记待人处理：{error}', file=sys.stderr)
         self.record(instance, state, pid=None, exited_at=now(), exit_code=code, signal=name, crash_report=report,
                     crashes=dumps(crashes))
 
@@ -324,20 +329,20 @@ class Manager:
         return result
 
     def set_holder(self, checkout, identity, holder):
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             db.execute('INSERT OR IGNORE INTO browser_instances(checkout,identity,port,profile,state) VALUES (?,?,?,?,?)',
                        (checkout.id, identity, port_for(self.project, checkout, identity),
                         str(self.instance(checkout, identity).profile()), 'exited'))
             db.execute('UPDATE browser_instances SET holder=? WHERE checkout=? AND identity=?', (holder, checkout.id, identity))
 
     def release(self, holder):
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
 
     def crashes_since(self, checkout, holder, since):
         """该持有者租约期间记录的异常退出：身份 → [crash]。"""
         result = {}
-        with self.store.connection() as db:
+        with self.store.local() as db:
             for row in db.execute('SELECT identity, crashes FROM browser_instances WHERE checkout=?', (checkout.id,)):
                 found = [c for c in json.loads(row['crashes']) if c['at'] >= since and c.get('holder') == holder]
                 if found:
@@ -354,7 +359,7 @@ class Manager:
             if row and row['holder'] and row['holder'] != 'human':
                 raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
             if reset_crash and row:
-                with self.store.transaction() as db:
+                with self.store.local_tx() as db:
                     db.execute("UPDATE browser_instances SET state='exited', crashes='[]' WHERE checkout=? AND identity=?",
                                (checkout.id, identity))
             instance = self.instance(checkout, identity)
@@ -371,7 +376,7 @@ class Manager:
             return self.status(checkout, identity)
 
     def release_identity(self, checkout, identity):
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE checkout=? AND identity=?', (checkout.id, identity))
 
     def handover(self, checkout, identity):
@@ -395,7 +400,7 @@ class Manager:
             return self.status(checkout, identity)
 
     def status(self, checkout, identity=None):
-        with self.store.connection() as db:
+        with self.store.local() as db:
             rows = [dict(row) for row in db.execute('SELECT * FROM browser_instances WHERE checkout=? ORDER BY identity', (checkout.id,))
                     if identity is None or row['identity'] == identity]
         for row in rows:
@@ -419,7 +424,7 @@ class Manager:
                     os.killpg(int(parts[0]), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
-        with self.store.transaction() as db:
+        with self.store.local_tx() as db:
             db.execute("UPDATE browser_instances SET holder=NULL, pid=NULL, state=CASE WHEN state='crashed' THEN 'crashed' ELSE 'exited' END")
 
     def shutdown(self):

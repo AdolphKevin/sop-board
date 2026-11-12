@@ -253,8 +253,22 @@
   // selected：右栏打开的场景键；panel：右栏打开的草稿文件面板（node 为空）或节点面板。
   const board = {data: null, signature: '', filter: null, search: '', selected: null, panel: null};
 
+  // 读不到业务记录（例如连不上共享库）时在页面上方说明原因；恢复后自动消失。本机写明主机，内网只说明连不上。
+  function boardProblem(message) {
+    let banner = $('#board-problem');
+    if (!message) { banner?.remove(); return; }
+    if (!banner) {
+      banner = el('div', {id: 'board-problem', class: 'banner blocked board-problem', role: 'alert'});
+      document.querySelector('main').prepend(banner);
+    }
+    banner.replaceChildren(pill('blocked', '暂时无法读取验收记录'), el('span', {class: 'reason'}, message));
+  }
+
   async function loadBoard() {
-    const data = await api('/api/board?' + query());
+    let data;
+    try { data = await api('/api/board?' + query()); }
+    catch (error) { boardProblem(error.message); throw error; }
+    boardProblem(null);
     const signature = JSON.stringify([data.counts, data.files.map(f => [f.name, f.invalid, f.nodes]),
       Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.review, v.title, v.draft_review]), data.stats]);
     board.data = data;
@@ -367,7 +381,9 @@
       el('span', {class: `dot ${dot}`, title: hint}), el('span', {class: 'sid', title: key}, item.id),
       el('span', {class: 'stitle', title: item.title}, item.title),
       item.review ? el('span', {class: 'tag review', title: '待人工复核'}, '核') : null,
-      item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null);
+      item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null,
+      item.source_branch ? el('span', {class: 'tag branch', title: '来源分支 ' + item.source_branch}, item.source_branch) : null,
+      item.unsynced ? el('span', {class: 'tag guard', title: item.unsynced}, '未同步') : null);
   }
 
   function renderTree() {
@@ -437,7 +453,9 @@
     loadDetail(key, {notice});
   }
 
+  // 证据在别的机器上而那台看板读不到时，只写明在哪台机器上，不显示损坏的图片或播放器。
   function evidenceView(item) {
+    if (item.available === false) return el('p', {class: 'evidence-elsewhere muted'}, item.where || `证据在 ${item.machine} 的机器上`);
     if (item.type.startsWith('image/')) return el('a', {href: item.url, target: '_blank', class: 'thumb'}, el('img', {src: item.url, alt: item.name, loading: 'lazy'}));
     if (item.type.startsWith('video/')) return el('video', {src: item.url, controls: true, preload: 'metadata'});
     if (item.name.endsWith('.zip') && item.name.includes('trace')) {
@@ -481,19 +499,43 @@
   }
 
   // 最近一次未执行：不是结果，不改变状态，只说明谁、什么时候、缺什么。
+  // 其他机器（及本机其他检出）上的情况：受阻、跳过、未执行与守护未通过，不改变本看板的状态。
+  function elsewhereBlock(items) {
+    if (!items?.length) return null;
+    return el('section', {class: 'block elsewhere'}, el('h3', {}, '其他机器上的情况'),
+      el('ul', {class: 'timeline'}, items.map(item => el('li', {class: 'event'},
+        el('div', {class: 'event-head'}, pill(item.kind === 'guard-failed' ? 'retest' : item.kind === 'not-executed' ? 'not-run' : item.kind, item.label),
+          el('span', {class: 'muted'}, item.at || ''), el('span', {class: 'muted'}, `${item.by || '未署名'} · ${item.machine} · 检出 ${item.checkout}`)),
+        item.reason ? el('p', {class: 'finding'}, item.reason) : null))),
+      el('p', {class: 'muted'}, '这些情况只影响产出它的机器和检出，不改变这里的状态。'));
+  }
+
+  function fixesNote(items) {
+    if (!items?.length) return null;
+    const label = {open: '修复中', submitted: '已提交修复，待独立复验', verified: '已独立复验，待关闭'};
+    return el('p', {class: 'fixes-note'}, el('strong', {}, '进行中的修复'),
+      '：' + items.map(f => `#${f.id}（${label[f.status] || f.status}，${f.machine} 的 ${f.checkout} 检出）`).join('；'));
+  }
+
   function notExecutedNote(item) {
     if (!item) return null;
     return el('p', {class: 'not-executed'}, el('strong', {}, '最近一次未执行'),
       `：${item.by || '未署名'}，${item.at}，运行 #${item.run}${item.finding ? '，' + item.finding : ''}（未执行不改变状态）`);
   }
 
+  // 产出机器与分支：每条记录都写明；结论来自其他分支时另标“来源分支”。
+  const origin = entry => `${entry.machine} · 分支 ${entry.branch}` + (entry.checkout && entry.checkout !== 'main' ? ` · 检出 ${entry.checkout}` : '');
+
   function historyItem(entry) {
     const who = entry.kind === 'manual' ? `复测人 ${entry.marked_by}` :
-      [entry.independence, entry.run ? `运行 #${entry.run}` : null, entry.launch ? `启动 #${entry.launch}` : null,
+      [entry.independence, entry.implemented_by ? `实现者 ${entry.implemented_by}` : null,
+        entry.run ? `运行 #${entry.run}` : null, entry.launch ? `启动 #${entry.launch}` : null,
         entry.executor ? `执行者 ${entry.executor}` : null, entry.snapshot ? `快照 ${entry.snapshot}` : null].filter(Boolean).join(' · ');
     return el('li', {class: 'event'},
       el('div', {class: 'event-head'}, pill(stateOf(entry), entry.label), el('span', {class: 'muted'}, entry.executed_at),
-        el('span', {class: 'muted'}, who), entry.current ? null : el('span', {class: 'tag old'}, '旧内容')),
+        el('span', {class: 'muted'}, who), entry.current ? null : el('span', {class: 'tag old'}, '旧内容'),
+        entry.other_branch ? el('span', {class: 'tag branch', title: '这条结论来自其他分支'}, '来源分支 ' + entry.branch) : null),
+      el('p', {class: 'origin muted'}, '产出：' + origin(entry)),
       entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
       stoppedServices(entry),
       entry.note ? el('p', {class: 'note'}, '说明：' + entry.note) : null,
@@ -811,12 +853,18 @@
         el('span', {class: 'chip'}, scene.polarity === 'positive' ? '正向' : '反向' + (scene.negative_type ? ' · ' + scene.negative_type : '')),
         el('span', {class: 'chip'}, '角色 ' + scene.actor)),
       el('div', {class: `banner ${data.state.state}`}, pill(data.state.state, data.state.label),
+        data.state.source_branch ? el('span', {class: 'tag branch', title: '本分支还没有结论，状态取自其他分支的结论'}, '来源分支 ' + data.state.source_branch) : null,
         el('span', {class: 'reason'}, data.state.reason || ''), data.state.review ? el('span', {class: 'tag review'}, '待人工复核') : null,
-        data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null),
+        data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null,
+        data.state.guard?.unsynced || data.state.guard?.unrunnable ? el('span', {class: 'tag guard'}, data.state.guard.reason) : null),
       notExecutedNote(data.not_executed),
+      fixesNote(data.fixes),
+      elsewhereBlock(data.elsewhere),
       ...contentSections(scene, data.coverage),
       section('最新执行结果与证据', latest ? el('div', {},
-        el('div', {class: 'event-head'}, pill(stateOf(latest), latest.label), el('span', {class: 'muted'}, latest.executed_at)),
+        el('div', {class: 'event-head'}, pill(stateOf(latest), latest.label), el('span', {class: 'muted'}, latest.executed_at),
+          latest.other_branch ? el('span', {class: 'tag branch'}, '来源分支 ' + latest.branch) : null),
+        el('p', {class: 'origin muted'}, '产出：' + origin(latest)),
         latest.actual ? el('p', {}, latest.actual) : null, latest.finding ? el('p', {class: 'finding'}, latest.finding) : null,
         stoppedServices(latest),
         gallery(latest.evidence)) : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
@@ -853,6 +901,8 @@
     const urgent = Object.entries(items).filter(([, item]) => ['retest', 'fail', 'blocked', 'changed'].includes(item.state));
     pane.replaceChildren(el('div', {class: 'overview'},
       el('div', {}, el('h1', {}, `检出 ${board.data.checkout} · ${total} 条场景`),
+        el('p', {class: 'muted'}, `产品 ${board.data.product.name}` + (board.data.product.shared ? '（共享库' + (board.data.product.database ? ' ' + board.data.product.database : '') + '）' : '（本机）')
+          + ` · 分支 ${board.data.branch || '（无分支）'} · 本机 ${board.data.machine}`),
         el('p', {class: 'muted'}, '从左侧选择场景查看四要素、证据并复测。代码改动不改变场景状态，结果记下取证时的快照。')),
       el('div', {class: 'tiles'}, [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['changed', '需求变更'],
         ['not-run', '未执行'], ['pass', '通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
@@ -868,7 +918,11 @@
 
   async function startWorkbench() {
     $('#search').addEventListener('input', event => { board.search = event.target.value; renderTree(); });
-    await loadBoard();
+    // 首次读取失败（例如连不上共享库）时每 15 秒重试，恢复后照常显示。
+    while (true) {
+      try { await loadBoard(); break; }
+      catch (error) { await new Promise(resolve => setTimeout(resolve, 15000)); }
+    }
     const key = decodeURIComponent(location.hash.slice(1));
     const panel = parsePanel(key);
     if (panel && isDraftFile(panel.file)) openPanel(panel.file, panel.node);

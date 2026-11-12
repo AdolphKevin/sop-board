@@ -7,7 +7,7 @@
 - Python 3.10+、uv、Git、`lsof`、支持 POSIX 进程组的本机环境；Node.js（浏览器运行时用）。
 - 被测版本用 `uv tool install <本仓检出>` 安装，或在检出目录用 `uv run sop-board …`。
 - 每轮使用新的临时数据目录（`--data`）、新的演示仓库和空闲端口；留证后停止 `sop-board serve` 及其环境和浏览器，再删除临时目录。
-- 看板守护进程在用户终端里启动，不由 agent 会话启动。
+- 看板守护进程可以在用户终端或 agent 会话中启动（已定决策 12）；浏览器只由守护进程启动、缺省无头。
 
 ## 演示项目
 
@@ -28,6 +28,33 @@ python3 examples/demo-shop/make_demo.py $G --with-stock --reuse --shop-only --da
 两个数据目录登记了同一组仓库，命令都带 `--data`（`-p demo`）指定项目；两者要同时运行环境时，把其中一个 `config.yaml` 的 `adapter.ports` 改开，避免端口租约冲突。
 
 `--data` 时脚本合并 init 写入的 `repos`、`identities` 与 `data/config.yaml`（库存演示项目用 `with-stock/config.yaml`），复制 `env.py`、`worktree.py`、`seed.py` 与验证技能 `skills/demo-verification/`；被测版本不在 PATH 上时加 `--sop-board "uv run --project <本仓检出> sop-board"`。启动看板守护进程时在同一环境设置凭据变量：`DEMO_SEED_TOKEN`（任意值，配方的写库凭据）与 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass）。验证运行时安装或缺失（BRW-01-P01、SET-05-N01）时，看板与 CLI 都设同一个临时 `SOP_BOARD_HOME`。
+
+### 双机项目（已定决策 21）
+
+setup.yaml 文件头的“双机项目”在一台机器上模拟两台：一个 docker 起的 PostgreSQL、两个 `SOP_BOARD_HOME`（各自的数据根目录、`machine.json` 与 `evidence/`）、同一份演示仓库的两个 clone。只操作为验收新建的容器与卷，用不常见的端口和带前缀的容器名，结束时删除。
+
+```sh
+# 共享库：密码只放 PGPASSFILE 指向的文件，不写进任何配置
+docker run -d --name sbv-pg -p 127.0.0.1:55432:5432 -e POSTGRES_USER=sopboard -e POSTGRES_DB=sopboard \
+  -e POSTGRES_PASSWORD="$PW" -v sbv-pgdata:/var/lib/postgresql/data postgres:16
+printf '127.0.0.1:55432:*:sopboard:%s\n' "$PW" > $T/pgpass && chmod 600 $T/pgpass && export PGPASSFILE=$T/pgpass
+# 机器 A（操作者 林甲）与机器 B（操作者 周乙）
+SOP_BOARD_HOME=$HA sop-board operator set 林甲
+SOP_BOARD_HOME=$HB sop-board operator set 周乙
+SOP_BOARD_HOME=$HA python3 examples/demo-shop/make_demo.py $TA --data $HA --shared-database 127.0.0.1:55432/sopboard/sopboard
+SOP_BOARD_HOME=$HB python3 examples/demo-shop/make_demo.py $TB --clone-of $TA --project shop-b --ports 28300 --data $HB \
+  --shared-database 127.0.0.1:55432/sopboard/sopboard
+SOP_BOARD_HOME=$HA sop-board init demo --new            # 在 $TA/app 运行；输出产品 ID
+SOP_BOARD_HOME=$HB sop-board init shop-b --join <ID>     # 在 $TB/app 运行
+SOP_BOARD_HOME=$HA sop-board serve demo --port <端口A> --lan
+SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
+```
+
+- `--clone-of` 让 B 的仓库从 A 的仓库 clone：origin 保持演示地址（登记时核对的仓库身份），另有远端 `peer` 指向 A 的仓库；“A 提交并推送，B 拉取”就是在 A 提交、在 B 的仓库 `git pull peer main`。
+- 两边的环境同时运行时用 `--ports` 错开 `adapter.ports`。机器显示名在第一次需要时生成为“操作者@主机名”，所以先设操作者再登记。
+- 两个数据根目录都没有浏览器运行时：需要浏览器时在各自的数据根目录放一个指向本机 `~/.sop-board/runtime` 的符号链接，只读使用。浏览器调试端口 `9400 + 槽位×20 + 身份序号` 不分项目、不分数据根目录：两个看板的 main 检出（以及本机正在用的看板）抢同一个端口。Web 身份的步骤放到不同槽位的 worktree 检出里做，并在记录里写明；要让结果仍归 main 分支，用 `git worktree add -f <目录>/app main`（lib 同理）建一个也在 main 上的 worktree 检出。
+- “内网设备”在同一台机器上用 `--lan` 打印的实际非回环地址访问代替，记录里写明是替代做法。
+- 共享库的只读查询：`psql -h 127.0.0.1 -p 55432 -U sopboard -d sopboard -c "…"`；停启共享库：`docker stop|start sbv-pg`；改表结构版本（SET-07-N02）：`UPDATE meta SET value='8' WHERE key='format'`。
 
 场景集中的简写与演示项目的对应：
 
@@ -54,7 +81,7 @@ python3 examples/demo-shop/make_demo.py $G --with-stock --reuse --shop-only --da
 | 验收开关 | 取自启动守护进程时的环境：`DEMO_STOCK_IGNORE_STOP=1` 时 env.py 忽略对 stock 的停止请求（ENV-06-N03）；`DEMO_STOCK_CRASH=1` 时库存服务启动后立即异常退出（RUN-05-N02）。开关在 `sop-board serve` 启动前设置，改开关须重启守护进程 |
 | 结束库存服务进程 | ENV-05-N01、RUN-05-N01、GRD-03-N03 用 `kill -9` 结束 stocksvc 进程：`pgrep -f "stocksvc/server.py --port <端口>"` 取进程号 |
 | 守护命令 `api`（库存演示项目） | app `docs/sop/regression.yaml` 另声明 `api`：`python3 tests/junit_runner.py --junit {junit} --pattern api_*.py`，测试经运行中的商城接口（读 `APP_URL`），依赖库存服务；`unit` 运行 `tests/test_*.py` |
-| 停启记录 | 运行的停启记录在 `board.sqlite3` 的 `service_events` 表（只读查询 `SELECT * FROM service_events WHERE work=<运行>`），提交后也写进 `work.result` 的 `service_events` |
+| 停启记录 | 运行中的停启记录在本机 `board.sqlite3` 的 `service_events` 表（只读查询 `SELECT * FROM service_events WHERE work=<本机运行编号>`），提交后写进运行摘要（本机 `local_work.result`）和业务记录库 `work.services`（`SELECT services FROM work WHERE local_id=<运行编号>`） |
 | 旧版数据目录（SET-01-N01） | 在 tag v9-final 的检出运行 `uv run --project <该检出> sop-board init old $T/app --data $D/old` |
 
 ## 入口
