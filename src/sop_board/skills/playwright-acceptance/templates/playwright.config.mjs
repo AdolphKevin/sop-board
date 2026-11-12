@@ -21,7 +21,7 @@ export default defineConfig({
   fullyParallel: false,
   retries: 0,
   // 业务失败由 fixture 标为预期失败，worker 不重启、连接保留，后续场景照常执行；
-  // 受阻、连接断开或浏览器崩溃在首个出现时停止本轮，剩余场景转换为未执行。
+  // 受阻、未执行（等人处理等）、连接断开或浏览器崩溃在首个出现时停止本轮，剩余场景转换为未执行。
   maxFailures: 1,
   timeout: limits.scenario,
   expect: { timeout: limits.action },

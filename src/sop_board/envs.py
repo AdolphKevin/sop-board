@@ -1,9 +1,14 @@
-"""按检出运行 adapter.env（守护进程侧）：端口偏移、跨项目端口租约、就绪等待与进程组清理。
+"""按检出运行 adapter.env（守护进程侧）：端口偏移、跨项目端口租约、就绪等待、进程组清理与各服务的状态和停启。
 
-适配契约（沿用）：adapter.env 在前台运行，就绪时输出一行 `sop-board: ready`，可在同一行后附 JSON 对象
+适配契约：adapter.env 在前台运行，就绪时输出一行 `sop-board: ready`，可在同一行后附 JSON 对象
 给出本检出的入口地址等变量（如 `sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`）。输入变量：
 SOP_CHECKOUT、SOP_REPO_<别名>（本检出的仓库）、SOP_BASE_<别名>（登记仓库）、SOP_PORT_OFFSET、SOP_PORTS、
-SOP_ENV_LOG_DIR，以及 adapter.worktree 为该检出返回的变量。
+SOP_ENV_LOG_DIR，以及 adapter.worktree 为该检出返回的变量。adapter 输出就绪即环境可用，不要求所有服务都在运行。
+
+声明了 adapter.services 时：adapter 把每个服务的状态写成 SOP_ENV_LOG_DIR/services/<名称>.state
+（JSON：{"state": "running|stopped|absent|crashed", "log": 异常退出时的日志路径}），状态变化时改写；
+守护进程在同一目录写 <名称>.request 请求停止、删除它请求启动，adapter 轮询并执行，完成后改写状态文件。
+声明了但没有状态文件的服务为“未上报”。环境启动前与停止后，守护进程清空这个目录。
 """
 import errno
 import fcntl
@@ -19,10 +24,73 @@ import threading
 import time
 
 from . import daemon, gitops
-from .redaction import StreamRedactor, names
+from .errors import APIError
+from .redaction import StreamRedactor, names, redact
 from .store import dumps, now
 
 READY = b'sop-board: ready'
+# 状态文件的取值；unreported（声明了但没有状态文件或内容不合格）与 down（环境没有运行）由守护进程补充。
+SERVICE_STATES = {'running': '运行中', 'stopped': '已停止', 'absent': '本机未搭建', 'crashed': '异常退出'}
+SERVICE_LABELS = dict(SERVICE_STATES, unreported='未上报', down='环境未运行')
+LOG_TAIL_LINES = 20
+
+
+def services_dir(project, checkout):
+    return project.data / 'env' / checkout.name / 'services'
+
+
+def clear_services(directory):
+    """清空状态与请求文件：旧环境留下的状态不代表新环境，遗留的停止请求也不能作用到新环境上。"""
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in list(directory.glob('*.state')) + list(directory.glob('*.request')):
+        path.unlink(missing_ok=True)
+
+
+def read_state(directory, name):
+    """读一个服务的状态文件：{state, log?, problem?}。"""
+    path = directory / f'{name}.state'
+    try:
+        raw = path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return dict(state='unreported')
+    except (OSError, UnicodeDecodeError) as error:
+        return dict(state='unreported', problem=f'状态文件无法读取：{error}')
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict) or value.get('state') not in SERVICE_STATES:
+        return dict(state='unreported', problem='状态文件不合格：须为 {"state": "running|stopped|absent|crashed", "log": …}')
+    result = dict(state=value['state'])
+    log = value.get('log')
+    if isinstance(log, str) and log.strip():
+        result['log'] = str((directory.parent / log).resolve()) if not Path(log).is_absolute() else log
+    return result
+
+
+def log_tail(path, secrets=(), lines=LOG_TAIL_LINES):
+    try:
+        with open(path, 'rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - 16384))
+            raw = stream.read()
+    except OSError:
+        return None
+    text = redact(raw, secrets).decode('utf-8', 'replace')
+    return '\n'.join(text.splitlines()[-lines:])
+
+
+def not_running(services):
+    """没在运行的服务：本机未搭建、已停止、异常退出、未上报或环境未运行。"""
+    return [dict(name=s['name'], about=s['about'], state=s['state'], label=s['label'],
+                 **({'log': s['log']} if s.get('log') else {})) for s in services if s['state'] != 'running']
+
+
+def missing_addresses(project, address_env):
+    """ready 输出里缺少的入口地址变量：入口名 → 变量名。"""
+    return {name: entry['address_env'] for name, entry in project.entries.items()
+            if isinstance(entry, dict) and entry.get('address_env') and entry['address_env'] not in address_env}
 
 
 class EnvBusy(ValueError):
@@ -210,6 +278,7 @@ class Environment:
             self.log = directory / f'{sequence}.log'
             self.ports, self.values, self.digest, self.error = ports, {}, digest, ''
             self.manager.record(checkout, 'starting', pid=None, ports=ports, log=self.log, digest=digest)
+            clear_services(directory / 'services')
             process = subprocess.Popen(self.command(), cwd=project.data, env=self.inputs(directory),
                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        start_new_session=True)
@@ -264,6 +333,7 @@ class Environment:
                 self.reader.join(timeout=5)
             self.process.stdout.close()
             self.process = None
+            clear_services(services_dir(self.project, self.checkout))
         self.manager.leases.release(self.ports or self.actual_ports())
         self.manager.record(self.checkout, state, pid=None, ports=self.ports, log=self.log, digest=self.digest,
                             error=error, ended=True)
@@ -366,10 +436,154 @@ class Manager:
         if row:
             result.update(state=row['state'], ports=json.loads(row['ports']), log=row['log'], error=row['error'],
                           product_digest=row['product_digest'], started_at=row['started_at'])
-        if environment and not environment.alive() and result['state'] in ('starting', 'ready'):
+        alive = bool(environment and environment.alive())
+        if not alive and result['state'] in ('starting', 'ready'):
             result['state'] = 'stopped'
-        result['address_env'] = environment.address_env() if environment and environment.alive() else {}
+        result['address_env'] = environment.address_env() if alive else {}
+        # ready 行给出的全部变量（含入口以外的地址，例如被依赖服务的地址），只在本机令牌接口返回。
+        result['variables'] = dict(environment.values) if alive else {}
+        result['services'] = self.services(checkout, alive=alive and result['state'] == 'ready')
+        result['not_running'] = not_running(result['services'])
+        result['missing_address_env'] = missing_addresses(self.project, result['address_env']) if alive else {}
         return result
+
+    def services(self, checkout, *, alive):
+        """声明的服务及其状态（按声明顺序）；环境没有运行时都是 down。异常退出附日志末尾（按凭据取值脱敏）。"""
+        declared = self.project.adapter.get('services') or {}
+        directory = services_dir(self.project, checkout)
+        secrets = [os.environ[n] for n in names(self.project.entries) if os.environ.get(n)]
+        result = []
+        for name, spec in declared.items():
+            info = read_state(directory, name) if alive else dict(state='down')
+            item = dict(name=name, about=spec['about'], stoppable=spec['stoppable'], state=info['state'],
+                        label=SERVICE_LABELS[info['state']], stop_requested=(directory / f'{name}.request').exists())
+            if info.get('problem'):
+                item['problem'] = info['problem']
+            if info.get('log'):
+                item['log'] = info['log']
+                if info['state'] == 'crashed':
+                    item['log_tail'] = log_tail(info['log'], secrets)
+            result.append(item)
+        return result
+
+    # ---- 服务停启（故障模拟）：只在本检出有 prepared 运行时可用，停启记进该运行 ----
+
+    def prepared_run(self, checkout):
+        with self.store.connection() as db:
+            return db.execute("SELECT id FROM work WHERE checkout=? AND kind='run' AND status='prepared'",
+                              (checkout.id,)).fetchone()
+
+    def record_service(self, checkout, work_id, name, action, operator, *, ok=True, note=None):
+        with self.store.transaction() as db:
+            cursor = db.execute('INSERT INTO service_events(work,checkout,service,action,ok,operator,at,note) VALUES (?,?,?,?,?,?,?,?)',
+                                (work_id, checkout.id, name, action, 1 if ok else 0, operator, now(), note))
+            return cursor.lastrowid
+
+    def wait_state(self, environment, directory, name, target, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            state = read_state(directory, name)['state']
+            if state == target:
+                return state
+            if not environment.alive() or time.monotonic() >= deadline or self.stopping.is_set():
+                return state
+            time.sleep(.2)
+
+    def service(self, checkout, name, action, *, operator):
+        """env stop|start <服务>：写或删请求文件，等状态变为目标值才返回；超时撤回停止请求并返回 service-timeout。"""
+        self.project.reload()
+        declared = self.project.adapter.get('services') or {}
+        if not declared:
+            raise APIError(409, 'service-not-declared', [dict(field='service', problem=(
+                '项目没有在 config.yaml 的 adapter.services 声明服务，不能停启单个服务；运行之外要恢复环境，用 sop-board env restart'))])
+        if name not in declared:
+            raise APIError(409, 'service-unknown', [dict(field='service', problem=(
+                f'服务 {name} 不在 adapter.services 中；已声明的服务：' + '、'.join(declared)))])
+        if not declared[name]['stoppable']:
+            raise APIError(409, 'service-not-stoppable', [dict(field='service', problem=(
+                f"服务 {name}（{declared[name]['about']}）没有声明为可停（stoppable: true），不能用 env stop|start 停启"))])
+        run = self.prepared_run(checkout)
+        if run is None:
+            raise APIError(409, 'run-required', [dict(field='run', problem=(
+                f'检出 {checkout.name} 没有 prepared 的运行：env stop|start 只用于运行中模拟依赖故障，停启记进该运行；'
+                '运行之外要恢复环境，用 sop-board env restart'))])
+        about = declared[name]['about']
+        timeout = self.project.adapter.get('service_timeout', 60)
+        with self.lock(checkout):
+            environment = self.environment(checkout)
+            if not environment.alive():
+                raise APIError(409, 'service-unavailable', [dict(field='environment', problem=(
+                    f'检出 {checkout.name} 的环境没有运行：先运行 sop-board env up'))])
+            directory = services_dir(self.project, checkout)
+            request = directory / f'{name}.request'
+            current = read_state(directory, name)['state']
+            target = 'stopped' if action == 'stop' else 'running'
+            base = dict(ok=True, run=run['id'], service=name, about=about, action=action)
+            if action == 'stop':
+                if current == 'stopped' and request.exists():
+                    return dict(base, changed=False, state='stopped', label=SERVICE_LABELS['stopped'], note='已经停止，没有新的停启记录')
+                if current != 'running':
+                    raise APIError(409, 'service-unavailable', [dict(field='service', problem=(
+                        f'服务 {name}（{about}）当前为{SERVICE_LABELS[current]}，不是运行中，不能停止'))])
+                directory.mkdir(parents=True, exist_ok=True)
+                request.write_text(dumps(dict(action='stop', run=run['id'], by=operator, at=now())) + '\n', encoding='utf-8')
+            else:
+                if not request.exists():
+                    if current == 'running':
+                        return dict(base, changed=False, state='running', label=SERVICE_LABELS['running'], note='已经在运行，没有新的停启记录')
+                    raise APIError(409, 'service-unavailable', [dict(field='service', problem=(
+                        f'服务 {name}（{about}）当前为{SERVICE_LABELS[current]}，不是由 env stop 停下的；'
+                        '恢复环境用 sop-board env restart'))])
+                request.unlink()
+            started = time.monotonic()
+            state = self.wait_state(environment, directory, name, target, timeout)
+            waited = round(time.monotonic() - started, 1)
+            if state != target:
+                if action == 'stop':
+                    request.unlink(missing_ok=True)
+                reason = '环境已经退出' if not environment.alive() else f'{timeout} 秒内'
+                raise APIError(409, 'service-timeout', [dict(field='service', problem=(
+                    f"服务 {name}（{about}）{reason}没有变为{SERVICE_LABELS[target]}（当前{SERVICE_LABELS[state]}），等待了 {waited} 秒"
+                    + ('；已撤回停止请求' if action == 'stop' else '') + '。adapter 须轮询 services 目录的请求文件并改写状态文件'))])
+            event = self.record_service(checkout, run['id'], name, action, operator)
+        return dict(base, changed=True, state=state, label=SERVICE_LABELS[state], waited=waited, event=event)
+
+    def restore(self, checkout, work_id, *, operator, reason):
+        """运行提交或放弃时，恢复本轮停着的服务并逐个记录。返回 [{service, ok, state, note}]。"""
+        with self.store.connection() as db:
+            events = [dict(r) for r in db.execute('SELECT service, action FROM service_events WHERE work=? ORDER BY id', (work_id,))]
+        last = {}
+        for event in events:
+            last[event['service']] = event['action']
+        stopped = [name for name, action in last.items() if action == 'stop']
+        result = []
+        if not stopped:
+            return result
+        timeout = self.project.adapter.get('service_timeout', 60)
+        with self.lock(checkout):
+            environment = self.environment(checkout)
+            directory = services_dir(self.project, checkout)
+            for name in stopped:
+                request = directory / f'{name}.request'
+                if not environment.alive():
+                    request.unlink(missing_ok=True)
+                    ok, state, note = True, 'down', f'{reason}时自动恢复：环境没有运行，已撤回停止请求，下次启动环境时照常启动'
+                elif request.exists():
+                    request.unlink()
+                    state = self.wait_state(environment, directory, name, 'running', timeout)
+                    ok = state == 'running'
+                    note = f'{reason}时自动恢复' + ('' if ok else f'：{timeout} 秒内没有变为运行中（当前{SERVICE_LABELS[state]}）')
+                else:
+                    state = read_state(directory, name)['state']
+                    ok = state == 'running'
+                    note = f'{reason}时自动恢复：停止请求已不在（环境重启过），当前{SERVICE_LABELS[state]}'
+                self.record_service(checkout, work_id, name, 'restore', operator, ok=ok, note=note)
+                result.append(dict(service=name, ok=ok, state=state, label=SERVICE_LABELS[state], note=note))
+        return result
+
+    def recover_services(self):
+        for checkout_dir in (self.project.data / 'env').glob('*/services'):
+            clear_services(checkout_dir)
 
     def recover(self):
         """守护进程启动时清理上次遗留的环境进程组（只处理记录在案、组长仍是适配命令的进程）。"""
@@ -386,9 +600,55 @@ class Manager:
                 stop_group(pid)
             with self.store.transaction() as db:
                 db.execute("UPDATE environments SET state='stopped', pid=NULL, ended_at=? WHERE checkout=?", (now(), row['checkout']))
+        self.recover_services()
 
     def close(self):
         self.stopping.set()
         for environment in list(self.environments.values()):
             if environment.alive():
                 environment.stop()
+
+
+def withdraw(project, store, checkout, work_id, *, operator, reason):
+    """守护进程没有运行时（它退出时已停掉全部环境）：撤回本轮留下的停止请求并逐个记录，下次启动环境时服务照常启动。"""
+    with store.connection() as db:
+        events = [dict(r) for r in db.execute('SELECT service, action FROM service_events WHERE work=? ORDER BY id', (work_id,))]
+    last = {}
+    for event in events:
+        last[event['service']] = event['action']
+    result = []
+    directory = services_dir(project, checkout)
+    for name in [n for n, action in last.items() if action == 'stop']:
+        (directory / f'{name}.request').unlink(missing_ok=True)
+        note = f'{reason}时自动恢复：看板守护进程没有运行（环境也已停止），已撤回停止请求，下次启动环境时照常启动'
+        with store.transaction() as db:
+            db.execute('INSERT INTO service_events(work,checkout,service,action,ok,operator,at,note) VALUES (?,?,?,?,?,?,?,?)',
+                       (work_id, checkout.id, name, 'restore', 1, operator, now(), note))
+        result.append(dict(service=name, ok=True, state='down', label=SERVICE_LABELS['down'], note=note))
+    return result
+
+
+def stopped_during(db, work_ids):
+    """结果执行时停着的服务：运行编号 → {场景键: [服务名]}，取自该运行停止事件记下的场景。"""
+    result = {}
+    ids = sorted({w for w in work_ids if w})
+    if not ids:
+        return result
+    marks = ','.join('?' * len(ids))
+    for row in db.execute(f"SELECT work, service, scenarios FROM service_events WHERE action='stop' AND work IN ({marks}) ORDER BY id", ids):
+        for key in json.loads(row['scenarios'] or '[]'):
+            names_ = result.setdefault(row['work'], {}).setdefault(key, [])
+            if row['service'] not in names_:
+                names_.append(row['service'])
+    return result
+
+
+def stopped_labels(project, services):
+    """['stock'] → [{name, about, text: '执行时 stock（库存查询与扣减）已停止'}]；about 取当前声明。"""
+    declared = project.adapter.get('services') or {}
+    result = []
+    for name in services:
+        about = (declared.get(name) or {}).get('about')
+        text = f'执行时 {name}（{about}）已停止' if about else f'执行时 {name} 已停止'
+        result.append(dict(name=name, about=about, text=text))
+    return result

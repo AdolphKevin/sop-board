@@ -253,6 +253,22 @@ CREATE TABLE IF NOT EXISTS draft_approvals(
 CREATE UNIQUE INDEX IF NOT EXISTS draft_approvals_active ON draft_approvals(file, scenario, fingerprint, approved_by)
   WHERE revoked_at IS NULL;
 """,
+    # 运行中经 env stop|start 停启的服务，以及提交或放弃时的自动恢复（restore）。ok=0 表示自动恢复没有完成；
+    # scenarios 在提交时写入：服务停着期间执行的场景键。
+    'service_events': """
+CREATE TABLE IF NOT EXISTS service_events(
+  id INTEGER PRIMARY KEY,
+  work INTEGER NOT NULL REFERENCES work(id),
+  checkout INTEGER NOT NULL REFERENCES checkouts(id),
+  service TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('stop','start','restore')),
+  ok INTEGER NOT NULL DEFAULT 1 CHECK(ok IN (0,1)),
+  operator TEXT NOT NULL,
+  at TEXT NOT NULL,
+  note TEXT,
+  scenarios TEXT NOT NULL DEFAULT '[]');
+CREATE INDEX IF NOT EXISTS service_events_work ON service_events(work, id);
+""",
 }
 SCHEMA += ''.join(ADDED_TABLES.values())
 
@@ -321,10 +337,12 @@ class Store:
                                      f'\nPRAGMA user_version={VERSION};\nCOMMIT;')
                 return
             present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            missing = [ddl for name, ddl in ADDED_TABLES.items() if name not in present]
-            if missing:
+            if any(name not in present for name in ADDED_TABLES):
                 with self.lock:
-                    db.executescript('BEGIN IMMEDIATE;\n' + ''.join(missing) + '\nCOMMIT;')
+                    present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    missing = [ddl for name, ddl in ADDED_TABLES.items() if name not in present]
+                    if missing:
+                        db.executescript('BEGIN IMMEDIATE;\n' + ''.join(missing) + '\nCOMMIT;')
 
     @contextmanager
     def connection(self):

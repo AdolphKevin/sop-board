@@ -12,7 +12,8 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 | 场景键 | `<文件名去掉 .yaml>#<场景编号>`。场景编号在全部文件中唯一时，命令可只写编号 | 计算得出 |
 | 指纹 | `initial_state`、`steps`、`expected`、`forbidden_effects` 四要素的 sha256（换行统一为 `\n`）。改标题、优先级等不改变指纹 | 计算得出 |
 | 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要，记录取证时的代码版本，不参与状态判定。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
-| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者 | `work` 表（kind=run）+ `runs/<编号>/` |
+| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者；提交后记下未执行清单及原因、服务停启记录 | `work` 表（kind=run）+ `runs/<编号>/`；停启在 `service_events` |
+| 未执行 | 某次运行里某场景因本机暂时不具备条件没有执行：谁、什么时候、缺什么。不是结果，不参与状态推导，场景详情与报告显示最近一次 | 运行摘要（`work.result.not_executed`） |
 | 结果 | 运行中某场景的结论与证据，绑定指纹，记录准备时的快照；证据按 sha256 存储。从旧看板导入的结果 `product_digest` 为空，即代码版本未记录 | `results`（kind=agent）、`evidence/` |
 | 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人） | `results`（kind=manual） |
 | 守护 | 场景到低成本测试的关联，绑定场景指纹与测试文件摘要 | 产品仓库 `<scenarios.path>/regression.yaml` |
@@ -102,8 +103,10 @@ sop-board check
 | `ports` | 基础端口数组（1–65535，不重复） |
 | `port_step` | 0～10000，缺省 0。实际端口 = `ports[i] + slot × port_step`；为 0 时各检出共用端口、轮流使用 |
 | `ready_timeout` | 正整数秒，缺省 180；也是 worktree/cleanup 的超时 |
+| `services` | 可选，服务名 → `{about: 一行业务说明（≤200 字）, stoppable: 布尔，缺省 false}`，按声明顺序列出。服务名 `[a-z][a-z0-9_-]*`，最长 64。声明后 adapter 按下文“服务契约”上报状态、响应停启 |
+| `service_timeout` | 1～3600 秒，缺省 60：`env stop|start` 与自动恢复等服务状态变为目标值的最长时间 |
 
-**adapter.env**：前台运行，就绪时输出一行 `sop-board: ready`，可在同一行后附 JSON 对象给出变量，例如 `sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`（变量名须合法且不以 `SOP_` 开头）。输入变量：
+**adapter.env**：前台运行，就绪时输出一行 `sop-board: ready`，可在同一行后附 JSON 对象给出变量，例如 `sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`（变量名须合法且不以 `SOP_` 开头）。输出就绪即环境可用，不要求每个服务都在运行。输入变量：
 
 | 变量 | 值 |
 | --- | --- |
@@ -116,6 +119,18 @@ sop-board check
 
 另外注入 `adapter.worktree` 为该检出返回的 `env`，以及守护进程环境中的凭据变量；继承环境里其他 `SOP_*` 变量被去掉。
 
+**服务契约**（声明了 `services` 时；没声明的 adapter 只有整体就绪与否，`services` 为空）：
+
+| 文件 | 写入方 | 内容与含义 |
+| --- | --- | --- |
+| `SOP_ENV_LOG_DIR/services/<名称>.state` | adapter | UTF-8 JSON 对象：`{"state": "running"}`、`{"state": "stopped"}`、`{"state": "absent"}` 或 `{"state": "crashed", "log": "<日志路径>"}`。依次为运行中、已停止、本机未搭建、异常退出；`log` 可选（相对路径按 `SOP_ENV_LOG_DIR` 解析），异常退出时应给出。状态变化时改写，建议先写临时文件再换名。其他字段忽略 |
+| `SOP_ENV_LOG_DIR/services/<名称>.request` | 守护进程 | 存在表示请求停止该服务，删除表示请求启动。内容是 `{"action": "stop", "run", "by", "at"}`，只供排查，adapter 只看文件是否存在。只对 `stoppable: true` 的服务写 |
+
+- adapter 轮询请求文件（建议 0.2～1 秒）并执行，完成后改写状态文件。守护进程等状态变为 `stopped`（停）或 `running`（启）才返回，超过 `service_timeout` 返回 `service-timeout`；停止超时时删除请求文件，撤回请求。
+- 声明了但没有状态文件（或内容不合格）的服务显示为“未上报”（`unreported`，不合格时附 `problem`）；环境没有运行时各服务显示“环境未运行”（`down`）。异常退出的服务另给 `log_tail`（日志末尾 20 行，按凭据取值脱敏）。
+- 服务意外退出时 adapter 写 `crashed`，不自动重启，环境整体照常就绪。
+- 守护进程在启动环境前、停止环境后与自身启动时清空 `services/` 目录，旧状态与遗留的停止请求不会带进新环境。
+
 **adapter.worktree**：输入 `SOP_TASK_DIR`（`<数据目录>/checkouts/<名称>`）、`SOP_FIX_BRANCH`（`sop-board/<名称>`）、`SOP_REPOS`（逗号分隔别名）、`SOP_BASE_<别名>`、有 `--from` 时 `SOP_BASE_COMMITS`（别名 → ref 的 JSON）。stdout 最后一行须为 `{"repos": {别名: 路径}, "env": {变量: 文字}}`，覆盖全部请求的仓库，env 不能用 `SOP_` 前缀。每个返回路径须通过三项核对：是工作树根目录且与登记仓库共用 common dir、检出了 `sop-board/<名称>` 分支、出现在 `git worktree list` 中。没有声明 worktree 时直接 `git worktree add -b sop-board/<名称> <数据目录>/checkouts/<名称>/<别名> <from 或 HEAD>`。
 
 **adapter.cleanup**：输入同上，另有 `SOP_WORKTREES`（别名 → 路径 JSON，只含本检出自有的 worktree）。没有声明时逐个 `git worktree remove`。清理后目录仍存在则报错并保留检出记录。
@@ -125,12 +140,12 @@ sop-board check
 `sop-board check` 输出 `steps`，三项全部合格才退出 0：
 
 1. **配置**：config.yaml、技能与入口校验。
-2. **环境**：守护进程须在运行；在当前检出拉起 adapter.env 并等就绪，且每个入口的 `address_env` 都在 ready 变量里。
+2. **环境**：守护进程须在运行；在当前检出拉起 adapter.env 并等就绪。就绪以 adapter 输出就绪为准：没在运行的服务（`not_running`）与 ready 变量里缺失的入口地址（`missing_address_env`，入口名 → 变量名）只列出，不算失败，同时写在输出顶层。
 3. **浏览器运行时**：`~/.sop-board/runtime/runtime.json` 存在且可执行文件在。
 
 ## 3. 守护进程与访问范围
 
-`sop-board serve [项目] [--port 8787] [--lan]` 在前台运行一个项目的守护进程，可在终端或 agent 会话中启动。它负责网页、各检出的 adapter 环境、浏览器代理、守护测试运行与无头会话启动器。启动时写 `<数据目录>/daemon.json`（pid、端口、URL、内网地址）与 `daemon.token`（权限 0600），清理上次遗留的环境进程组与浏览器、把遗留的运行中启动记为 failed；收到 SIGINT/SIGTERM 时停掉全部环境、浏览器和启动后删除状态文件。同一项目已在运行时拒绝再启动。
+`sop-board serve [项目] [--port 8787] [--lan]` 在前台运行一个项目的守护进程，可在终端或 agent 会话中启动。它负责网页、各检出的 adapter 环境、浏览器代理、守护测试运行与无头会话启动器。启动时写 `<数据目录>/daemon.json`（pid、端口、URL、内网地址）与 `daemon.token`（权限 0600），清理上次遗留的环境进程组与浏览器、清空各检出的服务状态目录、把遗留的运行中启动记为 failed；收到 SIGINT/SIGTERM 时停掉全部环境、浏览器和启动后删除状态文件。同一项目已在运行时拒绝再启动。
 
 CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回环 HTTP 调用守护进程；守护进程没运行时返回 `daemon-not-running`，并给出 `sop-board serve <名称>` 命令。`status` 也显示守护进程是否运行。
 
@@ -166,7 +181,8 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `checkout show [名称]` | 含场景目录与各仓分支 |
 | | `checkout create <名称> [--repo 别名]... [--from ref]` | 名称规则同检出名、不能是 main；`--repo` 只为这些仓库建 worktree；日志 `<数据目录>/checkouts/<名称>.log` |
 | | `checkout remove <名称>` | 环境须先停；main 不能移除；记录标为已移除，槽位释放 |
-| 环境 | `env up\|down\|restart\|status [--all]` | 经守护进程启停或重启当前检出环境；`status --all` 列出全部检出 |
+| 环境 | `env up\|down\|restart\|status [--all]` | 经守护进程启停或重启当前检出环境；`status --all` 列出全部检出。输出 `state`、`address_env`、`variables`（ready 行的全部变量）、`services`（名称、业务说明、可停、状态、`stop_requested`，异常退出附 `log` 与 `log_tail`）、`not_running`、`missing_address_env` |
+| | `env stop\|start <服务>` | 只在本检出有 prepared 运行时可用（`run-required`），只对 `stoppable` 的服务；等状态变为已停止或运行中才返回（`service-timeout`），停启记进该运行（`service_events`），提交或放弃时自动恢复。已在目标状态时返回 `changed: false`，不记录。运行之外恢复环境用 `env restart` |
 | 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
 | | `browser status [--identity]` | 守护进程未运行时只给运行时信息 |
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
@@ -174,7 +190,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `browser close [--identity]` | 结束浏览器并释放真人租约 |
 | 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
 | | `run submit --run N [--implementer X]` | 见 §5 |
-| | `run abandon --run N` | 放弃并释放浏览器租约 |
+| | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`） |
 | | `run launch [--scope …] [--fix N] [--implementer X]` | 由守护进程启动无头执行会话；`pending` 在 CLI 侧展开为具体场景；`--fix` 启动修复的独立复验 |
 | | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
 | | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
@@ -208,12 +224,13 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | 键或编号 | 指定场景；含草稿则 `draft-not-runnable` | 同 pending 的映射，其余 `rerun` |
 | `--fix N` | 修复的问题场景 | `rerun` |
 
-同一检出同时只能有一个 prepared 的运行（`run-prepared`，提示 `run abandon`）。准备时经守护进程拉起本检出环境（快照与环境启动时不同则重启；`port_step: 0` 且别的检出环境在运行时返回 `env-busy`），为本轮 Web 入口的全部身份取得浏览器租约，再写出运行目录 `<数据目录>/runs/<编号>/`：
+同一检出同时只能有一个 prepared 的运行（`run-prepared`，提示 `run abandon`）。准备时经守护进程拉起本检出环境（快照与环境启动时不同则重启；`port_step: 0` 且别的检出环境在运行时返回 `env-busy`），为本轮 Web 入口的全部身份取得浏览器租约，再写出运行目录 `<数据目录>/runs/<编号>/`。环境只要 adapter 输出就绪就可以准备，不要求每个服务都在运行；输出另有 `services`、`not_running` 与 `missing_address_env`。
 
 | 文件 | 内容 |
 | --- | --- |
 | `prompt.md` | 执行提示词（随包 `run.md`，修复复验附“逐条实际执行问题场景”） |
-| `brief.md` | 速查卡：范围计数、入口证据与录制开关、浏览器问题、前置数据规则、时间上限 |
+| `brief.md` | 速查卡：范围计数、入口证据与录制开关、缺失的入口地址、各服务的状态与业务说明及按服务判定未执行与受阻的规则、浏览器问题、前置数据规则、时间上限与等人处理的写法 |
+| `services.json` | 准备时的环境状态、各服务（名称、业务说明、可停、状态，异常退出附日志与末尾）、`not_running`、`missing_address_env` |
 | `scenarios.yaml`、`pending.json` | 本轮场景（带 key、reason）与范围 |
 | `entries.json`、`repos.json` | 用到的入口与地址；检出仓库路径 |
 | `snapshot.json`、`product-files.json` | 准备时的快照与逐文件清单 |
@@ -238,7 +255,9 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | `note` | 可选说明 |
 | `executor`、`session` | `playwright convert` 写入的执行者信息，只作留痕；登记以运行准备时的执行者为准 |
 
-`not-executed` 行写 finding、不附证据，不登记结果，场景留在待执行。独立复验（`--fix`）不接受 `not-executed`。表外字段不合格。
+`not-executed` 行写 finding、不附证据，不登记结果，场景状态不变，留在待执行。独立复验（`--fix`）不接受 `not-executed`。表外字段不合格。
+
+未执行与受阻按性质划分，不看发生在开始前还是执行中（提示词 run.md 与标准第 1 节）：用到的服务本机未搭建或被人停着、缺少入口声明的凭据变量、等人处理的事（真实或未声明账号登录、人机验证、只发到本人设备的验证码、身份使用次数到上限）写 `not-executed`；服务或浏览器异常退出、前置数据准备失败、证据丢失、`browser may not be secure`、入口或观察能力还没建设、需要停外部共享中间件的故障场景写 `blocked`。
 
 ### 提交规则
 
@@ -250,8 +269,9 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 4. 其余场景逐行校验（缺行即失败）。
 5. **product_changed**：比较准备时与提交时的逐文件清单，执行期间变化的路径记在每条结果上，作为版本记录，不影响状态与独立性。
 6. 登记结果、证据入库；某场景最近一次守护运行通过而本次失败时记漏检（§7）；释放浏览器租约；修复复验时更新修复状态（§8）。
+7. **服务**：本轮每条停止事件记下服务停着期间执行的场景（`executed_at` 落在停止与下一次启动或恢复之间，按秒比较），结果详情据此显示“执行时 <服务>（<业务说明>）已停止”。结果登记后恢复还停着的服务（守护进程未运行时只撤回停止请求），每个记一条 `restore`；声明了服务时另列出提交时异常退出的服务，`during_run` 表示准备时它还没有异常退出。
 
-输出 `recorded`、`voided`、`not_executed`、`product_changed`、`browser_crashes`、`independence`。校验不合格时不登记任何结果，运行保持 prepared，修正后重交。
+输出 `recorded`、`voided`、`not_executed`（`scenario`、`finding`、`fingerprint`）、`product_changed`、`browser_crashes`、`independence`、`submitted_by`；声明了服务或本轮停过服务时另有 `restored`、`crashed_services`、`service_events`（服务、`stop|start|restore`、`ok`、操作者、时间、说明、停着期间执行的场景），恢复出错时有 `services_problem`。这些也写进运行摘要（`work.result`）。校验不合格时不登记任何结果，运行保持 prepared，也不恢复服务，修正后重交。
 
 ### 独立性
 
@@ -321,7 +341,7 @@ guards:
 1. 缺省取当前检出全部非草稿场景（`--scenario` 可指定），只运行守护有效的，其余列在 `not_guarded` 并附原因；`--dry-run` 只输出场景与将运行的命令。
 2. 每条引用到的命令只运行一次：工作目录为检出对应仓库下的 `cwd`，`start_new_session`，超时结束整个进程组。环境为守护进程环境去掉 `SOP_*`，加上该检出环境运行中时的入口地址变量、命令 `env`、`PLAYWRIGHT_JUNIT_OUTPUT_NAME`、`PYTHONDONTWRITEBYTECODE=1`；声明了 `browser` 的命令先拉起环境、取得浏览器租约，再注入 `PW_CDP_ENDPOINT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT`。日志与 junit 写在 `<数据目录>/retests/<时间>-<检出>/`，并作为证据入库。
 3. 场景的守护运行记为通过须同时满足：相关命令退出码 0、没超时；每个声明的测试名都出现在 junit 中且为通过（跳过、缺失都不算；匹配完整名、以其结尾或测试标题相同）；运行前后产品快照不变。
-4. 每个场景写一条 `guard_runs`（pass/fail + 原因 + 快照）。通过不改变状态；未通过的场景转为待复测并显示原因，之后经真实入口通过，或守护重新运行通过，就回到通过。
+4. 每个场景写一条 `guard_runs`（pass/fail + 原因 + 快照）。通过不改变状态；未通过的场景转为待复测并显示原因，之后经真实入口通过，或守护重新运行通过，就回到通过。retest 不判断失败原因：未通过的原因在失败的测试与命令之后，写明运行开始时的情况：声明了服务时是“当时本机没在运行的服务：<名称>（<业务说明>，<状态>）”或“当时声明的服务都在运行”（环境没在运行时写明），以及“工作区有未提交改动（<仓库> N 处）”或“工作区没有未提交改动”（各仓库 `git status`，含未跟踪文件）。有服务没在运行时照常运行全部有效守护。
 
 ### 漏检
 
@@ -424,7 +444,7 @@ fixtures:
 
 ## 10. 报告与看板页面
 
-`report` 导出当前检出的 `report.md`（缺省目录 `<数据目录>/reports/<检出>-<时间>/`，不写进产品仓库）：快照与各仓提交、各状态计数、Agent 通过率与一次通过率、人工复测覆盖与通过率、Agent 独立通过的人工确认率与复核覆盖、独立性计数；每个场景的状态与原因、最近一次守护运行（注明不是真实入口执行）、最近 5 条结果（取证时的快照、独立性、finding、证据 sha256）和人工复测；然后是误判明细与待人工复核；最后列出未执行范围（未执行、待复测、草稿）。`--zip` 另写 `evidence.zip`（含报告与所引证据原文）。正文按凭据取值脱敏。
+`report` 导出当前检出的 `report.md`（缺省目录 `<数据目录>/reports/<检出>-<时间>/`，不写进产品仓库）：快照与各仓提交、各状态计数、Agent 通过率与一次通过率、人工复测覆盖与通过率、Agent 独立通过的人工确认率与复核覆盖、独立性计数；每个场景的状态与原因、当前指纹上最近一次未执行（操作者、时间、运行、原因；不改变状态）、最近一次守护运行（注明不是真实入口执行）、最近 5 条结果（取证时的快照、独立性、执行时停着的服务、finding、证据 sha256）和人工复测；然后是误判明细与待人工复核；最后列出未执行范围（未执行、待复测、草稿），每条附最近一次未执行。`--zip` 另写 `evidence.zip`（含报告与所引证据原文）。正文按凭据取值脱敏。
 
 统计口径（全部取当前检出的结果记录，不限当前场景文件）：
 
@@ -450,7 +470,7 @@ fixtures:
 | `GET /p/<项目>/inbox` | lan | 上传用例/SOP、待答复问题 |
 | `GET /p/<项目>/sop` | lan | 场景目录下的 SOP 原文渲染 |
 | `GET /p/<项目>/atlas` | lan | 交互地图与过期页面 |
-| `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据；`/api/board` 的每个场景带 `distill`、`review` 徽标，`counts` 含 `distill`、`review`，`stats` 含 `agent_confirm_rate`、`agent_review_coverage`（numerator、denominator、value） |
+| `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据；`/api/board` 的每个场景带 `distill`、`review` 徽标，`counts` 含 `distill`、`review`，`stats` 含 `agent_confirm_rate`、`agent_review_coverage`（numerator、denominator、value）；只在本机响应中另有 `environment`（环境状态与各服务的名称、业务说明、状态、可停），概况页据此显示“本检出的服务”。`/api/scenario` 另有 `not_executed`（当前指纹上最近一次未执行：`run`、`by`、`at`、`finding`，没有为 null），历史中的 Agent 结果带 `stopped_services`（`[{name, about, text: "执行时 stock（库存查询与扣减）已停止"}]`），内网同样返回，变量名照常遮蔽。`/api/runs` 的运行只在本机带 `service_events` |
 | `GET /evidence/<sha256>/<文件名>` | lan | 证据下载；视频支持 Range；trace zip 允许 trace.playwright.dev 跨域读取 |
 | `POST /api/mark` | lan | 复测标注：`verdict` 取 pass/fail/blocked/changed，`defect`、`note`、`by` 都可不填（本机缺省为操作者，内网不填记为未署名） |
 | `POST /api/inbox`、`/api/answer`、`/api/annotate` | lan | 上传、答复、批注；须有姓名（顶栏署名填一次，浏览器 localStorage 记住，各页面共用；批注在本机不填时为操作者） |
@@ -460,7 +480,7 @@ fixtures:
 | `GET /p/<项目>/sop`、`GET /api/sop?checkout=<名称>` | lan | 业务 SOP：场景目录下的 Markdown 按 1～3 级标题分节，左树右文；含“答复”小节的节标出已答复 / 待答复 |
 | `POST /api/launch`、`/api/retest`、`/api/distill` | local | AI 重跑此场景、运行守护、沉淀 |
 | `GET /api/launches/<编号>/log` | local | 启动日志末尾 512 KiB |
-| `/local/health`、`/local/env/{up,down,status}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
+| `/local/health`、`/local/env/{up,down,restart,status,service,restore}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
 
 ## 11. 错误码
 
@@ -475,6 +495,12 @@ fixtures:
 | `browser-crashed` | 30 分钟内两次异常退出；`browser open --reset-crash` |
 | `browser-runtime-missing` | 未安装运行时；`browser install` |
 | `session-required` | 取不到执行者会话编号；加 `--session` |
+| `run-required` | `env stop\|start` 时本检出没有 prepared 的运行；运行之外恢复环境用 `env restart` |
+| `service-not-declared` | 项目没有声明 `adapter.services`，不能停启单个服务 |
+| `service-unknown` | 服务名不在 `adapter.services` 中；输出列出已声明的服务 |
+| `service-not-stoppable` | 服务没有声明 `stoppable: true` |
+| `service-timeout` | adapter 没在 `service_timeout` 秒内把状态改成目标值；停止请求已撤回 |
+| `service-unavailable` | 环境没有运行，或服务当前不是可停启的状态（本机未搭建、异常退出、未上报，或要启动的服务不是由 `env stop` 停下的） |
 | `run-prepared` | 本检出已有准备好的运行；提交或 `run abandon` |
 | `run-not-prepared` / `run-not-found` | 运行不是 prepared / 不存在 |
 | `nothing-to-run` | 范围为空 |
@@ -510,7 +536,7 @@ fixtures:
 
 ### 数据库表
 
-`board.sqlite3`，格式 6（`PRAGMA user_version=6`），共 19 张表，没有任务状态机。格式 6 之后只新增过表（`draft_approvals`），格式号不变：打开已有的格式 6 库时补建缺失的新表，其余表与数据不动。
+`board.sqlite3`，格式 6（`PRAGMA user_version=6`），共 20 张表，没有任务状态机。格式 6 之后只新增过表（`draft_approvals`、`service_events`），格式号不变：打开已有的格式 6 库时补建缺失的新表，其余表与数据不动。
 
 | 表 | 内容 |
 | --- | --- |
@@ -526,6 +552,7 @@ fixtures:
 | `browser_instances` | 检出×身份浏览器：端口、pid、profile、有无界面、状态、租约持有者、退出码/信号、日志、崩溃报告、近期崩溃 |
 | `inbox`、`questions`、`annotations` | 上传、提问与答复、草稿批注 |
 | `draft_approvals` | 草稿场景的同意：文件、场景、指纹、同意人、时间、撤销时间；同一人在同一指纹上只有一条未撤销的同意 |
+| `service_events` | 运行中服务的停启：运行、检出、服务、`stop`/`start`/`restore`（提交或放弃时的自动恢复）、是否完成、操作者、时间、说明、停着期间执行的场景（提交时写入） |
 | `attention`、`identity_events`、`fixture_runs` | 待人处理、身份登录与验证码计数、前置数据留痕 |
 
 端口租约不在数据库中：守护进程用 `/tmp/sop-board-port-<uid>-<端口>.lock` 文件锁跨项目、跨检出租用端口，并在锁文件里记录占用的项目与检出。

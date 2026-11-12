@@ -46,6 +46,16 @@ def build(context, *, file=None, local=True):
             files_of[result['id']] = [dict(item) for item in db.execute(
                 'SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (result['id'],))]
         guards = status.guard_runs(db, checkout.id)
+        skipped = status.not_executed(db, checkout.id)
+        from .envs import stopped_during, stopped_labels
+        stopped = stopped_during(db, [r['work'] for group in rows.values() for r in group])
+
+    def skipped_text(scene):
+        item = status.latest_not_executed(skipped, scene)
+        if not item:
+            return None
+        return (f"最近一次未执行：操作者 {item['by'] or '未署名'}，{local_time(item['at'])}，运行 #{item['run']}"
+                + (f"，{_cell(item['finding'])}" if item.get('finding') else '') + '（未执行不改变状态）')
     title = f"# 验收报告：{project.name} · 检出 {checkout.name}" + (f" · 场景文件 {file}" if file else '')
     lines += [title, '', f"- 导出时间：{local_time(now())}",
               f"- 产品快照：{snapshot['product_digest'][:16]}（{'含未提交改动' if snapshot['dirty'] else '与提交一致'}）",
@@ -70,6 +80,8 @@ def build(context, *, file=None, local=True):
         lines += [f"### {key} {scene['title']}", '',
                   f"- 状态：**{info['label']}**" + (f"（{info['reason']}）" if info['reason'] else ''),
                   f"- 入口 {scene['verify']} · {scene['priority']} · {'正向' if scene['polarity'] == 'positive' else '反向'}"]
+        if skipped_text(scene):
+            lines.append('- ' + skipped_text(scene))
         guard = guards.get((scene['file'], scene['id'], scene['fingerprint']))
         if guard:
             lines.append(f"- 最近一次守护运行：{'通过' if guard['status'] == 'pass' else '未通过'}，{local_time(guard['ran_at'])}，"
@@ -86,10 +98,12 @@ def build(context, *, file=None, local=True):
                 label += '（沿用早先结果的证据，未实际执行）'
             executor = result['executor'] if local else 'Agent 会话'
             changed = json.loads(result['product_changed'] or '[]')
+            down = stopped.get(result['work'], {}).get(key, [])
             lines.append(f"- 运行 #{result['work']} {local_time(result['executed_at'])}：{label}，"
                          f"执行者 {executor}，{status.INDEPENDENCE.get(result['independence'], '独立性未声明')}，"
                          f"快照 {_version(result['product_digest'])}"
                          + (f"（执行期间变化：{_cell('、'.join(changed[:5]))}）" if changed else '')
+                         + (f"；{'；'.join(s['text'] for s in stopped_labels(project, down))}" if down else '')
                          + (f"；{_cell(result['finding'])}" if result['finding'] else ''))
             for item in files_of.get(result['id'], []):
                 path = f"evidence/{item['sha256'][:12]}-{item['name']}"
@@ -108,7 +122,9 @@ def build(context, *, file=None, local=True):
     review = sorted(k for k in scenes if derived['items'][k]['review'])
     lines += ['', '## 待人工复核', '', *([f"- {k} {scenes[k]['title']}" for k in review] or ['- 无']), '']
     unexecuted = sorted(k for k in scenes if derived['items'][k]['state'] in ('not-run', 'retest', 'draft'))
-    lines += ['## 未执行范围', '', *([f"- {k}：{derived['items'][k]['label']}" for k in unexecuted] or ['- 无']), '']
+    lines += ['## 未执行范围', '', *([f"- {k}：{derived['items'][k]['label']}"
+                                     + (f"；{skipped_text(scenes[k])}" if skipped_text(scenes[k]) else '')
+                                     for k in unexecuted] or ['- 无']), '']
     secrets = [os.environ[n] for n in names(project.entries) if os.environ.get(n)]
     markdown = redact('\n'.join(lines).encode(), secrets).decode()
     return markdown, list(dict.fromkeys(evidence))

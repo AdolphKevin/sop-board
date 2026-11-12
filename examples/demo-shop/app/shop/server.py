@@ -1,6 +1,9 @@
 """演示商城：Web 页面与 JSON API，SQLite 存储；退款规则来自 lib 仓库的 refundlib。
 
-python3 server.py --port 8100 --db shop.sqlite3 --lib <lib 仓库目录>
+python3 server.py --port 8100 --db shop.sqlite3 --lib <lib 仓库目录> [--stock-url <库存服务地址>]
+
+下单（POST /api/purchases）先经库存服务扣减库存，成功后才生成订单；没有给出库存服务地址或它无法应答时，
+返回 503 与降级提示“库存服务暂不可用，请稍后再试”，不生成订单（库存演示项目的 SOP stock.md 规则 R2）。
 """
 import argparse
 from http.cookies import SimpleCookie
@@ -9,13 +12,17 @@ import html
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 import sys
-from urllib.parse import parse_qs, urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote, urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 HERE = Path(__file__).resolve().parent
 SESSIONS = {}
+STOCK_UNAVAILABLE = '库存服务暂不可用，请稍后再试'
 
 
 def connect(path):
@@ -24,8 +31,74 @@ def connect(path):
     db.executescript('''CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY, shop TEXT NOT NULL DEFAULT 'demo',
                           paid REAL NOT NULL, delivered_days_ago INTEGER NOT NULL);
                         CREATE TABLE IF NOT EXISTS refunds(id INTEGER PRIMARY KEY, order_id TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
-                          status TEXT NOT NULL DEFAULT '已退款');''')
+                          status TEXT NOT NULL DEFAULT '已退款');
+                        CREATE TABLE IF NOT EXISTS order_items(order_id TEXT PRIMARY KEY, sku TEXT NOT NULL, qty INTEGER NOT NULL);''')
     return db
+
+
+class StockUnavailable(Exception):
+    """库存服务没有地址、连不上、超时或返回 5xx。"""
+
+
+class StockShortage(Exception):
+    pass
+
+
+class StockClient:
+    """库存服务客户端。测试可以换成替身：只要提供 quantity(sku) 与 deduct(sku, qty)，不可用时抛 StockUnavailable。"""
+
+    def __init__(self, url, timeout=3):
+        self.url, self.timeout = (url or '').rstrip('/'), timeout
+        self.opener = build_opener(ProxyHandler({}))
+
+    def call(self, method, path, body=None):
+        if not self.url:
+            raise StockUnavailable('没有库存服务地址')
+        data = None if body is None else json.dumps(body).encode()
+        request = Request(self.url + path, data=data, method=method, headers={'Content-Type': 'application/json'})
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                return response.status, json.loads(response.read() or b'{}')
+        except HTTPError as error:
+            if error.code >= 500:
+                raise StockUnavailable(f'库存服务返回 {error.code}') from error
+            return error.code, json.loads(error.read() or b'{}')
+        except (URLError, OSError, ValueError) as error:
+            raise StockUnavailable(str(error)) from error
+
+    def quantity(self, sku):
+        return self.call('GET', '/api/stock/' + quote(sku))[1]['quantity']
+
+    def deduct(self, sku, qty):
+        status, body = self.call('POST', f'/api/stock/{quote(sku)}/deduct', {'qty': qty})
+        if status == 409:
+            raise StockShortage(body.get('error') or '库存不足')
+        if status != 200:
+            raise StockUnavailable(f'库存服务返回 {status}')
+        return body['quantity']
+
+
+def purchase(db, data, stock):
+    """下单：先扣减库存，成功后才写订单。返回 (状态码, 响应正文)。"""
+    order_id, sku = str(data.get('order_id') or ''), str(data.get('sku') or '')
+    try:
+        qty, paid = int(data.get('qty', 1)), float(data.get('paid', 0))
+    except (TypeError, ValueError):
+        return 422, {'error': '数量与金额须为数字'}
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', order_id) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', sku) or qty <= 0 or paid <= 0:
+        return 422, {'error': '须给出订单号、商品、正数数量与实付金额'}
+    if db.execute('SELECT 1 FROM orders WHERE id=?', (order_id,)).fetchone():
+        return 409, {'error': '订单已存在'}
+    try:
+        left = stock.deduct(sku, qty)
+    except StockUnavailable:
+        return 503, {'error': STOCK_UNAVAILABLE}
+    except StockShortage as error:
+        return 409, {'error': str(error)}
+    db.execute('INSERT INTO orders(id, paid, delivered_days_ago) VALUES (?,?,0)', (order_id, paid))
+    db.execute('INSERT INTO order_items(order_id, sku, qty) VALUES (?,?,?)', (order_id, sku, qty))
+    db.commit()
+    return 201, {'order_id': order_id, 'sku': sku, 'qty': qty, 'paid': paid, 'stock_left': left}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -75,6 +148,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/refunds':
             order = parse_qs(urlsplit(self.path).query).get('order_id', [''])[-1]
             return self.send(200, [dict(r) for r in db.execute('SELECT * FROM refunds WHERE order_id=?', (order,))])
+        if path == '/api/orders':
+            order = parse_qs(urlsplit(self.path).query).get('id', [''])[-1]
+            return self.send(200, [dict(r) for r in db.execute(
+                'SELECT o.id, o.paid, i.sku, i.qty FROM orders o LEFT JOIN order_items i ON i.order_id=o.id WHERE o.id=?', (order,))])
+        match = re.fullmatch(r'/api/stock/([A-Za-z0-9_-]+)', path)
+        if match:
+            try:
+                return self.send(200, {'sku': match[1], 'quantity': self.server.stock.quantity(match[1])})
+            except StockUnavailable:
+                return self.send(503, {'error': STOCK_UNAVAILABLE})
         return self.send(404, {'error': 'not found'})
 
     def do_POST(self):
@@ -108,6 +191,9 @@ class Handler(BaseHTTPRequestHandler):
             db.execute('INSERT INTO refunds(order_id, amount) VALUES (?,?)', (order['id'], amount))
             db.commit()
             return self.send(201, {'order_id': order['id'], 'amount': amount, 'status': '已退款'})
+        if path == '/api/purchases':
+            status, body = purchase(db, data, self.server.stock)
+            return self.send(status, body)
         return self.send(404, {'error': 'not found'})
 
 
@@ -116,10 +202,12 @@ def main():
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--db', required=True)
     parser.add_argument('--lib', required=True)
+    parser.add_argument('--stock-url', default='', help='库存服务地址；不给时下单返回降级提示')
     args = parser.parse_args()
     sys.path.insert(0, args.lib)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), Handler)
     server.db_path = args.db
+    server.stock = StockClient(args.stock_url)
     connect(args.db).close()
     print(f'listening on {args.port}', flush=True)
     server.serve_forever()

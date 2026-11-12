@@ -346,6 +346,7 @@ def run_guards(app, checkout, index, keys, *, holder):
     out = project.data / 'retests' / f"{datetime_stamp()}-{checkout.name}"
     out.mkdir(parents=True, exist_ok=True)
     before = _gitops.snapshot(checkout.paths, project.exclusions(test_exclusions_for(project, checkout)))['product_digest']
+    notes = circumstances(app, checkout)
     results = {}
     try:
         for name, command in commands.items():
@@ -394,8 +395,29 @@ def run_guards(app, checkout, index, keys, *, holder):
         if before != after:
             problems.append('运行期间产品内容发生变化')
         evidence = [item for test in index['guards'][key]['tests'] for item in outputs.get(test['command'], [])]
-        verdicts[key] = (not problems, '；'.join(dict.fromkeys(problems)), list({e['sha256']: e for e in evidence}.values()))
+        # 不判断失败原因：未通过时如实附上当时的情况（没在运行的服务、工作区是否有未提交改动），交真实入口复测时判断。
+        reason = '；'.join(list(dict.fromkeys(problems)) + notes) if problems else ''
+        verdicts[key] = (not problems, reason, list({e['sha256']: e for e in evidence}.values()))
     return verdicts, before
+
+
+def circumstances(app, checkout):
+    """守护运行开始时的情况：声明了服务时列出没在运行的服务，以及各仓库工作区是否有未提交改动。"""
+    from . import gitops as _gitops
+    notes = []
+    if app.project.adapter.get('services'):
+        environment = app.envs.status(checkout)
+        down = environment.get('not_running', [])
+        if environment.get('state') != 'ready':
+            notes.append('当时本检出的环境没有运行，声明的服务都没在运行')
+        elif down:
+            notes.append('当时本机没在运行的服务：' + '、'.join(f"{s['name']}（{s['about']}，{s['label']}）" for s in down))
+        else:
+            notes.append('当时声明的服务都在运行')
+    dirty = _gitops.uncommitted(checkout.paths)
+    notes.append('工作区有未提交改动（' + '、'.join(f'{alias} {count} 处' for alias, count in dirty.items()) + '）'
+                 if dirty else '工作区没有未提交改动')
+    return notes
 
 
 def datetime_stamp():

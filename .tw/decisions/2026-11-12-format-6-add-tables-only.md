@@ -3,13 +3,13 @@ title: "格式 6 的数据库只新增表、打开时补建，不升格式号"
 scope: ["self:src/sop_board/store.py"]
 source: ["协调会话转达的实现约束（2026-11-12，决策 19、20 的实现任务）", "self:docs/design.md"]
 status: "accepted"
-tags: ["数据库", "格式", "表结构", "user_version", "补建", "迁移", "draft_approvals", "project-format"]
+tags: ["数据库", "格式", "表结构", "user_version", "补建", "迁移", "draft_approvals", "service_events", "project-format"]
 ---
 # 格式 6 的数据库只新增表、打开时补建，不升格式号
 
 背景：已定决策 20 的草稿同意需要新存储。数据库格式一变，旧数据目录就以 `project-format` 拒读，而使用者本机有一个正在使用的真实项目数据目录（cw2），迁移脚本要到已定决策 21（格式 7、共享库）才有。
 
-决定（2026-11-12 实现决策 20 时）：格式号保持 6。`store.ADDED_TABLES` 登记格式 6 之后新增的表；新库随 SCHEMA 一起建立，已有的格式 6 库在 `Store` 打开时检查并补建缺失的表（同一把跨进程锁内 `CREATE TABLE IF NOT EXISTS`），不改已有表的结构与数据。第一张这样的表是 `draft_approvals`。
+决定（2026-11-12 实现决策 20 时）：格式号保持 6。`store.ADDED_TABLES` 登记格式 6 之后新增的表；新库随 SCHEMA 一起建立，已有的格式 6 库在 `Store` 打开时检查并补建缺失的表（同一把跨进程锁内 `CREATE TABLE IF NOT EXISTS`），不改已有表的结构与数据。第一张这样的表是 `draft_approvals`（决策 20），第二张是 `service_events`（决策 22：运行中服务的停启与自动恢复）。
 
 ## 备选
 - 升到格式 7 并写迁移：要先有迁移命令，且会让正在使用的数据目录在升级前被拒读；按设计，迁移留到决策 21 一次完成。

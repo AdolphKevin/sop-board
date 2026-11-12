@@ -52,12 +52,19 @@ def board(app, request):
     counts['review'] = derived['review']
     with app.store.connection() as db:
         stats = status.statistics(db, context.checkout.id)
-    return dict(ok=True, project=app.project.name, local=request.local, checkout=context.checkout.name,
-                checkouts=[dict(name=c.name, kind=c.kind) for c in app.checkouts()],
-                labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items,
-                stats=dict(agent_confirm_rate=stats['agent_confirm_rate'], agent_review_coverage=stats['agent_review_coverage']),
-                product=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
-                configured=app.project.configured)
+    result = dict(ok=True, project=app.project.name, local=request.local, checkout=context.checkout.name,
+                  checkouts=[dict(name=c.name, kind=c.kind) for c in app.checkouts()],
+                  labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items,
+                  stats=dict(agent_confirm_rate=stats['agent_confirm_rate'], agent_review_coverage=stats['agent_review_coverage']),
+                  product=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
+                  configured=app.project.configured)
+    if request.local:
+        # 本检出的环境与各服务状态只在本机页面显示，内网不返回。
+        environment = app.envs.status(context.checkout)
+        result['environment'] = dict(state=environment['state'], services=[
+            dict(name=s['name'], about=s['about'], state=s['state'], label=s['label'], stoppable=s['stoppable'])
+            for s in environment['services']])
+    return result
 
 
 def evidence_items(db, result_id):
@@ -66,7 +73,7 @@ def evidence_items(db, result_id):
             for row in db.execute('SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal', (result_id,))]
 
 
-def history_entry(db, row, *, local):
+def history_entry(db, row, *, local, stopped=None, project=None):
     item = dict(id=row['id'], kind=row['kind'], status=row['status'], executed_at=local_time(row['executed_at']),
                 actual=row['actual'], finding=row['finding'], note=row['note'], defect=row['defect'])
     if row['kind'] == 'manual':
@@ -78,6 +85,10 @@ def history_entry(db, row, *, local):
         item.update(label=label, independence=INDEPENDENCE.get(row['independence'], '独立性未声明'), run=row['work'],
                     snapshot=row['product_digest'][:12] if row['product_digest'] else None,
                     product_changed=json.loads(row['product_changed']))
+        names_ = ((stopped or {}).get(row['work']) or {}).get(scenarios.key(row['file'], row['scenario']), [])
+        if names_ and project is not None:
+            from .envs import stopped_labels
+            item['stopped_services'] = stopped_labels(project, names_)
         work = db.execute('SELECT launch FROM work WHERE id=?', (row['work'],)).fetchone() if row['work'] else None
         item['launch'] = work['launch'] if work else None
         if local:
@@ -98,11 +109,15 @@ def detail(app, request):
         guard = guards.load_index(guards.index_path(context))['guards'][key]
         for part in coverage:
             coverage[part] = {item['index']: item['tests'] for item in guard['coverage'][part]}
+    from .envs import stopped_during
     with app.store.connection() as db:
         rows = db.execute('SELECT * FROM results WHERE checkout=? AND file=? AND scenario=? ORDER BY id DESC',
                           (context.checkout.id, scene['file'], scene['id'])).fetchall()
-        history = [dict(history_entry(db, row, local=request.local), current=row['fingerprint'] == scene['fingerprint'])
+        stopped = stopped_during(db, [row['work'] for row in rows])
+        history = [dict(history_entry(db, row, local=request.local, stopped=stopped, project=app.project),
+                        current=row['fingerprint'] == scene['fingerprint'])
                    for row in rows]
+        skipped = status.latest_not_executed(status.not_executed(db, context.checkout.id), scene)
         guard_runs = [dict(status=r['status'], reason=r['reason'], ran_at=local_time(r['ran_at']), operator=r['operator'],
                            snapshot=r['product_digest'][:12],
                            evidence=[dict(name=o['name'], url=f"/evidence/{o['sha256']}/{quote(o['name'])}", type='text/plain')
@@ -119,7 +134,9 @@ def detail(app, request):
                              fingerprint=scene['fingerprint'], **fields),
                   state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
                              review=info['review'], guard=info['guard']),
-                  coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=[])
+                  coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=[],
+                  # 最近一次未执行（谁、什么时候、缺什么）：不是结果，不改变状态，也不进历史。
+                  not_executed=dict(skipped, at=local_time(skipped['at'])) if skipped else None)
     if scene.get('status') == 'draft':
         result.update(draft_detail(app, context, scene, info['draft_review']))
     return result
@@ -224,6 +241,9 @@ def runs_api(app, request):
             item['not_executed'] = [n['scenario'] for n in summary.get('not_executed', [])]
             if request.local:
                 item.update(session=row['session'], operator=row['operator'], dir=row['dir'])
+                item['service_events'] = [dict(service=e['service'], action=e['action'], ok=bool(e['ok']), operator=e['operator'],
+                                               at=local_time(e['at']), note=e['note'], scenarios=json.loads(e['scenarios']))
+                                          for e in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (row['id'],))]
             works.append(item)
     for launch in launches:
         for key in ('started_at', 'ended_at'):

@@ -9,8 +9,10 @@
 约定：
 - 场景键 = 测试标题的第一个空白分隔词，写成 <文件>#<编号>，例如 "shop#R1-P01 申请退款…"。无场景键的测试跳过并提示。
 - passed → pass；skipped → skip；failed / timedOut / interrupted → fail，
-  但错误信息以“受阻：”开头，或模板注记了 blocked（调试连接中断、目标页关闭）时 → blocked。每个测试取最后一次结果（不建议 retries）。
-- 同一场景有多条测试时合并，状态取最差：fail > blocked > skip > pass；附件按测试隔离，避免覆盖。
+  但错误信息以“受阻：”开头，或模板注记了 blocked（调试连接中断、目标页关闭）时 → blocked；
+  错误信息以“未执行：”开头（模板 notExecuted()：等人处理、缺凭据变量、用到的服务本机没在运行）时 → not-executed，
+  finding 取“未执行：”之后的原因（--finding 可覆盖），不附证据、不登记结果。每个测试取最后一次结果（不建议 retries）。
+- 同一场景有多条测试时合并，状态取最差：fail > blocked > not-executed > skip > pass；附件按测试隔离，避免覆盖。
 - pending/scope 默认要求结果完整；部分试跑须 --allow-partial，范围内尚无结果的场景写成 status 为 not-executed 的标记行
   （带 finding，无证据），sop-board 登记时不登记这些场景、保留在待执行范围。coverage.json 单独记录范围。
 - scope 对比报告注解与原始场景文件摘要，防止检出、场景或指纹串用。
@@ -31,9 +33,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BLOCKED_PREFIX = '受阻：'
+NOT_EXECUTED_PREFIX = '未执行：'
 NOT_EXECUTED = 'not-executed'
 EVIDENCE_LIMIT_BYTES = 64 * 1024 * 1024
-RANK = {'fail': 3, 'blocked': 2, 'skip': 1, 'pass': 0}
+RANK = {'fail': 4, 'blocked': 3, NOT_EXECUTED: 2, 'skip': 1, 'pass': 0}
 ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
 ACTUAL_LIMIT = 300
 UNSAFE = re.compile(r'[^A-Za-z0-9._\u4e00-\u9fff-]+')
@@ -115,7 +118,10 @@ def classify(result, test=None):
     if status == 'skipped':
         return 'skip'
     if status in ('failed', 'timedOut', 'interrupted'):
-        return 'blocked' if error_message(result).startswith(BLOCKED_PREFIX) or blocked_note(result, test) else 'fail'
+        message = error_message(result)
+        if message.startswith(NOT_EXECUTED_PREFIX):
+            return NOT_EXECUTED
+        return 'blocked' if message.startswith(BLOCKED_PREFIX) or blocked_note(result, test) else 'fail'
     raise ConvertError('未知的测试状态：%r' % status)
 
 
@@ -140,6 +146,8 @@ def describe(result, status, test):
     elif status == 'skip':
         reasons = [a.get('description') for a in (test.get('annotations') or []) if a.get('type') == 'skip' and a.get('description')]
         text = '跳过：' + (reasons[0] if reasons else '未说明原因')
+    elif status == NOT_EXECUTED:
+        text = first_line(message)
     elif status == 'blocked':
         note = blocked_note(result, test)
         text = (note + ('；' + first_line(message) if message else '')) if note else first_line(message)
@@ -276,6 +284,19 @@ def convert(report, out, executor, findings, session=None, pending_ids=None, ski
         statuses = [(classify(result, test), title, test, result) for title, test, result in entries]
         worst = max(statuses, key=lambda item: RANK[item[0]])
         status = worst[0]
+        if status == NOT_EXECUTED:
+            # 未执行：不形成结论，不附证据；原因取“未执行：”之后的文字，--finding 可覆盖。
+            reason = error_message(worst[3])[len(NOT_EXECUTED_PREFIX):].strip()
+            row = {'scenario': sid, 'status': NOT_EXECUTED, 'finding': findings.get(sid) or reason or '本机暂时不具备执行条件',
+                   'evidence': [], 'executor': executor}
+            if session:
+                row['session'] = session
+            if any(result.get('attachments') for _, _, _, result in statuses):
+                warnings.append('%s 未执行，不附证据：报告中的附件没有复制' % sid)
+            if pending_ids is not None and sid not in pending_ids:
+                problems.append('%s 不在 pending 清单里，核对场景编号或任务身份' % sid)
+            rows.append(row)
+            continue
         evidence = []
         actuals = []
         latest = None

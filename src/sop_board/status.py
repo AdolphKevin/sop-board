@@ -56,6 +56,29 @@ def instant(value):
     return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
 
 
+def not_executed(db, checkout_id):
+    """各场景最近一次未执行：(文件, 场景, 指纹) → {run, by, at, finding}。
+
+    未执行不是结果，不参与状态推导；取自已提交运行摘要的未执行清单。早先没有记指纹的条目以指纹 None 登记。"""
+    result = {}
+    for row in db.execute("SELECT id, operator, ended_at, result FROM work WHERE checkout=? AND kind='run' AND status='submitted' "
+                          "AND result IS NOT NULL ORDER BY ended_at, id", (checkout_id,)):
+        try:
+            summary = json.loads(row['result'])
+        except ValueError:
+            continue
+        for item in summary.get('not_executed') or []:
+            file, _, scenario = str(item.get('scenario', '')).partition('#')
+            result[(file, scenario, item.get('fingerprint'))] = dict(
+                run=row['id'], by=summary.get('submitted_by') or row['operator'], at=row['ended_at'], finding=item.get('finding'))
+    return result
+
+
+def latest_not_executed(records, scene):
+    """当前指纹上最近一次未执行；没有记指纹的早先条目作为后备。"""
+    return records.get((scene['file'], scene['id'], scene['fingerprint'])) or records.get((scene['file'], scene['id'], None))
+
+
 def closed_fixes(db, checkout_id):
     """已关闭的修复：场景键 → 关闭时间。"""
     result = {}

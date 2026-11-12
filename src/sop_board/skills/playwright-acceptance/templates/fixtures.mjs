@@ -20,10 +20,19 @@ import {recording} from './recording.mjs';
 export {cdpEndpoint};
 
 const BLOCKED_PREFIX = '受阻：';
+const NOT_EXECUTED_PREFIX = '未执行：';
 
-// 受阻：前置条件不满足、人机验证、真实账号登录过期、未知遮挡。to_scenarios.py 据此输出 blocked。
+// 受阻：意外故障或全队都不具备的能力（前置数据准备失败、未知遮挡、浏览器或服务异常退出、browser may not be secure）。
+// to_scenarios.py 据此输出 blocked。
 export function blocked(reason) {
   return new Error(BLOCKED_PREFIX + reason);
+}
+
+// 未执行：本机暂时不具备、补齐就能执行（等人处理的真实或未声明账号登录、人机验证、只发到本人设备的验证码、
+// 身份使用次数到上限；缺凭据变量；用到的服务本机没在运行）。to_scenarios.py 据此输出 not-executed，不附证据、不登记结果；
+// 等人处理的事另用 sop-board attention add 登记。
+export function notExecuted(reason) {
+  return new Error(NOT_EXECUTED_PREFIX + reason);
 }
 
 // 读取 cases.json，为场景生成 tag：['@SOP-02-P01', '@CASE-037', …]。tag 只能来自配对文件。
@@ -92,16 +101,16 @@ export const test = base.extend({
 });
 
 // 业务失败只记本场景：留截图与页面结构快照，关闭本场景新开的页面，标为预期失败，
-// worker 不重启、连接保留，后续场景照常执行。受阻、连接断开、目标页关闭仍按意外失败停止本轮。
+// worker 不重启、连接保留，后续场景照常执行。受阻、未执行、连接断开、目标页关闭仍按意外失败停止本轮。
 function stopsRun(target, testInfo) {
   if (!target.browser.isConnected() || target.page.isClosed()) return true;
-  return testInfo.errors.some(error => (error.message || '').includes(BLOCKED_PREFIX) ||
+  return testInfo.errors.some(error => (error.message || '').includes(BLOCKED_PREFIX) || (error.message || '').includes(NOT_EXECUTED_PREFIX) ||
     /Target page, context or browser has been closed|Browser has been closed|has been disconnected|Target crashed/.test(error.message || ''));
 }
 
 async function scenarioFailure(target, testInfo, before) {
   const stop = stopsRun(target, testInfo);
-  if (stop && !testInfo.errors.some(error => (error.message || '').includes(BLOCKED_PREFIX))) {
+  if (stop && !testInfo.errors.some(error => /受阻：|未执行：/.test(error.message || ''))) {
     // 连接中断或目标页关闭不是产品缺陷：注记为受阻，转换时据此输出 blocked。
     testInfo.annotations.push({type: 'blocked', description: BLOCKED_PREFIX + '浏览器连接中断、页面关闭或渲染进程崩溃，本轮停止，剩余场景未执行'});
   }

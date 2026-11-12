@@ -78,7 +78,8 @@ def pending_reason(info):
     return PENDING_STATES.get(info['state'], 'rerun')
 
 
-def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared):
+def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared, environment=None):
+    environment = environment or {}
     counts = {}
     for item in scope:
         counts[item['reason']] = counts.get(item['reason'], 0) + 1
@@ -90,6 +91,29 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
             policy = web_evidence(entry)
             extra = f"，录屏{'开' if policy['video'] else '关'}、trace {'开' if policy['trace'] else '关'}"
         lines.append(f"- 入口 {name}（{entry.get('surface')}）：证据 {'、'.join(entry.get('evidence', []))}{extra}")
+    missing = {name: var for name, var in (environment.get('missing_address_env') or {}).items() if name in entries}
+    if missing:
+        lines += ['', '## 入口地址缺失', '']
+        lines += [f'- 入口 {name}：环境没有给出 {var}。用这个入口的场景写 not-executed，finding 写“入口 {name} 的地址 {var} 本机环境没有给出”。'
+                  for name, var in sorted(missing.items())]
+    services = environment.get('services') or []
+    if services:
+        lines += ['', '## 服务', '', '准备时各服务的状态（详见 services.json；执行中用 `sop-board env status --json` 看当前状态）：', '']
+        for item in services:
+            text = f"- {item['name']}（{item['about']}）：{item['label']}"
+            if item.get('stoppable'):
+                text += '，可停'
+            if item.get('log'):
+                text += f"，日志 {item['log']}"
+            lines.append(text)
+        lines += ['',
+                  '按场景起点与步骤用到的业务能力，对照括号里的业务说明找到对应的服务：',
+                  '',
+                  '- 用到的服务本机未搭建、已停止或未上报：写 not-executed，finding 写“<服务>（<业务说明>）本机未搭建”等实际状态。不启动服务、不登记仓库、不改配置。',
+                  '- 用到的服务异常退出（准备前或执行中）：写 blocked，finding 附 `env status` 给出的日志末尾，并 `sop-board attention add --kind 环境问题` 登记。',
+                  '- 场景起点要求某个依赖不可用：先 `sop-board env stop <服务>` 停掉对应的可停服务，再执行；结果写好后 `sop-board env start <服务>`，或交给提交时自动恢复。'
+                  'executed_at 写服务停着期间的实际执行时刻。对应的服务本机未搭建时写 not-executed；不可停，或依赖是外部共享的中间件时写 blocked 并写明原因。',
+                  '- 不用到这些服务的场景照常执行。']
     if browser_problems:
         lines += ['', '## 浏览器问题', '']
         lines += [f'- 身份 {identity}：{problem}。用这个身份的 Web 场景直接写 blocked，finding 照抄这句。'
@@ -102,7 +126,12 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
         lines.append('- 项目没有声明前置数据配方：前置不满足时记受阻，finding 写明缺什么，不自行写库。')
     lines += ['', '## 时间上限与停止', '',
               '- 单场景 4 分钟、定位或操作 15 秒、导航 30 秒（模板缺省）。单个场景累计 15 分钟或 4 次仍无结论时记下证据转下一个。',
-              '- 业务断言失败只记该场景失败并继续；连接异常、等待人处理（真实账号登录、人机验证、只发到使用者本人设备的验证码）、状态不明时停止本轮，剩余场景写 not-executed 行（带 finding）。声明的测试账号未登录时直接用凭据变量登录，不算等待人处理。']
+              '- 业务断言失败只记该场景失败并继续。',
+              '- 等人处理的事（真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码、身份使用次数到上限），不论出现在开始前还是执行中：'
+              '该场景写 not-executed，finding 写需要人做什么，并 `sop-board attention add` 登记（identity record 返回 identity-limit 时已自动登记）；'
+              '不用这件事的场景照常执行。'
+              '声明的测试账号未登录时直接用凭据变量登录，不算等人处理。',
+              '- 连接异常、状态不明时停止本轮，剩余场景写 not-executed 行（带 finding）。']
     (directory / 'brief.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
@@ -159,10 +188,18 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
     with store.transaction() as db:
         db.execute('UPDATE work SET dir=?, snapshot=?, product_digest=? WHERE id=?',
                    (str(directory), dumps(product), snapshot['product_digest'], work_id))
+    # 部分就绪：adapter 输出就绪即可执行；没在运行的服务与缺失的入口地址只列出，由执行会话按场景判断。
     return dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
                 outputs=dict(results=str(directory / 'results.jsonl')),
                 session=executor, scope=scope, browser_problems=browser_problems,
-                environment=dict(state=environment['state'], address_env=environment.get('address_env', {})))
+                environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
+                services=public_services(environment.get('services', [])),
+                not_running=environment.get('not_running', []),
+                missing_address_env=environment.get('missing_address_env', {}))
+
+
+def public_services(services):
+    return [{k: v for k, v in item.items() if k in ('name', 'about', 'stoppable', 'state', 'label', 'log')} for item in services]
 
 
 def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix):
@@ -180,6 +217,11 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     (directory / 'repos.json').write_text(dumps({alias: str(path) for alias, path in checkout.paths.items()}), encoding='utf-8')
     (directory / 'snapshot.json').write_text(dumps({k: v for k, v in snapshot.items() if k != 'files'}), encoding='utf-8')
     (directory / 'product-files.json').write_text(dumps(snapshot['files']), encoding='utf-8')
+    # 准备时各服务的状态与业务说明，供执行会话把场景起点对应到服务；提交时据此区分运行期间才异常退出的服务。
+    (directory / 'services.json').write_text(json.dumps(dict(
+        at=now(), environment=environment.get('state'), services=environment.get('services', []),
+        not_running=environment.get('not_running', []), missing_address_env=environment.get('missing_address_env', {})),
+        ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     web = [scene for scene in selected if web_entry(entries[scene['verify']])]
     env_lines = {**addresses}
     runtime = None
@@ -208,7 +250,7 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
             (directory / 'node_modules').symlink_to(runtime['node_modules'], target_is_directory=True)
     env_lines.update(SOP_BOARD_RUN=str(work_id), SOP_BOARD_CHECKOUT=checkout.name)
     (directory / 'run.env').write_text(''.join(f"{name}={value}\n" for name, value in sorted(env_lines.items())), encoding='utf-8')
-    write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None)
+    write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None, environment)
     if (directory / 'atlas.json').exists():
         with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
             brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'
@@ -216,7 +258,8 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     from .entries import web_skill
     prompt = Template(files('sop_board').joinpath('prompts', 'run.md').read_text(encoding='utf-8')).substitute(
         run=work_id, directory=directory, skill=project.skill, web_skill=web_skill() / 'SKILL.md',
-        checkout=checkout.name, verify_note=('这是修复 #%d 的独立复验：逐条实际执行，不能保留旧通过。' % fix['id']) if fix else '')
+        checkout=checkout.name, verify_note=('这是修复 #%d 的独立复验：逐条完整执行，不能保留旧通过，也不接受 not-executed；'
+                                 '本机缺少条件时停下报告缺什么。' % fix['id']) if fix else '')
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
 
 
@@ -366,12 +409,21 @@ def submit(context, run_id, *, implementer=None):
     executor = work['session']
     implementer = work['implementer'] or implementer or os.environ.get('SOP_BOARD_IMPLEMENTER') or None
     independence = status.independence(executor, implementer)
+    operator = config.operator() or work['operator']
+    with store.connection() as db:
+        events = [dict(r) for r in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (run_id,))]
+    executed = {key: row for key, row in rows.items()
+                if key in scope and key not in voided and row.get('status') != 'not-executed' and row.get('executed_at')}
+    while_stopped = scenarios_while_stopped(events, executed)
     with store.transaction() as db:
+        for event_id, keys in while_stopped.items():
+            db.execute('UPDATE service_events SET scenarios=? WHERE id=?', (dumps(keys), event_id))
         for key, row in rows.items():
             if key in voided or key not in scope:
                 continue
             if row.get('status') == 'not-executed':
-                not_executed.append(dict(scenario=key, finding=row['finding']))
+                # 未执行不登记结果、不改变状态；记在运行上（谁、什么时候、缺什么），场景详情与报告显示最近一次。
+                not_executed.append(dict(scenario=key, finding=row['finding'], fingerprint=prepared[key]['fingerprint']))
                 continue
             scene = prepared[key]
             cursor = db.execute(
@@ -388,14 +440,84 @@ def submit(context, run_id, *, implementer=None):
             recorded.append(dict(scenario=key, status=row['status'], result=result_id))
             guards.after_result(db, checkout, scene, row['status'], result_id)
         summary = dict(recorded=recorded, voided=voided, not_executed=not_executed, product_changed=product_changed,
-                       browser_crashes=sorted(crashed), independence=independence)
+                       browser_crashes=sorted(crashed), independence=independence, submitted_by=operator)
         db.execute("UPDATE work SET status='submitted', ended_at=?, result=?, implementer=? WHERE id=?",
                    (now(), dumps(summary), implementer, run_id))
         db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
         if fixing:
             from . import fixes
             fixes.after_verify(db, work, recorded)
+    # 结果登记之后再恢复停着的服务：等待服务恢复期间不占用数据库。
+    services = finish_services(context, work, reason='提交', operator=operator, crashes=True)
+    if services:
+        summary.update(services)
+        with store.transaction() as db:
+            db.execute('UPDATE work SET result=? WHERE id=?', (dumps(summary), run_id))
     return dict(ok=True, run=run_id, checkout=checkout.name, **summary)
+
+
+def scenarios_while_stopped(events, rows):
+    """每条停止事件 → 服务停着期间执行的场景（executed_at 落在停止与下一次启动或恢复之间；按秒比较，执行时间通常只精确到秒）。"""
+    from .status import instant
+    result = {}
+    for index, event in enumerate(events):
+        if event['action'] != 'stop':
+            continue
+        start = instant(event['at']).replace(microsecond=0)
+        end = next((instant(e['at']) for e in events[index + 1:]
+                    if e['service'] == event['service'] and e['action'] in ('start', 'restore')), None)
+        hit = []
+        for key, row in rows.items():
+            try:
+                moment = instant(row['executed_at'])
+            except ValueError:
+                continue
+            if start <= moment and (end is None or moment <= end):
+                hit.append(key)
+        result[event['id']] = sorted(hit)
+    return result
+
+
+def finish_services(context, work, *, reason, operator, crashes=False):
+    """运行结束（提交或放弃）时：恢复本轮停着的服务并记录；提交时另列出异常退出的服务（区分准备前与运行期间）。
+
+    返回要并入运行摘要的字段；项目没有声明服务、本轮也没有停过服务时返回空。"""
+    from . import envs
+    project, checkout, store = context.project, context.checkout, context.store
+    declared = project.adapter.get('services') or {}
+    with store.connection() as db:
+        stopped_any = db.execute("SELECT 1 FROM service_events WHERE work=? AND action='stop' LIMIT 1", (work['id'],)).fetchone()
+    if not declared and not stopped_any:
+        return {}
+    result, problems = dict(restored=[]), []
+    current = None
+    try:
+        if stopped_any:
+            result['restored'] = daemon.call(project, 'POST', '/local/env/restore', dict(
+                checkout=checkout.name, run=work['id'], operator=operator, reason=reason), timeout=1800)['restored']
+        if crashes and declared:
+            current = daemon.call(project, 'POST', '/local/env/status', dict(checkout=checkout.name))['environments'][0]
+    except daemon.DaemonUnavailable as error:
+        problems.append(str(error))
+        if stopped_any:
+            result['restored'] = envs.withdraw(project, store, checkout, work['id'], operator=operator, reason=reason)
+    except APIError as error:
+        problems.append('；'.join(p.get('problem', '') for p in error.problems))
+    if crashes and declared:
+        try:
+            prepared = {s['name']: s['state'] for s in json.loads((Path(work['dir']) / 'services.json').read_text(encoding='utf-8'))['services']}
+        except (OSError, ValueError, KeyError, TypeError):
+            prepared = {}
+        result['crashed_services'] = [dict(service=s['name'], about=s['about'], log=s.get('log'),
+                                           during_run=prepared.get(s['name']) != 'crashed')
+                                      for s in (current or {}).get('services', []) if s['state'] == 'crashed']
+    with store.connection() as db:
+        result['service_events'] = [dict(service=r['service'], action=r['action'], ok=bool(r['ok']), operator=r['operator'],
+                                         at=r['at'], note=r['note'], scenarios=json.loads(r['scenarios']))
+                                    for r in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (work['id'],))]
+    if problems:
+        result['services_problem'] = '；'.join(problems)
+    return result
 
 
 def crash_findings(context, work, prepared):
@@ -434,7 +556,11 @@ def abandon(context, run_id):
     with context.store.transaction() as db:
         db.execute("UPDATE work SET status='abandoned', ended_at=? WHERE id=?", (now(), run_id))
         db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
-    return dict(ok=True, run=run_id, status='abandoned')
+    services = finish_services(context, work, reason='放弃', operator=config.operator() or work['operator'])
+    if services.get('service_events'):
+        with context.store.transaction() as db:
+            db.execute('UPDATE work SET result=? WHERE id=?', (dumps(dict(abandoned_by=config.operator() or work['operator'], **services)), run_id))
+    return dict(ok=True, run=run_id, status='abandoned', **services)
 
 
 # ---- 人工复测 ----

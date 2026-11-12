@@ -9,7 +9,7 @@ sop-board playwright tags --pairs <配对.json> --out <运行目录外>/cases.js
 # 执行（环境变量见 templates/fixtures.mjs 顶部注释；PW_OUT、PW_SCOPE 等已在 run.env）
 PW_CASES=<目录>/cases.json npx --no-install playwright test
 
-# 转成结果契约；blocked 与 skip 用 --finding 写原因；超过 64 MiB 的证据加 --skip-large
+# 转成结果契约；blocked 与 skip 用 --finding 写原因；not-executed 的原因取 notExecuted() 的文字（--finding 可覆盖）；超过 64 MiB 的证据加 --skip-large
 sop-board playwright convert --report playwright/report.json --out . --executor <会话> \
   --scope scope.json --scenario-file scenarios.yaml [--finding shop#W=<原因>] [--allow-partial] [--skip-large]
 

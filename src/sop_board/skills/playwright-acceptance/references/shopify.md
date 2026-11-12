@@ -24,7 +24,7 @@ Shopify 项目与普通前端的流程相同，差别都在入口层。一个项
 
 ## 人机验证与登录
 
-- 短时间内反复打开主题编辑器等页面会触发 "Your connection needs to be verified before you can proceed"。遇到即抛 `受阻：Shopify 要求人机验证`，由人在同一身份的看板窗口中完成后交还再重跑；不要重试或绕过。
+- 短时间内反复打开主题编辑器等页面会触发 "Your connection needs to be verified before you can proceed"。遇到即 `throw notExecuted('Shopify 要求人机验证')` 并 `sop-board attention add --kind 人机验证` 登记，由人在同一身份的看板窗口中完成后交还再重跑；不要重试或绕过。
 - 项目声明的 Shopify 测试员工账号与测试邮箱，由执行者用声明的凭据变量登录、读邮件中的验证码；真实账号（商家、合作伙伴、Google 登录）与只发到使用者本人设备的验证码由人在看板窗口完成，脚本复用该窗口的会话（见[Web 参考](web.md#账号登录与人做的验证)）。出现 "browser may not be secure" 立即停止并记 blocked。
 - 后台内嵌应用加载本机前端时，浏览器会询问 admin.shopify.com 是否可以访问本地网络，自签名的 localhost 证书也会被拦；两者都由执行者在该身份的浏览器里放行。
 

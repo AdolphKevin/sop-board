@@ -1,0 +1,47 @@
+# 库存演示项目（make_demo.py --with-stock）config.yaml 的其余部分；repos 与 identities 由 sop-board init 写入，make_demo.py 合并本文件。
+# 与基础演示项目的差别只在 adapter：多一个库存服务端口，并声明 services（服务名 → 业务说明与是否可停）。
+scenarios: {repo: app, path: docs/sop}
+skill: demo-verification
+entries:
+  api:
+    surface: http
+    address_env: APP_URL
+    operate: "按 app 仓库 docs/operations/verification.md 第 2 节 api 入口，用 curl 调用 APP_URL 下的接口"
+    observe: ["按同手册第 3 节核对响应与演示 SQLite 中的退款记录"]
+    evidence: ["请求与完整响应原文", "只读 SQLite 查询与输出"]
+    isolation: "按同手册第 4 节：订单编号带运行编号前缀，只清理本轮创建的数据"
+  web:
+    surface: web
+    address_env: WEB_URL
+    operate: "按同手册第 2 节 web 入口，经看板浏览器（身份 merchant）打开 WEB_URL"
+    observe: ["按同手册第 3 节核对页面显示与 SQLite 数据"]
+    evidence: ["截图", "页面文本"]
+    isolation: "按同手册第 4 节"
+    credential_env: [DEMO_MERCHANT_PASSWORD]
+    identities: [{id: merchant, label: 商家, limits: {logins_per_day: 2, codes_per_day: 2}}]
+    spec_library: app:acceptance
+    atlas: {repos: [app], languages: [zh]}
+    web_evidence: {video: true, trace: true}
+adapter:
+  env: [python3, env.py]
+  ports: [28080, 28090]                   # 商城、库存服务
+  port_step: 100
+  services:                               # env.py 把各服务的状态写到 SOP_ENV_LOG_DIR/services/<名称>.state
+    shop: {about: 商城网页与接口, stoppable: false}
+    stock: {about: 库存查询与扣减, stoppable: true}
+  service_timeout: 60                     # env stop|start 等状态变为目标值的最长秒数
+  worktree: [python3, worktree.py, create]
+  cleanup: [python3, worktree.py, cleanup]
+  ready_timeout: 60
+snapshot_exclude: {app: [docs/, tests/, acceptance/]}
+agents: {default: {runner: claude}}
+fixtures:
+  environment: 演示 SQLite（每个检出一份，位于数据目录 env/<检出>/shop.sqlite3）
+  scope: [测试订单]
+  credential_env: [DEMO_SEED_TOKEN]
+  recipes:
+    - name: seed-order
+      title: 准备测试订单
+      params: {order_id: 订单号, paid: 实付金额（缺省 99）, days: 已签收天数（缺省 3）}
+      creates: [订单]
+      run: [python3, seed.py]

@@ -18,7 +18,16 @@ python3 examples/demo-shop/make_demo.py $T              # 只生成 $T/app、$T/
 python3 examples/demo-shop/make_demo.py $T --data $D    # 另外 init 为项目 demo，并把 data/ 模板装进 $D/demo
 ```
 
-`--data` 时脚本合并 init 写入的 `repos`、`identities` 与 `data/config.yaml`，复制 `env.py`、`worktree.py`、`seed.py` 与验证技能 `skills/demo-verification/`；被测版本不在 PATH 上时加 `--sop-board "uv run --project <本仓检出> sop-board"`。启动看板守护进程时在同一环境设置凭据变量：`DEMO_SEED_TOKEN`（任意值，配方的写库凭据）与 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass）。验证运行时安装或缺失（BRW-01-P01、SET-05-N01）时，看板与 CLI 都设同一个临时 `SOP_BOARD_HOME`。
+库存演示项目（environment.yaml 文件头，已定决策 22）用 `--with-stock` 生成第三个仓库 stock（库存服务），“只搭商城”用同一份生成结果另登记一个只含 app、lib 的项目：
+
+```sh
+python3 examples/demo-shop/make_demo.py $G --with-stock --data $S                     # app、lib、stock 都登记
+python3 examples/demo-shop/make_demo.py $G --with-stock --reuse --shop-only --data $T  # 只搭商城：只登记 app、lib
+```
+
+两个数据目录登记了同一组仓库，命令都带 `--data`（`-p demo`）指定项目；两者要同时运行环境时，把其中一个 `config.yaml` 的 `adapter.ports` 改开，避免端口租约冲突。
+
+`--data` 时脚本合并 init 写入的 `repos`、`identities` 与 `data/config.yaml`（库存演示项目用 `with-stock/config.yaml`），复制 `env.py`、`worktree.py`、`seed.py` 与验证技能 `skills/demo-verification/`；被测版本不在 PATH 上时加 `--sop-board "uv run --project <本仓检出> sop-board"`。启动看板守护进程时在同一环境设置凭据变量：`DEMO_SEED_TOKEN`（任意值，配方的写库凭据）与 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass）。验证运行时安装或缺失（BRW-01-P01、SET-05-N01）时，看板与 CLI 都设同一个临时 `SOP_BOARD_HOME`。
 
 场景集中的简写与演示项目的对应：
 
@@ -36,8 +45,16 @@ python3 examples/demo-shop/make_demo.py $T --data $D    # 另外 init 为项目 
 | 数据配方 | `seed-order`：参数 `order_id`、`paid`、`days`，写入本检出的 `$D/demo/env/<检出>/shop.sqlite3`；输出含凭据取值，用来核对留痕遮蔽 |
 | 守护命令 | app `docs/sop/regression.yaml` 的 `unit`：`python3 tests/junit_runner.py --junit {junit}`（unittest，测试放 `tests/test_*.py`） |
 | 端口 | 基础端口 28080，`port_step` 100：main 用 28080，槽位 1 的检出用 28180；`APP_URL` 与 `WEB_URL` 取自 ready 行 |
+| 浏览器端口 | 身份浏览器的调试端口是 `9400 + 槽位×20 + 身份序号`，不分项目：main 的 merchant 用 9401，槽位 1 用 9421。本机同时开着别的看板（例如使用者自己的项目）时，相同槽位的同一身份会冲突，`run prepare` 报“调试端口已被其他进程占用”；这时 Web 场景改在没有冲突的 worktree 检出执行并在记录中注明，或先在占用的项目运行 `sop-board browser close` |
 | 合成账号 | merchant，密码取 `DEMO_MERCHANT_PASSWORD`；限额 每日登录 2 次、每日验证码 2 次 |
-| 环境日志 | `env.py` 把收到的 `SOP_*` 变量逐行写进 `$D/demo/env/<检出>/<序号>.log`，并存 `received.json`（变量名中的别名为大写，如 `SOP_REPO_APP`） |
+| 环境日志 | `env.py` 把收到的 `SOP_*` 变量逐行写进 `$D/demo/env/<检出>/<序号>.log`，并存 `received.json`（变量名中的别名为大写，如 `SOP_REPO_APP`）；商城与库存服务的输出在同目录 `shop.log`、`stock.log` |
+| `stock#K` | 库存演示项目 `stock#STOCK-O1-P01`：库存可用时 `POST /api/purchases` 下单成功（201），订单生成，DEMO-1 库存减 1 |
+| `stock#S` | 库存演示项目 `stock#STOCK-O1-N01`：起点“库存查询不可用”，下单返回 503 与“库存服务暂不可用，请稍后再试”，不生成订单 |
+| 服务声明（库存演示项目） | `adapter.services`：`shop`（商城网页与接口，不可停）、`stock`（库存查询与扣减，可停）；`adapter.ports` 为 `[28080, 28090]`，库存服务用第二个端口，就绪行另给出 `STOCK_URL`。状态文件在 `$S/demo/env/<检出>/services/<名称>.state`，停止请求是同目录的 `stock.request`。只搭商城时 stock 上报 `absent`（本机未搭建）。基础演示项目没有 `adapter.services` |
+| 验收开关 | 取自启动守护进程时的环境：`DEMO_STOCK_IGNORE_STOP=1` 时 env.py 忽略对 stock 的停止请求（ENV-06-N03）；`DEMO_STOCK_CRASH=1` 时库存服务启动后立即异常退出（RUN-05-N02）。开关在 `sop-board serve` 启动前设置，改开关须重启守护进程 |
+| 结束库存服务进程 | ENV-05-N01、RUN-05-N01、GRD-03-N03 用 `kill -9` 结束 stocksvc 进程：`pgrep -f "stocksvc/server.py --port <端口>"` 取进程号 |
+| 守护命令 `api`（库存演示项目） | app `docs/sop/regression.yaml` 另声明 `api`：`python3 tests/junit_runner.py --junit {junit} --pattern api_*.py`，测试经运行中的商城接口（读 `APP_URL`），依赖库存服务；`unit` 运行 `tests/test_*.py` |
+| 停启记录 | 运行的停启记录在 `board.sqlite3` 的 `service_events` 表（只读查询 `SELECT * FROM service_events WHERE work=<运行>`），提交后也写进 `work.result` 的 `service_events` |
 | 旧版数据目录（SET-01-N01） | 在 tag v9-final 的检出运行 `uv run --project <该检出> sop-board init old $T/app --data $D/old` |
 
 ## 入口

@@ -23,8 +23,8 @@ Agent 工作只有一条路径：在产品仓库的检出目录运行 `sop-board
 | 根据 PRD、需求写业务 SOP，或登记已有 SOP 原文 | [references/author-sop.md](references/author-sop.md) |
 | 从 SOP 生成验收场景草稿、处理草稿批注、查看审阅进度、确认草稿 | [references/draft.md](references/draft.md) |
 | 上传、合并测试用例，向测试同学提问、读取答复 | [references/merge.md](references/merge.md) |
-| 执行、验收或重跑场景，分步实现的验收安排与统一验收，登记人工复测结论，真人登录 | [references/run.md](references/run.md) |
+| 执行、验收或重跑场景，未执行与受阻的口径，依赖故障的场景（env stop/start），分步实现的验收安排与统一验收，登记人工复测结论，真人登录 | [references/run.md](references/run.md) |
 | 运行守护测试检查回归（retest）、沉淀回归测试 | [references/guard.md](references/guard.md) |
 | 修复失败场景、复验修复、关闭修复 | [references/fix.md](references/fix.md) |
 | 梳理 Web 交互地图 | [references/atlas.md](references/atlas.md) |
-| 前置数据、身份计数、待人处理、检出与环境、导出报告 | [references/support.md](references/support.md) |
+| 前置数据、身份计数、待人处理、检出与环境（服务状态）、导出报告 | [references/support.md](references/support.md) |

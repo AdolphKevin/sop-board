@@ -284,6 +284,12 @@ code.command { font: 12.5px var(--mono); padding: 3px 8px; border-radius: 6px; b
 .tile span { font-size: 12.5px; color: var(--muted); }
 .todo { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .todo .row { padding: 8px 10px; }
+/* 最近一次未执行、执行时停着的服务、本检出的服务状态与运行的停启记录 */
+p.not-executed { margin: 10px 0 0; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--notrun-bg); color: var(--text-2); font-size: 13px; }
+p.stopped-services { margin: 6px 0; color: var(--blocked); font-size: 13px; }
+.service-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.service-list li { display: flex; align-items: center; gap: 6px; }
+.service-events { margin: 4px 0 0; padding-left: 16px; font-size: 12px; }
 .todo .reason { color: var(--muted); font-size: 12.5px; margin-left: auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---- 普通页面 ---- */

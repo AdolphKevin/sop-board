@@ -17,7 +17,7 @@ sop-board init <项目> <仓库目录>... [--data <根目录>]
 
 ## 2. 查清实际环境并写真实验证手册
 
-从仓库、启动配置、文档和开发者说明查清服务、依赖、启动顺序、端口与入口地址，用实际监听端口和服务响应交叉核对。按标准第 2、3 节把事实写进产品仓库的真实验证手册（如 `docs/operations/verification.md`）：环境与依赖、可重复数据、执行与观察、证据、清理、账号类别。手册在有产品仓库写权限的会话中编写。
+从仓库、启动配置、文档和开发者说明查清服务、依赖、启动顺序、端口与入口地址，用实际监听端口和服务响应交叉核对。按标准第 2、3 节把事实写进产品仓库的真实验证手册（如 `docs/operations/verification.md`）：环境与依赖、可重复数据、执行与观察、证据、清理、账号类别。每个服务记一句业务说明（测试同学和执行会话靠它把“库存查询不可用”这类场景起点对应到服务）以及能否在运行中单独停启，写 `adapter.services` 时照抄。手册在有产品仓库写权限的会话中编写。
 
 ## 3. 写 config.yaml
 
@@ -57,6 +57,10 @@ adapter:
   worktree: [python3, worktree.py, create]  # 可选：sop-board checkout create 用它建立多仓 worktree
   cleanup: [python3, worktree.py, cleanup]
   ready_timeout: 180
+  services:                                 # 可选：环境里的服务，名称 → 业务说明与能否在运行中停启
+    api: {about: 订单与退款接口, stoppable: false}
+    search: {about: 商品搜索, stoppable: true}
+  service_timeout: 60                       # 可选：env stop|start 等服务状态变为目标值的最长秒数（缺省 60）
 snapshot_exclude: {app: [docs/test-cases/, tests/]}   # 可选：不影响产品运行的材料
 agents: {run: {runner: claude, model: sonnet}, default: {runner: codex}}   # 可选：看板启动无头会话用哪个代理
 fixtures:                                   # 可选：前置数据配方
@@ -80,7 +84,14 @@ fixtures:                                   # 可选：前置数据配方
 | `SOP_PORT_OFFSET`、`SOP_PORTS` | 端口偏移，以及偏移后的端口 JSON 数组 |
 | `SOP_ENV_LOG_DIR` | 本检出的日志目录 |
 
-服务就绪后输出一行 `sop-board: ready`，可在同一行附 JSON 给出本检出的入口地址：`sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`。项目的服务无法换端口时保持 `port_step: 0`，看板会让检出轮流使用同一组端口，冲突时直接报告占用者。
+服务就绪后输出一行 `sop-board: ready`，可在同一行附 JSON 给出本检出的入口地址：`sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`。输出就绪即环境可用，不要求每个服务都在运行：本机暂时没搭的服务照常跳过，用不到它的场景照常执行。项目的服务无法换端口时保持 `port_step: 0`，看板会让检出轮流使用同一组端口，冲突时直接报告占用者。
+
+声明了 `adapter.services` 时，适配还要按服务契约工作（没声明时只看整体就绪与否）：
+
+- **上报状态**：每个声明的服务把状态写到 `SOP_ENV_LOG_DIR/services/<名称>.state`，内容是 JSON `{"state": "running|stopped|absent|crashed", "log": "<日志路径>"}`，状态变化时改写（先写临时文件再换名）。`absent` 表示本机没有搭建（例如这个检出没有登记对应仓库），`crashed` 表示意外退出，附日志路径。没有状态文件的服务显示“未上报”。
+- **响应停启**：看板在同一目录写 `<名称>.request` 表示请求停止该服务，删除它表示请求启动。适配轮询这个目录（建议每 0.2～1 秒），停或启完成后改写状态文件；看板等状态变为 `stopped` 或 `running` 才返回，超过 `service_timeout` 返回 `service-timeout` 并撤回停止请求。只有 `stoppable: true` 的服务会收到请求。
+- **意外退出**：服务意外退出时写 `crashed` 与日志路径，不自动重启；其他服务与整个环境照常运行。
+- 看板在启动环境前与停止环境后清空 `services/` 目录。
 
 `adapter.worktree` / `cleanup`（可选，须同时声明）沿用既有契约：输入 `SOP_TASK_DIR`、`SOP_FIX_BRANCH`、`SOP_REPOS`（逗号分隔）、`SOP_BASE_<别名>`，可选 `SOP_BASE_COMMITS`，清理时另有 `SOP_WORKTREES`。worktree 最后一行输出 `{"repos": {别名: 路径}, "env": {变量: 值}}`。不声明时用 `git worktree add`。开发者自己建的 worktree 不需要适配，在其中运行命令即自动识别为检出。
 
@@ -92,7 +103,7 @@ fixtures:                                   # 可选：前置数据配方
 
 ```sh
 sop-board serve <项目> [--lan]   # 守护进程：网页、按检出的环境、浏览器、无头会话
-sop-board check                  # 配置、当前检出的环境就绪、浏览器运行时
+sop-board check                  # 配置、当前检出的环境就绪（列出没在运行的服务与缺失的入口地址，不算失败）、浏览器运行时
 sop-board status
 ```
 

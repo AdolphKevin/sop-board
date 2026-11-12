@@ -39,7 +39,7 @@ sop-board browser open --identity <身份> --headed   # 有界面的 CfT 窗口�
 sop-board browser release --identity <身份>          # 交还：窗口不关，之后的运行直接沿用
 ```
 
-人持有窗口期间，`run prepare` 对该身份返回 `browser-busy`。看到 "browser may not be secure" 时停止，执行者把场景记为 blocked。每次真实登录或请求验证码前，执行者先运行 `sop-board identity record --identity <身份> --kind login|code --run <N>`；超限被拒绝并登记到待人处理。
+人持有窗口期间，`run prepare` 对该身份返回 `browser-busy`。执行中遇到只能由人完成的步骤，执行者用模板的 `notExecuted()` 把场景记为未执行（not-executed，不改变场景状态）并登记待人处理；人完成并交还后重跑。看到 "browser may not be secure" 时停止，执行者把场景记为 blocked。每次真实登录或请求验证码前，执行者先运行 `sop-board identity record --identity <身份> --kind login|code --run <N>`；超限被拒绝并登记到待人处理，该身份的场景记未执行。
 
 ## 崩溃
 

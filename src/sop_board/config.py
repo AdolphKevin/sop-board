@@ -17,7 +17,8 @@ from .entries import validate_entries, verification_skills, skill_files
 FORMAT = 'sop-board-project-6'
 HOME = Path(os.environ.get('SOP_BOARD_HOME', str(Path.home() / '.sop-board'))).expanduser()
 TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents'}
-ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout'}
+ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout', 'services', 'service_timeout'}
+SERVICE_NAME = re.compile(r'[a-z][a-z0-9_-]{0,63}\Z')
 AGENT_KINDS = ('default', 'run', 'fix', 'distill', 'merge', 'author', 'draft', 'atlas')
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 
@@ -167,7 +168,40 @@ def validate_adapter(adapter, problem):
     if type(timeout) is not int or timeout <= 0:
         problem('adapter.ready_timeout', '须为正整数秒数')
         timeout = 180
-    return dict(adapter, ports=ports, port_step=step, ready_timeout=timeout)
+    services = validate_services(adapter.get('services', {}), problem) if 'services' in adapter else {}
+    service_timeout = adapter.get('service_timeout', 60)
+    if type(service_timeout) is not int or not 1 <= service_timeout <= 3600:
+        problem('adapter.service_timeout', '须为 1～3600 的整数秒数')
+        service_timeout = 60
+    return dict(adapter, ports=ports, port_step=step, ready_timeout=timeout, services=services, service_timeout=service_timeout)
+
+
+def validate_services(value, problem):
+    """adapter.services：服务名 → {about: 业务说明, stoppable: 是否可停（缺省 false）}，按声明顺序保留。"""
+    if not isinstance(value, dict) or not value:
+        problem('adapter.services', '须为服务名到 {about, stoppable} 的非空对象；没有服务时不写这一项')
+        return {}
+    result = {}
+    for name, item in value.items():
+        field = f'adapter.services.{name}'
+        if not isinstance(name, str) or not SERVICE_NAME.fullmatch(name):
+            problem(field, '服务名须以小写字母开头，只含小写字母、数字、下划线与连字符，最长 64')
+            continue
+        if not isinstance(item, dict):
+            problem(field, '须为含 about 的对象')
+            continue
+        for extra in item.keys() - {'about', 'stoppable'}:
+            problem(f'{field}.{extra}', '格式外字段')
+        about = item.get('about')
+        if not isinstance(about, str) or not about.strip() or '\n' in about or len(about) > 200:
+            problem(field + '.about', '须为一行业务说明（最长 200 字），供执行会话把场景起点对应到服务')
+            continue
+        stoppable = item.get('stoppable', False)
+        if type(stoppable) is not bool:
+            problem(field + '.stoppable', '须为布尔值')
+            continue
+        result[name] = dict(about=about.strip(), stoppable=stoppable)
+    return result
 
 
 def root_of(data_root=None):

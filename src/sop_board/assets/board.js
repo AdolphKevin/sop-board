@@ -474,6 +474,19 @@
     return entry.status;
   }
 
+  // 结果执行时被 env stop 停着的服务（故障模拟），例如“执行时 stock（库存查询与扣减）已停止”。
+  function stoppedServices(entry) {
+    if (!entry?.stopped_services?.length) return null;
+    return el('p', {class: 'stopped-services'}, entry.stopped_services.map(s => s.text).join('；'));
+  }
+
+  // 最近一次未执行：不是结果，不改变状态，只说明谁、什么时候、缺什么。
+  function notExecutedNote(item) {
+    if (!item) return null;
+    return el('p', {class: 'not-executed'}, el('strong', {}, '最近一次未执行'),
+      `：${item.by || '未署名'}，${item.at}，运行 #${item.run}${item.finding ? '，' + item.finding : ''}（未执行不改变状态）`);
+  }
+
   function historyItem(entry) {
     const who = entry.kind === 'manual' ? `复测人 ${entry.marked_by}` :
       [entry.independence, entry.run ? `运行 #${entry.run}` : null, entry.launch ? `启动 #${entry.launch}` : null,
@@ -482,6 +495,7 @@
       el('div', {class: 'event-head'}, pill(stateOf(entry), entry.label), el('span', {class: 'muted'}, entry.executed_at),
         el('span', {class: 'muted'}, who), entry.current ? null : el('span', {class: 'tag old'}, '旧内容')),
       entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
+      stoppedServices(entry),
       entry.note ? el('p', {class: 'note'}, '说明：' + entry.note) : null,
       entry.defect ? el('p', {}, '缺陷：', /^https?:/.test(entry.defect) ? el('a', {href: entry.defect, target: '_blank', rel: 'noopener'}, entry.defect) : entry.defect) : null,
       entry.product_changed?.length ? el('p', {class: 'muted'}, '执行期间产品变化（只作版本记录）：' + entry.product_changed.slice(0, 5).join('、')) : null,
@@ -799,10 +813,12 @@
       el('div', {class: `banner ${data.state.state}`}, pill(data.state.state, data.state.label),
         el('span', {class: 'reason'}, data.state.reason || ''), data.state.review ? el('span', {class: 'tag review'}, '待人工复核') : null,
         data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null),
+      notExecutedNote(data.not_executed),
       ...contentSections(scene, data.coverage),
       section('最新执行结果与证据', latest ? el('div', {},
         el('div', {class: 'event-head'}, pill(stateOf(latest), latest.label), el('span', {class: 'muted'}, latest.executed_at)),
         latest.actual ? el('p', {}, latest.actual) : null, latest.finding ? el('p', {class: 'finding'}, latest.finding) : null,
+        stoppedServices(latest),
         gallery(latest.evidence)) : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
       el('details', {class: 'block history'}, el('summary', {}, el('h3', {}, '历史'), el('span', {class: 'muted'}, `${data.history.length} 条，当前内容 ${current.length} 条`)),
         data.history.length ? el('ul', {class: 'timeline'}, data.history.map(historyItem)) : el('p', {class: 'muted'}, '没有记录'),
@@ -818,6 +834,17 @@
   const percent = value => { const x = value * 100, r = Math.round(x); return r - x === 0.5 && r % 2 ? r - 1 : r; };
   const ratio = item => item.denominator ? `${item.numerator}/${item.denominator}（${percent(item.value)}%）` : '—';
 
+  // 本检出各服务的状态与业务说明，只在本机页面显示（内网接口不返回 environment）。
+  function servicesBlock(environment) {
+    if (!config.local || !environment?.services?.length) return null;
+    const ENV = {ready: '就绪', starting: '启动中', failed: '启动失败', stopped: '未运行'};
+    const tone = {running: 'pass', stopped: 'skip', absent: 'not-run', crashed: 'fail', unreported: 'blocked', down: 'skip'};
+    return el('section', {class: 'block services'}, el('h3', {}, `本检出的服务（环境${ENV[environment.state] || environment.state}）`),
+      el('ul', {class: 'service-list'}, environment.services.map(s => el('li', {},
+        pill(tone[s.state] || 'skip', s.label), el('span', {class: 'mono'}, ' ' + s.name), el('span', {class: 'muted'}, `（${s.about}）`),
+        s.stoppable ? el('span', {class: 'tag'}, '可停') : null))));
+  }
+
   function renderOverview() {
     const pane = $('#detail');
     const {counts, total, items} = board.data;
@@ -830,6 +857,7 @@
       el('div', {class: 'tiles'}, [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['changed', '需求变更'],
         ['not-run', '未执行'], ['pass', '通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
       el('p', {class: 'muted metrics'}, `Agent 独立通过的人工确认率 ${ratio(board.data.stats.agent_confirm_rate)} · 复核覆盖 ${ratio(board.data.stats.agent_review_coverage)}`),
+      servicesBlock(board.data.environment),
       el('section', {class: 'block'}, el('h3', {}, `需要处理（${urgent.length}）`),
         urgent.length ? el('ul', {class: 'todo'}, urgent.map(([key, item]) => el('li', {},
           el('div', {class: 'row selectable', onclick: () => select(key, {fromHash: true})},
@@ -1049,6 +1077,7 @@
 
   // ---- 运行记录 ----
 
+  const SERVICE_ACTIONS = {stop: '停止', start: '启动', restore: '自动恢复'};
   const table = (headers, rows, empty) => el('div', {class: 'table-wrap'}, el('table', {},
     el('thead', {}, el('tr', {}, headers.filter(Boolean).map(t => el('th', {}, t)))),
     el('tbody', {}, rows.length ? rows : [el('tr', {}, el('td', {colspan: headers.length, class: 'muted center'}, empty))])));
@@ -1073,7 +1102,10 @@
         const [cls, label] = runState[item.status] || ['skip', item.status];
         return el('tr', {}, el('td', {class: 'mono'}, '#' + item.id), el('td', {}, item.kind === 'run' ? (item.fix ? `修复 #${item.fix} 的复验` : '执行') : '沉淀'),
           el('td', {}, pill(cls, label)), el('td', {class: 'mono'}, item.scope.join('、')),
-          el('td', {}, `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : '')),
+          el('td', {}, `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : ''),
+            item.service_events?.length ? el('ul', {class: 'service-events'}, item.service_events.map(e => el('li', {class: 'muted'},
+              `${e.at} ${e.operator} ${SERVICE_ACTIONS[e.action] || e.action} ${e.service}` + (e.ok ? '' : '（未完成）')
+              + (e.scenarios?.length ? `；停着期间执行 ${e.scenarios.join('、')}` : '') + (e.note ? `；${e.note}` : '')))) : null),
           el('td', {}, item.created_at), config.local ? el('td', {class: 'mono muted'}, item.session || '') : null);
       }), '没有运行'));
   }

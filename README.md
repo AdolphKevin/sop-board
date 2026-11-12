@@ -22,6 +22,7 @@ flowchart LR
 - **场景文件是唯一真相**：场景 YAML 放在产品仓库，随分支与 worktree 走；会话直接编辑，开发者审核提交。看板按场景内容指纹记录结果，产品快照只记下取证时的代码版本。
 - **一条路径**：所有 AI 工作都经 `sop-board` 命令完成。看板上的“AI 重跑”只是用同一份技能启动一个无头会话。
 - **多 worktree**：同一项目的 main 与各个 git worktree 自动识别为不同检出，结果、快照、环境端口和浏览器各自隔离。
+- **环境按产品来**：仓库与服务只是本机搭环境的材料，不要求全部在运行；用不到某个服务的场景照常执行，本机暂时不具备条件的场景记未执行（不改变状态），意外故障才记受阻。需要依赖故障的场景用 `sop-board env stop|start <服务>` 模拟，提交时自动恢复。
 - **自带浏览器**：看板守护进程启动固定版本的 Google Chrome for Testing（每个检出×身份一份持久 profile，缺省无头），不接管你日常用的 Chrome。
 - **自动署名**：登记以本机操作者（缺省 `git config user.name`）署名，会话不再反复询问确认人；草稿的确认人是在看板上同意它的测试同学。
 
@@ -59,6 +60,7 @@ sop-board check
 | 修复 | `sop-board fix prepare` → 改代码 → `fix submit` → 另一会话 `run prepare --fix N` → 提交后 `fix close` |
 | worktree | `sop-board checkout list`，`sop-board checkout create <名称>` |
 | 真人登录与验证 | `sop-board browser open --identity <身份> --headed`，完成后 `browser release` 交还（窗口不关） |
+| 看各服务状态、模拟依赖故障 | `sop-board env status`；运行中 `sop-board env stop <服务>` / `env start <服务>` |
 
 ## 文档
 

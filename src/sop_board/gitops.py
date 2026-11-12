@@ -165,6 +165,24 @@ def snapshot(paths, exclusions=None, *, files=False):
     return result
 
 
+def uncommitted(paths):
+    """各仓库工作区的未提交改动数（git status，含未跟踪、未忽略的文件）：别名 → 数量，只列有改动的仓库。"""
+    result = {}
+    for alias in sorted(paths):
+        try:
+            entries = _records(git(paths[alias], 'status', '--porcelain=v1', '-z', '--untracked-files=all'))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        count, position = 0, 0
+        while position < len(entries):
+            # 重命名与复制的下一项是原路径，不另计。
+            position += 2 if entries[position][:1] in (b'R', b'C') else 1
+            count += 1
+        if count:
+            result[alias] = count
+    return result
+
+
 def changed_between(before, after):
     """比较两份 snapshot(files=True) 的逐文件清单，返回 别名/路径 列表。"""
     result = []

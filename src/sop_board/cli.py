@@ -29,7 +29,7 @@ GROUPS = {
              'operator': '查看或设置本机操作者', 'skills': '安装随包技能到 Codex 与 Claude Code',
              'serve': '在终端启动看板守护进程（网页、环境、浏览器、无头会话）', 'status': '查看场景状态与待处理事项'},
     '检出': {'checkout': '列出、查看、建立或移除 main 与 worktree 检出'},
-    '执行': {'env': '按检出启停产品环境', 'browser': '安装与管理 Chrome for Testing',
+    '执行': {'env': '按检出启停产品环境，查看各服务状态，运行中停启单个服务', 'browser': '安装与管理 Chrome for Testing',
              'run': '准备、提交、启动执行会话', 'retest': '运行守护测试发现代码回归', 'mark': '登记人工复测结论',
              'launch': '查看或停止本机无头会话'},
     '修复与沉淀': {'fix': '修复、独立复验与关闭', 'distill': '把独立通过的场景沉淀为守护测试'},
@@ -217,6 +217,15 @@ def daemon_call(context, path, body=None, timeout=900):
 
 def cmd_env(args):
     context = load(args)
+    if args.action in ('stop', 'start'):
+        if not args.service:
+            return fail('service-required', [dict(field='service', problem=f'请写出服务名：sop-board env {args.action} <服务>')], 2)
+        result = daemon_call(context, '/local/env/service', dict(
+            service=args.service, action=args.action, operator=config.operator() or '本机'))
+        emit(result)
+        return 0 if result.get('ok') else 1
+    if args.service:
+        return fail('invalid', [dict(field='service', problem=f'env {args.action} 不接受服务名；停启单个服务用 env stop|start <服务>')], 2)
     if args.action == 'status' and args.all:
         from . import daemon
         emit(daemon.call(context.project, 'POST', '/local/env/status', {}))
@@ -242,11 +251,17 @@ def cmd_check(args):
         if not state['running']:
             step('环境', False, f'看板守护进程没有运行：先运行 sop-board serve --project {project.name}')
         else:
+            # 环境就绪以 adapter 输出就绪为准；没在运行的服务与缺失的入口地址只列出，不算失败。
             try:
                 environment = daemon_call(context, '/local/env/up')['environment']
-                missing = [entry.get('address_env') for entry in project.entries.values()
-                           if entry.get('address_env') and entry['address_env'] not in environment.get('address_env', {})]
-                step('环境', not missing, environment if not missing else f'就绪，但缺少入口地址变量：{"、".join(missing)}')
+                result['not_running'] = environment.get('not_running', [])
+                result['missing_address_env'] = environment.get('missing_address_env', {})
+                step('环境', environment.get('state') == 'ready', dict(
+                    state=environment.get('state'), address_env=environment.get('address_env', {}),
+                    services=[dict(name=s['name'], about=s['about'], state=s['state'], label=s['label'])
+                              for s in environment.get('services', [])],
+                    not_running=result['not_running'], missing_address_env=result['missing_address_env'],
+                    log=environment.get('log')))
             except (APIError, ValueError) as error:
                 step('环境', False, getattr(error, 'problems', None) or str(error))
         for extra in CHECKS:
@@ -616,7 +631,9 @@ def parser():
     p.set_defaults(handler=cmd_serve)
 
     p = common(sub.add_parser('env'))
-    p.add_argument('action', choices=('up', 'down', 'restart', 'status'))
+    p.add_argument('action', choices=('up', 'down', 'restart', 'status', 'stop', 'start'),
+                   help='stop|start <服务>：运行中停启 adapter.services 中可停的服务（模拟依赖故障），停启记进运行，提交或放弃时自动恢复')
+    p.add_argument('service', nargs='?', help='stop|start：服务名')
     p.add_argument('--all', action='store_true', help='status：列出全部检出')
     p.set_defaults(handler=cmd_env)
 

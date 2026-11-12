@@ -1,0 +1,36 @@
+metadata:
+  requirement: "演示商城下单与库存：下单先扣减库存，成功后才生成订单；库存查询不可用时下单返回明确的降级提示，不生成订单"
+  version: 1
+  owner: "演示负责人"
+  status: confirmed
+  sources:
+    - {ref: "docs/sop/stock.md", version: "演示 v1", confirmed_by: "演示负责人"}
+sops:
+  - id: STOCK-O1
+    title: 买家下单
+    actor: 买家
+    entry: 下单接口 POST /api/purchases
+    scenarios:
+      - id: STOCK-O1-P01
+        polarity: positive
+        title: 有库存时下单成功并扣减库存
+        actor: 买家
+        priority: P0
+        verify: api
+        initial_state: ["库存查询与扣减可用；商品 DEMO-1 至少有 1 件库存，记下单前的库存数为 N", "订单 K（订单号带运行编号前缀）不存在"]
+        steps: ["GET /api/stock/DEMO-1 记录 N", "POST /api/purchases，order_id 为订单 K，sku 为 DEMO-1，qty 为 1，paid 为 20", "GET /api/orders?id=订单 K", "GET /api/stock/DEMO-1"]
+        expected: ["下单接口返回 201，sku 为 DEMO-1，qty 为 1", "订单查询有一条订单 K，商品 DEMO-1、数量 1", "DEMO-1 的库存为 N - 1"]
+        forbidden_effects: ["DEMO-1 的库存减少超过 1 件", "订单 K 出现两条"]
+        refs: ["stock.md#R1"]
+      - id: STOCK-O1-N01
+        polarity: negative
+        negative_type: disconnect
+        title: 库存查询不可用时下单返回降级提示，不生成订单
+        actor: 买家
+        priority: P0
+        verify: api
+        initial_state: ["库存查询不可用：商城查询或扣减库存都得不到应答", "订单 S（订单号带运行编号前缀）不存在"]
+        steps: ["POST /api/purchases，order_id 为订单 S，sku 为 DEMO-1，qty 为 1，paid 为 20", "GET /api/orders?id=订单 S"]
+        expected: ["下单接口返回 503，提示“库存服务暂不可用，请稍后再试”", "订单查询没有订单 S"]
+        forbidden_effects: ["生成订单 S"]
+        refs: ["stock.md#R2"]
