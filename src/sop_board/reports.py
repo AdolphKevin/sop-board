@@ -113,7 +113,7 @@ def build(context, *, file=None, local=True, fetch=False):
                   f"- 入口 {scene['verify']} · {scene['priority']} · {'正向' if scene['polarity'] == 'positive' else '反向'}"]
         if skipped_text(scene):
             lines.append('- ' + skipped_text(scene))
-        if info['guard'].get('unsynced') or info['guard'].get('unrunnable'):
+        if (info['state'] == 'pass' and info['guard'].get('unsynced')) or info['guard'].get('unrunnable'):
             lines.append(f"- 守护：{info['guard']['reason']}")
         guard = book.own_guard((scene['file'], scene['id'], scene['fingerprint']))
         if guard:
@@ -165,6 +165,8 @@ def build(context, *, file=None, local=True, fetch=False):
                      + (f"，说明 {_cell(item['note'])}" if item['note'] else ''))
     if not stats['misjudgments']:
         lines.append('- 无')
+    distill = sorted(k for k in scenes if derived['items'][k]['distill'])
+    lines += ['', '## 待沉淀', '', *([f"- {k} {scenes[k]['title']}" for k in distill] or ['- 无']), '']
     review = sorted(k for k in scenes if derived['items'][k]['review'])
     lines += ['', '## 待人工复核', '', *([f"- {k} {scenes[k]['title']}" for k in review] or ['- 无']), '']
     unexecuted = sorted(k for k in scenes if derived['items'][k]['state'] in ('not-run', 'retest', 'draft'))

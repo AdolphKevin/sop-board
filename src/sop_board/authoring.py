@@ -140,13 +140,15 @@ def create_work(context, kind, *, session=None, scope=()):
 def load_work(context, kind, work_id=None):
     with context.store.local() as db:
         if work_id is None:
-            row = db.execute("SELECT * FROM local_work WHERE kind=? AND checkout=? AND status='prepared' ORDER BY id DESC LIMIT 1",
+            state = '' if kind == 'author' else " AND status='prepared'"
+            row = db.execute('SELECT * FROM local_work WHERE kind=? AND checkout=?' + state + ' ORDER BY id DESC LIMIT 1',
                              (kind, context.checkout.id)).fetchone()
         else:
             row = db.execute('SELECT * FROM local_work WHERE id=? AND kind=?', (work_id, kind)).fetchone()
     if row is None:
         reject(404, 'work-not-found', 'work', '没有进行中的工作；先运行对应的 prepare')
-    if row['status'] != 'prepared':
+    allowed = ('prepared', 'submitted') if kind == 'author' else ('prepared',)
+    if row['status'] not in allowed:
         reject(409, 'work-state-invalid', 'work', f"#{row['id']} 的状态是 {row['status']}")
     return dict(row)
 
@@ -255,6 +257,7 @@ def sop_check(text):
 
 
 def sop_submit(context, file, *, by, work_id=None):
+    """一次编写工作可分别提交多份 SOP（新 SOP 与随之改正的已有 SOP），结果累计为 files 清单。"""
     work = load_work(context, 'author', work_id)
     path = Path(file).expanduser().resolve()
     target_dir = context.checkout.scenarios_dir(context.project).resolve()
@@ -264,16 +267,20 @@ def sop_submit(context, file, *, by, work_id=None):
     problems = sop_check(text)
     if problems:
         reject(422, 'sop-invalid', 'content', '；'.join(problems))
+    earlier = json.loads(work['result']).get('files', []) if work['result'] else []
+    submitted = [item for item in earlier if item['file'] != path.name]
     listing = json.loads((Path(work['dir']) / 'sources.json').read_text(encoding='utf-8'))
-    stamp = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')
+    confirmed_at = now()
+    stamp = datetime.fromisoformat(confirmed_at).astimezone().strftime('%Y-%m-%d %H:%M')
     record = [CONFIRMATION, '', f'- 确认人：{by}（{stamp}，sop-board sop submit）'] + \
              [f"- 资料 {s['id']}：{s['name']}（sha256 {s['sha256'][:16]}）" for s in listing]
     path.write_text(text.rstrip() + '\n\n' + '\n'.join(record) + '\n', encoding='utf-8')
     from . import works
     from .checkouts import branch_of
+    submitted.append(dict(file=path.name, confirmed_by=by, confirmed_at=confirmed_at))
     works.finish(context.store, work, checkout=context.checkout.name, branch=branch_of(context.project, context.checkout),
-                 result=dict(file=path.name, confirmed_by=by))
-    return dict(ok=True, work=work['id'], file=str(path), confirmed_by=by)
+                 result=dict(files=submitted))
+    return dict(ok=True, work=work['id'], file=str(path), confirmed_by=by, files=submitted)
 
 
 def sop_files(context):

@@ -33,4 +33,4 @@
 - 命令只用 argv，不经 shell；`{junit}` 由运行器替换为 junit 输出路径，`{playwright}` 替换为看板运行时的 Playwright CLI。命令必须输出 junit。
 - 浏览器层测试的命令写 `"browser": "<身份>"`，由看板提供 PW_CDP_ENDPOINT；测试不自己启动浏览器。改写已有 spec 的断言时，在该守护的 ledger 里逐条写 `{"assertion_id", "kind": "rewrite", "reason"}`。
 
-5. 运行 `sop-board distill submit`。它会核对 acceptance、覆盖与检出能力证据，实际运行一次命令，全部合格后才写进守护索引。被拒时按输出修正后再提交。不要提交 git。
+5. 运行 `sop-board distill submit`。当前状态须为通过；状态不是通过时返回 `distill-not-passing` 并写明当前状态，回到通过后再登记。它会核对 acceptance、覆盖与检出能力证据，实际运行一次命令，全部合格后才写进守护索引。被拒时按输出修正后再提交。不要提交 git。

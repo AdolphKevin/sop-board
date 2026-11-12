@@ -1,6 +1,6 @@
 # 编写业务 SOP（工作 #$work）
 
-资料副本在 $directory/sources/（清单与摘要见 sources.json）。把 SOP 写成场景目录 $target 下的一个 Markdown 文件，然后运行 `sop-board sop submit --file <该文件>`。
+资料副本在 $directory/sources/（清单与摘要见 sources.json）。把 SOP 写成场景目录 $target 下的 Markdown 文件，新 SOP 与随之改正的已有 SOP 分别运行 `sop-board sop submit --file <该文件> --work $work`。同一工作可登记多份文件，每份的确认资料都取这次的 sources.json；有新资料时重新 `sop prepare`。
 
 ## 依据
 

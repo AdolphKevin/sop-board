@@ -48,7 +48,7 @@ def board(app, request):
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
         if info.get('source_branch'):
             items[key]['source_branch'] = info['source_branch']
-        if info['guard'].get('unsynced'):
+        if info['state'] == 'pass' and info['guard'].get('unsynced'):
             items[key]['unsynced'] = info['guard']['reason']
         if 'draft_review' in info:
             draft = info['draft_review']

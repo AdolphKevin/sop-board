@@ -12,6 +12,6 @@
 
 使用者要求沉淀（“待沉淀”“写成回归测试 / 低成本测试 / 守护测试”）时进行；执行与修复会话专注各自的工作，测试由沉淀会话写。
 
-1. 可沉淀的场景在 `status --json` 的 `distill_queue`：同一指纹上有独立真实入口通过、还没有有效守护。
-2. 按 [regression-distill](../../regression-distill/SKILL.md) 技能执行：`sop-board distill prepare [<场景键> …]`，按 prompt.md 写测试与 guard.json，再 `sop-board distill submit`。
+1. 可沉淀的场景在 `status --json` 的 `distill_queue`：状态为通过，同一指纹上有独立真实入口通过、还没有有效守护。
+2. 按 [regression-distill](../../regression-distill/SKILL.md) 技能执行：`sop-board distill prepare [<场景键> …]`，按 prompt.md 写测试与 guard.json，再 `sop-board distill submit`。prepare 与 submit 都核对当前状态；状态不是通过时返回 `distill-not-passing` 并写明当前状态，回到通过后再准备或登记。
 3. 测试文件与 regression.yaml 留作未提交改动，由开发者审核提交。

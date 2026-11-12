@@ -15,7 +15,7 @@ description: 把经独立真实入口通过的 SOP 场景沉淀为产品仓库�
 sop-board distill prepare [<文件>#<场景编号> ...]
 ```
 
-不写场景时，准备当前检出全部“待沉淀”的场景。只有同一指纹上有独立真实入口通过、且没有有效守护的场景才能沉淀，prepare 会拒绝其他场景。按输出给出的 prompt.md 工作。材料都在工作目录：scenarios.yaml（场景原文）、acceptance.json（独立通过的结果编号；Web 场景的通过 spec 在其运行目录）、repos.json（本检出的仓库目录）。
+不写场景时，准备当前检出全部“待沉淀”的场景。只有当前状态为通过、同一指纹上有独立真实入口通过、且没有有效守护的场景才能沉淀，prepare 会拒绝其他场景。prepare 与 submit 在状态不是通过时返回 `distill-not-passing` 并写明当前状态，回到通过后再准备或登记。按输出给出的 prompt.md 工作。材料都在工作目录：scenarios.yaml（场景原文）、acceptance.json（独立通过的结果编号；Web 场景的通过 spec 在其运行目录）、repos.json（本检出的仓库目录）。
 
 ## 2. 调查并选层
 

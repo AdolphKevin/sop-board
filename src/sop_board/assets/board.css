@@ -232,6 +232,8 @@ pre.text-evidence { margin: 0; max-height: 280px; overflow: auto; padding: 10px;
 
 /* 草稿审阅：单栏详情、路径、规则原文、检查清单、同意、文件与节点面板 */
 .detail-grid.single { grid-template-columns: minmax(0, 1fr); max-width: 980px; }
+/* 隐藏左栏后，详情内容用满让出的宽度；显示左栏时仍沿用原来的阅读宽度。 */
+.workbench.sidebar-hidden .detail-grid { max-width: none; }
 .crumbs .crumb, .crumb { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; font-size: 12.5px; cursor: pointer; }
 .crumbs .crumb:hover, .crumb:hover { background: none; text-decoration: underline; }
 .rule { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); }

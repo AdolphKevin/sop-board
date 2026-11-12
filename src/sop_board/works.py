@@ -41,7 +41,9 @@ def local_dir(store, db, record_id):
 def finish(store, row, *, checkout, branch, result):
     """编写类工作（合并、SOP、地图、沉淀）提交时：先登记业务部分，再把本机部分标为 submitted。"""
     with store.records_tx() as db:
-        record, _ = publish(db, store, row, checkout=checkout, branch=branch, result=result)
+        record, created = publish(db, store, row, checkout=checkout, branch=branch, result=result)
+        if not created and row['kind'] == 'author':
+            db.execute('UPDATE work SET result=?, ended_at=? WHERE id=?', (dumps(result), now(), record))
     with store.local_tx() as db:
         db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, record=? WHERE id=?",
                    (now(), dumps(result), record, row['id']))

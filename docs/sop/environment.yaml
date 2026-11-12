@@ -99,7 +99,7 @@ sops:
           - "wt1 中修好了预埋缺陷（未提交），并把 shop#A 的一条 expected 文字改为新内容（未提交）；main 保持原样"
         steps:
           - "同时在 main 运行 sop-board run prepare --scope all --session S1，在 wt1 运行 sop-board run prepare --scope all --session S2"
-          - "两位执行者各自用本检出 runs/<编号>/run.env 中的入口地址变量执行 shop#X 与 shop#A，按实际结果写结果后分别 run submit"
+          - "两位执行者各自用本检出 runs/<编号>/run.env 中的入口地址变量执行 shop#X 与 shop#A，按实际结果写结果（范围内其余场景写为未执行）后分别 run submit"
           - "分别在两个检出运行 sop-board status --json，并在工作台切换 checkout=main 与 checkout=wt1 查看 shop#X、shop#A"
           - "在 main 与 wt1 分别运行 git status"
         expected:

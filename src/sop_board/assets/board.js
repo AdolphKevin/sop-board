@@ -467,7 +467,10 @@
     if (item.type.startsWith('video/')) return el('video', {src: item.url, controls: true, preload: 'metadata'});
     if (item.name.endsWith('.zip') && item.name.includes('trace')) {
       const absolute = new URL(item.url, location.href).href;
-      return el('div', {class: 'file-evidence'}, el('a', {href: item.url}, '下载 trace'), el('a', {href: 'https://trace.playwright.dev/?trace=' + encodeURIComponent(absolute), target: '_blank'}, '在 Trace Viewer 中打开'));
+      return el('div', {class: 'file-evidence'}, el('a', {href: item.url, download: item.name}, '下载 trace'),
+        config.local ? el('div', {}, el('a', {href: 'https://trace.playwright.dev/?trace=' + encodeURIComponent(absolute), target: '_blank'}, '在 Trace Viewer 中打开'),
+          el('p', {class: 'muted small'}, '首次打开时，浏览器若询问是否允许访问本地网络，请选择允许。')) : null,
+        el('p', {class: 'muted small'}, '下载后打开 ', el('a', {href: 'https://trace.playwright.dev/', target: '_blank'}, 'Trace Viewer'), '，选择或拖入这个文件。'));
     }
     const pre = el('pre', {class: 'text-evidence'}, '…');
     fetch(item.url).then(r => r.text()).then(text => { pre.textContent = text.length > 6000 ? text.slice(0, 6000) + '\n…（已截断，下载查看全文）' : text; });
@@ -832,7 +835,7 @@
           r => `已启动无头会话 #${r.launch.id}，结果会回到这里；进度见运行记录`)),
         action('运行守护', '直接运行守护测试，不启动 AI', call('/api/retest', {checkout: data.checkout, scenario: data.key},
           r => r.summary || '守护测试已运行')),
-        action('沉淀', data.state.distill ? '启动沉淀会话写守护测试' : '需要先有独立真实入口通过', call('/api/distill', {checkout: data.checkout, scenario: data.key},
+        action('沉淀', data.state.distill ? '启动沉淀会话写守护测试' : '需要当前状态为通过且满足待沉淀条件', call('/api/distill', {checkout: data.checkout, scenario: data.key},
           r => `已启动沉淀会话 #${r.launch.id}`), !data.state.distill)),
       message);
   }
@@ -863,7 +866,7 @@
         data.state.source_branch ? el('span', {class: 'tag branch', title: '本分支还没有结论，状态取自其他分支的结论'}, '来源分支 ' + data.state.source_branch) : null,
         el('span', {class: 'reason'}, data.state.reason || ''), data.state.review ? el('span', {class: 'tag review'}, '待人工复核') : null,
         data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null,
-        data.state.guard?.unsynced || data.state.guard?.unrunnable ? el('span', {class: 'tag guard'}, data.state.guard.reason) : null),
+        (data.state.state === 'pass' && data.state.guard?.unsynced) || data.state.guard?.unrunnable ? el('span', {class: 'tag guard'}, data.state.guard.reason) : null),
       notExecutedNote(data.not_executed),
       fixesNote(data.fixes),
       elsewhereBlock(data.elsewhere),

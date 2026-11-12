@@ -11,7 +11,7 @@
 - fail 失败 / blocked 受阻 / skip 跳过：最新结果如此（人工不通过按失败，人工阻塞按受阻）。
 - changed 需求变更：测试同学复测时标为需求变更；场景文件按新需求修改后指纹变化，回到未执行。
 另有两个徽标，可与状态并存：
-- distill 待沉淀：选出的记录中有经真实入口的 Agent 独立通过，但没有有效守护（别人已沉淀而本机未同步、或本机无法运行时不算）。
+- distill 待沉淀：状态为通过，选出的记录中有经真实入口的 Agent 独立通过，但没有有效守护（别人已沉淀而本机未同步、或本机无法运行时不算）。
 - review 待人工复核：状态为通过，且最新结果是经真实入口的 Agent 独立通过，之后还没有人工标注。
 未执行记录（运行记录里的未执行清单）不参与推导，只显示在场景详情里。
 草稿场景另有审阅状态（draft_review）：annotated 有批注 / approved 已同意 / pending 待审；同意按 产品 + 文件 + 场景 + 指纹 记录。
@@ -298,7 +298,7 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
         run = book.own_guard(identity)
         info = derive(scene, selection, guard_run=run)
         info['label'] = LABELS[info['state']]
-        info['distill'] = bool(scene.get('status') != 'draft' and independent_pass(results) and not guard['valid']
+        info['distill'] = bool(info['state'] == 'pass' and independent_pass(results) and not guard['valid']
                                and not guard.get('unsynced') and not guard.get('unrunnable'))
         info['review'] = info['state'] == 'pass' and accepted(results[0])
         info['guard'] = dict(guard, last=dict(id=run['id'], status=run['status'], reason=run['reason'], ran_at=run['ran_at'],

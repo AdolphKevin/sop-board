@@ -525,6 +525,15 @@ def distill_eligible(context):
     return found, derived
 
 
+def require_passing(derived, keys):
+    """沉淀只接收当前状态为通过的场景，不改变已有守护的有效性。"""
+    from .errors import reject
+    failed = [f"{key} 当前的状态是{derived['items'][key]['label']}"
+              for key in keys if key in derived['items'] and derived['items'][key]['state'] != 'pass']
+    if failed:
+        reject(409, 'distill-not-passing', 'scope', '不能沉淀：' + '；'.join(failed))
+
+
 def distill_prepare(context, scope, *, session):
     from importlib.resources import files
     from string import Template
@@ -537,6 +546,7 @@ def distill_prepare(context, scope, *, session):
     found, derived = distill_eligible(context)
     scenes = found['scenarios']
     keys = resolve(scope, scenes) if scope else sorted(k for k, v in derived['items'].items() if v['distill'])
+    require_passing(derived, keys)
     not_ready = [k for k in keys if not derived['items'][k]['distill']]
     if not_ready:
         from .errors import reject
@@ -617,6 +627,7 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
         reject(422, 'report-invalid', 'report', '沉淀报告须含 guards')
     found, snapshot, derived = scene_board(context)
     scenes = found['scenarios']
+    require_passing(derived, report['guards'])
     path = index_path(context)
     index = load_index(path)
     commands = dict(index['commands'])
@@ -703,6 +714,8 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
     failed = {k: v[1] for k, v in verdicts.items() if not v[0]}
     if failed:
         reject(422, 'distill-tests-failed', 'tests', '守护命令实际运行未通过：' + '；'.join(f'{k} {r}' for k, r in failed.items()))
+    _, _, current = scene_board(context)
+    require_passing(current, entries)
     path.write_text(yaml.safe_dump(merged, allow_unicode=True, sort_keys=False), encoding='utf-8')
     from .checkouts import branch_of
     branch = branch_of(app.project, checkout)

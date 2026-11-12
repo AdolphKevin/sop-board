@@ -10,11 +10,12 @@
 #   “库存演示项目”与 stock#K、stock#S 见 environment.yaml 文件头；其 regression.yaml 另声明守护命令 api（经商城接口下单，依赖库存服务）。
 #   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 GRD-05（沉淀登记共享与“本机未同步”、
 #   守护未通过只影响产出它的检出、本机无法运行、漏检只在同一机器同一检出内判定）。“双机项目”见 setup.yaml 文件头。
+#   版本 6 由未参与实现的审核方按 docs/design.md 已定决策 25（使用者 2026-11-12 决定）修订：待沉淀只在状态为通过时显示，GRD-01 的规则改写，新增 GRD-01-N02。
 #   版本 5 由未参与实现的审核方按决策 21 实现者指出的问题修订 GRD-05-N02 的起点：守护改由 B 沉淀，因为沉淀时会在沉淀的机器上实际运行一次守护。
 
 metadata:
   requirement: "sop-board v10：独立通过 → 待沉淀 → 写测试 → 守护；sop-board retest 不经 AI 运行全部有效守护发现代码回归：通过只留作证据、场景状态不变，未通过的场景转为待复测交真实入口，修好后守护重新运行通过或经真实入口通过即回到通过；retest 不判断失败原因，待复测原因写明当时本机没在运行的服务与工作区是否有未提交改动；故障场景的守护写在不需要真实停服的层；漏检使守护失效"
-  version: 5
+  version: 6
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -33,6 +34,9 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（守护有效性现算、沉淀登记共享、守护未通过只影响产出它的检出）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 25：待沉淀只在状态为通过时显示"
+      version: "2026-11-12"
+      confirmed_by: "blur.yin"
   tags: ["guard", "distill", "retest", "regression"]
 
 sops:
@@ -40,7 +44,9 @@ sops:
     title: 独立通过后显示待沉淀
     actor: 开发者
     entry: "工作台徽标与“待沉淀”筛选、sop-board status --json"
-    must: ["同一指纹上已有独立真实入口通过、但没有有效守护的场景显示为待沉淀"]
+    must:
+      - "状态为通过、同一指纹上已有独立真实入口通过、但没有有效守护的场景显示为待沉淀"
+      - "状态不是通过时（失败、受阻、待复测、需求变更、跳过）不显示待沉淀，不进入待沉淀筛选与 distill_queue；distill prepare 指名这样的场景时返回 distill-not-passing"
     scenarios:
       - id: GRD-01-P01
         polarity: positive
@@ -72,6 +78,33 @@ sops:
           - "regression.yaml 的 sha256 不变"
         forbidden_effects: ["把实现者自检或未声明的通过写进守护"]
         refs: ["docs/design.md#守护与沉淀（问题 4）"]
+
+      - id: GRD-01-N02
+        polarity: negative
+        negative_type: other
+        title: 独立通过后被测试同学标为不通过或阻塞的场景不显示待沉淀，也不能沉淀；再标为通过后重新显示
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state:
+          - "shop#A 与 shop#B 各有一条 Agent 独立验收通过，都没有守护，都显示通过与“待沉淀”"
+          - "运行 sop-board status --json，记录 distill 与 distill_queue；内网设备的浏览器已存有姓名 张测"
+        steps:
+          - "测试同学从内网把 shop#A 标注为不通过，把 shop#B 标注为阻塞"
+          - "本机打开工作台，查看 shop#A 与 shop#B 的状态与徽标，点筛选“待沉淀”；运行 sop-board status --json"
+          - "运行 sop-board distill prepare shop#A --json"
+          - "测试同学再把 shop#A 标注为通过；查看 shop#A 的状态与徽标，运行 sop-board status --json"
+        expected:
+          - "标注后 shop#A 显示失败、shop#B 显示受阻，两条都不带“待沉淀”徽标；“待沉淀”筛选不含这两条"
+          - "status --json 的 distill 比标注前少 2，distill_queue 不含 shop#A 与 shop#B"
+          - "distill prepare shop#A 以业务失败退出（退出码 1），error_code 为 distill-not-passing，写明 shop#A 当前的状态是失败；没有新建沉淀工作"
+          - "再标注通过后 shop#A 回到通过，重新带“待沉淀”徽标；distill 比上一步多 1，distill_queue 包含 shop#A、不含 shop#B"
+        forbidden_effects:
+          - "状态为失败或受阻的场景带“待沉淀”徽标，或进入待沉淀筛选与 distill_queue"
+          - "为状态不是通过的场景准备或登记守护"
+          - "人工标注使那条 Agent 独立通过的结果被删除或改写"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#场景状态（按检出推导，不存储）", "docs/design.md#守护与沉淀（问题 4）"]
+        evidence_hints: ["标注前后的 status --json", "工作台 shop#A、shop#B 的状态与徽标截图", "“待沉淀”筛选的截图", "distill prepare 输出", "results 表只读查询"]
 
   - id: GRD-02
     title: 会话沉淀测试并登记守护

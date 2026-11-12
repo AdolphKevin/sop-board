@@ -197,7 +197,7 @@ def cmd_status(args):
                       review_queue=sorted(k for k, v in derived['items'].items() if v['review']),
                       from_other_branch={k: v['source_branch'] for k, v in sorted(derived['items'].items()) if v.get('source_branch')},
                       distilled_elsewhere={k: v['guard']['reason'] for k, v in sorted(derived['items'].items())
-                                           if v['guard'].get('unsynced')},
+                                           if v['state'] == 'pass' and v['guard'].get('unsynced')},
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
         from . import daemon
         result['daemon'] = dict(daemon.describe(project), command=project.serve_command())
