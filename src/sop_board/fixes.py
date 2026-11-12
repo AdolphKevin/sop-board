@@ -72,6 +72,7 @@ def prepare(context, scope, *, session):
         reject(409, 'nothing-to-fix', 'scope', '当前检出没有失败或受阻的场景')
     store = context.store
     book = derived['book']
+    # 共享的修复记录只引用证据的名称与 sha256，不带任何一台机器的本机路径；本机的 problems.json 另外写明证据在本机的位置。
     problems = []
     with store.records() as db:
         for key in keys:
@@ -81,9 +82,7 @@ def prepare(context, scope, *, session):
                                  results=[dict(kind=r['kind'], status=r['status'], actual=r['actual'], finding=r['finding'],
                                                defect=r['defect'], executed_at=r['executed_at'],
                                                machine=book.machine_name(r['machine']), branch=r['branch'],
-                                               evidence=[dict(name=e['name'], sha256=e['sha256'],
-                                                              path=str(store.evidence_path(e['sha256'])) if store.has_evidence(e['sha256'])
-                                                              else f"证据在 {book.machine_name(r['machine'])} 的机器上")
+                                               evidence=[dict(name=e['name'], sha256=e['sha256'])
                                                          for e in db.all('SELECT name, sha256 FROM result_evidence WHERE result=? ORDER BY ordinal',
                                                                          (r['id'],))])
                                           for r in rows]))
@@ -111,7 +110,7 @@ def prepare(context, scope, *, session):
                    (fix_id, store.product, context.checkout.id, str(directory), dumps(base)))
     directory.mkdir(parents=True)
     import yaml
-    (directory / 'problems.json').write_text(dumps(problems), encoding='utf-8')
+    (directory / 'problems.json').write_text(dumps(local_problems(store, problems)), encoding='utf-8')
     (directory / 'scenarios.yaml').write_text(yaml.safe_dump([dict(scenes[k], key=k) for k in keys], allow_unicode=True, sort_keys=False),
                                               encoding='utf-8')
     (directory / 'repos.json').write_text(dumps({a: str(p) for a, p in context.checkout.paths.items()}), encoding='utf-8')
@@ -121,6 +120,19 @@ def prepare(context, scope, *, session):
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
     return dict(ok=True, fix=fix_id, checkout=context.checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
                 answer=str(directory / 'fix.json'), problems=keys, session=executor)
+
+
+def local_problems(store, problems):
+    """修复会话读的 problems.json：在共享的问题记录上给每份证据补上本机路径；本机没有的写明在哪台机器上。"""
+    result = []
+    for problem in problems:
+        results = []
+        for row in problem['results']:
+            evidence = [dict(item, path=str(store.evidence_path(item['sha256'])) if store.has_evidence(item['sha256'])
+                             else f"证据在 {row['machine']} 的机器上") for item in row['evidence']]
+            results.append(dict(row, evidence=evidence))
+        result.append(dict(problem, results=results))
+    return result
 
 
 def scenario_digests(context, checkout):

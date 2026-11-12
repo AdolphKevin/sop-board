@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import threading
 from urllib.parse import urlsplit
 
 import yaml
@@ -380,6 +381,7 @@ class Project:
         self.name = registered['name']
         self.marker = marker
         self.config_path = self.data / 'config.yaml'
+        self._publish = threading.Lock()
         self.reload()
 
     def binding(self):
@@ -401,12 +403,28 @@ class Project:
         os.replace(temporary, self.marker)
 
     def reload(self):
-        self.repos, self.identities, self.entries, self.adapter = {}, {}, {}, {}
-        self.snapshot_exclude, self.fixtures, self.agents = {}, None, {}
-        self.shared, self.shared_invalid = None, False
-        self.scenario_repo, self.scenario_path = None, None
-        self.skill, self.driver_paths = None, {}
+        """重新读取 config.yaml：先在局部算出全部字段，再一次换上。
+
+        守护进程的多个请求线程共用这个对象并会同时调用 reload（两个检出同时 run prepare 时各自 env up）。
+        边清空边填写会让并发的另一次读取看到半成品：仓库被当成重复声明、场景仓库别名“未声明”、共享库位置暂时为空。
+        """
+        values = self.read()
+        with self._publish:
+            self.__dict__.update(values)
+
+    def read(self):
+        """读取并校验 config.yaml，返回全部配置字段；不修改本对象。"""
+        repos, identities, entries, adapter = {}, {}, {}, {}
+        snapshot_exclude, fixtures, agents = {}, None, {}
+        shared, shared_invalid = None, False
+        scenario_repo, scenario_path = None, None
         problems = []
+
+        def values(skill=None, driver_paths=None):
+            return dict(repos=repos, identities=identities, entries=entries, adapter=adapter, snapshot_exclude=snapshot_exclude,
+                        fixtures=fixtures, agents=agents, shared=shared, shared_invalid=shared_invalid,
+                        scenario_repo=scenario_repo, scenario_path=scenario_path, skill=skill, driver_paths=driver_paths or {},
+                        problems=problems)
 
         def problem(field, message):
             problems.append(dict(field=field, problem=message))
@@ -416,21 +434,21 @@ class Project:
             if not isinstance(config, dict):
                 raise ValueError('配置应为对象')
         except FileNotFoundError:
-            self.problems = [dict(field='config.yaml', problem='尚未搭建：配置文件不存在')]
-            return
+            problem('config.yaml', '尚未搭建：配置文件不存在')
+            return values()
         except (OSError, ValueError, TypeError, yaml.YAMLError, RecursionError) as error:
-            self.problems = [dict(field='config.yaml', problem='配置无法读取或格式不合格：' + str(error))]
-            return
+            problem('config.yaml', '配置无法读取或格式不合格：' + str(error))
+            return values()
         for field in config.keys() - TOP_FIELDS:
             problem(field, '格式外字段')
         if 'shared_database' in config:
-            self.shared = validate_shared(config['shared_database'], problem)
-            self.shared_invalid = self.shared is None
-        values = config.get('repos')
-        if not isinstance(values, dict) or not values:
+            shared = validate_shared(config['shared_database'], problem)
+            shared_invalid = shared is None
+        declared = config.get('repos')
+        if not isinstance(declared, dict) or not declared:
             problem('repos', '至少声明一个仓库')
-            values = {}
-        for alias, value in values.items():
+            declared = {}
+        for alias, value in declared.items():
             if not isinstance(alias, str) or not re.fullmatch('[a-z][a-z0-9-]*', alias):
                 problem('repos', '仓库别名只能使用小写字母、数字与连字符，且以字母开头')
                 continue
@@ -440,18 +458,18 @@ class Project:
             try:
                 path = Path(value).expanduser().resolve()
                 identity = repository(path, self.data)
-                if path in self.repos.values():
+                if path in repos.values():
                     raise ValueError('同一仓库不能重复声明')
-                self.repos[alias], self.identities[alias] = path, identity
+                repos[alias], identities[alias] = path, identity
             except (OSError, ValueError) as error:
                 problem('repos.' + alias, str(error))
         registered = config.get('identities')
         if not isinstance(registered, dict):
             problem('identities', '须为 别名 → 登记时规范化的 origin 身份（init 写入）')
             registered = {}
-        for alias in registered.keys() - values.keys():
+        for alias in registered.keys() - declared.keys():
             problem('identities.' + str(alias), '没有对应的仓库')
-        for alias, identity in self.identities.items():
+        for alias, identity in identities.items():
             if alias not in registered:
                 problem('identities.' + alias, '缺少登记的 origin 身份')
             elif registered[alias] != identity:
@@ -463,29 +481,28 @@ class Project:
             for field in location.keys() - {'repo', 'path'}:
                 problem('scenarios.' + field, '格式外字段')
             alias, relative = location.get('repo'), location.get('path')
-            if not isinstance(alias, str) or alias not in self.repos:
+            if not isinstance(alias, str) or alias not in repos:
                 problem('scenarios.repo', '须为已声明的仓库别名')
             elif (not isinstance(relative, str) or not relative.strip() or Path(relative).is_absolute()
                     or '..' in Path(relative).parts or not Path(relative).parts):
                 problem('scenarios.path', '须为不含 .. 的仓内相对目录，不能等于仓库根目录')
             else:
-                self.scenario_repo, self.scenario_path = alias, Path(relative)
-        self.snapshot_exclude = relative_paths(config.get('snapshot_exclude', {}), 'snapshot_exclude', self.repos, problem)
-        entries = config.get('entries', {})
-        problems.extend(validate_entries(entries, self.repos))
-        self.entries = entries if isinstance(entries, dict) else {}
+                scenario_repo, scenario_path = alias, Path(relative)
+        snapshot_exclude = relative_paths(config.get('snapshot_exclude', {}), 'snapshot_exclude', repos, problem)
+        raw_entries = config.get('entries', {})
+        problems.extend(validate_entries(raw_entries, repos))
+        entries = raw_entries if isinstance(raw_entries, dict) else {}
         if 'agents' in config:
-            self.agents = validate_agents(config['agents'], problem)
+            agents = validate_agents(config['agents'], problem)
         if 'fixtures' in config:
             from .ledger import validate_fixtures
-            self.fixtures = validate_fixtures(config['fixtures'], problem)
-        self.adapter = validate_adapter(config.get('adapter', {}), problem) if 'adapter' in config else {}
+            fixtures = validate_fixtures(config['fixtures'], problem)
+        adapter = validate_adapter(config.get('adapter', {}), problem) if 'adapter' in config else {}
         if 'adapter' not in config:
             problem('adapter', '须声明 adapter.env：看板守护进程用它按检出启动环境')
-        skill, drivers, skill_problems = verification_skills(self.data, config.get('skill'), self.entries)
-        self.skill, self.driver_paths = skill, drivers
+        skill, drivers, skill_problems = verification_skills(self.data, config.get('skill'), entries)
         problems.extend(skill_problems)
-        self.problems = problems
+        return values(skill=skill, driver_paths=drivers)
 
     @property
     def configured(self):

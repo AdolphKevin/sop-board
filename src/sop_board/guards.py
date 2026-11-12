@@ -582,11 +582,11 @@ def distill_prepare(context, scope, *, session):
 
 
 def browser_fidelity(store, db, checkout, test, acceptance, ledger):
-    """浏览器层 spec 的保真检查：基线为 git HEAD 中的同一文件；HEAD 还没有时，以产生独立通过的那份 spec 为基线
+    """浏览器层 spec 的保真检查：基线为 git HEAD 中的同一 spec 及其本地导入；HEAD 还没有时，以产生独立通过的那份 spec 为基线
     （独立通过出自别的机器时，本机没有那份运行目录，不设基线）。"""
     from . import specs, works
     repo = checkout.paths[test['repo']]
-    if specs.baseline_from_git(repo, test['path']) is not None:
+    if specs.in_head(repo, test['path']):
         return specs.check_file(repo, test['path'], ledger=ledger)
     directory = works.local_dir(store, db, acceptance['work'])
     candidates = sorted(Path(directory).rglob(Path(test['path']).name)) if directory else []

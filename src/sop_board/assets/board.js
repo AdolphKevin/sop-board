@@ -1,7 +1,8 @@
 // Flow Board 页面脚本。
 // - 顶栏署名：姓名在页面上填一次，存 localStorage，所有页面与场景共用，使用者主动修改才变。
 // - 工作台：左栏 文件→节点→场景 树（展开状态按项目记在 localStorage；点击场景只切换右栏，不重建树、不动滚动位置），
-//   右栏四要素、证据、复测（通过 / 不通过 / 阻塞 / 需求变更，缺陷链接与姓名都可不填）与历史。
+//   右栏单栏，从上到下：标题与徽标、状态与原因、四要素、最新结果与证据、复测（通过 / 不通过 / 阻塞 / 需求变更，
+//   缺陷链接与姓名都可不填）、本机按钮、历史。
 // - 左栏（工作台与业务 SOP 共用）：“全部展开 / 全部收起”一键切换树中全部分组，结果同手动展开一样记住；
 //   有筛选或搜索时只作用于当前显示的结果。左栏可隐藏，隐藏状态记在 localStorage，两页共用。
 //   左栏右边缘的手柄可拖拽调宽（240px 到窗口宽度的 60%，双击恢复 360px），宽度记在 localStorage，两页共用、不分项目。
@@ -40,9 +41,15 @@
   const api = async (path, options = {}) => {
     const response = await fetch(path, {headers: {'Content-Type': 'application/json'}, ...options});
     const body = await response.json().catch(() => ({ok: false, problems: [{problem: `HTTP ${response.status}`}]}));
-    if (!response.ok || body.ok === false) throw new Error((body.problems || []).map(p => p.problem).join('；') || `HTTP ${response.status}`);
+    if (!response.ok || body.ok === false) {
+      const error = new Error((body.problems || []).map(p => p.problem).join('；') || `HTTP ${response.status}`);
+      error.problems = body.problems || [];
+      throw error;
+    }
     return body;
   };
+  // 问题的位置与内容：有行号写“第 N 行”，有字段写字段（如 test_cases.1.expected_results），与场景文件不合格的写法一致。
+  const problemText = p => `${p.line ? '第 ' + p.line + ' 行 ' : ''}${p.field ? p.field + '：' : ''}${p.problem}`;
   const query = (extra = {}) => {
     const search = new URLSearchParams({checkout: checkoutName(), ...extra});
     if (!checkoutName()) search.delete('checkout');
@@ -396,7 +403,7 @@
           if (filtering) continue;
           files.push(group('f:' + file.name, true, false,
             el('span', {class: 'group-label invalid'}, file.name, el('span', {class: 'tag fail'}, '不合格')),
-            el('ul', {class: 'problems'}, (file.problems || []).map(p => el('li', {}, `${p.line ? '第 ' + p.line + ' 行 ' : ''}${p.field}：${p.problem}`))),
+            el('ul', {class: 'problems'}, (file.problems || []).map(p => el('li', {}, problemText(p)))),
             'group file'));
           continue;
         }
@@ -574,7 +581,7 @@
         await loadDetail(data.key, {keep: true});
       } catch (error) { message.textContent = '提交失败：' + error.message; submit.disabled = false; }
     }}, el('div', {class: 'verdicts', role: 'radiogroup', 'aria-label': '复测结论'}, choices), defectField, noteField, signer, submit, message);
-    return el('div', {class: 'card'}, el('h3', {}, '复测'), el('p', {class: 'muted small'}, '按左侧四要素操作后登记结论；缺陷链接与姓名都可不填。'), form);
+    return el('div', {class: 'card mark'}, el('h3', {}, '复测'), el('p', {class: 'muted small'}, '按上面的四要素操作后登记结论；缺陷链接与姓名都可不填。'), form);
   }
 
   // ---- 草稿审阅：场景详情、批注、同意 ----
@@ -868,13 +875,15 @@
         latest.actual ? el('p', {}, latest.actual) : null, latest.finding ? el('p', {class: 'finding'}, latest.finding) : null,
         stoppedServices(latest),
         gallery(latest.evidence)) : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
+      markCard(data),
+      localCard(data),
       el('details', {class: 'block history'}, el('summary', {}, el('h3', {}, '历史'), el('span', {class: 'muted'}, `${data.history.length} 条，当前内容 ${current.length} 条`)),
         data.history.length ? el('ul', {class: 'timeline'}, data.history.map(historyItem)) : el('p', {class: 'muted'}, '没有记录'),
         data.guard_runs.length ? el('div', {}, el('h4', {}, '守护运行'), el('ul', {class: 'timeline'}, data.guard_runs.map(run =>
           el('li', {class: 'event'}, el('div', {class: 'event-head'}, pill(run.status === 'pass' ? 'pass' : 'fail', run.status === 'pass' ? '守护运行通过' : '守护运行未通过'),
             el('span', {class: 'muted'}, run.ran_at), el('span', {class: 'muted'}, `${run.operator} · 快照 ${run.snapshot}`)), run.reason ? el('p', {}, run.reason) : null)))) : null));
-    const side = el('aside', {class: 'side'}, markCard(data), localCard(data));
-    pane.replaceChildren(el('div', {class: 'detail-grid'}, main, side));
+    // 单栏：从上到下依次是 标题与徽标、状态与原因、四要素、最新结果与证据、复测标注、本机按钮、历史（设计“看板”一节的 1→7）。
+    pane.replaceChildren(el('div', {class: 'detail-grid single'}, main));
     pane.scrollTop = keep ? top : 0;
   }
 
@@ -1188,7 +1197,8 @@
         location.reload();
       } catch (error) {
         message.textContent = '上传被拒绝';
-        problems.replaceChildren(el('ul', {}, error.message.split('；').map(text => el('li', {}, text))));
+        const items = error.problems?.length ? error.problems.map(problemText) : error.message.split('；');
+        problems.replaceChildren(el('ul', {}, items.map(text => el('li', {}, text))));
       }
     });
     for (const answerForm of document.querySelectorAll('form.answer')) {

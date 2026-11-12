@@ -8,7 +8,7 @@
 sop-board specs check --repo <仓库别名> <仓内相对路径> [--ledger ledger.json]
 ```
 
-以 git HEAD 中的同一文件为基线，用 `scripts/spec-ast.mjs` 比较断言与数据核对。输出 JSON：`same`、`new`、`review`、`violation`、`no_baseline`；有 `violation` 时退出码为 1。
+以 git HEAD 中的同一 spec 连同它的本地导入（`./fixtures.mjs`、`./library.mjs` 及其导入）为基线，用 `scripts/spec-ast.mjs` 比较断言与数据核对；夹具与库文件也要提交，基线才完整。输出 JSON：`same`、`new`、`review`、`violation`、`no_baseline`；有 `violation` 时退出码为 1。
 
 | 情况 | 结果 |
 | --- | --- |

@@ -121,7 +121,12 @@ def hide_names(raw, credential_names):
 
 # 本机路径的常见编码：任意层数的反斜杠转义斜杠、URL 编码的斜杠，大小写不敏感（macOS 默认不区分大小写）。
 SLASH = rb'(?:\\*/|%2[fF])'
-PATH_TAIL = rb'(?:[A-Za-z0-9._~+@-]|' + SLASH + rb'|%(?![0-9a-fA-F]{2}))*'
+PATH_WORD = rb'(?:[A-Za-z0-9._~+@-]|%(?![0-9a-fA-F]{2}))'
+# 路径中的空格（原样或 %20）：后面（255 字节以内、只经路径字符与空格）还有斜杠，或以文件扩展名结束时，空格属于路径，
+# 例如 “Application Support/…”“Google Chrome for Testing-….ips”；否则路径在空格处结束，后面的文字照常显示。
+PATH_SPACE = (rb'(?: |%20)(?=(?:' + PATH_WORD + rb'| |%20){0,255}?(?:' + SLASH
+              + rb'|\.[A-Za-z0-9]{1,10}(?![A-Za-z0-9._~+@-])))')
+PATH_TAIL = rb'(?:' + PATH_WORD + rb'|' + SLASH + rb'|' + PATH_SPACE + rb')*'
 COMMON_ROOTS = ('/Users/', '/home/', '/private/', '/tmp/', '/var/folders/', '/Volumes/')
 
 

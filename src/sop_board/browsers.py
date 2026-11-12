@@ -3,7 +3,8 @@
 - 运行时是本机级的：<SOP_BOARD_HOME>/runtime，固定版本（随包 lock 文件），浏览器装在同目录 browsers/，
   不读写共享的 ms-playwright 缓存，也不碰用户日常 Chrome。
 - 只有看板守护进程启动浏览器：每个 检出×身份 一个 CfT，独立持久 profile 与调试端口，缺省无头；
-  执行者通过 CDP 连接。真实账号由人在 `browser open --headed` 打开的窗口里登录、完成验证，之后
+  执行者通过 CDP 连接。缺省端口 = 9400 + 槽位×20 + 身份序号，被别的进程占用时顺延到下一个空闲端口（已定决策 24），
+  实际端口记在浏览器实例里，经 run.env 交给执行者；浏览器运行期间端口不变，下一次启动重新从缺省端口找起。真实账号由人在 `browser open --headed` 打开的窗口里登录、完成验证，之后
   `browser release` 交还：只解除真人租约，窗口保持运行，之后的运行直接沿用它，人做过的验证不作废。
 - 浏览器异常退出时记录信号、日志与崩溃报告；租约持有期间不自动重启；30 分钟内两次异常退出进入 crashed。
 """
@@ -12,6 +13,7 @@ from importlib.resources import files
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -27,6 +29,8 @@ from .store import dumps, now
 
 BASE_PORT = 9400
 SLOT_WIDTH = 20
+LAST_PORT = 65535
+LAUNCH_ATTEMPTS = 5
 READY_SECONDS = 15
 CRASH_WINDOW = timedelta(minutes=30)
 REPORTS = Path.home() / 'Library' / 'Logs' / 'DiagnosticReports'
@@ -103,6 +107,7 @@ def identity_order(project):
 
 
 def port_for(project, checkout, identity):
+    """缺省调试端口：9400 + 槽位×20 + 身份序号。实际端口见 Instance.port（被占用时顺延）。"""
     order = identity_order(project)
     if identity not in order:
         raise ValueError(f'没有声明身份 {identity}')
@@ -113,9 +118,47 @@ def port_for(project, checkout, identity):
 
 
 def port_in_use(port):
+    """127.0.0.1 上的端口已被占用：有进程在监听，或本机地址绑定不上。只探测，不连接后发送任何内容。"""
     with socket.socket() as sock:
         sock.settimeout(.5)
-        return sock.connect_ex(('127.0.0.1', port)) == 0
+        if sock.connect_ex(('127.0.0.1', port)) == 0:
+            return True
+    with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(('127.0.0.1', port))
+        except OSError:
+            return True
+    return False
+
+
+def free_port(start):
+    """从 start 起第一个空闲端口；一直到 65535 都被占用时返回 None。"""
+    return next((port for port in range(start, LAST_PORT + 1) if not port_in_use(port)), None)
+
+
+LISTENING = re.compile(rb'DevTools listening on ws://([^\s/]+)/devtools/browser/([0-9A-Za-z-]+)')
+
+
+def listener_pids(port):
+    """在 127.0.0.1:<端口> 上监听的进程号（lsof）；取不到时为空集合。"""
+    try:
+        result = subprocess.run([shutil.which('lsof') or '/usr/sbin/lsof', '-nP', '-t', f'-iTCP@127.0.0.1:{port}', '-sTCP:LISTEN'],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {int(item) for item in result.stdout.split() if item.isdigit()}
+
+
+def listening(log, offset):
+    """本次启动写进 chrome.log 的 DevTools 监听地址：(主机:端口, 浏览器标识)；还没写出时返回 None。"""
+    try:
+        with open(log, 'rb') as stream:
+            stream.seek(offset)
+            found = LISTENING.search(stream.read())
+    except OSError:
+        return None
+    return (found.group(1).decode(), found.group(2).decode()) if found else None
 
 
 def debugger_ready(port):
@@ -150,6 +193,7 @@ class Instance:
         self.process, self.watcher = None, None
         self.started, self.stopping = 0.0, False
         self.headed = False
+        self.actual = None   # 本次启动实际使用的调试端口
 
     @property
     def project(self):
@@ -161,8 +205,12 @@ class Instance:
     def log(self):
         return self.profile().parent / 'chrome.log'
 
-    def port(self):
+    def default_port(self):
         return port_for(self.project, self.checkout, self.identity)
+
+    def port(self):
+        """实际端口：启动过就是本次（或最近一次）启动所用的端口，否则是缺省端口。"""
+        return self.actual or self.default_port()
 
     def alive(self):
         return self.process is not None and self.process.poll() is None
@@ -171,10 +219,26 @@ class Instance:
         return f'http://127.0.0.1:{self.port()}'
 
     def launch(self, *, headed, url=None):
+        """启动浏览器：从缺省端口找起，被别的进程占用就顺延到下一个空闲端口（不结束、不连接占用者）。
+
+        CfT 在 127.0.0.1 上绑定失败时会改在 [::1] 上监听而不退出，这时 127.0.0.1 上应答的是别的进程；
+        所以就绪须确认应答的是本次启动的浏览器：chrome.log 里本次的监听行是 127.0.0.1:<端口> 且浏览器标识与 /json/version 一致，
+        或（没有监听行时）lsof 显示在该端口监听的正是本进程。探测之后端口才被别人占去时，结束这次启动，从下一个端口再找。"""
         info = require_runtime()
-        port = self.port()
-        if port_in_use(port):
-            raise ValueError(f'调试端口 {port} 已被其他进程占用；不改用随机端口')
+        default = self.default_port()
+        start = default
+        for _ in range(LAUNCH_ATTEMPTS):
+            port = free_port(start)
+            if port is None:
+                raise ValueError(f'调试端口从缺省的 {default} 起到 {LAST_PORT} 都被占用，无法启动浏览器')
+            outcome = self.start_on(info, port, headed=headed, url=url)
+            if outcome != 'taken':
+                return outcome
+            start = port + 1
+        raise ValueError(f'调试端口一再被别的进程抢先占用（从缺省的 {default} 起试了 {LAUNCH_ATTEMPTS} 次），无法启动浏览器')
+
+    def start_on(self, info, port, *, headed, url):
+        """在 port 上启动一次。返回 endpoint；启动即退出返回 None；端口被抢先占用返回 'taken'。"""
         profile = self.profile()
         profile.mkdir(parents=True, exist_ok=True)
         argv = [info['executable'], f'--user-data-dir={profile}', f'--remote-debugging-port={port}',
@@ -183,7 +247,8 @@ class Instance:
             argv.append('--headless=new')
         argv.append(url or 'about:blank')
         log = self.log().open('ab')
-        self.stopping, self.headed, self.started = False, headed, time.time()
+        offset = log.tell()
+        self.stopping, self.headed, self.started, self.actual = False, headed, time.time(), port
         self.process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
         log.close()
         self.manager.record(self, 'starting')
@@ -194,13 +259,20 @@ class Instance:
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 break
-            if debugger_ready(port):
+            heard = listening(self.log(), offset)
+            if heard and heard[0] != f'127.0.0.1:{port}':
+                # 本机地址上的端口在探测之后被别人占去，CfT 改在别的地址上监听：结束这次启动，换下一个端口。
+                self.stop()
+                return 'taken'
+            ws = debugger_ready(port)
+            if ws and (ws.rstrip('/').endswith('/devtools/browser/' + heard[1]) if heard
+                       else self.process.pid in listener_pids(port)):
                 self.manager.record(self, 'ready')
                 return self.endpoint()
             time.sleep(.2)
         if self.process.poll() is None:
             self.stop()
-            raise ValueError(f'Chrome for Testing {READY_SECONDS} 秒内没有就绪；日志：{self.log()}')
+            raise ValueError(f'Chrome for Testing {READY_SECONDS} 秒内没有在调试端口 {port} 上就绪；日志：{self.log()}')
         self.watcher.join(timeout=5)
         return None
 
@@ -407,6 +479,11 @@ class Manager:
             instance = self.instances.get((checkout.id, row['identity']))
             row['alive'] = bool(instance and instance.alive())
             row['crashes'] = json.loads(row['crashes'])
+            # port 是实际（运行中）或最近一次启动所用的端口；缺省端口被占用时两者不同。
+            try:
+                row['default_port'] = port_for(self.project, checkout, row['identity'])
+            except ValueError:
+                row['default_port'] = None
             row['endpoint'] = f"http://127.0.0.1:{row['port']}" if row['alive'] else None
         return dict(checkout=checkout.name, runtime=runtime_info(), browsers=rows)
 

@@ -4,6 +4,34 @@ import path from 'node:path';
 import {createRequire, builtinModules} from 'node:module';
 import {createHash, randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {execFileSync} from 'node:child_process';
+
+// 基线（sop-board specs check 与沉淀的保真检查）：SOP_SPEC_BASELINE_REPO 指向仓库时，分析目录是 git HEAD 的临时副本，
+// 起初只有 spec 本身；跟随本地导入、读取任务资产时，缺的文件按需从 HEAD 取出写进分析目录。只取分析目录之内的路径，不改仓库。
+const baselineRepo = process.env.SOP_SPEC_BASELINE_REPO;
+function headEntries(relative, recursive) {
+  let raw;
+  try { raw = execFileSync('git', ['-C', baselineRepo, 'ls-tree', '-z', ...(recursive ? ['-r'] : []), 'HEAD', '--', relative], {maxBuffer: 256 << 20}); }
+  catch { return []; }
+  return raw.toString('utf8').split('\0').filter(Boolean).map(line => {
+    const tab = line.indexOf('\t');
+    const [mode, type, object] = line.slice(0, tab).split(' ');
+    return {mode, type, object, path: line.slice(tab + 1)};
+  });
+}
+export function fromHead(root, file, {recursive = false} = {}) {
+  if (!baselineRepo) return;
+  const relative = path.relative(root, file);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || (!recursive && fs.existsSync(file))) return;
+  for (const entry of headEntries(relative.split(path.sep).join('/'), recursive)) {
+    const target = path.join(root, ...entry.path.split('/'));
+    if (entry.type !== 'blob' || fs.existsSync(target)) continue;
+    const bytes = execFileSync('git', ['-C', baselineRepo, 'cat-file', 'blob', entry.object], {maxBuffer: 256 << 20});
+    fs.mkdirSync(path.dirname(target), {recursive: true});
+    // HEAD 里的符号链接照样还原成符号链接，由下面的检查同样拒绝。
+    if (entry.mode === '120000') fs.symlinkSync(bytes.toString('utf8'), target); else fs.writeFileSync(target, bytes);
+  }
+}
 
 export const sha = value => createHash('sha256').update(value).digest('hex');
 const ignored = new Set(['loc', 'start', 'end', 'extra', 'tokens', 'comments', 'leadingComments', 'trailingComments', 'innerComments']);
@@ -106,7 +134,10 @@ export function assetFiles(directory) {
   scan(directory); return files;
 }
 export function taskAssets(directory) {
-  return [...new Set(['library', 'pages', 'support', 'data'].flatMap(name => assetFiles(path.join(directory, 'scenarios', name))))];
+  return [...new Set(['library', 'pages', 'support', 'data'].flatMap(name => {
+    fromHead(directory, path.join(directory, 'scenarios', name), {recursive: true});
+    return assetFiles(path.join(directory, 'scenarios', name));
+  }))];
 }
 export function graph(spec, root, {library = false, importRoot = root, extra = [], canonicalSpec = true} = {}) {
   root = path.resolve(root); spec = path.resolve(spec);
@@ -116,6 +147,7 @@ export function graph(spec, root, {library = false, importRoot = root, extra = [
     file = path.resolve(file);
     if (files.has(file)) return;
     if (canonicalSpec && !file.startsWith(root + path.sep)) throw new Error('执行依赖越出冻结目录：' + file);
+    fromHead(root, file);
     let cursor = root;
     for (const part of canonicalSpec ? path.relative(root, file).split(path.sep) : []) {
       cursor = path.join(cursor, part);

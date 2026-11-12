@@ -91,6 +91,7 @@ class Book:
 
     def __init__(self, db, view):
         self.viewer = view
+        self.current = None
         self.names = {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
         self.groups = {}
         for row in db.execute('SELECT * FROM results WHERE product=? ORDER BY seq DESC', (view.product,)):
@@ -192,19 +193,32 @@ class Book:
                                   at=skipped['at'], reason=skipped['finding'], branch=None, seq=skipped['seq']))
         return sorted(items, key=lambda item: item['seq'], reverse=True)
 
+    def involved(self, key, current):
+        """一组（文件 + 场景 + 指纹）里参与本看板推导的记录，新到旧。
+
+        current 为真（场景的当前内容）时按“场景状态”的规则选出（本分支优先，没有时回落到全部分支）；
+        旧内容上只取本分支的结论和本检出的非结论，别的分支上内容不同的结果不列入，也不回落。"""
+        if current:
+            return self.select(key).records
+        branch = self.viewer.branch
+        return [row for row in self.groups.get(key, [])
+                if (conclusion(row) and branch is not None and row['branch'] == branch) or (not conclusion(row) and self.own(row))]
+
     def history(self, scene):
-        """场景的历史：每个指纹上参与本看板推导的记录（本分支的结论或回落时全部分支的结论，加本检出的非结论），新到旧。"""
+        """场景的历史：各指纹上参与本看板推导的记录（见 involved），新到旧。"""
         rows = []
         for (file, scenario, fingerprint) in self.groups:
             if file == scene['file'] and scenario == scene['id']:
-                rows += self.select((file, scenario, fingerprint)).records
+                rows += self.involved((file, scenario, fingerprint), fingerprint == scene['fingerprint'])
         return sorted(rows, key=lambda r: r['seq'], reverse=True)
 
     def participating(self):
-        """全部参与本看板推导的结果记录（统计与人工确认率用），按序号旧到新。"""
+        """全部参与本看板推导的结果记录（统计与人工确认率用，与历史同一规则），按序号旧到新。
+
+        self.current（文件 + 场景 → 当前指纹）由 board() 填入；场景已不在本检出的，它的记录都按旧内容的规则取。"""
         rows = []
         for key in self.groups:
-            rows += self.select(key).records
+            rows += self.involved(key, self.current is None or self.current.get(key[:2]) == key[2])
         return sorted(rows, key=lambda r: r['seq'])
 
 
@@ -272,6 +286,7 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
     """全部场景的状态与计数。guard_validity：场景键 → 守护判定（guards.validity）。"""
     reviews = reviews or {}
     guard_validity = guard_validity or {}
+    book.current = {(scene['file'], scene['id']): scene['fingerprint'] for scene in scenes.values()}
     items, counts = {}, {state: 0 for state in ORDER}
     draft_counts = {state: 0 for state in DRAFT_REVIEW}
     distill = review = 0

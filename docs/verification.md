@@ -52,7 +52,7 @@ SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
 
 - `--clone-of` 让 B 的仓库从 A 的仓库 clone：origin 保持演示地址（登记时核对的仓库身份），另有远端 `peer` 指向 A 的仓库；“A 提交并推送，B 拉取”就是在 A 提交、在 B 的仓库 `git pull peer main`。
 - 两边的环境同时运行时用 `--ports` 错开 `adapter.ports`。机器显示名在第一次需要时生成为“操作者@主机名”，所以先设操作者再登记。
-- 两个数据根目录都没有浏览器运行时：需要浏览器时在各自的数据根目录放一个指向本机 `~/.sop-board/runtime` 的符号链接，只读使用。浏览器调试端口 `9400 + 槽位×20 + 身份序号` 不分项目、不分数据根目录：两个看板的 main 检出（以及本机正在用的看板）抢同一个端口。Web 身份的步骤放到不同槽位的 worktree 检出里做，并在记录里写明；要让结果仍归 main 分支，用 `git worktree add -f <目录>/app main`（lib 同理）建一个也在 main 上的 worktree 检出。
+- 两个数据根目录都没有浏览器运行时：需要浏览器时在各自的数据根目录放一个指向本机 `~/.sop-board/runtime` 的符号链接，只读使用。两个看板的 main 检出（以及本机正在用的看板）的缺省调试端口相同，后启动的浏览器自动顺延到下一个空闲端口（已定决策 24），不用再把 Web 步骤挪到别的检出；实际端口看 `browser status` 与 `run.env`。
 - “内网设备”在同一台机器上用 `--lan` 打印的实际非回环地址访问代替，记录里写明是替代做法。
 - 共享库的只读查询：`psql -h 127.0.0.1 -p 55432 -U sopboard -d sopboard -c "…"`；停启共享库：`docker stop|start sbv-pg`；改表结构版本（SET-07-N02）：`UPDATE meta SET value='8' WHERE key='format'`。
 
@@ -72,7 +72,7 @@ SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
 | 数据配方 | `seed-order`：参数 `order_id`、`paid`、`days`，写入本检出的 `$D/demo/env/<检出>/shop.sqlite3`；输出含凭据取值，用来核对留痕遮蔽 |
 | 守护命令 | app `docs/sop/regression.yaml` 的 `unit`：`python3 tests/junit_runner.py --junit {junit}`（unittest，测试放 `tests/test_*.py`） |
 | 端口 | 基础端口 28080，`port_step` 100：main 用 28080，槽位 1 的检出用 28180；`APP_URL` 与 `WEB_URL` 取自 ready 行 |
-| 浏览器端口 | 身份浏览器的调试端口是 `9400 + 槽位×20 + 身份序号`，不分项目：main 的 merchant 用 9401，槽位 1 用 9421。本机同时开着别的看板（例如使用者自己的项目）时，相同槽位的同一身份会冲突，`run prepare` 报“调试端口已被其他进程占用”；这时 Web 场景改在没有冲突的 worktree 检出执行并在记录中注明，或先在占用的项目运行 `sop-board browser close` |
+| 浏览器端口 | 身份浏览器的缺省调试端口是 `9400 + 槽位×20 + 身份序号`，不分项目：main 的 merchant 缺省用 9401，槽位 1 用 9421。缺省端口被别的进程（例如使用者自己的看板的浏览器）占用时顺延到下一个空闲端口，实际端口见 `browser status` 的 `port`（`default_port` 是缺省端口）与 `run.env` 的 `PW_CDP_ENDPOINT`。BRW-02-N01 的占用进程：本机已有进程监听 9401 时直接用它并记下进程号；没有时用一个与项目无关的占位进程，例如 `python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1", 9401)); s.listen(); time.sleep(3600)'`，验收后结束它 |
 | 合成账号 | merchant，密码取 `DEMO_MERCHANT_PASSWORD`；限额 每日登录 2 次、每日验证码 2 次 |
 | 环境日志 | `env.py` 把收到的 `SOP_*` 变量逐行写进 `$D/demo/env/<检出>/<序号>.log`，并存 `received.json`（变量名中的别名为大写，如 `SOP_REPO_APP`）；商城与库存服务的输出在同目录 `shop.log`、`stock.log` |
 | `stock#K` | 库存演示项目 `stock#STOCK-O1-P01`：库存可用时 `POST /api/purchases` 下单成功（201），订单生成，DEMO-1 库存减 1 |

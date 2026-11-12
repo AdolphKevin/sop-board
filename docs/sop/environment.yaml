@@ -5,6 +5,7 @@
 #   演示 adapter 的 env.py 按 SOP_PORT_OFFSET 偏移端口并在 ready 输出里给出入口地址。基础端口记为 P。
 #   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 22（使用者 2026-11-12 决定）修订：新增 ENV-05（服务状态与部分就绪）、ENV-06（停启服务与自动恢复）。
 #   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：ENV-02 的“结果按检出隔离”改为结果按分支归属、本分支有结论的场景不受其他检出影响。
+#   版本 4 由未参与实现的审核方按统一验收（2026-11-12）指出的问题修订 ENV-02-P01 的禁止项：写明别的分支上内容不同的结果不得列入本检出的历史。
 # 库存演示项目（ENV-05、ENV-06 使用，run.yaml、guard.yaml、workbench.yaml、report.yaml 引用）：
 #   - 生成命令加 --with-stock，在临时目录生成 app、lib、stock 三个 Git 仓库。stock 是库存服务，商城下单依赖它。
 #     以另一个临时数据目录 $S init 为项目 demo，登记三个仓库（下称“三个仓库都已登记”），看板以 sop-board serve demo --data $S --lan 启动。
@@ -17,7 +18,7 @@
 
 metadata:
   requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时按租约轮流使用，冲突时返回 env-busy 并写明占用者；adapter 声明并上报各服务的状态，环境不要求所有服务都在运行；运行中可用 env stop|start 停启声明为可停的服务，提交或放弃运行时自动恢复"
-  version: 3
+  version: 4
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -108,7 +109,8 @@ sops:
           - "main 的 status 不含 wt1 的任何结果，wt1 也不含 main 的结果"
           - "git status 中只有测试者自己做的改动"
         forbidden_effects:
-          - "一个检出的结果出现在另一个检出的状态、工作台或历史中"
+          - "本分支已有结论的场景显示成另一个检出的结果"
+          - "另一个分支上内容不同的结果出现在本检出的状态、工作台或历史中（包括被当作旧内容列入历史）"
           - "wt1 对场景文件的改动出现在 main"
           - "看板回写或生成任何场景文件"
           - "两个检出的执行打到同一个环境"

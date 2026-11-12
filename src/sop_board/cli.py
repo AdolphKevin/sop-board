@@ -300,8 +300,24 @@ def cmd_check(args):
                 step('环境', False, getattr(error, 'problems', None) or str(error))
         for extra in CHECKS:
             extra(context, step)
+    if not result['ok']:
+        # 业务失败按通用约定带 error_code 与 problems（每个不合格项一条）；steps 照常给出三项的完整结果。
+        result['error_code'] = 'check-failed'
+        result['problems'] = [problem for item in result['steps'] if not item['ok'] for problem in check_problems(item)]
     emit(result)
     return 0 if result['ok'] else 1
+
+
+def check_problems(item):
+    """check 不合格的一项 → [{field, problem}]：配置问题逐条列出，其余写明该项的原因。"""
+    detail = item['detail']
+    if isinstance(detail, list) and all(isinstance(p, dict) and 'problem' in p for p in detail):
+        return [dict(field=f"{item['step']}：{p.get('field') or ''}".rstrip('：'), problem=p['problem']) for p in detail] or [
+            dict(field=item['step'], problem='不合格')]
+    if isinstance(detail, dict):
+        state = detail.get('state')
+        return [dict(field=item['step'], problem=f'环境没有就绪（{state}）' if state else '不合格')]
+    return [dict(field=item['step'], problem=str(detail))]
 
 
 def check_browser(context, step):

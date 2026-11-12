@@ -33,4 +33,4 @@ related: ["rules/adapter-services-contract.md", "rules/not-executed-vs-blocked.m
 - 未执行不形成结论、不改变任何人看到的状态；独立复验仍须完整执行，不接受未执行。
 - 服务异常退出不由 sop-board 自动判定场景结论：执行会话按 `env status` 或 `services.json` 的日志末尾写 blocked 并登记待人处理；`run submit` 输出列出提交时异常退出的服务，`during_run` 区分准备前还是运行期间。
 - 只限本机由 adapter 启动的服务；外部共享的中间件不能停，需要这类故障的场景记受阻。延迟、错误注入等其他故障方式不做。
-- 浏览器调试端口按 `9400 + 槽位×20 + 身份序号`、不分项目：本机同时运行多个看板时，相同槽位的同一身份会争用端口（验收时的处理见 docs/verification.md）。
+- 浏览器调试端口按 `9400 + 槽位×20 + 身份序号`、不分项目；本机同时运行多个看板时，后启动的浏览器顺延到下一个空闲端口（见 decisions/2026-11-12-browser-port-roll-forward.md）。
