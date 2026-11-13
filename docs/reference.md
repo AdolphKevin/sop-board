@@ -207,7 +207,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
 | | `run submit --run N [--implementer X \| --implemented-by 操作者]` | 见 §5 |
 | | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`） |
-| | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者]` | 由守护进程启动无头执行会话；`pending` 在 CLI 侧展开为具体场景；`--fix` 启动修复的独立复验 |
+| | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者]` | 由守护进程启动无头执行会话；启动前与 `run prepare` 共用范围核对，`pending` 由守护进程展开为具体场景；`--fix` 启动修复的独立复验 |
 | | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
 | | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
 | | `mark <键> pass\|fail\|blocked\|changed [--defect 链接] [--note 说明] [--as 姓名]` | 人工复测：通过、不通过、阻塞、需求变更；缺陷链接与说明可选；草稿拒绝 |
@@ -225,7 +225,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `identity status`、`identity record --identity I --kind login\|code [--run N]` | |
 | | `attention list`、`attention add --kind K --text … [--scenario]... [--run]`、`attention resolve <编号> [--note]` | |
 | | `report [--file 文件] [--zip] [--out 目录]` | 见 §10 |
-| | `playwright guide\|convert\|tags` | Web 指引、Playwright JSON 报告转 results.jsonl、配对标签 |
+| | `playwright guide\|convert` | Web 指引、Playwright JSON 报告转 results.jsonl |
 
 ## 5. 运行
 
@@ -301,9 +301,10 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 - 同一检出同时只有一个 running 的启动（`launch-running`）。类型 `run` 或 `distill`，须有具体场景。
 - 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>/output.prompt.md`（目录被占用时顺延后缀）（随包 `launch.md`：先运行 `sop-board run prepare --scope …` 或 `distill prepare …`，按 prompt.md 执行并提交，需要人时 `attention add` 后结束），日志为同目录 `output.jsonl`（实际位置取启动记录的 `log`）。
-- 注入 `SOP_BOARD_LAUNCH`、`SOP_BOARD_CHECKOUT`、`SOP_BOARD_IMPLEMENTER?`。Claude：启动器生成 UUID 作为 `--session-id` 并注入 `SOP_BOARD_SESSION`，缺省参数 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。Codex：`codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check -C <目录>`，会话编号取日志中的 `thread.started`。两者都 `--add-dir` 数据目录与浏览器运行时目录。
+- 注入 `SOP_BOARD_LAUNCH`、`SOP_BOARD_CHECKOUT`、`SOP_BOARD_IMPLEMENTER?`。Claude：启动器生成 UUID 作为 `--session-id` 并注入 `SOP_BOARD_SESSION`，缺省参数 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。Codex：`codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check -C <目录>`，会话编号取日志中的 `thread.started`。两者都 `--add-dir` 项目数据目录与数据根目录下的 `evidence` 目录，路径先解析为真实路径；浏览器运行时只读使用。
 - 状态 `running` → `exited`（退出码 0）/`failed`/`stopped`。启动记录与其会话编号就是独立执行的证据；运行通过 `SOP_BOARD_LAUNCH` 关联启动。
-- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。
+- `run launch` 在启动前与 `run prepare` 共用范围检查；范围不合格不产生启动记录。指定文件不合格时返回 `scenario-file-invalid`，附文件、字段及行号。`pending`/`all` 只从合格文件选场景，不因其他文件不合格拒绝；prepare 输出及 launch 输出的 `launch` 对象附 `invalid_files`（文件、字段、行号），brief.md 的“未纳入的不合格文件”要求执行会话转述。选出范围为空仍返回 `nothing-to-run`，problems 同时列出不合格文件。交给客户端的目录解析为真实路径；浏览器运行时只读，不授予写权限。
+- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。会话正常退出（`exited`）却没有产生运行或沉淀时，启动公开状态为 `no-work`（未产生运行），本机输出附 `log_tail`；wait 返回 `launch-no-work`、退出码 1。失败的启动保持 `failed`，本机同样附 `log_tail`，wait 返回 `launch-failed`、退出码 1。`exited` 关联工作中存在 `prepared` 或 `abandoned` 时，输出 `unsubmitted` 列出工作编号、类型、状态，problem 写明未提交或已放弃，本机附日志末尾；wait 返回 `launch-unsubmitted`、退出码 1。`failed` 有这些工作时同样列明，错误码仍为 `launch-failed`。不自动提交或放弃工作；其余已结束情况返回成功。
 
 ## 6. 浏览器代理
 
@@ -369,7 +370,7 @@ guards:
 ### 沉淀
 
 - `distill prepare [键…]`：缺省为全部待沉淀场景；指名状态不是通过的场景时返回 `distill-not-passing`，写明当前状态；其余指定的场景须为待沉淀（`not-distillable`）。同一检出只能有一个进行中的沉淀（`distill-prepared`）。工作目录 `<数据目录>/distills/<编号>/` 含 `prompt.md`、`scenarios.yaml`、`acceptance.json`（独立通过的结果编号、执行者、运行目录）、`repos.json`。会话按随包 regression-distill 技能在当前检出写测试（不提交），写出 `guard.json`。
-- `distill submit`：给出 `--work` 时须是进行中的沉淀（`work-state-invalid`）；缺省读进行中沉淀目录里的 `guard.json`（YAML 或 JSON，结构同 regression.yaml 的 `commands` 与 `guards`；`detection.evidence` 写证据文件路径，相对 guard.json 目录）。守护进程先核对当前状态为通过，否则返回 `distill-not-passing` 并写明当前状态；运行守护后、登记前再次核对状态。逐条核对：acceptance 为同指纹独立通过、测试文件存在并重新计算 sha256、逐条覆盖、detection 完整、漏检后的条件；同名命令与已有定义不同则 `report-invalid`；`layer: browser` 的测试另做 spec 保真检查（基线为 `git show HEAD:<路径>`；HEAD 还没有该文件时，以产生独立通过的那次运行目录中的同名 spec 为基线，都没有时只做静态检查）。不合格返回 `distill-invalid`。全部合格后按 retest 规则实际运行一次，未通过返回 `distill-tests-failed`；通过后合并写入 regression.yaml、记录守护运行，测试与索引留作未提交改动供开发者审核。
+- `distill submit`：给出 `--work` 时须是进行中的沉淀（`work-state-invalid`）；缺省读进行中沉淀目录里的 `guard.json`（YAML 或 JSON，结构同 regression.yaml 的 `commands` 与 `guards`；`detection.evidence` 写证据文件路径，相对 guard.json 目录）。守护进程先核对当前状态为通过，否则返回 `distill-not-passing` 并写明当前状态；运行守护后、登记前再次核对状态。逐条核对：acceptance 为同指纹独立通过、测试文件存在并重新计算 sha256、逐条覆盖、detection 完整、漏检后的条件；同名命令与已有定义不同则 `report-invalid`；`layer: browser` 的测试另做 spec 保真检查（基线为 `git show HEAD:<路径>`；HEAD 还没有该文件时，以产生独立通过的那次运行目录中覆盖该场景的 spec 为基线：按 playwright/report.json（缺失时 report.partial.json）中测试标题首词或场景标签与文件的对应关系查找；本机目录存在却找到零份或多份时拒绝并列出目录与文件；首次比较以各自 spec 所在目录作为辅助文件的逻辑路径根，排除 spec 直接 ./fixtures.mjs 导入的运行适配接口及其依赖，不按全局文件名排除项目代码；spec 与 library.mjs 及其本地导入仍完整比较，HEAD 基线比较保持原有完整依赖规则。替换夹具自身的正确性由实际运行与检出能力核对。基线不合规则时指出基线及原因，要求按规则写 spec 重新验收后再沉淀；本机没有那份运行目录（记录缺失或目录已不在，不论产出机器是谁）时只做静态检查，fidelity 写 no_baseline=true 及 no_baseline_reason=“运行目录不在本机”）。不合格返回 `distill-invalid`；成功输出的 `fidelity` 按场景列出脚本、基线及 same/new/review/violation/no_baseline，供核对实际比较依据。全部合格后按 retest 规则实际运行一次，未通过返回 `distill-tests-failed`；通过后合并写入 regression.yaml、记录守护运行，测试与索引留作未提交改动供开发者审核。
 - 工作台“沉淀”按钮仅本机可用，作用是启动一个无头沉淀会话。
 
 ## 8. 修复
@@ -418,7 +419,7 @@ sops:
 ### 收件箱、合并与问答
 
 - **上传**：内网页面或 `inbox add` 上传 UTF-8 文本（≤2 MiB）。`cases` 按用例格式校验：`metadata{module, feature, owner, last_reviewed: YYYY-MM-DD, tags?}`，`test_cases[]{id: TC_<大写>_<三位数字>, title, priority: P0\|P1\|P2, type: functional\|ui\|security\|performance\|accessibility, steps, expected_results, tags, description?, preconditions?, auto?}`；`sop` 须含六个标题（见下）。状态 pending → merged / rejected（`inbox done|reject`）。
-- **合并**：`merge prepare [--inbox N]` 取待合并用例（缺省全部），当前场景文件须先合格；目录 `<数据目录>/merges/<编号>/` 含 `inbox/` 原文、`answers.json`、`before.json`、`prompt.md`。会话直接编辑场景与用例文件，有疑问在对话里问或用 `ask`。`merge submit` 校验全部场景文件，输出场景差异（新增、移除、内容改动，以及 actor/verify/polarity 变化），把收件箱条目标为已合并。
+- **合并**：`merge prepare [--inbox N]` 取待合并用例（缺省全部），当前场景文件须先合格；目录 `<数据目录>/merges/<编号>/` 含 `inbox/` 原文、`answers.json`、`before.json`、`prompt.md`。会话直接编辑场景与用例文件，有疑问在对话里问或用 `ask`。`merge submit` 校验全部场景文件，输出场景差异（新增、移除、内容改动，以及 actor/verify/polarity 变化），把收件箱条目标为已合并。差异的 `references_only` 单列“只加了引用”的场景、用例编号及处理提示（本次用例编号新增进 refs、四要素未变），不计入 changed，也不阻止提交。
 - **问答**：`ask --about inbox:N|<键>|<文件名> --text …` 挂到看板“待答复”；测试同学在内网答复（须填姓名）；会话用 `answers [--about] [--unanswered]` 读取。确认人取操作者或答复人，记在场景 `refs` 与 `metadata.sources`。
 
 ### 业务 SOP
@@ -556,6 +557,9 @@ fixtures:
 | `fix-validation-required` | 关闭前须独立复验通过 |
 | `fix-commit-required` | 修复改动文件未提交 |
 | `fix-content-changed` | 提交内容与复验时不一致，须重新复验 |
+| `launch-unsubmitted` | 启动正常退出但有关联工作未提交或已放弃，列出工作及本机日志末尾；run wait 退出码 1 |
+| `launch-failed` | 启动失败；本机附日志末尾，run wait 退出码 1 |
+| `launch-no-work` | 启动的会话退出但没有产生运行或沉淀；附启动日志末尾 |
 | `scenario-file-invalid` | 场景文件不合格（带行号） |
 | `cases-invalid` / `sop-invalid` / `upload-invalid` / `upload-too-large` | 上传或提交内容不合格 |
 | `nothing-to-merge` / `inbox-invalid` / `inbox-state-invalid` | 合并范围不对 |

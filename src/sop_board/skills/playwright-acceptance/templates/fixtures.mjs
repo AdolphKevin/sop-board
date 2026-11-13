@@ -8,12 +8,10 @@
 //   PW_OUT               输出目录（运行目录内），由 playwright.config.mjs 读取。
 //   PW_TAB               可选。复用 URL 含该子串的唯一标签页；缺省新开一页。
 //   PW_FRAME             可选。surface-map 已确认的唯一 iframe 选择器。
-//   PW_CASES             可选。scripts/case_tags.py 生成的 cases.json，用于给测试加上游用例 tag。
 //   PW_CONNECT_TIMEOUT_MS 可选。连接超时，默认 30000。
 //
 // 运行时由 sop-board browser install 安装（固定版本、自带 ffmpeg）；不要自行 npx 安装另一个版本。
 import { test as base, chromium } from '@playwright/test';
-import fs from 'node:fs';
 import {connectBroker, cdpEndpoint} from './connection.mjs';
 import {readScope, scopeAnnotation, webEvidence} from './scope.mjs';
 import {recording} from './recording.mjs';
@@ -23,26 +21,21 @@ const BLOCKED_PREFIX = '受阻：';
 const NOT_EXECUTED_PREFIX = '未执行：';
 
 // 受阻：意外故障或全队都不具备的能力（前置数据准备失败、未知遮挡、浏览器或服务异常退出、browser may not be secure）。
-// to_scenarios.py 据此输出 blocked。
+// sop-board playwright convert 据此输出 blocked。
 export function blocked(reason) {
   return new Error(BLOCKED_PREFIX + reason);
 }
 
 // 未执行：本机暂时不具备、补齐就能执行（等人处理的真实或未声明账号登录、人机验证、只发到本人设备的验证码、
-// 身份使用次数到上限；缺凭据变量；用到的服务本机没在运行）。to_scenarios.py 据此输出 not-executed，不附证据、不登记结果；
+// 身份使用次数到上限；缺凭据变量；用到的服务本机没在运行）。sop-board playwright convert 据此输出 not-executed，不附证据、不登记结果；
 // 等人处理的事另用 sop-board attention add 登记。
 export function notExecuted(reason) {
   return new Error(NOT_EXECUTED_PREFIX + reason);
 }
 
-// 读取 cases.json，为场景生成 tag：['@SOP-02-P01', '@CASE-037', …]。tag 只能来自配对文件。
-let casesCache;
+// 场景标签保留完整场景键。
 export function tags(scenarioId) {
-  if (casesCache === undefined) {
-    const file = process.env.PW_CASES;
-    casesCache = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).scenarios || {} : {};
-  }
-  return ['@' + scenarioId, ...(casesCache[scenarioId] || []).map((id) => '@' + id)];
+  return ['@' + scenarioId];
 }
 
 export const test = base.extend({

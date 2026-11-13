@@ -22,10 +22,10 @@
 
 实际执行的 pass、fail 至少一份真实证据；`not-executed` 不附证据，留在待执行范围。`convert` 生成上述字段，其他入口的行由对应驱动写入后合并。
 
-## 配对标签
+## 场景标签
 
-`pairs.json` 顶层为 `covered`、`conflict`、`disposed` 数组。`covered`、`conflict` 含 `case`、`scenarios`、`note`；`disposed` 含 `case`、`state`、`reason`、`confirmed_by`。`sop-board playwright tags` 只把已确定的对应关系转成 Playwright tag，不生成业务预期，也不把标签当作通过结果。
+`tags(scenarioId)` 只返回完整场景键标签，例如 `['@shop#W']`，不表示验收通过。
 
 ## 回归
 
-场景是验收单位。由人触发的测试建设使用随包 [regression-distill](../../regression-distill/SKILL.md)，由 `sop-board distill submit` 登记关联；关联不改变验收结论，场景执行会话不写测试。
+场景是验收单位，场景执行会话不写测试。使用者另行要求沉淀时，由随包 [regression-distill](../../regression-distill/SKILL.md) 把独立通过的场景写成守护测试，经 `sop-board distill submit` 登记；之后 `sop-board retest` 运行守护，未通过的场景转待复测。本轮通过的 spec 是浏览器层沉淀的保真基线，所以按 [spec 的导入](web.md#spec-的导入)规则写。

@@ -1,4 +1,4 @@
-"""随包 Web 验收技能（playwright-acceptance）的命令入口：指引、报告转换与配对标签。"""
+"""随包 Web 验收技能（playwright-acceptance）的命令入口：指引与报告转换。"""
 import argparse
 import hashlib
 import json
@@ -40,7 +40,6 @@ def guide():
 结果转换：sop-board playwright convert --report <报告.json> --out <运行目录> --scope <scope.json> \\
   --scenario-file scenarios.yaml --executor <执行者>
 然后 sop-board run submit 登记；不要另行登记第二份结果。
-配对标签：sop-board playwright tags --pairs <pairs.json> --out <cases.json>
 细则见内置技能 references/。
 """
 
@@ -60,13 +59,12 @@ def _script(name, arguments):
 
 
 def command(arguments):
-    if arguments and arguments[0] in ('convert', 'tags'):
-        return _script('to_scenarios.py' if arguments[0] == 'convert' else 'case_tags.py', arguments[1:])
+    if arguments and arguments[0] == 'convert':
+        return _script('to_scenarios.py', arguments[1:])
     parser = argparse.ArgumentParser(prog='sop-board playwright')
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('guide')
     sub.add_parser('convert', add_help=False, help='把 Playwright JSON 报告转换为 results.jsonl，参数用 convert --help 查看')
-    sub.add_parser('tags', add_help=False, help='从配对文件生成标签，参数用 tags --help 查看')
     args = parser.parse_args(arguments)
     if args.action == 'guide':
         print(guide())

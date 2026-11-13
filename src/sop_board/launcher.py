@@ -15,7 +15,6 @@ import time
 import uuid
 from string import Template
 
-from . import browsers
 from .errors import APIError
 from .store import dumps, now
 
@@ -27,7 +26,7 @@ def agent_for(project, kind):
 
 
 def work_directory(project, checkout):
-    return checkout.paths[project.scenario_repo]
+    return checkout.paths[project.scenario_repo].resolve()
 
 
 def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemented_by=None):
@@ -45,6 +44,14 @@ def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemente
     return text
 
 
+def running_launch(db, checkout):
+    """同一检出同时只运行一个启动。"""
+    running = db.execute("SELECT id FROM launches WHERE checkout=? AND status='running'", (checkout.id,)).fetchone()
+    if running:
+        raise APIError(409, 'launch-running', [dict(field='launch', problem=
+            f"检出 {checkout.name} 已有运行中的启动 #{running['id']}；结束后再启动，或运行 sop-board launch stop --launch {running['id']}")])
+
+
 class Launcher:
     def __init__(self, project, store):
         self.project, self.store = project, store
@@ -57,15 +64,26 @@ class Launcher:
         if not scope:
             raise ValueError('须给出场景')
         self.project.require()
+        # 已有运行中的启动时先报 launch-running：它可能已准备了运行，范围检查会误报 run-prepared。
+        with self.store.local() as db:
+            running_launch(db, checkout)
+        from .cli import Context
+        context = Context(self.project, self.store, checkout)
+        excluded = []
+        if kind == 'run':
+            from .runs import validate_scope, invalid_files
+            found, _, _, selected = validate_scope(context, scope)
+            excluded = invalid_files(found)
+            scope = [item['scenario'] for item in selected]
+        else:
+            from .guards import validate_distill_scope
+            validate_distill_scope(context, scope)
         agent = agent_for(self.project, kind)
         directory = self.project.data / 'launches'
         directory.mkdir(exist_ok=True)
         with self.guard:
             with self.store.local_tx() as db:
-                running = db.execute("SELECT id FROM launches WHERE checkout=? AND status='running'", (checkout.id,)).fetchone()
-                if running:
-                    raise APIError(409, 'launch-running', [dict(field='launch', problem=
-                        f"检出 {checkout.name} 已有运行中的启动 #{running['id']}；结束后再启动，或运行 sop-board launch stop --launch {running['id']}")])
+                running_launch(db, checkout)
                 cursor = db.execute(
                     "INSERT INTO launches(checkout,kind,agent,scope,log,status,requested_by,started_at) VALUES (?,?,?,?,?,'running',?,?)",
                     (checkout.id, kind, agent['runner'], dumps(scope), '', requested_by, now()))
@@ -87,14 +105,15 @@ class Launcher:
             elif implemented_by:
                 env['SOP_BOARD_IMPLEMENTED_BY'] = implemented_by
             work = work_directory(self.project, checkout)
-            # 数据根目录（证据目录与 machine.json 在这里）也要可写。
-            writable = [str(self.project.data), str(self.project.data.parent / 'evidence'), str(browsers.runtime_dir())]
+            # 会话写项目工作目录与证据；浏览器和 Node 依赖由守护进程准备，只读使用。
+            writable = [str(path.resolve()) for path in (self.project.data, self.project.data.parent / 'evidence')]
             argv = self.argv(agent, prompt, work, writable, session)
             try:
                 with log.open('wb') as output:
                     process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=output,
                                                stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as error:
+                log.write_text(f"无法启动 {agent['runner']}：{error}\n", encoding='utf-8')
                 with self.store.local_tx() as db:
                     db.execute("UPDATE launches SET status='failed', log=?, ended_at=? WHERE id=?", (str(log), now(), launch_id))
                 raise ValueError(f"无法启动 {agent['runner']}：{error}") from error
@@ -102,11 +121,13 @@ class Launcher:
                 db.execute('UPDATE launches SET pid=?, log=?, session=? WHERE id=?', (process.pid, str(log), session, launch_id))
             self.processes[launch_id] = process
             threading.Thread(target=self.watch, args=(launch_id, process, log), daemon=True, name=f'launch-{launch_id}').start()
-        return self.read(launch_id)
+        result = self.read(launch_id)
+        result['invalid_files'] = excluded
+        return result
 
     def argv(self, agent, prompt, work, writable, session):
         if agent['runner'] == 'claude':
-            argv = [sys.executable, '-m', 'sop_board.claude_runner', '--directory', str(self.project.data / 'launches'),
+            argv = [sys.executable, '-m', 'sop_board.claude_runner', '--directory', str((self.project.data / 'launches').resolve()),
                     '--session', session, '--work-directory', str(work)]
             if agent.get('model'):
                 argv += ['--model', agent['model']]
@@ -198,6 +219,29 @@ def public(row, runs, *, local):
     item = dict(id=row['id'], kind=row['kind'], agent=row['agent'], scope=json.loads(row['scope']), status=row['status'],
                 exit_code=row['exit_code'], requested_by=row['requested_by'], started_at=row['started_at'],
                 ended_at=row['ended_at'], checkout=row['checkout'], runs=[dict(id=r['id'], kind=r['kind'], status=r['status']) for r in runs])
+    if row['status'] == 'exited' and not runs:
+        item.update(status='no-work', problem=f"启动 #{row['id']} 未产生运行（或沉淀）")
+    elif row['status'] == 'failed':
+        item['problem'] = f"启动 #{row['id']} 失败" + ('' if runs else '，未产生运行（或沉淀）')
+    if row['status'] in ('exited', 'failed'):
+        unsubmitted = [dict(id=r['id'], kind=r['kind'], status=r['status'])
+                       for r in runs if r['status'] in ('prepared', 'abandoned')]
+        if unsubmitted:
+            item['unsubmitted'] = unsubmitted
+            details = '、'.join(
+                f"{'运行' if r['kind'] == 'run' else '沉淀'} #{r['id']} "
+                + ('未提交（prepared）' if r['status'] == 'prepared' else '已放弃（abandoned，未登记结果）')
+                for r in unsubmitted)
+            item['problem'] = item.get('problem', f"启动 #{row['id']} 已退出") + '；' + details
+    if item['status'] in ('no-work', 'failed') or item.get('unsubmitted'):
+        if local:
+            try:
+                with Path(row['log']).open('rb') as stream:
+                    stream.seek(0, 2)
+                    stream.seek(max(0, stream.tell() - 8192))
+                    item['log_tail'] = stream.read().decode('utf-8', errors='replace')[-4000:]
+            except OSError:
+                item['log_tail'] = '启动日志不可读'
     if local:
         item.update(pid=row['pid'], log=row['log'], session=row['session'],
                     prompt=str(Path(row['log']).with_suffix('.prompt.md')) if row['log'] else None)

@@ -2,10 +2,12 @@
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo，数据目录 $D，Web 场景 shop#W 使用身份 merchant）；看板已以 sop-board serve demo --data $D --lan 启动；
 #   浏览器运行时已安装，merchant 已登录（browser.yaml）。spec 库目录指演示项目 app 中存放浏览器层 spec 与地图文件的目录。
+#   版本 2 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#守护与沉淀（问题 4） 的“首次沉淀的基线按场景认”）：
+#   新增 ATS-02-N02（守护 spec 改名仍以产生独立通过的 spec 为基线）与 ATS-02-N03（基线不合 spec 规则时拒绝并指出是基线）。
 
 metadata:
   requirement: "sop-board v10：交互地图放在产品仓库 spec 库目录并记录前端源码摘要，atlas stale 按摘要判断过期；浏览器层守护测试在 distill submit 时做保真检查，基线是 HEAD 版本，首次以产生独立通过的那份 spec 为准"
-  version: 1
+  version: 2
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -47,7 +49,9 @@ sops:
     title: 浏览器层测试沉淀时做 spec 保真检查
     actor: 开发者
     entry: "sop-board distill submit（浏览器层测试）、specs check（specs 只保留 check）"
-    must: ["浏览器层测试另跑保真检查，基线是 git show HEAD:<path>，首次以产生独立通过的那份 spec 为准"]
+    must:
+      - "浏览器层测试另跑保真检查，基线是 git show HEAD:<path>，首次以产生独立通过的那份 spec 为准"
+      - "首次的基线按场景认：取独立通过所属运行目录里覆盖该场景的 spec，不按文件名；运行目录在本机却找不到时拒绝，不当作没有基线"
     scenarios:
       - id: ATS-02-P01
         polarity: positive
@@ -77,4 +81,43 @@ sops:
         steps: ["运行 sop-board distill submit --report guard.json --json"]
         expected: ["submit 以业务失败退出，写明保真检查不合格及被削弱的断言", "regression.yaml 的 sha256 不变"]
         forbidden_effects: ["削弱断言的 spec 写进守护"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）"]
+      - id: ATS-02-N02
+        polarity: negative
+        negative_type: tampered-input
+        title: 守护 spec 改了文件名，仍以产生独立通过的那份 spec 为基线
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "shop#W 已由运行 R 中的一份浏览器 spec 在当前快照上独立通过；该 spec 只经 ./fixtures.mjs、./library.mjs 导入，不在 git HEAD 中"
+          - "已运行 distill prepare shop#W；把该 spec 复制到守护目录并改名（例如 shop-w1-p01.guard.spec.mjs），删掉其中对退款状态的断言；guard.json 声明它覆盖 shop#W"
+          - "记录 regression.yaml 的 sha256"
+        steps:
+          - "运行 sop-board distill submit --report guard.json --json"
+          - "把删掉的断言恢复（守护 spec 仍用新文件名），再运行 sop-board distill submit --report guard.json --json"
+        expected:
+          - "第一次 submit 以业务失败退出，写明保真检查不合格及被删的断言；基线是运行 R 目录中的那份 spec"
+          - "第一次之后 regression.yaml 的 sha256 不变"
+          - "第二次 submit 的保真检查合格：断言与基线相同，不是没有基线；守护写进 regression.yaml"
+        forbidden_effects: ["按文件名找不到基线就以没有基线判合格", "削弱断言的 spec 写进守护"]
+        refs: ["docs/design.md#守护与沉淀（问题 4）"]
+      - id: ATS-02-N03
+        polarity: negative
+        negative_type: invalid-input
+        title: 产生独立通过的 spec 不合 spec 规则时，submit 拒绝并指出出问题的是基线
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state:
+          - "替代做法：执行者在运行 R 中为 shop#W 写出一份直接导入 node:child_process 做只读查询的浏览器 spec（不经 ./library.mjs），执行通过并以独立验收提交"
+          - "已运行 distill prepare shop#W；守护 spec 按规则改写为只经 ./fixtures.mjs、./library.mjs 导入，guard.json 声明它覆盖 shop#W"
+          - "记录 regression.yaml 的 sha256"
+        steps:
+          - "运行 sop-board distill submit --report guard.json --json"
+        expected:
+          - "submit 以业务失败退出，写明出问题的是运行 R 目录中的基线 spec 及原因（导入了 node:child_process），并说明要按规则写 spec 重新验收后再沉淀"
+          - "错误没有归到守护 spec 上"
+          - "regression.yaml 的 sha256 不变"
+        forbidden_effects: ["以没有基线为由判合格", "把基线的问题报成守护 spec 的问题"]
         refs: ["docs/design.md#守护与沉淀（问题 4）"]

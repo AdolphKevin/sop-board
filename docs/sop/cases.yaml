@@ -5,10 +5,11 @@
 #   “内网”指另一台设备经 --lan 的实际非回环地址访问。
 #   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 CAS-04（收件箱与问答在同一产品的各台机器上可见）。
 #   “双机项目”见 setup.yaml 文件头。
+#   版本 3 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#保留能力的简化形态）：新增 CAS-02-N02（只加了引用的场景单独列出）。
 
 metadata:
   requirement: "sop-board v10：测试同学从内网上传用例进收件箱；会话 merge prepare 后直接编辑仓库中的用例与场景文件，merge submit 校验并输出场景差异；疑问用 ask 挂到看板待答复，答复在下次合并读取；多人协作时收件箱与问答在同一产品的各台机器上可见"
-  version: 2
+  version: 3
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -98,6 +99,26 @@ sops:
         steps: ["运行 sop-board merge submit --json", "运行 sop-board inbox list"]
         expected: ["merge submit 以业务失败退出，列出文件、字段与行号", "收件箱条目仍为未合并"]
         forbidden_effects: ["不合格的文件被当作已合并"]
+        refs: ["docs/design.md#保留能力的简化形态"]
+      - id: CAS-02-N02
+        polarity: negative
+        negative_type: incomplete-input
+        title: 细节用例只写进 refs、四要素没有变化时，merge submit 把该场景列为“只加了引用”
+        actor: 开发者
+        priority: P2
+        verify: cli
+        initial_state:
+          - "shop#A 有一条 Agent 独立验收通过"
+          - "收件箱有演示用例文件的未合并条目 N；已运行 merge prepare --inbox N"
+          - "新流程用例按原文生成了场景；细节用例 TC_REFUND_AMOUNT_001 只写进 shop#A 的 refs（inbox:N TC_REFUND_AMOUNT_001），shop#A 的四要素不改"
+        steps:
+          - "运行 sop-board merge submit --json"
+          - "运行 sop-board status --json，在工作台查看 shop#A"
+        expected:
+          - "merge submit 成功，收件箱条目标为已合并"
+          - "差异里单独列出 shop#A 为“只加了引用”，带用例编号 TC_REFUND_AMOUNT_001，并提示细节用例应并进 expected，或向使用者说明预期为什么不用改"
+          - "shop#A 不在改动编号里，仍为通过"
+        forbidden_effects: ["只加了引用的场景被列为改动", "差异里不提只加了引用的场景"]
         refs: ["docs/design.md#保留能力的简化形态"]
 
   - id: CAS-03

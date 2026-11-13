@@ -30,7 +30,7 @@
 }
 ```
 
-- 命令只用 argv，不经 shell；`{junit}` 由运行器替换为 junit 输出路径，`{playwright}` 替换为看板运行时的 Playwright CLI。命令必须输出 junit。
-- 浏览器层测试的命令写 `"browser": "<身份>"`，由看板提供 PW_CDP_ENDPOINT；测试不自己启动浏览器。改写已有 spec 的断言时，在该守护的 ledger 里逐条写 `{"assertion_id", "kind": "rewrite", "reason"}`。
+- 命令只用 argv，不经 shell；`{junit}` 由运行器替换为 junit 输出路径，`{playwright}` 替换为看板运行时的 Playwright CLI。命令必须输出 junit。命令（`cwd`、`argv`、`env`）与测试文件随仓库提交，路径都写仓库内相对路径，不写本机绝对路径。
+- 浏览器层测试的命令写 `"browser": "<身份>"`，由看板提供 PW_CDP_ENDPOINT；测试不自己启动浏览器。以运行目录里那份独立通过的 spec 为起点，连同 library.mjs 及其导入放进仓库 spec 库的任意子目录，spec 可改名；另配连接 PW_CDP_ENDPOINT 的守护 fixtures.mjs 与配置，不依赖原运行的 scope.json 等材料（见技能 references/report.md 的 commands）。原 spec 是首次保真基线，比较时排除运行适配接口、保留业务断言与项目辅助代码；改写已有 spec 的断言时，在该守护的 ledger 里逐条写 `{"assertion_id", "kind": "rewrite", "reason"}`。
 
-5. 运行 `sop-board distill submit`。当前状态须为通过；状态不是通过时返回 `distill-not-passing` 并写明当前状态，回到通过后再登记。它会核对 acceptance、覆盖与检出能力证据，实际运行一次命令，全部合格后才写进守护索引。被拒时按输出修正后再提交。不要提交 git。
+5. 运行 `sop-board distill submit`。当前状态须为通过；状态不是通过时返回 `distill-not-passing` 并写明当前状态，回到通过后再登记。它会核对 acceptance、覆盖与检出能力证据，实际运行一次命令，全部合格后才写进守护索引。被拒时按输出修正后再提交；输出指出问题在保真基线（独立通过的那份 spec）时停下，按技能第 5 步交回。不要提交 git。

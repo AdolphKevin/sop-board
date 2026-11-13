@@ -17,10 +17,12 @@
 #   BRW-07 的有界面窗口由执行者用 browser open --headed 打开，并用声明的合成账号登录，不需要真人；窗口会出现在执行机器的屏幕上。
 #   版本 7 由未参与实现的审核方按决策 26 独立验收（2026-11-13）的结果修订：有界面的窗口核对不通过时不再结束（新增 BRW-07-N03）；
 #   BRW-07-P02 写明环境先停掉、原有运行目录不得被删除。BRW-07-P01、P02 的“不出现登录表单”依赖演示商城的登录会话在商城进程重启后仍然有效。
+#   版本 8 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#进程与入口）：BRW-05-N01 写明运行准备的输出带退出时间与信号；
+#   BRW-05-P01 的 Codex 那次以完整权限运行；新增 BRW-05-N02（Codex 沙箱里不自行启动看板）。
 
 metadata:
   requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人，等人处理的场景记未执行并登记待人处理；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
-  version: 7
+  version: 8
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -289,7 +291,7 @@ sops:
           - "在 app 目录新开 Claude Code 会话，用自然语言请求“启动看板并验收 shop#W，提交结果”"
           - "会话在后台运行 sop-board serve demo --data $D，再运行 run prepare --scope shop#W，经 PW_CDP_ENDPOINT 执行并 run submit"
           - "会话运行期间用 ps -o pid,ppid,command 查看 CfT 进程的参数与父进程"
-          - "对 Codex 会话重复一次"
+          - "对 Codex 会话重复一次：Codex 以使用者配置的完整权限运行（沙箱内的情况见 BRW-05-N02）"
         expected:
           - "serve 正常启动，没有因会话环境中的 agent 标记拒绝"
           - "CfT 的父进程是 sop-board serve 守护进程，参数含 --headless=new，没有弹出有界面窗口"
@@ -313,12 +315,34 @@ sops:
           - "运行 sop-board browser status 与 attention list，在工作台打开 shop#W"
         expected:
           - "run prepare 在 15 秒就绪时限内返回，没有挂起"
+          - "run prepare 的输出与运行目录说明中的浏览器问题写明 CfT 的退出时间、退出信号与日志路径，没有空值"
           - "该运行中 shop#W 记为受阻，finding 写明 CfT 的退出信号与日志路径"
           - "browser status 记录该次退出信号；attention list 有对应的待人处理"
           - "工作台 shop#W 显示受阻及原因"
         forbidden_effects: ["命令一直挂起或静默结束而没有任何记录", "shop#W 记为通过或失败", "回退到用户日常 Chrome"]
         refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 3 条"]
         evidence_hints: ["会话记录与命令耗时", "chrome.log 末尾", "提交结果", "工作台截图"]
+      - id: BRW-05-N02
+        polarity: negative
+        negative_type: other
+        title: Codex 沙箱里的会话不自行启动看板，请使用者在终端启动；在沙箱环境里启动的 serve 给出提示
+        actor: 执行会话
+        priority: P2
+        verify: agent
+        initial_state:
+          - "看板未运行，没有运行中的 CfT"
+          - "Codex 以 workspace-write 沙箱运行（会话环境有 CODEX_SANDBOX）"
+        steps:
+          - "在 app 目录新开 Codex 会话（-s workspace-write），请求“启动看板并验收 shop#W，提交结果”"
+          - "会话请使用者启动看板时，在终端运行 sop-board serve demo --data $D，然后回答“已启动”"
+          - "会话结束后运行 sop-board browser status 与 attention list，在工作台打开 shop#W"
+          - "替代做法（只核对提示，不核对沙箱本身）：在终端以环境变量 CODEX_SANDBOX=seatbelt 运行 sop-board serve demo --data $D --port <空闲端口>，查看启动输出后停止它"
+        expected:
+          - "会话没有在沙箱里运行 sop-board serve，而是说明沙箱里启动的看板无法启动浏览器，请使用者在终端启动"
+          - "使用者启动看板后，shop#W 经 run prepare（或 run launch）执行并提交，结果登记成功并附截图"
+          - "带 CODEX_SANDBOX 启动的 serve 在启动输出中提示：在沙箱里启动的看板无法启动浏览器、启动的会话读不到客户端的登录凭据，应在终端启动"
+        forbidden_effects: ["会话在沙箱里启动 serve 后反复重试浏览器", "会话改用日常 Chrome"]
+        refs: ["docs/design.md#进程与入口"]
 
   - id: BRW-06
     title: 执行会话直接登录声明的测试账号，只把真人才能完成的步骤交给人

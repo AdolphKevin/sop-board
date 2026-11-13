@@ -139,13 +139,11 @@ export function taskAssets(directory) {
     return assetFiles(path.join(directory, 'scenarios', name));
   }))];
 }
-export function graph(spec, root, {library = false, importRoot = root, extra = [], canonicalSpec = true} = {}) {
+export function graph(spec, root, {library = false, importRoot = root, extra = [], canonicalSpec = true, runtimeFixtures = false} = {}) {
   root = path.resolve(root); spec = path.resolve(spec);
   const parse = parser([path.dirname(spec), root]);
   const files = new Map(), packages = {}, unresolved = [];
-  function load(file, isSpec = false) {
-    file = path.resolve(file);
-    if (files.has(file)) return;
+  function checkPath(file) {
     if (canonicalSpec && !file.startsWith(root + path.sep)) throw new Error('执行依赖越出冻结目录：' + file);
     fromHead(root, file);
     let cursor = root;
@@ -153,6 +151,11 @@ export function graph(spec, root, {library = false, importRoot = root, extra = [
       cursor = path.join(cursor, part);
       if (fs.lstatSync(cursor).isSymbolicLink()) throw new Error('执行资产不能包含符号链接：' + cursor);
     }
+  }
+  function load(file, isSpec = false) {
+    file = path.resolve(file);
+    if (files.has(file)) return;
+    checkPath(file);
     const bytes = fs.readFileSync(file), source = bytes.toString('utf8');
     const ast = /\.(?:mjs|cjs|js)$/.test(file) ? parse(source, file) : null;
     const imports = ast ? importsOf(ast, {strict: canonicalSpec}) : [];
@@ -180,6 +183,14 @@ export function graph(spec, root, {library = false, importRoot = root, extra = [
         continue;
       }
       imp.target = imp.source.startsWith('file:') ? fileURLToPath(imp.source) : path.resolve(library && isSpec ? importRoot : path.dirname(file), imp.source);
+      // 只把 spec 的直接 fixtures 导入当作运行适配接口，不按全局文件名过滤。
+      // 同名文件若从 library.mjs 可达，仍作为项目辅助代码完整分析。
+      if (runtimeFixtures && isSpec && imp.source === './fixtures.mjs') {
+        checkPath(imp.target);
+        if (!fs.statSync(imp.target).isFile()) throw new Error('运行夹具须为普通文件：' + imp.target);
+        delete imp.target;
+        continue;
+      }
       load(imp.target);
     }
   }

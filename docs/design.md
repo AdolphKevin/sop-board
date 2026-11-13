@@ -161,7 +161,7 @@
 
 ### 进程与入口
 
-- `sop-board serve [项目] [--lan] [--port]`：**看板守护进程**，可以在终端或 agent 会话中启动（使用者 2026-11-10：可以根据验收需要启动服务和浏览器）。负责：网页、按检出管理 adapter 环境、浏览器代理、本机无头会话启动器。CLI 需要环境或浏览器时，通过回环 HTTP 调用守护进程（数据目录里的本机令牌文件鉴权）；守护进程没运行时直接报错并给出启动命令。配了共享库且带 `--lan` 启动时，把机器标识、显示名和内网地址登记到共享库，供别的看板读取本机的证据（已定决策 21）。
+- `sop-board serve [项目] [--lan] [--port]`：**看板守护进程**，可以在终端或 agent 会话中启动（使用者 2026-11-10：可以根据验收需要启动服务和浏览器）。在 Codex 沙箱里（环境有 `CODEX_SANDBOX`）启动的看板及其子进程仍受沙箱限制：浏览器启动即中止，启动的会话读不到客户端的登录凭据。serve 在这种环境下启动时先打印这条提示；技能要求会话在沙箱里不自行启动看板，请使用者在终端启动（2026-11-13 真实会话验收发现）。负责：网页、按检出管理 adapter 环境、浏览器代理、本机无头会话启动器。CLI 需要环境或浏览器时，通过回环 HTTP 调用守护进程（数据目录里的本机令牌文件鉴权）；守护进程没运行时直接报错并给出启动命令。配了共享库且带 `--lan` 启动时，把机器标识、显示名和内网地址登记到共享库，供别的看板读取本机的证据（已定决策 21）。
 - **会话 CLI** 是 Agent 工作的唯一入口。看板上的“AI 重跑”“沉淀”按钮（仅本机）用同一份 `sop-board` 技能在检出目录启动 `codex exec` 或 `claude -p`（按 `agents` 配置），只记录进程号、日志和退出码；同一检出同时只运行一个。
 
 ### 检出与环境（问题 3）
@@ -237,6 +237,7 @@
   - 状态为通过、同一指纹上已有独立真实入口通过、但没有有效守护的场景，显示为“待沉淀”（已定决策 25）。
   - `distill prepare [F#ID…]` 在当前检出准备工作目录。会话在当前检出写测试（不提交），写出 `guard.json` 后运行 `distill submit`。
   - submit 交给守护进程处理：按上面的有效条件核对；浏览器层测试另跑保真检查（沿用 `spec_library.ast/check_one/qualified :109-122,465-565`），基线是 `git show HEAD:<path>`，首次以产生独立通过的那份 spec 为准；然后按 retest 的规则实际运行一次；全部合格后合并进 `regression.yaml`，留给开发者审核提交。
+  - 首次沉淀的基线按场景认，不按文件名认：取那条独立通过所属运行目录里覆盖该场景的 spec，守护 spec 改了名字也以它为基线。运行目录在本机、却找不到或找到不止一份覆盖该场景的 spec 时，submit 拒绝并列出运行目录与找到的文件；只有独立通过出自别的机器（本机没有那份运行目录）时才不设基线。这次比较按各自 spec 所在目录认文件；spec 直接导入的 `./fixtures.mjs` 是可替换的运行适配接口（守护要在 retest 里独立运行，必须换一份），不计入断言比较，项目自写的 `library.mjs` 及其导入照常比较；替换后的夹具是否真的执行步骤、断言失败会不会传出来，由沉淀时的实际运行与检出能力证据核对。基线本身不合 spec 规则（规范脚本只经 `./fixtures.mjs`、`./library.mjs` 导入）时，submit 拒绝并写明出问题的是基线，要按规则写 spec 重新验收后再沉淀；执行会话写验收 spec 时就遵守这条规则（2026-11-13 真实会话验收发现）。
   - 看板上的“沉淀”按钮仅本机可用，作用是启动一个无头沉淀会话。
   - 需要某个依赖故障的场景，守护写在不需要真实停服的层（单元、接口或组件层，用替身模拟依赖不可用）；写不出这样的测试时不沉淀，沉淀报告里写明原因（已定决策 22）。
 - **spec 库并入守护的浏览器层**：`regression.yaml` 取代 `INDEX.json`，成为唯一索引。`seed()` 改为从 `regression.yaml` 预置：守护有效就预置，过期的只作参考。删除 `index/version_digest/promote/import_cw2`、`_history` 和 `baseline` 目录。
@@ -267,8 +268,9 @@
 
 - **用例上传与合并**：内网上传的文件进收件箱（`inbox`，先用 `scenarios.cases` 校验格式）。会话运行 `merge prepare [--inbox ID…]` 后，直接编辑仓库里的用例和场景文件，原来的看板版本、配对、缺口、增量和全量合并都不再需要：
   - 有疑问时，在对话里问用户，或用 `ask --about inbox:ID|F#ID` 把问题挂到看板“待答复”；测试同学答复后，下一次合并读取。
-  - `merge submit` 用 `load_scenarios` 校验改后的文件，输出场景差异（新增、移除、改动编号，以及角色或入口的变化），并把收件箱条目标为已合并。
+  - `merge submit` 用 `load_scenarios` 校验改后的文件，输出场景差异（新增、移除、改动编号，以及角色或入口的变化），并把收件箱条目标为已合并。差异里另列“只加了引用”的场景：`refs` 新增了本次用例编号、四要素却没有变化。细节用例应并进 expected：提交已经完成，会话直接改该场景文件（内容一变即回到未执行），或向使用者说明为什么预期不用改（2026-11-13 真实会话验收发现）。
   - 场景的 `refs` 和 `metadata.sources` 记录来源与确认人；确认人自动取操作者，或取答复人。
+  - v9 留下的上游用例配对标签（`playwright tags --pairs` 与 spec 读取的 `PW_CASES`）随配对一起删除，spec 的 tag 只有场景键（使用者 2026-11-13 决定）。
 - **SOP 编写与草稿**：
   - `sop prepare --source` 复制资料、给出提示词；会话在仓库里写 SOP Markdown，有问题在对话中问；`sop submit` 校验六个标题和规则编号（沿用 `sop_markdown`），并在文件头写入确认人。
   - 草稿就是带 `metadata.status: draft` 的场景文件，不进入执行。测试同学在工作台批注并逐条同意，批注与同意存业务记录库（配了共享库时各机器的看板都能看到）；会话按批注修订后 `draft resolve`；`draft confirm <文件>` 要求每条场景在当前指纹上已同意、且没有未处理的批注，才把状态改为 confirmed，确认人写同意人（已定决策 20）。
@@ -280,7 +282,8 @@
 
 - 首选做法：协调会话运行 `sop-board run launch …`，由守护进程启动一个新的无头会话执行。这个会话只拿到 prompt 文件，会话编号由启动器取得（Claude 用 `--session-id`，Codex 读 `thread.started`），启动记录就是独立性的证据。原来的两段交接、handoff 文件与替代标签规则全部删除。
 - 当前会话自己 `run prepare` 时，执行者取自 `CODEX_THREAD_ID` 或启动器注入的 `SOP_BOARD_SESSION`，取不到就要求 `--session`。实现者有三个来源：修复复验时自动取修复会话；否则用 `--implementer <会话编号>` 或 `--implemented-by <操作者>` 声明（二选一）；不声明记为“未声明”。仍然分三类：独立验收、实现者自检、未声明。
-- 跨机器验收时执行会话拿不到实现者的会话编号，用 `--implemented-by <操作者>`：与本机操作者不同记独立验收；相同则以参数错误拒绝，要求改填会话编号。实现者由使用者在任务里说明，没说明的照旧记未声明，会话不追问（已定决策 21）。
+- 跨机器验收时执行会话拿不到实现者的会话编号，用 `--implemented-by <操作者>`：与本机操作者不同记独立验收；相同则以参数错误拒绝，要求改填会话编号。实现者由使用者在任务里说明，没说明的照旧记未声明，会话不追问（已定决策 21）。`--implementer` 只填改了被验收代码的会话：协调会话自己没改代码、使用者也没说明实现者时不填。
+- **范围核对与启动结果**（2026-11-13 真实会话验收发现）：`run launch` 启动会话之前，按 `run prepare` 的同一套规则核对范围（场景是否存在、是否草稿、所在文件是否合格、同一检出是否已有 prepared 的运行），不合格就以同样的错误码直接拒绝，不启动会话。指定的场景所在文件不合格时，`run prepare` 与 `run launch` 都返回 `scenario-file-invalid`，列出文件、字段与行号，不报 `scenario-not-found`；`--scope pending|all` 不因别的文件不合格而拒绝，照常按合格文件选场景，输出与运行目录说明列出未纳入的不合格文件，执行会话在报告中转述。启动失败（`failed`）同样让 `run wait` 以业务失败返回。启动的会话准备了运行（或沉淀）却没有提交就退出时，`launch status` 写明哪项工作未提交，`run wait` 以 `launch-unsubmitted` 业务失败返回（使用者 2026-11-13 决定）。启动的会话退出时没有产生任何运行（或沉淀）工作，`launch status` 把这次启动标为“未产生运行”并附日志末尾，`run wait` 以业务失败返回。启动器交给客户端的目录一律先解析成真实路径，只把需要写入的目录作为可写目录。
 
 ### 本仓自身的场景、演示项目与文档
 
@@ -347,7 +350,7 @@
 | 修复 | `fix prepare [F#ID…]`、`fix submit`、`fix close`、`fix abandon` |
 | 沉淀 | `distill prepare [F#ID…]`、`distill submit --report r.json` |
 | 编写 | `inbox add <文件> [--kind cases\|sop]\|list\|show\|done\|reject`、`merge prepare/submit`、`ask --about F#ID\|inbox:ID --text`、`answers`、`sop prepare/submit`、`draft annotations\|resolve\|confirm <文件>` |
-| 其他 | `atlas prepare/submit/stale`、`specs check`、`fixtures run\|exec`、`identity status`、`attention list\|add\|resolve`、`report [--zip]`、`launch status\|stop`、`playwright guide\|convert\|tags` |
+| 其他 | `atlas prepare/submit/stale`、`specs check`、`fixtures run\|exec`、`identity status`、`attention list\|add\|resolve`、`report [--zip]`、`launch status\|stop`、`playwright guide\|convert` |
 
 除 `status` 的文字输出外，所有命令都输出 JSON：成功退出 0，业务失败退出 1，参数错误退出 2。
 
@@ -396,3 +399,5 @@
 - **共享库是唯一一份业务记录**（已定决策 21）：连不上时不能读写业务记录，也没有本地缓存；备份由部署共享库的人按文档示例自己做。各机器的 sop-board 版本须与共享库的表结构版本一致。
 - **两种库的验收**：现行场景缺省在 SQLite 上验收；已定决策 21 的场景和各能力文件的 P0 场景在 PostgreSQL 上再验收一遍；沉淀出的守护测试对两种库各跑一遍。
 - **各看板显示的是本检出的场景内容**：检出落后时，别人按新内容登记的结果对不上本机的指纹，显示为未执行；拉取后即一致。
+- **Codex 沙箱提示只认 `CODEX_SANDBOX`**：这个变量可能只在 macOS 的 Codex 沙箱里设置，Linux 上 serve 的提示与技能里的判断可能都不触发。未核实，先记下不处理（使用者 2026-11-13）。
+- **守护拿不到本机才有的值**：retest 只给守护注入入口地址变量，守护需要本机路径（例如演示库的 SQLite 文件）时没有可移植的来源，只能写进命令或测试。以后处理（使用者 2026-11-13）。

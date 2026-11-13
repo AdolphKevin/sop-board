@@ -8,7 +8,11 @@
 sop-board specs check --repo <仓库别名> <仓内相对路径> [--ledger ledger.json]
 ```
 
-以 git HEAD 中的同一 spec 连同它的本地导入（`./fixtures.mjs`、`./library.mjs` 及其导入）为基线，用 `scripts/spec-ast.mjs` 比较断言与数据核对；夹具与库文件也要提交，基线才完整。输出 JSON：`same`、`new`、`review`、`violation`、`no_baseline`；有 `violation` 时退出码为 1。
+以 git HEAD 中的同一 spec 连同它的本地导入（`./fixtures.mjs`、`./library.mjs` 及其导入）为基线，用 `scripts/spec-ast.mjs` 比较断言与数据核对；夹具与库文件也要提交，基线才完整。输出 JSON：`same`、`new`、`review`、`violation`、`no_baseline`、`baseline`；有 `violation` 时退出码为 1。
+
+spec 还没进 git HEAD 的首次沉淀由 `sop-board distill submit` 检查：基线是产生独立通过的那次运行目录里覆盖该场景的 spec（按场景认，不按文件名），基线本身不合[导入规则](web.md#spec-的导入)时拒绝并指出基线。
+
+首次比较把两边的辅助文件路径都按各自 spec 所在目录识别，改名或搬到 spec 库的其他子目录不改变断言身份。spec 直接导入的 `./fixtures.mjs` 是可替换的运行适配接口，其依赖（随包 connection、recording、scope、identity、atlas 和运行材料）不进入首次断言签名；这按导入边界识别，不按全局文件名过滤。`library.mjs` 及其可达本地导入仍完整比较，包括同名的 scope.mjs 等文件。删除、削弱 spec 断言或改变项目查询仍须账本；首次检查不证明替换夹具自身的正确性，夹具必须保持真实 expect、执行步骤并传播失败，按 [守护命令契约](../../regression-distill/references/report.md#commands) 实际运行并核对检出能力。HEAD 已有 spec 时仍比较其完整依赖，夹具变化照常查出。
 
 | 情况 | 结果 |
 | --- | --- |
@@ -45,4 +49,4 @@ await expect(page.getByText('Member')).toHaveText('Member');
 
 ## 改写后
 
-先运行 `specs check` 直到没有 `violation`，再经真实入口实际运行该 spec 并保留新证据；回归关联由 `sop-board distill submit` 登记，不改变验收结论。
+先运行 `specs check` 直到没有 `violation`，再经真实入口实际运行该 spec 并保留新证据。测试文件一改，原守护随即失效（摘要不同）；按 [regression-distill](../../regression-distill/SKILL.md) 带账本重新 `sop-board distill submit` 登记。

@@ -354,6 +354,8 @@ def env_status(app, request):
 
 def serve(project, *, port=8787, lan=False):
     """在前台运行守护进程，直到收到 SIGINT/SIGTERM。"""
+    if 'CODEX_SANDBOX' in os.environ:
+        print('提示：在 Codex 沙箱里启动的看板无法启动浏览器，启动的会话读不到客户端的登录凭据；请在终端启动看板。', flush=True)
     from . import extensions
     state = daemon.describe(project)
     if state['running']:

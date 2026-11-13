@@ -115,7 +115,7 @@ def answers(store, *, about=None, unanswered=False):
 # ---- 合并 ----
 
 def scene_summary(found):
-    return {key: dict(fingerprint=s['fingerprint'], actor=s['actor'], verify=s['verify'], polarity=s['polarity'])
+    return {key: dict(fingerprint=s['fingerprint'], actor=s['actor'], verify=s['verify'], polarity=s['polarity'], refs=s.get('refs', []))
             for key, s in found['scenarios'].items()}
 
 
@@ -201,7 +201,18 @@ def merge_submit(context, work_id=None):
             if before[key][field] != after[key][field]:
                 attributes.append(dict(scenario=key, field=field, before=before[key][field], after=after[key][field]))
     inbox_ids = [int(item.split(':', 1)[1]) for item in json.loads(work['scope'])]
+    references_only = []
+    cases = {item_id: {case['id'] for case in scenarios.load_cases(inbox_show(context.store, item_id)['content'])['test_cases']}
+             for item_id in inbox_ids}
+    for key in sorted(set(before) & set(after) - set(changed)):
+        new_refs = set(after[key]['refs']) - set(before[key].get('refs', []))
+        linked = sorted({case for ids in cases.values() for case in ids
+                         if any(case in ref for ref in new_refs)})
+        if linked:
+            references_only.append(dict(scenario=key, cases=linked, label='只加了引用',
+                note='细节用例应并进 expected，或向使用者说明预期为什么不用改'))
     diff = dict(added=added, removed=removed, changed=changed, attribute_changes=attributes,
+                references_only=references_only,
                 total_before=len(before), total_after=len(after))
     from . import works
     from .checkouts import branch_of

@@ -74,7 +74,7 @@ def pending_reason(info):
     return PENDING_STATES.get(info['state'], 'rerun')
 
 
-def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared, environment=None):
+def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared, environment=None, invalid_files=()):
     environment = environment or {}
     counts = {}
     for item in scope:
@@ -87,6 +87,9 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
             policy = web_evidence(entry)
             extra = f"，录屏{'开' if policy['video'] else '关'}、trace {'开' if policy['trace'] else '关'}"
         lines.append(f"- 入口 {name}（{entry.get('surface')}）：证据 {'、'.join(entry.get('evidence', []))}{extra}")
+    if invalid_files:
+        lines += ['', '## 未纳入的不合格文件', '', '在报告中转述以下未纳入范围的文件及问题：', '']
+        lines += [f"- {p['file']}：{p['field']}（行 {p.get('line')}）：{p['problem']}" for p in invalid_files]
     missing = {name: var for name, var in (environment.get('missing_address_env') or {}).items() if name in entries}
     if missing:
         lines += ['', '## 入口地址缺失', '']
@@ -131,27 +134,42 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
     (directory / 'brief.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
+def invalid_files(found):
+    return [dict(p, file=str(info['path'])) for info in found['files'].values() for p in info['problems']]
+
+
+def validate_scope(context, requested, fix=None):
+    """准备与启动共用的只读前置检查。"""
+    from .cli import scene_board
+    found, snapshot, derived = scene_board(context)
+    names = {value.split('#', 1)[0] for value in requested if '#' in value}
+    problems = [dict(p, file=str(info['path'])) for name, info in found['files'].items()
+                if name in names for p in info['problems']]
+    if problems:
+        raise APIError(422, 'scenario-file-invalid', problems)
+    scope = scope_for(context, found['scenarios'], derived, requested, fix)
+    if not scope:
+        raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')] + invalid_files(found))
+    with context.store.local() as db:
+        running = db.execute("SELECT id, session FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
+                             (context.checkout.id,)).fetchone()
+    if running:
+        reject(409, 'run-prepared', 'run', f"检出 {context.checkout.name} 已有准备好的运行 #{running['id']}（会话 {running['session']}）；"
+               f"提交或放弃后再准备：sop-board run abandon --run {running['id']}")
+    return found, snapshot, derived, scope
+
+
 def prepare(context, requested, *, session=None, fix_id=None, launch=None):
     project, checkout, store = context.project, context.checkout, context.store
     launch = launch or (int(os.environ['SOP_BOARD_LAUNCH']) if os.environ.get('SOP_BOARD_LAUNCH', '').isdigit() else None)
     executor = session_id(session)
     operator = config.require_operator()
-    from .cli import scene_board
-    found, snapshot, derived = scene_board(context)
-    scenes = found['scenarios']
     fix = None
     if fix_id is not None:
         from . import fixes
         fix = fixes.for_verify(context, fix_id, executor)
-    scope = scope_for(context, scenes, derived, requested, fix)
-    if not scope:
-        reject(409, 'nothing-to-run', 'scope', '没有需要执行的场景')
-    with store.local() as db:
-        running = db.execute("SELECT id, session FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
-                             (checkout.id,)).fetchone()
-    if running:
-        reject(409, 'run-prepared', 'run', f"检出 {checkout.name} 已有准备好的运行 #{running['id']}（会话 {running['session']}）；"
-                                           f"提交或放弃后再准备：sop-board run abandon --run {running['id']}")
+    found, snapshot, derived, scope = validate_scope(context, requested, fix)
+    scenes = found['scenarios']
     environment = daemon.call(project, 'POST', '/local/env/up', dict(checkout=checkout.name), timeout=900)['environment']
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)
     selected = [scenes[item['scenario']] for item in scope]
@@ -174,7 +192,7 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
             browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
             browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
         directory = workdirs.create(project.data / 'runs', work_id)
-        materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix)
+        materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix, invalid_files(found))
     except BaseException:
         with store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
@@ -189,7 +207,7 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
     # 部分就绪：adapter 输出就绪即可执行；没在运行的服务与缺失的入口地址只列出，由执行会话按场景判断。
     return dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
                 outputs=dict(results=str(directory / 'results.jsonl')),
-                session=executor, scope=scope, browser_problems=browser_problems,
+                session=executor, scope=scope, browser_problems=browser_problems, invalid_files=invalid_files(found),
                 environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
                 services=public_services(environment.get('services', [])),
                 not_running=environment.get('not_running', []),
@@ -200,7 +218,7 @@ def public_services(services):
     return [{k: v for k, v in item.items() if k in ('name', 'about', 'stoppable', 'state', 'label', 'log')} for item in services]
 
 
-def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix):
+def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix, invalid_files=()):
     project, checkout = context.project, context.checkout
     reasons = {item['scenario']: item['reason'] for item in scope}
     selected = [dict(scenes[key], key=key, reason=reasons[key]) for key in reasons]
@@ -248,7 +266,7 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
             (directory / 'node_modules').symlink_to(runtime['node_modules'], target_is_directory=True)
     env_lines.update(SOP_BOARD_RUN=str(work_id), SOP_BOARD_CHECKOUT=checkout.name)
     (directory / 'run.env').write_text(''.join(f"{name}={value}\n" for name, value in sorted(env_lines.items())), encoding='utf-8')
-    write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None, environment)
+    write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None, environment, invalid_files)
     if (directory / 'atlas.json').exists():
         with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
             brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'

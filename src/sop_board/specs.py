@@ -19,7 +19,7 @@ from . import gitops
 SCRIPT = Path(__file__).parent / 'skills' / 'playwright-acceptance' / 'scripts' / 'spec-ast.mjs'
 
 
-def analyze(spec, root, *, head=None):
+def analyze(spec, root, *, head=None, promotion=False):
     """分析 spec 的断言。head 为仓库目录时，root 是该仓库 HEAD 的临时副本：分析器按需从 HEAD 取出 spec 的本地导入与任务资产。"""
     from .browsers import runtime_info
     env = {k: v for k, v in os.environ.items() if k != 'SOP_SPEC_BASELINE_REPO'}
@@ -28,7 +28,10 @@ def analyze(spec, root, *, head=None):
         env['PW_NODE_ROOT'] = str(Path(info['node_modules']).parent)
     if head is not None:
         env['SOP_SPEC_BASELINE_REPO'] = str(head)
-    result = subprocess.run(['node', str(SCRIPT), 'analyze', str(spec), str(root)], capture_output=True, text=True,
+    args = ['node', str(SCRIPT), 'analyze', str(spec), str(root)]
+    if promotion:
+        args += ['promotion', str(Path(spec).absolute().parent)]
+    result = subprocess.run(args, capture_output=True, text=True,
                             timeout=120, env=env)
     if result.returncode:
         raise ValueError('spec 静态分析失败：' + result.stderr.strip()[-400:])
@@ -63,15 +66,22 @@ def head_baseline(repo, relative):
         shutil.rmtree(directory, ignore_errors=True)
 
 
-def check(candidate, candidate_root, *, baseline=None, baseline_root=None, baseline_head=None, ledger=()):
+def check(candidate, candidate_root, *, baseline=None, baseline_root=None, baseline_head=None, ledger=(), promotion=False):
     """返回 dict(same, new, review, violation, no_baseline)；violation 或未配账本的 review 视为不合格。
-    baseline_head：基线取自该仓库的 git HEAD（见 head_baseline）。"""
-    current = {item['assertion_id']: item for item in analyze(candidate, candidate_root)}
-    report = dict(same=[], new=[], review=[], violation=[], no_baseline=baseline is None)
+    baseline_head：基线取自该仓库的 git HEAD（见 head_baseline）。
+    promotion：首次沉淀，逻辑路径相对各自 spec 目录；直接 fixtures 导入是可替换的运行适配接口。"""
+    try:
+        current = {item['assertion_id']: item for item in analyze(candidate, candidate_root, promotion=promotion)}
+    except ValueError as error:
+        raise ValueError(f'候选 spec {candidate}：{error}') from error
+    report = dict(same=[], new=[], review=[], violation=[], no_baseline=baseline is None, baseline=str(baseline) if baseline else None)
     if baseline is None:
         report['new'] = sorted(current)
         return report
-    before = {item['assertion_id']: item for item in analyze(baseline, baseline_root, head=baseline_head)}
+    try:
+        before = {item['assertion_id']: item for item in analyze(baseline, baseline_root, head=baseline_head, promotion=promotion)}
+    except ValueError as error:
+        raise ValueError(f'基线 spec {baseline}：{error}；要按规则写 spec 重新验收后再沉淀') from error
     records = {}
     for record in ledger or ():
         if isinstance(record, dict) and isinstance(record.get('assertion_id'), str):
@@ -97,7 +107,7 @@ def check(candidate, candidate_root, *, baseline=None, baseline_root=None, basel
 
 def qualified(report):
     if report['violation']:
-        raise ValueError('保真检查不合格：' + '；'.join(f"{v['assertion_id']} {v['reason']}（没有对应账本）"
+        raise ValueError(f"保真检查不合格（基线 {report.get('baseline')}）：" + '；'.join(f"{v['assertion_id']} {v['reason']}（没有对应账本）"
                                                     for v in report['violation'][:5]))
 
 

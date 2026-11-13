@@ -10,10 +10,13 @@
 #   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：RUN-01 的“按检出隔离”改为按分支归属；
 #   新增 RUN-03-P02、RUN-03-N02（--implemented-by）与 RUN-06（共享库中断后重新提交只登记一次）。“双机项目”见 setup.yaml 文件头。
 #   版本 5 由未参与实现的审核方按 docs/design.md 已定决策 23（使用者 2026-11-12 需求）修订：新增 RUN-07（分步实现时按情况决定验收时机、如实标注、统一验收的范围）。
+#   版本 6 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#独立性（取代交接仪式） 的“范围核对与启动结果”）：
+#   新增 RUN-04-N02（范围不合格时 run launch 直接拒绝、不启动会话；场景所在文件不合格返回 scenario-file-invalid）与 RUN-04-N03（启动的会话没有产生运行）；
+#   按使用者 2026-11-13 决定新增 RUN-04-N04（启动的会话准备了运行却没提交就退出）。
 
 metadata:
   requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入"
-  version: 5
+  version: 6
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -262,6 +265,7 @@ sops:
       - "守护进程按 agents 配置启动无头 claude -p 或 codex exec，会话只拿到 prompt 文件"
       - "会话编号由启动器取得，启动记录就是独立性的证据"
       - "同一检出同时只运行一个启动"
+      - "启动前按 run prepare 的同一套规则核对范围，不合格直接拒绝、不启动会话；会话退出时没有产生运行或留下未提交的运行，launch status 标出、run wait 以失败返回"
     scenarios:
       - id: RUN-04-P01
         polarity: positive
@@ -296,6 +300,71 @@ sops:
           - "wt1 的启动成功"
         forbidden_effects: ["main 同时运行两个无头会话", "结束或替换 L1"]
         refs: ["docs/design.md#进程与入口", "docs/design.md#数据库（格式 7）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+      - id: RUN-04-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 范围不合格时 run launch 直接拒绝，不启动会话；场景所在文件不合格时写明是文件的问题
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state:
+          - "main 没有运行中的启动，也没有 prepared 的运行；draft-a（metadata.status: draft）在仓库中"
+          - "在 app 的场景目录另建一份不合格的场景文件 broken.yaml：一个节点、一条缺少 expected 的场景 BROKEN-1-P01"
+          - "记录 launches 表的行数与当前的 claude、codex 进程"
+        steps:
+          - "在 main 运行 sop-board run launch --scope shop#NOPE-1 --json"
+          - "运行 sop-board run launch --scope draft-a#DRAFT-A-1-P01 --json"
+          - "运行 sop-board run launch --scope broken#BROKEN-1-P01 --json，再运行 sop-board run prepare --scope broken#BROKEN-1-P01 --session S1 --json"
+          - "运行 sop-board launch status，查询 launches 表行数，用 ps 查看 claude、codex 进程"
+          - "broken.yaml 仍在时运行 sop-board run prepare --scope pending --session S2 --json，查看运行目录的说明，然后 sop-board run abandon"
+        expected:
+          - "第一条以业务失败退出（退出码 1），error_code 为 scenario-not-found，写明 shop#NOPE-1"
+          - "第二条以业务失败退出，error_code 为 draft-not-runnable"
+          - "第三步的 run launch 与 run prepare 都以业务失败退出，error_code 为 scenario-file-invalid，列出 broken.yaml、缺少的字段与行号"
+          - "三次 run launch 都没有启动会话：launches 表行数不变，launch status 没有新记录，没有新的 claude 或 codex 进程"
+          - "--scope pending 的 run prepare 成功，范围是合格文件中的待执行场景；输出与运行目录说明列出未纳入的 broken.yaml 及其问题"
+        forbidden_effects: ["先启动无头会话、到会话里才发现范围不合格", "把不合格文件中的场景报成 scenario-not-found"]
+        refs: ["docs/design.md#独立性（取代交接仪式）"]
+      - id: RUN-04-N03
+        polarity: negative
+        negative_type: interrupted
+        title: 启动的会话没有产生运行就退出时，launch status 标为未产生运行，run wait 返回失败
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state:
+          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A 有待执行内容"
+          - "替代做法（代表“会话没有执行就结束”）：config.yaml 的 agents 为 claude，args 设为 [\"--tools\", \"Read\"]，启动的会话只能读文件、运行不了命令，正常结束而没有产生运行"
+        steps:
+          - "在 main 运行 sop-board run launch --scope shop#A，记下启动编号 L"
+          - "运行 sop-board run wait，记录退出码与输出"
+          - "运行 sop-board launch status --json，在工作台查看 shop#A"
+        expected:
+          - "run wait 以业务失败退出（退出码 1），写明 L 没有产生运行"
+          - "launch status 中 L 标为未产生运行，附启动日志末尾"
+          - "shop#A 没有新增结果，状态不变"
+        forbidden_effects: ["L 显示为正常结束且没有任何提示", "run wait 以成功返回"]
+        refs: ["docs/design.md#独立性（取代交接仪式）"]
+      - id: RUN-04-N04
+        polarity: negative
+        negative_type: interrupted
+        title: 启动的会话准备了运行却没有提交就退出时，run wait 返回失败并写明未提交的运行
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state:
+          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A 有待执行内容"
+          - "替代做法（代表“会话准备后没提交就结束”）：config.yaml 的 agents 为 claude，args 设为 [\"--permission-mode\", \"acceptEdits\", \"--allowedTools\", \"Read\", \"Bash(sop-board run prepare:*)\", \"Bash(sop-board status:*)\"]，启动的会话能准备运行，不能执行与提交；会话没能准备运行时本次作废，换用其他办法让会话在准备后结束并注明"
+        steps:
+          - "在 main 运行 sop-board run launch --scope shop#A，记下启动编号 L"
+          - "运行 sop-board run wait，记录退出码与输出"
+          - "运行 sop-board launch status --json，查询本机运行记录，在工作台查看 shop#A"
+        expected:
+          - "run wait 以业务失败退出（退出码 1），error_code 为 launch-unsubmitted，写明仍未提交的运行编号"
+          - "launch status 中 L 写明该运行未提交，附启动日志末尾"
+          - "该运行仍为 prepared，看板没有替它放弃或提交；shop#A 没有新增结果"
+        forbidden_effects: ["run wait 以成功返回", "看板自动放弃或提交该运行"]
+        refs: ["docs/design.md#独立性（取代交接仪式）"]
 
   - id: RUN-05
     title: 未执行与受阻按性质划分，故障场景用 env stop 模拟

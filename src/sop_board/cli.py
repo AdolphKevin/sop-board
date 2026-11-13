@@ -359,12 +359,6 @@ def cmd_run(args):
             fix = fixes.load(context, args.fix)
             fixes.require_local(context, fix)
             scope = [scenarios.key(p['file'], p['scenario']) for p in json.loads(fix['problems'])]
-        elif scope == ['pending']:
-            from .runs import scope_for
-            found, snapshot, derived = scene_board(context)
-            scope = [item['scenario'] for item in scope_for(context, found['scenarios'], derived, ['pending'])]
-            if not scope:
-                return fail('nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')])
         emit(daemon.call(context.project, 'POST', '/local/launch', dict(
             checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
             implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机')))
@@ -415,6 +409,19 @@ def wait(context, *, launch=None, run=None, timeout=1800):
                 done = row['status'] != 'prepared'
                 value = dict(run=row['id'], status=row['status'], result=json.loads(row['result']) if row['result'] else None)
         if done:
+            code = None
+            if launch is not None:
+                launched = value['launch']
+                if launched['status'] == 'no-work':
+                    code = 'launch-no-work'
+                elif launched['status'] == 'failed':
+                    code = 'launch-failed'
+                elif launched['status'] == 'exited' and launched.get('unsubmitted'):
+                    code = 'launch-unsubmitted'
+            if code:
+                emit(dict(ok=False, error_code=code,
+                          problems=[dict(field='launch', problem=value['launch']['problem'])], **value))
+                return 1
             emit(dict(ok=True, **value))
             return 0
         if deadline and time.monotonic() > deadline:

@@ -4,9 +4,9 @@
 
 ## 独立执行（首选）
 
-1. `sop-board run launch --scope <范围> [--implementer <实现者>]`：守护进程按项目 `agents` 配置启动一个新的无头会话。它只拿到 prompt 文件，会话编号由启动器取得，启动记录就是独立性的证据。
+1. `sop-board run launch --scope <范围> [--implementer <会话编号> | --implemented-by <操作者>]`：守护进程按项目 `agents` 配置启动一个新的无头会话。它只拿到 prompt 文件，会话编号由启动器取得，启动记录就是独立性的证据。实现者参数按下文「实现者与独立性」填。启动前按 `run prepare` 的规则核对范围，被拒绝时不启动会话，处理见「准备时的拒绝」。
 2. `sop-board run wait [--timeout <秒>]` 等它结束（缺省 1800 秒；退出码 3 表示超时、启动仍在运行，可再次 wait）。`sop-board launch status` 查看启动记录与日志；使用者要求停止时 `sop-board launch stop --launch <编号>`。
-3. 把 wait 输出中的提交结果（登记、作废、未执行的场景及原因，服务停启与自动恢复）如实转述。
+3. 把 wait 输出中的提交结果（登记、作废、未执行的场景及原因，服务停启与自动恢复）如实转述。`results` 里运行的 `status` 是 `submitted` 才有登记的结果。wait 返回 `launch-no-work`（会话退出了却没有产生运行）或 `launch-failed`（会话没能启动或异常退出）时，这一轮未完成验收（已有 submitted 结果仍如实转述）：把 `problems` 与 `log_tail`（启动日志末尾）里的原因转告使用者，原因排除后重新 launch。`launch-unsubmitted` 表示会话已退出，但有关联运行或沉淀未提交或已放弃：转述工作编号、状态和日志；运行仍为 prepared 时，由使用者决定继续执行并提交，还是 `sop-board run abandon --run <编号>`，协调会话不替他处理。
 
 协调会话只发起和转述：结果由执行会话写出并提交，协调会话保持原样转述。同一检出已有运行中的启动时返回 `launch-running`，报告该启动并等它结束。
 
@@ -16,11 +16,22 @@
 
 1. `sop-board run prepare --scope <范围>`。
 2. 读输出的 prompt.md 与 brief.md，按其执行、留证、写结果。
-3. `sop-board run submit --run <编号> [--implementer <实现者>]`，如实转述提交输出。
+3. `sop-board run submit --run <编号> [--implementer <会话编号> | --implemented-by <操作者>]`，如实转述提交输出。
+
+`--scope pending|all` 只从合格的场景文件里选场景。`run launch` 输出的 `launch.invalid_files`、`run prepare` 输出的 `invalid_files` 非空时，这些文件里的场景没有纳入本轮：把文件与问题转告使用者，报告范围时写明。
 
 ## 实现者与独立性
 
-`--implementer` 填改了被验收产品代码的会话编号；实现者是别的机器上的另一位操作者时改用 `--implemented-by <操作者>`（见 [shared.md](shared.md)），二者只给一个。与执行者不同记为独立验收，相同记为实现者自检，不填记为独立性未声明。当前会话改过这些产品代码又自己执行时，填自己的会话编号，报告为实现者自检。不清楚实现者时不填，报告为未声明。修复复验的实现者由系统自动取修复会话。
+实现者是改了被验收产品代码的会话或操作者，按事实填，二者只给一个：
+
+| 被验收的代码是谁改的 | 填 | 记为 |
+| --- | --- | --- |
+| 本会话在这次对话里改的 | `--implementer <本会话编号>` | 由 `run launch` 的会话执行：独立验收；本会话自己执行：实现者自检 |
+| 使用者说明的另一个本机会话 | `--implementer <他给的会话编号>` | 独立验收 |
+| 使用者说明的别的机器上的操作者 | `--implemented-by <操作者>`（见 [shared.md](shared.md)） | 独立验收 |
+| 使用者没说明，本会话也没改 | 都不填 | 独立性未声明，报告里照此说明 |
+
+只发起、转述验收的协调会话没有改代码，它的会话编号不是实现者：使用者只说“做完了，请验收”而没说是谁改的，属于最后一行，直接不填，不追问。修复复验的实现者由系统自动取修复会话。
 
 ## 分步实现时的验收时机
 
@@ -51,7 +62,7 @@
 
 每一步做完都做实现者自检（运行改动、核对输出）。报告与提交说明给每一步标三者之一：**已独立验收**（附运行编号）、**只做了实现者自检**、**未验证**。
 
-- 做完就验：自检后按上文「独立执行」发起验收（`--implementer` 填本会话编号），独立通过后才标已独立验收。
+- 做完就验：自检后按上文「独立执行」发起验收（这一步是本会话实现的，`--implementer` 填本会话编号），独立通过后才标已独立验收。
 - 并到后面一起验：报告写“第 N 步只做了实现者自检，未经独立验收，并到第 M 步之后一起验”。这一步的场景在第 M 步之后那一轮执行和登记；在那之前，这一步的说法停在“已实现，实现者自检”。
 
 ### 先验通过的场景
@@ -95,12 +106,17 @@
 
 ## 准备时的拒绝
 
+`run prepare` 与 `run launch` 用同一套核对：
+
 | error_code | 处理 |
 | --- | --- |
+| `scenario-not-found` | 范围里的场景键不存在，或省略文件后编号不唯一：对照场景文件写全 `<文件>#<场景编号>` |
+| `scenario-file-invalid` | 指名的场景所在文件不合格：按列出的文件、字段与行号转告使用者，修正后再准备 |
+| `nothing-to-run` | 范围里没有要执行的场景；`problems` 同时列出不合格文件时，转告使用者这些文件的场景没有纳入 |
 | `run-prepared` | 本检出已有 prepared 运行：报告编号；是本会话的就完成并 submit；使用者同意放弃后 `sop-board run abandon --run <编号>` |
 | `env-busy` | 端口被另一检出的环境占用，输出写明占用者与 `env down` 命令：转告使用者，由他决定 |
 | `browser-busy` | 该身份正被真人占用：使用者说完成后 `sop-board browser release --identity <身份>` 交还，再准备 |
-| `browser-unrecovered` | 窗口仍保留：查看进程号与原因，恢复应答后重试；只有确实不要窗口时才用 `browser close --identity <身份>` 结束 |
+| `browser-unrecovered` | 看板重启后没认回的有界面窗口，处理见「账号与真人操作」末段 |
 | `draft-not-runnable` | 范围含草稿场景：先按 [draft.md](draft.md) 确认 |
 
 运行目录使用 `run prepare` 返回的 `directory`，重号时会顺延目录名称；不要按运行编号拼路径。
@@ -118,7 +134,7 @@
 
 看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
 
-窗口未认回时，`browser status` 显示进程号与原因，租约、`run prepare` 和 `browser open` 返回 `browser-unrecovered`，不会另起浏览器。窗口恢复应答后再次请求会重新核对；确实不要这个窗口时，用 `sop-board browser close --identity <身份>` 结束。看板停止仍保留未认回窗口。
+窗口未认回时，`browser status` 显示进程号与原因，租约、`run prepare` 和 `browser open` 返回 `browser-unrecovered`，不会另起浏览器。把进程号与原因转告使用者；窗口恢复应答后再次请求会重新核对。只有使用者确认不要这个窗口（里面的登录与验证随之作废）时，才用 `sop-board browser close --identity <身份>` 结束。看板停止仍保留未认回窗口。
 
 ## 人工复测结论
 

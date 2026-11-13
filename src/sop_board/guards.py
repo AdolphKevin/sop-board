@@ -5,6 +5,8 @@
 没有登记过漏检。只覆盖部分预期的守护不写进索引。
 """
 import hashlib
+import json
+import os
 from pathlib import Path
 import re
 
@@ -534,26 +536,38 @@ def require_passing(derived, keys):
         reject(409, 'distill-not-passing', 'scope', '不能沉淀：' + '；'.join(failed))
 
 
+def validate_distill_scope(context, scope):
+    from .scenarios import resolve
+    from .errors import reject
+    found, derived = distill_eligible(context)
+    try:
+        keys = resolve(scope, found['scenarios']) if scope else sorted(k for k, v in derived['items'].items() if v['distill'])
+    except ValueError as error:
+        reject(422, 'scenario-not-found', 'scope', str(error))
+    require_passing(derived, keys)
+    not_ready = [k for k in keys if not derived['items'][k]['distill']]
+    if not_ready:
+        reject(409, 'not-distillable', 'scope', '这些场景没有独立真实入口通过或已有有效守护，不能沉淀：' + '、'.join(not_ready))
+    if not keys:
+        reject(409, 'nothing-to-distill', 'scope', '没有待沉淀的场景')
+    with context.store.local() as db:
+        running = db.execute("SELECT id FROM local_work WHERE checkout=? AND kind='distill' AND status='prepared'",
+                             (context.checkout.id,)).fetchone()
+    if running:
+        reject(409, 'distill-prepared', 'work', f"检出 {context.checkout.name} 已有进行中的沉淀 #{running['id']}")
+    return found, derived, keys
+
+
 def distill_prepare(context, scope, *, session):
     from importlib.resources import files
     from string import Template
     import yaml
     from . import config, runs
-    from .scenarios import resolve
     from .store import dumps
     executor = runs.session_id(session)
     operator = config.require_operator()
-    found, derived = distill_eligible(context)
+    found, derived, keys = validate_distill_scope(context, scope)
     scenes = found['scenarios']
-    keys = resolve(scope, scenes) if scope else sorted(k for k, v in derived['items'].items() if v['distill'])
-    require_passing(derived, keys)
-    not_ready = [k for k in keys if not derived['items'][k]['distill']]
-    if not_ready:
-        from .errors import reject
-        reject(409, 'not-distillable', 'scope', '这些场景没有独立真实入口通过或已有有效守护，不能沉淀：' + '、'.join(not_ready))
-    if not keys:
-        from .errors import reject
-        reject(409, 'nothing-to-distill', 'scope', '没有待沉淀的场景')
     from .status import independent_pass
     from . import works
     book = derived['book']
@@ -586,23 +600,53 @@ def distill_prepare(context, scope, *, session):
         work=work_id, directory=directory, skill=skill, index=index_path(context), checkout=context.checkout.name)
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
     with context.store.local_tx() as db:
-        db.execute('UPDATE local_work SET dir=? WHERE id=?', (str(directory), work_id))
+        launch = os.environ.get('SOP_BOARD_LAUNCH', '')
+        db.execute('UPDATE local_work SET dir=?, launch=? WHERE id=?',
+                   (str(directory), int(launch) if launch.isdigit() else None, work_id))
     return dict(ok=True, work=work_id, directory=str(directory), prompt=str(directory / 'prompt.md'),
                 report=str(directory / 'guard.json'), scenarios=keys, acceptance={k: v['result'] for k, v in acceptance.items()})
 
 
-def browser_fidelity(store, db, checkout, test, acceptance, ledger):
+def browser_fidelity(store, db, checkout, test, acceptance, ledger, scenario):
     """浏览器层 spec 的保真检查：基线为 git HEAD 中的同一 spec 及其本地导入；HEAD 还没有时，以产生独立通过的那份 spec 为基线
-    （独立通过出自别的机器时，本机没有那份运行目录，不设基线）。"""
+    （本机没有那份运行目录时不设基线，不按产出机器判断）。"""
     from . import specs, works
     repo = checkout.paths[test['repo']]
     if specs.in_head(repo, test['path']):
         return specs.check_file(repo, test['path'], ledger=ledger)
     directory = works.local_dir(store, db, acceptance['work'])
-    candidates = sorted(Path(directory).rglob(Path(test['path']).name)) if directory else []
-    if candidates:
-        return specs.check(repo / test['path'], repo, baseline=candidates[0], baseline_root=Path(directory), ledger=ledger)
-    return specs.check(repo / test['path'], repo, ledger=ledger)
+    if not directory or not Path(directory).is_dir():
+        report = specs.check(repo / test['path'], repo, ledger=ledger)
+        report['no_baseline_reason'] = '运行目录不在本机'
+        return report
+    directory = Path(directory)
+    report_file = directory / 'playwright' / 'report.json'
+    if not report_file.is_file():
+        report_file = directory / 'playwright' / 'report.partial.json'
+    candidates = set()
+    try:
+        report = json.loads(report_file.read_text(encoding='utf-8'))
+        def visit(suite):
+            for spec in suite.get('specs', []):
+                title = (spec.get('title') or '').split()
+                tags = [tag for test in spec.get('tests', []) for tag in test.get('tags', [])]
+                if (title and title[0] == scenario) or '@' + scenario in tags or '@' + scenario in spec.get('tags', []):
+                    name = spec.get('file') or suite.get('file')
+                    if name:
+                        path = Path(name)
+                        if not path.is_absolute():
+                            path = Path(report.get('config', {}).get('rootDir') or directory) / path
+                        candidates.add(path.resolve())
+            for child in suite.get('suites', []):
+                visit(child)
+        for suite in report.get('suites', []):
+            visit(suite)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"基线运行目录 {directory} 的报告不可读：{error}；找到的文件：[]") from error
+    paths = sorted(candidates)
+    if len(paths) != 1 or not paths[0].is_file() or not paths[0].is_relative_to(directory.resolve()):
+        raise ValueError(f"基线运行目录 {directory} 中覆盖 {scenario} 的 spec 须恰有一份；找到的文件：{[str(p) for p in paths]}")
+    return specs.check(repo / test['path'], repo, baseline=paths[0], baseline_root=directory, ledger=ledger, promotion=True)
 
 
 def distill_submit(app, checkout, report_path, *, operator, work_id=None):
@@ -635,7 +679,7 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
         if name in commands and commands[name] != command:
             reject(422, 'report-invalid', f'commands.{name}', '与 regression.yaml 中同名命令不同；换一个命令编号')
         commands[name] = command
-    problems, entries = [], {}
+    problems, entries, fidelity = [], {}, {}
     product = app.store.product
     with app.store.records() as db:
         for key, guard in report['guards'].items():
@@ -700,9 +744,11 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
             for test in tests:
                 if test['layer'] == 'browser':
                     try:
-                        specs.qualified(browser_fidelity(app.store, db, checkout, test, row, entry['ledger']))
+                        checked = browser_fidelity(app.store, db, checkout, test, row, entry['ledger'], key)
+                        specs.qualified(checked)
+                        fidelity.setdefault(key, []).append(dict(path=test['path'], **checked))
                     except ValueError as error:
-                        problems.append(f"{key}：{test['path']} {error}")
+                        problems.append(f"{key}：{error}")
             entries[key] = entry
     if problems:
         reject(422, 'distill-invalid', 'report', '；'.join(problems))
@@ -738,7 +784,7 @@ def distill_submit(app, checkout, report_path, *, operator, work_id=None):
         with app.store.local_tx() as db:
             db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, record=? WHERE id=? AND kind='distill'",
                        (now(), dumps(dict(guards=sorted(entries))), record, work_id))
-    return dict(ok=True, checkout=checkout.name, index=str(path), guards=sorted(entries),
+    return dict(ok=True, checkout=checkout.name, index=str(path), guards=sorted(entries), fidelity=fidelity,
                 runs={k: '实际运行通过' for k in verdicts}, next='测试文件与 regression.yaml 为未提交改动，请审核后提交')
 
 

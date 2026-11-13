@@ -6,18 +6,22 @@ import {graph, canonical, walk, nameOf, assetSummary, sha, supportFiles, assetFi
 const [mode, specArg, rootArg, libraryArg, importsArg] = process.argv.slice(2);
 const spec = path.resolve(specArg), root = path.resolve(rootArg);
 const library = libraryArg === 'library';
+// 首次沉淀：复用库的 importRoot 定位方式，只比较 spec 与项目辅助代码。
+const promotion = libraryArg === 'promotion';
+const importRoot = importsArg || (promotion ? path.dirname(spec) : root);
 const extra = libraryArg === 'runtime' ? [...['playwright.config.mjs', 'global-setup.mjs', 'progress-reporter.mjs'].map(name => path.join(root, name)).filter(file => fs.existsSync(file)), ...taskAssets(root)] : library ? assetFiles(importsArg || root) : [];
 const sql = /\b(?:SELECT\b[\s\S]*\bFROM\b|WITH\s+\w+\s+AS\s*\(|INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)/i;
 
 function analyze() {
-  const dataAssets = (library ? assetFiles(importsArg || root) : taskAssets(root))
+  const dataAssets = (promotion ? [] : library ? assetFiles(importRoot) : taskAssets(root))
     .filter(file => !/\.(mjs|cjs|js)(\.off)?$/.test(file) && !file.split(path.sep).join('/').includes('/support/'));
-  const bundle = graph(spec, root, {library, importRoot: importsArg || root, extra: dataAssets});
+  const bundle = graph(spec, root, {library: library || promotion, importRoot, extra: dataAssets, runtimeFixtures: promotion});
   const items = [], ids = new Set();
   const shim = rec => /^\s*(?:\/\/[^\n]*\n)*export \* from ['"]\.\/library\/[^'"]+['"];\s*$/.test(rec.source);
   function logical(file) {
     const rec = bundle.files.get(file);
     if (rec && shim(rec)) return logical(rec.imports[0].target);
+    if (promotion) return file === spec ? '(spec)' : path.relative(importRoot, file).split(path.sep).join('/');
     return file === spec ? '(spec)' : path.relative(library ? (importsArg || root) : root, file).replace(/^scenarios\/(?:library\/)?/, '').replace(/^library\//, '');
   }
   function programOf(rec) {
@@ -46,11 +50,11 @@ function analyze() {
     return out;
   }
   const execution = [...bundle.files].filter(([file]) => !shim(bundle.files.get(file)))
-    .map(([file, rec]) => ({file: file === spec ? '(spec)' : path.relative(library ? (importsArg || root) : root, file).replace(/^scenarios\/(?:library\/)?/, '').replace(/^library\//, ''),
+    .map(([file, rec]) => ({file: promotion ? logical(file) : file === spec ? '(spec)' : path.relative(library ? (importsArg || root) : root, file).replace(/^scenarios\/(?:library\/)?/, '').replace(/^library\//, ''),
       sha256: sha(JSON.stringify(rec.ast ? executionShape(programOf(rec)) : sha(rec.bytes)))}));
   for (const [file, rec] of bundle.files) {
     if (!rec.ast || shim(rec)) continue;
-    const relative = file === spec ? '(spec)' : path.relative(library ? (importsArg || root) : root, file).replace(/^scenarios\/(?:library\/)?/, '').replace(/^library\//, '');
+    const relative = promotion ? logical(file) : file === spec ? '(spec)' : path.relative(library ? (importsArg || root) : root, file).replace(/^scenarios\/(?:library\/)?/, '').replace(/^library\//, '');
     let ordinal = 0;
     const bindings = new Map();
     walk(rec.ast.program, (node, parents) => {

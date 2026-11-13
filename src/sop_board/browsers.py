@@ -476,7 +476,9 @@ class Manager:
         """浏览器进程退出：主动停止记为 exited；其他退出记录崩溃，并登记待人处理。"""
         name = signal_name(code)
         report = crash_report(instance.started)
-        row = self.row(instance.checkout, instance.identity) if instance.checkout.id is not None else None
+        with self.store.local() as db:
+            row = db.execute('SELECT * FROM browser_instances WHERE checkout=? AND identity=?',
+                             (instance.checkout.id, instance.identity)).fetchone() if instance.checkout.id is not None else None
         crashes = json.loads(row['crashes']) if row else []
         state = 'exited'
         if not expected:
@@ -488,6 +490,10 @@ class Manager:
             text = (f"身份 {instance.identity} 的 Chrome for Testing（检出 {instance.checkout.name}）"
                     + exit_description(moment.isoformat(), code, name, str(instance.log()))
                     + (f'，崩溃报告 {report}' if report else ''))
+        self.record(instance, state, pid=None, exited_at=now(), exit_code=code, signal=signal_name(code), crash_report=report,
+                    crashes=dumps(crashes))
+
+        if not expected:
             # 待人处理在业务记录库（附产出机器）；连不上共享库时只记本机的崩溃记录，不影响浏览器状态。
             from .ledger import insert_attention
             try:
@@ -496,8 +502,6 @@ class Manager:
             except Exception as error:  # noqa: BLE001
                 import sys
                 print(f'浏览器崩溃没能登记待人处理：{error}', file=sys.stderr)
-        self.record(instance, state, pid=None, exited_at=now(), exit_code=code, signal=signal_name(code), crash_report=report,
-                    crashes=dumps(crashes))
 
     # ---- 租约 ----
 

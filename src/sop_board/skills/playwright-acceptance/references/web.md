@@ -26,9 +26,7 @@
 - **测试环境的浏览器提示**：测试环境自身地址触发的本地网络访问请求、localhost 自签名证书警告等，由执行者处理（页面上的“继续”、该浏览器的站点设置）；处理不了再按人做的部分登记。
 - 遇到 "browser may not be secure" 立即停止并记 blocked。
 
-看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
-
-窗口未认回时，`browser status` 显示进程号与原因，租约、`run prepare` 和 `browser open` 返回 `browser-unrecovered`，不会另起浏览器。窗口恢复应答后再次请求会重新核对；确实不要这个窗口时，用 `sop-board browser close --identity <身份>` 结束。看板停止仍保留未认回窗口。
+看板停止与重启时有界面窗口的保留与认回（`browser-unrecovered`）由发起运行的会话处理，见 sop-board 技能的 [run.md](../../sop-board/references/run.md)「账号与真人操作」；执行者始终只连 run.env 与 identities.json 给出的地址。
 
 ### 崩溃
 
@@ -82,7 +80,7 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 
 ## 只读探测
 
-黑盒验收方常常没有产品源码。此时界面结构只能从真实页面取，用临时脚本（放仓库外，用完删除）连上同一个运行目录浏览器做以下几件事，把结果写进界面地图：
+黑盒验收方常常没有产品源码。此时界面结构只能从真实页面取，用临时脚本连上同一个运行目录浏览器做以下几件事，把结果写进界面地图。临时脚本放在本次运行目录（那里的 `node_modules` 能解析 `@playwright/test`），用完删除：
 
 - 列出 `context.pages()` 的 URL 和目标页的 `page.frames()`（name、url），确认 iframe 层次与预加载副本。
 - 对页面和每个相关 frame 取 `locator('body').ariaSnapshot()`，从中抄下按钮、标题、占位文字的准确文案；没有多语言文件时，脚本里的文字以快照为准。
@@ -96,6 +94,25 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 优先级：`getByRole` 带可见名称 → `getByLabel`、`getByPlaceholder`、`getByText` → `data-testid` → 第三方库的稳定类名（如 `.ReactVirtualized__Grid__innerScrollContainer > div`）。按钮、标签文字从产品多语言文件取，没有源码时从 aria 快照抄；脚本与场景使用同一种语言；测试账号的界面语言固定。
 
 同一文字出现多处时加 `exact: true` 或限定容器，不要用 `.first()` 掩盖歧义，除非场景本身写的就是"第一项"。
+
+## spec 的导入
+
+spec 文件（`scenarios/*.spec.mjs`）里只写两种导入：`./fixtures.mjs` 与 `./library.mjs`，路径用静态字符串。其余依赖都放进自建的 `scenarios/library.mjs`，由它导入再导出给 spec：
+
+```js
+// scenarios/library.mjs
+import {execFileSync} from 'node:child_process';
+export {as, release} from './identity.mjs';   // 多身份；有地图时同样转出 atlas.mjs
+export const query = (...args) => execFileSync('<只读查询命令>', args, {encoding: 'utf8'});
+```
+
+```js
+// scenarios/<名称>.spec.mjs
+import {test, expect, step, shot, blocked, notExecuted, tags} from './fixtures.mjs';
+import {as, query} from './library.mjs';
+```
+
+沉淀时，产生独立通过的这份 spec 是保真检查的基线，静态分析按这条规则读它；spec 直接导入 `node:child_process`、`./identity.mjs` 等时基线不合格，`distill submit` 拒绝，场景只能按规则重写 spec、重新验收后再沉淀。
 
 ## 步骤与断言
 
@@ -121,7 +138,7 @@ URL 和 iframe 的 src 只用于辅助识别。单页导航可能不改变 ifram
 
 - `PW_OUT`（run.env 已设为运行目录内的 `playwright/`）：`results/`（原始产物）、`html/`（report）、`report.json`、`junit.xml`。
 - 录制开关取本轮 scope 中按入口固定的 `web_evidence`，缺省均开启，关闭项不启动、不保存。开启时，录屏用 `page.screencast`，只录指定标签页；trace 录整个 context。证据里会有 cookie、令牌与客户数据，不要贴进 PR 或聊天，只在验收记录中引用。
-- 单个文件超过 64 MiB 时看板拒绝接收，`to_scenarios.py` 会列出并停止；trace 过大时关闭 `snapshots` 或缩短场景。
+- 单个文件超过 64 MiB 时看板拒绝接收，`sop-board playwright convert` 会列出并停止（`--skip-large` 跳过该文件）；trace 过大时关闭 `snapshots` 或缩短场景。
 
 ## 禁止副作用的观察
 

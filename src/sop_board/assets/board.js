@@ -1152,13 +1152,14 @@
     const data = await api('/api/runs?' + query());
     const boardData = await api('/api/board?' + query());
     fillCheckouts(boardData.checkouts, data.checkout);
-    const launchState = {running: ['retest', '运行中'], exited: ['pass', '已结束'], failed: ['fail', '失败'], stopped: ['skip', '已停止']};
+    const launchState = {running: ['retest', '运行中'], exited: ['pass', '已结束'], 'no-work': ['fail', '未产生运行'], failed: ['fail', '失败'], stopped: ['skip', '已停止']};
     $('#launches').replaceChildren(table(['编号', '类型', '代理', '场景', '状态', '开始', '发起人', config.local ? '本机' : null],
       data.launches.map(item => {
-        const [cls, label] = launchState[item.status] || ['skip', item.status];
+        const [cls, label] = item.status === 'exited' && item.unsubmitted?.length
+          ? ['fail', '有工作未提交'] : launchState[item.status] || ['skip', item.status];
         return el('tr', {}, el('td', {class: 'mono'}, '#' + item.id), el('td', {}, item.kind === 'run' ? '场景执行' : '回归沉淀'), el('td', {}, item.agent),
           el('td', {class: 'mono'}, item.scope.join('、')),
-          el('td', {}, pill(cls, label + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : ''))),
+          el('td', {}, item.problem ? el('div', {}, item.problem) : null, item.log_tail ? el('pre', {class: 'muted'}, item.log_tail) : null, pill(cls, label + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : ''))),
           el('td', {}, item.started_at || ''), el('td', {}, item.requested_by),
           config.local ? el('td', {}, el('a', {href: `/api/launches/${item.id}/log`, target: '_blank'}, '日志'), item.session ? el('span', {class: 'muted mono'}, ' ' + item.session) : null) : null);
       }), '没有启动记录'));

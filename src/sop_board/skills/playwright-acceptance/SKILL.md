@@ -19,7 +19,7 @@ disable-model-invocation: true
 
 1. **读输入。** 读运行目录的 `brief.md` 与 `prompt.md`，再读 `scenarios.yaml`（场景 `key` 为 `<文件>#<编号>`）、`pending.json`、`entries.json`、`identities.json`。`scope.json` 固定本检出、场景原文摘要与各场景指纹（见[执行范围](references/run-scope.md)）。`set -a; . ./run.env; set +a`。
 2. **弄清界面。** 运行目录有 `atlas.json`（PW_ATLAS）时先用它定位页面与控件，`stale` 中的页面以实际页面为准。其余情况有产品源码时读路由与文案，再对真实页面只读探测；无源码时只探测，做法见[Web 参考](references/web.md#只读探测)。结论写入 `surface-map.md`（模板在 `templates/`）。已就绪的视图直接复用，只在前提不满足时导航。
-3. **补齐运行器与脚本。** 把 `playwright.config.mjs`、`global-setup.mjs`、`progress-reporter.mjs` 复制到运行目录根部，`fixtures.mjs`、`connection.mjs`、`recording.mjs`、`scope.mjs`、`identity.mjs`（有地图时另加 `atlas.mjs`）放进 `scenarios/`。依赖由 `node_modules` 符号链接指向看板运行时。一条场景步骤对应一个 `step()`，用例标题以场景 key 开头（`shop#W 标题`）；上游用例 tag 用 `scripts/case_tags.py` 生成。
+3. **补齐运行器与脚本。** 把 `playwright.config.mjs`、`global-setup.mjs`、`progress-reporter.mjs` 复制到运行目录根部，`fixtures.mjs`、`connection.mjs`、`recording.mjs`、`scope.mjs`、`identity.mjs`（有地图时另加 `atlas.mjs`）放进 `scenarios/`。依赖由 `node_modules` 符号链接指向看板运行时。spec 写在 `scenarios/`：一条场景步骤对应一个 `step()`，用例标题以场景 key 开头（`shop#W 标题`）。`tags(场景键)` 只生成 `@<完整场景键>` 标签。spec 文件只从 `./fixtures.mjs` 与 `./library.mjs` 导入；其余依赖（Node 内置模块、只读查询、`identity.mjs`、`atlas.mjs`）写进自建的 `scenarios/library.mjs` 再转出，写法见[Web 参考](references/web.md#spec-的导入)。通过的 spec 是日后沉淀的保真基线，导入不合这条规则的基线会被 `distill submit` 拒绝，只能重新验收。探测、登录等临时脚本与临时文件都放本次运行目录。
 4. **准备前置。** 按 `initial_state` 逐项核对。无关前置数据按 brief.md 的前置数据一节准备；被验收流程应产生的对象经真实入口产生。前置数据准备失败时 `throw blocked('<缺什么>')`；缺入口声明的凭据变量、用到的服务本机未搭建或被人停着（brief.md“服务”一节）时 `throw notExecuted('<缺什么>')`。真实登录或请求验证码前先登记使用次数（见[Web 参考](references/web.md#多身份与使用次数)）。
 5. **执行。** `npx --no-install playwright test`，保留 `workers: 1`、`retries: 0`、`maxFailures: 1`。保存、发送、支付等动作只提交一次，等完成信号后再核对。
 6. **核对结果。** 只断言用户看得见的结果，逐项核对 `forbidden_effects`。
@@ -45,8 +45,8 @@ disable-model-invocation: true
 | [命令](references/commands.md) | 运行、转换、提交与标签 |
 | [Web 参考](references/web.md) | 连接、身份、定位、前置数据与证据 |
 | [Shopify 参考](references/shopify.md) | 内嵌应用与验证停止 |
-| [结果与配对契约](references/contracts.md) | 场景与结果字段、配对标签 |
+| [结果契约](references/contracts.md) | 场景与结果字段、用例标签 |
 | [执行范围](references/run-scope.md) | scope.json、完整与部分执行 |
-| [场景写法要求](references/scenario-steps.md) | 对上游场景的要求与退回清单 |
+| [场景写法要求](references/scenario-steps.md) | 对场景原文的要求与退回清单 |
 | [浏览器层 spec 保真](references/spec-fidelity.md) | 改写或撤销已有 spec 断言时的检查与账本 |
 | `templates/` | 运行器配置、夹具、连接与身份、示例 spec、界面地图模板 |

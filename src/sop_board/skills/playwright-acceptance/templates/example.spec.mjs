@@ -1,6 +1,7 @@
 // 通用只读示例：将映射与步骤替换为项目 surface-map.md 中已核对的内容。
 // 此文件中的视图名和选择器只是示例，不是业务预期或跨项目默认值。
 // 本文件放在运行目录的 scenarios/，用例标题以场景 key（<文件>#<编号>）开头；回归沉淀由 regression-distill 负责。
+// 只从 ./fixtures.mjs 与 ./library.mjs 导入；只读查询、多身份等其余依赖放进 scenarios/library.mjs 再导出（见 references/web.md「spec 的导入」）。
 import { test, expect, step, shot, blocked, tags } from './fixtures.mjs';
 
 const SCENARIO = 'example#EX-P01';
