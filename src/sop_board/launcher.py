@@ -109,9 +109,20 @@ class Launcher:
             writable = [str(path.resolve()) for path in (self.project.data, self.project.data.parent / 'evidence')]
             argv = self.argv(agent, prompt, work, writable, session)
             try:
-                with log.open('wb') as output:
-                    process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=output,
-                                               stderr=subprocess.STDOUT, start_new_session=True)
+                process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+                from .redaction import StreamRedactor
+                def collect():
+                    redactor = StreamRedactor([])
+                    with log.open('wb') as output:
+                        while True:
+                            chunk = process.stdout.read1(65536)
+                            output.write(redactor.feed(chunk, final=not chunk))
+                            output.flush()
+                            if not chunk:
+                                break
+                    process.stdout.close()
+                threading.Thread(target=collect, daemon=True, name=f'launch-log-{launch_id}').start()
             except OSError as error:
                 log.write_text(f"无法启动 {agent['runner']}：{error}\n", encoding='utf-8')
                 with self.store.local_tx() as db:

@@ -18,6 +18,8 @@ NAV = (('', '工作台'), ('/sop', '业务 SOP'), ('/inbox', '收件箱与待答
 def layout(project, title, body, *, local, active='', page='', data=None, operator=None, wide=False, scripts=()):
     links = ''.join(f'<a href="/p/{quote(project)}{path}"{" class=active" if path == active else ""}>{escape(label)}</a>'
                     for path, label in NAV)
+    if local:
+        links += f'<a href="/p/{quote(project)}/settings"{" class=active" if active == "/settings" else ""}>设置</a>'
     config = dict(data or {}, project=project, local=local, page=page, operator=operator if local else None)
     payload = escape(json.dumps(config, ensure_ascii=False), quote=False)
     extra = ''.join(f'<script src="/assets/{name}"></script>' for name in scripts)
@@ -66,9 +68,20 @@ def tree_page(kind, search, empty):
 
 
 def workbench(project, *, local, operator=None):
-    body = tree_page('', '搜索场景编号或标题', '<p>从左侧选择一个场景</p><p class="muted">四要素、证据与复测都在这里</p>')
+    body = '<div id="configuration-hint" hidden></div>' + tree_page('', '搜索场景编号或标题', '<p>从左侧选择一个场景</p><p class="muted">四要素、证据与复测都在这里</p>')
     return layout(project, '工作台', body, local=local, page='workbench', operator=operator, wide=True,
                   data=dict(states=list(ORDER)))
+
+
+def settings(project, *, operator=None):
+    body = f'''<section class="page settings-page">
+  {page_head('设置', '每节单独保存，保存后立即生效，无需重启看板。')}
+  <p class="settings-note">保存会按标准格式重写 config.yaml，原来的注释和排版不保留；上一份保存在 config.yaml.prev。</p>
+  <p class="muted">数组每行一项；命令每行一个参数，不经过 shell。测试账号的凭据取值只通过环境变量传入。</p>
+  <div class="toolbar"><button type="button" id="settings-reload">重新载入设置</button><span id="settings-message" role="status"></span></div>
+  <div id="settings-notices"></div><div id="settings-other"></div><div id="settings-sections" aria-busy="true">正在读取设置…</div>
+</section>'''
+    return layout(project, '设置', body, local=True, active='/settings', page='settings', operator=operator)
 
 
 def sop(project, *, local, operator=None):

@@ -4,12 +4,23 @@
 
 ## 接入共享库
 
-1. `sop-board init <项目> --json`：输出 `product-choice-required` 和 `products`（每个产品的 ID、名称、创建人、有结果的场景数、最近写入时间，以及 `hint`：本机 N 条场景中有 M 条在该产品里已有结果）。
-2. 把清单原样告诉使用者（每个产品的名称、创建人、有结果的场景数、`hint` 的重合条数），问：加入哪个已有产品，还是新建一个（新建时可以给名称，缺省用本机项目名）。得到答复之前停在这里。是不是同一个产品只由使用者的答复决定，供他判断的信息都在 init 的输出里；接入全程不读取仓库 origin，不查看目录或别的仓库。
-3. 按答复运行 `sop-board init <项目> --join <ID>` 或 `sop-board init <项目> --new [--product <名称>]`，再 `sop-board status --json` 确认。
-4. 把绑定输出的 `notes` 转告使用者：本机已有的结果不带入共享库（已登记的守护要在共享库里重新验收后再沉淀）；`unregistered_aliases` 列出的仓库别名本机没有登记，引用它们的守护在本机列为“本机无法运行”。
+先用 `sop-board status --json` 判断：`product.shared` 为 false 表示还没有连接；`product-unbound` 表示已写连接、尚未绑定产品。配置不完整、status 尚无 product 时，先按主技能启动看板，从回环地址的 `/api/settings` 读取无密码状态，用 sections.shared.content 是否有 shared_database 判断。会话不读取、不输出 config.yaml 的 `shared_database.password`。接入全程不读取仓库 origin，不查看目录或别的仓库；同一个产品由使用者选择。
 
-`config.yaml` 的 `shared_database` 只写 host、port、dbname、user；密码由使用者自己放进 `~/.pgpass`。要改绑时同样先问使用者，再重新 `--join` 或 `--new`。
+### 还没有连接
+
+1. 按主技能的“守护进程”步骤确认看板在运行。从 status 的 `daemon.url` 取得回环地址，给使用者完整的 `<daemon.url>/p/<项目>/settings` 链接（项目名按 URL 编码；不要给内网地址）。
+2. 请使用者在设置页“共享库”填写连接与密码、测试连接，并选择加入或新建产品。会话不引导手写配置或密码文件，不索要、读取或代填密码，不自行写入连接或绑定产品。
+3. 使用者说已接入后，再运行 `sop-board status --json` 核对产品名称与共享状态，转告结果；仍未接入就报告实际状态。
+
+### 已有连接、尚未绑定，或明确要求换产品
+
+1. `sop-board init <项目> --json` 输出 `product-choice-required` 和 `products`。把名称、创建人、有结果的场景数、最近写入时间与 `hint` 告诉使用者，问加入哪个产品，还是新建（名称缺省为项目名）。等明确答复。
+2. 按答复运行 `sop-board init <项目> --join <ID>` 或 `--new [--product <名称>]`，再 `sop-board status --json` 确认。
+3. 转告绑定输出的 `notes`：本机已有结果不带入共享库、已登记守护须在共享库重新验收后再沉淀；`unregistered_aliases` 所列别名本机未登记，引用它们的守护在本机无法运行。
+
+### 连接错误
+
+`database-authentication`：给出上述本机设置页链接，请使用者核对连接并改密码；使用者处理后用 status 重试。`database-unreachable` 与 `database-version`：照错误输出报告连接位置或两边版本，等使用者处理，沿用原有规则。
 
 ## 跨机器验收
 

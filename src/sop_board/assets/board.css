@@ -62,7 +62,7 @@ button.primary:hover, .button.primary:hover { background: #4338ca; }
 button.block { width: 100%; padding: 9px 14px; }
 button.link { border: 0; padding: 0 0 0 8px; background: none; color: var(--accent); font-size: inherit; }
 button.link:hover { background: none; text-decoration: underline; }
-input[type=text], input[type=search], input:not([type]), select, textarea {
+input[type=text], input[type=search], input[type=password], input[type=number], input:not([type]), select, textarea {
   font: inherit; width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); }
 textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
 input:focus, select:focus, textarea:focus, button:focus-visible, .selectable:focus-visible {
@@ -78,6 +78,27 @@ input[type=file] { font: inherit; font-size: 13px; }
 .message { margin: 0; font-size: 12.5px; color: var(--muted); min-height: 1em; }
 .signed-as { margin: 0; font-size: 12.5px; color: var(--muted); }
 .signed-as strong { color: var(--text); margin-left: 2px; }
+
+/* ---- 本机设置：一列字段、分节保存 ---- */
+.settings-page { max-width: 920px; }
+.settings-section { scroll-margin-top: 90px; }
+.settings-field { margin: 12px 0; min-width: 0; }
+.settings-field h3 { font-size: 14px; margin: 12px 0 8px; }
+.settings-object { border-left: 2px solid var(--line); padding-left: 16px; }
+.settings-section > .settings-field > .settings-object { border: 0; padding: 0; }
+.settings-item { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 16px; margin: 12px 0; }
+.settings-item > button + button { margin-left: 8px; }
+.settings-enable { display: flex; gap: 8px; align-items: center; margin: 12px 0; }
+.settings-note { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 10px 14px; overflow-wrap: anywhere; }
+.field-problems { color: var(--fail); font-size: 13px; overflow-wrap: anywhere; }
+.field-problems:empty, .settings-section > .problems:empty { display: none; }
+.settings-section .message { overflow-wrap: anywhere; }
+.settings-section .row-actions, .settings-section .form-actions { flex-wrap: wrap; }
+#configuration-hint { flex: none; padding: 12px 24px; border-bottom: 1px solid var(--line); background: var(--accent-soft); }
+#configuration-hint h2 { font-size: 16px; margin: 0 0 8px; }
+#configuration-hint ul { margin: 6px 0; }
+body.wide main { height: calc(100vh - var(--top)); display: flex; flex-direction: column; }
+body.wide .workbench { flex: 1; min-height: 0; height: auto; }
 
 /* ---- 标签、圆点、状态 ---- */
 .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; background: var(--sunken); border: 1px solid var(--line); color: var(--text-2); font-size: 12px; white-space: nowrap; }
@@ -324,6 +345,7 @@ ul.links { margin: 0; padding-left: 18px; }
 }
 @media (max-width: 820px) {
   body.wide { overflow: auto; }
+  body.wide main { height: auto; display: block; }
   .workbench, .workbench.sidebar-hidden { grid-template-columns: 1fr; height: auto; }
   .sidebar { max-height: 55vh; border-right: 0; border-bottom: 1px solid var(--line); }
   .sidebar-resizer { display: none; }

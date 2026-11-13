@@ -9,7 +9,7 @@ Agent 工作只有一条路径：在产品仓库的检出目录运行 `sop-board
 
 ## 每次都适用
 
-1. **先看状态**：在当前目录运行 `sop-board status --json`。项目和检出（main 或 git worktree）按当前目录自动识别，直接沿用识别结果。识别不到项目时，按 `sop-board guide` 引导使用者运行 `sop-board init`。`attention` 中有待人处理事项时一并报告。返回 `product-unbound`，或使用者要把项目接到团队的共享库时，先按 [references/shared.md](references/shared.md) 接入；返回 `database-unreachable`、`database-version` 时照输出报告（连的哪台主机、两边的版本），等使用者处理。
+1. **先看状态**：在当前目录运行 `sop-board status --json`。项目和检出（main 或 git worktree）按当前目录自动识别，直接沿用识别结果。识别不到项目时，按 `sop-board guide` 登记；`init` 之后就能 `serve`，使用者可在本机设置页补全配置，会话也可按 guide 直接编写配置与适配脚本。`attention` 中有待人处理事项时一并报告。返回 `product-unbound`、`database-authentication`，或使用者要接入共享库时，按 [references/shared.md](references/shared.md) 引导；返回 `database-unreachable`、`database-version` 时照输出报告（连的哪台主机、两边的版本），等使用者处理。
 2. **守护进程**：`env`、`browser`（install 除外）、`run prepare`、`run launch`、`retest`、`distill submit` 依赖看板守护进程。`daemon.running` 为 false 或命令返回 `daemon-not-running` 时，先运行 `printenv CODEX_SANDBOX`：
    - 没有输出：在后台启动 `daemon.command`（形如 `sop-board serve <项目>`，使用者已允许），再次 status 确认运行中后继续。
    - 有输出（本会话的命令在 Codex 沙箱里运行）：看板由使用者在自己的终端启动。沙箱里启动的看板连同它启动的浏览器和执行会话都受沙箱限制，浏览器启动即中止，启动的会话读不到客户端的登录凭据。把这个原因和 `daemon.command` 告诉使用者，本轮停在这里；使用者说已启动后，再次 status 确认 `daemon.running` 再继续。使用者点名要你启动看板时也这样处理。
@@ -19,6 +19,8 @@ Agent 工作只有一条路径：在产品仓库的检出目录运行 `sop-board
 6. **宣布可验收前**：准备宣布“可以验收”或交付前，运行 `sop-board status --json`，报告 `counts` 中待复测（retest）、失败（fail）、受阻（blocked）、未执行（not-run）的数量与 `queues` 中的场景，这些须经真实入口执行。代码改动不改变场景状态；有沉淀的守护时，先运行 `sop-board retest` 检查代码回归。分几步实现的，先前通过、但被后续步骤重做了实现的场景仍显示通过、不在 `queues` 中：守护有效且最近一次运行通过的仍然可信，其余按 run.md「统一验收：选范围」列入验收范围、重新执行。报告之后才宣布。
 
 ## 按请求读取一份参考
+
+共享库密码由使用者在本机设置页管理。会话不读取、不输出 config.yaml 的 `shared_database.password`，不索要或代填密码；接入与认证失败的具体步骤见 shared.md。
 
 | 使用者要做的事 | 读取 |
 | --- | --- |

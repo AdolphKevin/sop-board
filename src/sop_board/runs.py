@@ -277,6 +277,8 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
         checkout=checkout.name, verify_note=('这是修复 #%d 的独立复验：逐条完整执行，不能保留旧通过，也不接受 not-executed；'
                                  '本机缺少条件时停下报告缺什么。' % fix['id']) if fix else '')
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
+    from .redaction import clean_task_output
+    clean_task_output(directory, ())
 
 
 def atlas_excerpt(context, entries):
@@ -455,7 +457,8 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
         files_of[key] = []
         for name in row.get('evidence', []):
             raw = (directory / name).read_bytes()
-            files_of[key].append((Path(name).name, store.put_evidence(raw), len(raw)))
+            sha = store.put_evidence(raw, name)
+            files_of[key].append((Path(name).name, sha, store.evidence_path(sha).stat().st_size))
     not_executed = [dict(scenario=key, finding=row['finding'], fingerprint=prepared[key]['fingerprint'])
                     for key, row in rows.items() if key in scope and key not in voided and row.get('status') == 'not-executed']
     summary = dict(recorded=[], voided=voided, not_executed=not_executed, product_changed=product_changed,

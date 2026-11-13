@@ -9,16 +9,24 @@
 #   版本 4 由未参与实现的审核方按决策 21 实现者指出的问题修订 SET-01：数据库格式随决策 21 升为 7（项目标记不变）。
 #   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 SET-06（接入共享库：新建或加入产品、改绑）、SET-07（连不上共享库、表结构版本不符）。
 # 双机项目（SET-06、SET-07 使用，workbench、run、guard、fix、report、cases、authoring 引用）：
-#   - 共享库：用 docker 起一个 PostgreSQL。密码放在 PGPASSFILE 指向的文件（代替 ~/.pgpass），不写进任何配置。
+#   - 共享库：用 docker 起一个 PostgreSQL。SET-06、SET-07 的密码放在 PGPASSFILE 指向的文件（代替 ~/.pgpass）；SET-09 的密码经设置页写进 config.yaml。
 #   - 用两个 SOP_BOARD_HOME 模拟两台机器。机器 A：数据根目录 $HA，操作者 林甲，项目名 demo，仓库为生成的 app、lib。
 #     机器 B：数据根目录 $HB，操作者 周乙，项目名 shop-b，仓库为同一份 app、lib 的 clone。两边都在 main 分支、内容相同。
 #     两边的 machine.json 各自生成，显示名分别为“林甲@<主机名>”“周乙@<主机名>”，下称“A 的机器”“B 的机器”。
 #   - 两边的 config.yaml 都写了指向共享库的 shared_database（主机、端口、库名、用户名）。A 已用 init demo --new 建立产品（名称 demo，ID 记为 PID），B 已用 init shop-b --join PID 绑定。
 #   - 两边的看板各以 sop-board serve --lan 启动在不同端口，下称“A 的看板”“B 的看板”；“内网设备”指第三台设备经实际非回环地址访问。
+#   版本 6 由未参与实现的审核方按 docs/design.md 已定决策 27（使用者 2026-11-13 决定）修订：新增 SET-08（看板设置页查看与修改全部配置）、
+#   SET-09（在设置页接入、换产品与断开共享库；共享库密码可以写在本机 config.yaml）；SET-06 的密码规定随之更新。
+# 只登记的演示项目（SET-08-P01 使用）：用 examples/demo-shop 生成 app、lib 两个仓库，sop-board init demo 只登记仓库；数据目录里已放好演示的
+#   env.py、worktree.py、seed.py 与验证技能 demo-verification；config.yaml 只有 init 写入的 repos 与 identities。生成方法见 docs/verification.md。
+#   “演示配置”指 examples/demo-shop/data/config.yaml 的内容。
+# 设置页接入前的双机（SET-09 使用）：共享库同双机项目，开始时是空库；密码记为 PW，由测试者随机生成，只存在一个临时文件里，证据中遮蔽。
+#   机器 A（项目 demo，操作者 林甲）与机器 B（项目 shop-b，操作者 周乙）都已登记、配置合格，config.yaml 都没有 shared_database；
+#   两边的看板与命令都把 PGPASSFILE 指向一个空文件（连接只能用 config.yaml 里的密码）；两边的看板以 --lan 启动。
 
 metadata:
   requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对；多人协作时各机器直连同一个共享库，由 Agent 问使用者后新建或加入产品，一边的验收记录在另一边可见"
-  version: 5
+  version: 6
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -34,7 +42,10 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（共享库、产品与加入、连不上与版本）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
-  tags: ["setup", "operator", "checkout", "check", "shared-database", "product"]
+    - ref: "docs/design.md 已定决策 27：看板设置页（全部配置在页面上查看与修改、共享库在设置页接入与断开、密码可写在本机 config.yaml）"
+      version: "2026-11-13"
+      confirmed_by: "blur.yin"
+  tags: ["setup", "operator", "checkout", "check", "shared-database", "product", "settings"]
 
 sops:
   - id: SET-01
@@ -267,7 +278,7 @@ sops:
       - "init <项目> 列出共享库里已有的产品（名称、创建人、有结果的场景数、最近写入时间）和“本机 N 条场景中，有 M 条在该产品里已有结果”，以 product-choice-required 结束，不自动绑定；由 Agent 问使用者后用 --join 或 --new 绑定，绑定关系记在本机 project.json"
       - "绑定时提示：本机已有的结果不带入共享库，已登记的守护须重新验收后再沉淀；regression.yaml 引用、但本机没有登记的仓库别名"
       - "改绑时重新运行 --join 或 --new，已写入原产品的记录留在原产品"
-      - "新建、加入和共享都不读取、不比对仓库的 origin，不扫描目录，不往产品仓库写东西；密码只放 ~/.pgpass，不出现在任何地方"
+      - "新建、加入和共享都不读取、不比对仓库的 origin，不扫描目录，不往产品仓库写东西；密码写在本机 config.yaml 的 shared_database.password 或 ~/.pgpass，不出现在页面、接口、命令输出、日志、报告与证据里"
     scenarios:
       - id: SET-06-P01
         polarity: positive
@@ -292,13 +303,14 @@ sops:
           - "B 的 init shop-b 列出产品 demo：创建人 林甲、有结果的场景数 1、最近写入时间；并写明本机场景中有 1 条在该产品里已有结果；以 product-choice-required 结束，没有绑定"
           - "--join 成功；B 的 status 中 shop#A 为通过，其余场景为未执行"
           - "B 的看板 shop#A 详情显示这条通过，历史写明产出机器为 A 的机器、分支为 main"
-          - "两边的 project.json 记有同一个产品 ID；project.json 与 config.yaml 中都没有密码"
+          - "两边的 project.json 记有同一个产品 ID；project.json 中没有密码，config.yaml 也没有被写入密码（本场景的密码在 PGPASSFILE 里）"
           - "两边 app、lib 的 git status 与开始时相同"
         forbidden_effects:
           - "init 不带 --join 或 --new 时自行绑定或自行新建产品"
           - "按仓库 origin、目录名或场景重合数自动判断并绑定"
           - "往产品仓库写入任何文件"
-          - "密码出现在 config.yaml、project.json、命令输出或看板页面"
+          - "密码出现在 project.json、命令输出或看板页面"
+          - "sop-board 自行把 PGPASSFILE 里的密码写进 config.yaml"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#核心概念（只有这些）"]
         evidence_hints: ["各条命令的原文与输出（连接信息只保留主机以外的部分）", "两边的 project.json 与 config.yaml", "B 的看板 shop#A 详情与历史截图", "两边的 git status"]
       - id: SET-06-P02
@@ -452,3 +464,316 @@ sops:
           - "提示运行这次并不提供的升级命令"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
         evidence_hints: ["版本记录的修改语句", "各条命令的输出", "共享库各表行数的前后对照"]
+
+  - id: SET-08
+    title: 在看板设置页查看与修改全部配置
+    actor: 开发者
+    entry: "看板设置页 /p/<项目>/settings（仅本机）；/api/settings 之下的接口；$D/<项目>/config.yaml"
+    must:
+      - "设置页只在看板所在的本机可用：内网页面不显示入口，内网访问页面与接口返回 local-only；写入核对同源"
+      - "全部配置分节显示并可修改；每节单独保存，用读取 config.yaml 的同一套校验，不合格不写入，问题标在字段旁"
+      - "别的节原有的问题不妨碍本节保存，但保存不能让别的节出现新问题；被场景引用的入口不能删除或改名"
+      - "正在使用的配置不能改（settings-locked）：环境运行时不能改环境适配与仓库和场景目录；有 prepared 的工作或运行中的启动时不能改仓库和场景目录与共享库"
+      - "页面打开后 config.yaml 被别处改过时拒绝覆盖（settings-stale）"
+      - "保存按标准格式重写 config.yaml，上一份留在 config.yaml.prev；看板随即重新读取，不用重启"
+      - "凭据变量只显示名称与启动看板的环境里有没有，不显示取值"
+    scenarios:
+      - id: SET-08-P01
+        polarity: positive
+        title: 只登记了仓库的新项目启动看板后，在设置页把配置补到合格
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state:
+          - "只登记的演示项目；看板已以 sop-board serve demo --data $D --lan 启动，启动它的环境设有 DEMO_SEED_TOKEN 与 DEMO_MERCHANT_PASSWORD"
+          - "sop-board status --json 的 configured 为 false"
+        steps:
+          - "本机浏览器打开工作台，查看提示，点去设置页的链接，查看各节的问题数"
+          - "在“仓库与场景目录”按演示配置填场景目录（app、docs/sop）与快照排除，保存"
+          - "在“验证入口”选验证技能 demo-verification，按演示配置逐项填 api 与 web 两个入口（含身份 merchant、凭据变量、录制开关、spec 库与交互地图），保存；查看凭据变量的显示"
+          - "在“环境适配”按演示配置填启动命令、端口、端口步长、worktree 与清理命令、就绪时限，保存"
+          - "在“前置数据”按演示配置填环境说明、范围、凭据变量与配方 seed-order，保存；在“无头会话”把缺省代理设为 claude，保存"
+          - "回到工作台；运行 sop-board status --json 与 sop-board check --json；查看 $D/demo/config.yaml 与 config.yaml.prev"
+        expected:
+          - "配置不完整时，本机工作台显示“项目配置还没完成”和问题清单，并有去设置页的链接"
+          - "设置页各节标出问题数；每保存一节，该节的问题数归零，其余节还有问题也不妨碍保存"
+          - "凭据变量处列出 DEMO_MERCHANT_PASSWORD 与 DEMO_SEED_TOKEN，都显示已设置；页面与 /api/settings 的响应里没有它们的取值"
+          - "全部保存后 status 的 configured 为 true、problems 为空；工作台列出 shop 的全部场景，状态都是未执行"
+          - "check 的配置与环境两项通过"
+          - "config.yaml 的内容与演示配置逐项相同（按解析后的值比较），repos 与 identities 保持 init 写入的值；config.yaml.prev 是最后一次保存之前的内容"
+          - "整个过程没有重启看板"
+        forbidden_effects: ["保存一节时改动别的节的内容", "页面、接口响应或看板输出里出现凭据取值", "要求使用者手工编辑 config.yaml 才能完成"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["工作台与设置页各节保存前后的截图", "各次保存的请求与响应", "config.yaml 与演示配置的逐项对照", "status 与 check 的输出"]
+      - id: SET-08-P02
+        polarity: positive
+        title: 在设置页修改已有配置，改动写进 config.yaml 并在下一次运行时生效
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state:
+          - "演示项目（配置合格），看板已启动；main 没有 prepared 的运行，环境没有运行"
+          - "记录 config.yaml 的内容与 sop-board operator show 的输出"
+        steps:
+          - "在设置页“验证入口”把 web 入口的录屏关掉，给它加一个身份 buyer（标签 买家），保存"
+          - "在“无头会话”给 run 设代理 codex，保存；在“本机”把操作者改为 周乙、机器显示名改为 周乙的验收机，保存"
+          - "查看 config.yaml 与 config.yaml.prev；运行 sop-board operator show 与 sop-board status --json"
+          - "运行 sop-board run prepare --scope shop#W --session S1，查看运行目录里的录制开关与身份清单，然后运行 sop-board run abandon"
+          - "运行 sop-board mark shop#B pass，在工作台查看 shop#B 的历史"
+        expected:
+          - "config.yaml 中 web 入口的 web_evidence.video 为 false、identities 多了 buyer，agents.run.runner 为 codex，其余内容不变；config.yaml.prev 是最后一次保存之前的内容"
+          - "operator show 输出 周乙；status 中本机的机器显示名为 周乙的验收机"
+          - "没有重启看板，run prepare 的运行目录里录屏为关闭，身份清单含 merchant 与 buyer"
+          - "shop#B 的标注署名为 周乙，历史里的产出机器显示 周乙的验收机"
+        forbidden_effects: ["要重启看板才生效", "保存后原有的其他配置项丢失或被改动"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["设置页截图", "config.yaml 前后对照", "运行目录的 scope.json 与 identities.json", "工作台历史截图"]
+      - id: SET-08-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网访问不到设置页与设置接口，跨源的写入被拒绝
+        actor: 测试同学
+        priority: P0
+        verify: api
+        initial_state: ["演示项目（配置合格），看板以 --lan 启动", "记录 config.yaml 的 sha256"]
+        steps:
+          - "内网设备打开工作台，查看顶栏；再直接访问 /p/demo/settings"
+          - "从内网地址对 /api/settings 发 GET，并对保存“无头会话”一节的接口发内容合格的 JSON POST"
+          - "从本机回环地址发同样的 POST，另带一个别的站点的 Origin 头"
+          - "计算 config.yaml 的 sha256"
+        expected:
+          - "内网页面的顶栏没有“设置”"
+          - "内网访问设置页与两个接口都返回 403，error_code 为 local-only，响应里没有任何配置内容"
+          - "带别的站点 Origin 的本机 POST 返回 403，error_code 为 cross-origin"
+          - "config.yaml 的 sha256 不变"
+        forbidden_effects: ["内网读到本机路径、命令、凭据变量名或共享库连接", "内网或跨源请求改动了配置"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["内网顶栏截图", "各请求与响应原文", "config.yaml 的 sha256"]
+      - id: SET-08-N02
+        polarity: negative
+        negative_type: invalid-input
+        title: 不合格的内容不保存；会破坏引用关系的修改被拒绝并指出引用者
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["演示项目（配置合格），看板已启动，环境没有运行，没有 prepared 的运行", "记录 config.yaml 的 sha256"]
+        steps:
+          - "在设置页“环境适配”把端口填成两个相同的端口，保存"
+          - "在“验证入口”清空 api 入口的操作说明，保存"
+          - "在“仓库与场景目录”删除仓库 app，保存"
+          - "在“验证入口”删除入口 api，保存；再把入口 web 改名为 web2，保存"
+          - "计算 config.yaml 的 sha256，运行 sop-board status --json"
+        expected:
+          - "前两次保存被拒绝，error_code 为 settings-invalid，页面在对应字段旁写明问题（端口不能重复；操作说明须为非空文字）"
+          - "删除 app 被拒绝，写明哪些配置项引用了它（至少包括 scenarios.repo）"
+          - "删除 api、改名 web 都被拒绝，写明引用该入口的场景数并列出其中几条"
+          - "config.yaml 的 sha256 不变，status 的 configured 仍为 true，场景文件没有变成不合格"
+        forbidden_effects: ["把不合格的内容写进 config.yaml", "被拒绝的修改部分写入"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["各次保存的页面截图与响应", "config.yaml 的 sha256", "status 输出"]
+      - id: SET-08-N03
+        polarity: negative
+        negative_type: concurrency
+        title: 环境在运行或有进行中的运行时，相关的配置不能改，其余照常可改
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state: ["演示项目（配置合格），看板已启动，环境没有运行，没有 prepared 的运行", "记录 config.yaml 的 sha256"]
+        steps:
+          - "运行 sop-board env up；在设置页“环境适配”把就绪时限改为 90，保存"
+          - "运行 sop-board run prepare --scope shop#A --session S1；在“仓库与场景目录”给 app 的快照排除加一项 tmp/，保存；在“无头会话”把 run 的代理设为 codex，保存"
+          - "运行 sop-board run abandon --run <编号> 与 sop-board env down；重新载入设置页，再保存前两处修改；查看 config.yaml"
+        expected:
+          - "环境运行时保存“环境适配”被拒绝，error_code 为 settings-locked，写明检出 main 的环境正在运行"
+          - "有 prepared 运行时保存“仓库与场景目录”被拒绝，error_code 为 settings-locked，列出运行编号与正在运行的环境"
+          - "同一时刻保存“无头会话”成功"
+          - "放弃运行、停掉环境后两处修改都保存成功：adapter.ready_timeout 为 90，snapshot_exclude.app 含 tmp/"
+        forbidden_effects: ["看板为了保存而停掉环境或放弃运行", "被拒绝的修改写进了 config.yaml"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["各次保存的页面截图与响应", "env status 与运行状态", "config.yaml 前后对照"]
+      - id: SET-08-N04
+        polarity: negative
+        negative_type: stale-input
+        title: 页面打开后 config.yaml 被别处改过，保存时不覆盖
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state: ["演示项目（配置合格），看板已启动；本机浏览器已打开设置页的“无头会话”一节"]
+        steps:
+          - "不刷新页面，用编辑器直接改 config.yaml：把 adapter.ready_timeout 改为 75"
+          - "在页面上把缺省代理改为 codex，保存"
+          - "重新载入设置页，再把缺省代理改为 codex，保存；查看 config.yaml"
+        expected:
+          - "第一次保存被拒绝，error_code 为 settings-stale，页面提示配置已被别处修改、要重新载入；config.yaml 中 ready_timeout 为 75，缺省代理没有变"
+          - "重新载入后保存成功：ready_timeout 仍为 75，缺省代理为 codex"
+        forbidden_effects: ["用页面上的旧内容覆盖别处的修改"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["两次保存的页面截图与响应", "config.yaml 各阶段的内容"]
+
+  - id: SET-09
+    title: 在设置页接入、换产品与断开共享库
+    actor: 开发者
+    entry: "看板设置页的“共享库”一节（仅本机）；$D/<项目>/config.yaml 的 shared_database；project.json；sop-board status、init"
+    must:
+      - "连接与密码在设置页填写；先测试连接并列出产品，使用者选择加入或新建后，一次完成写入连接与绑定产品；任何一步失败都不写入"
+      - "密码写在本机 config.yaml 的 shared_database.password，文件权限 600；密码不出现在页面、接口响应、命令输出、日志、报告、证据与内网页面"
+      - "没写 password 时照旧用 ~/.pgpass 或 PGPASSFILE；sop-board 不把那里的密码抄进 config.yaml"
+      - "有 prepared 的工作或运行中的启动时，不能接入、改连接、换产品或断开"
+      - "断开后业务记录回到本机库，共享库里的记录不删不搬；之后可以重新接入"
+      - "项目还没配连接时，会话请使用者在设置页接入，不经手密码"
+    scenarios:
+      - id: SET-09-P01
+        polarity: positive
+        title: A 在设置页连接空库并新建产品，B 在设置页看到产品后加入，随即看到 A 的结果
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state: ["设置页接入前的双机"]
+        steps:
+          - "在 A 的本机浏览器打开设置页“共享库”，填主机、端口、库名、用户名与密码 PW，点“测试连接”"
+          - "点“新建产品”（名称用缺省），确认；运行 sop-board status --json；然后在 A 经演示项目入口执行 shop#A，提交一条独立验收通过（run submit --implementer I1）"
+          - "在 B 的本机浏览器打开设置页“共享库”，填同样的连接与密码，点“测试连接”，查看产品清单与提示"
+          - "点 demo 的“加入”，确认；运行 sop-board status --json，在 B 的看板打开 shop#A 的详情与历史"
+          - "查看两边的 config.yaml（内容与文件权限）与 project.json"
+          - "在这些地方查找 PW：两边设置页的页面源码、/api/settings 的响应、sop-board status --json 与 sop-board init <项目> --json 的输出、看板的启动输出，以及从内网地址打开的工作台页面与 /api/board 的响应"
+        expected:
+          - "A 测试连接成功，写明库里还没有产品；新建后设置页显示已接入、产品 demo 与产品 ID，status 的产品为共享"
+          - "B 测试连接后列出产品 demo：创建人 林甲、有结果的场景数 1、最近写入时间，并写明本机场景中有 1 条在该产品里已有结果；同时显示绑定后的提示（本机已有的结果不带入共享库）"
+          - "加入后 B 的 status 中 shop#A 为通过；B 的看板 shop#A 历史写明产出机器为 A 的机器"
+          - "两边 config.yaml 的 shared_database 有主机、端口、库名、用户名与 password，文件权限为 600；两边 project.json 记有同一个产品 ID"
+          - "设置页只显示密码已保存；上面列出的页面源码、接口响应、命令输出、启动输出与内网页面里都找不到 PW"
+          - "整个过程没有重启看板"
+        forbidden_effects:
+          - "点“测试连接”时就写入 config.yaml 或 project.json"
+          - "看板不经使用者选择自行加入或新建产品"
+          - "密码出现在页面、接口响应、命令输出、日志或内网页面"
+          - "往产品仓库写入任何文件"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["两边设置页各步的截图（密码框不显示内容）", "两边的 config.yaml（密码遮蔽）与文件权限、project.json", "status 输出", "B 的看板 shop#A 历史截图", "查找 PW 的命令与结果"]
+      - id: SET-09-P02
+        polarity: positive
+        title: 断开后业务记录回到本机库，共享库里的记录原样保留，重新接入后照常可见
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state:
+          - "机器 A、B 已在设置页接入同一个产品 demo；共享库中 shop#A 有 A 的一条独立通过，shop#X 有 B 接入后登记的一条不通过标注"
+          - "B 在接入之前，本机库里有一条 shop#B 的通过标注（接入后 B 的看板上 shop#B 为未执行）"
+          - "B 没有 prepared 的工作；记录共享库各表的行数"
+        steps:
+          - "在 B 的设置页“共享库”点“断开”，阅读确认框，确认"
+          - "运行 sop-board status --json，在 B 的看板查看 shop#A、shop#B、shop#X；查看 B 的 config.yaml 与 project.json"
+          - "核对共享库各表的行数；在 A 的看板打开 shop#X 的历史"
+          - "在 B 的设置页重新填连接与密码，测试连接，加入 demo；运行 sop-board status --json"
+        expected:
+          - "确认框写明：共享库里的记录不删、本机不再显示；接入之前本机库里的结果重新可见；别的机器读不到留在本机的证据文件"
+          - "断开后 B 的 status 的产品为本机、不共享：shop#B 为通过（接入前的标注），shop#A 与 shop#X 为未执行"
+          - "B 的 config.yaml 没有 shared_database，project.json 没有产品绑定"
+          - "共享库各表的行数不变；A 的看板上 shop#X 仍是 B 标注的不通过"
+          - "重新加入后 B 的 status：shop#A 为通过、shop#X 为失败、shop#B 为未执行"
+        forbidden_effects: ["断开时删除或搬走共享库里的记录", "把本机库里的结果写进共享库", "断开后仍向共享库读写业务记录"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["确认框截图", "断开前后与重新加入后的 status 输出", "共享库各表行数的前后对照", "A 的看板 shop#X 历史截图"]
+      - id: SET-09-P03
+        polarity: positive
+        title: 手写在 config.yaml 里的密码同样生效，文件权限被收紧，命令输出不带密码
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "机器 A 已在设置页新建产品 demo（ID 记为 PID）；机器 B 的 config.yaml 没有 shared_database，PGPASSFILE 指向空文件"
+          - "用编辑器在 B 的 config.yaml 写入 shared_database（主机、端口、库名、用户名与 password: PW），把文件权限设为 644；记录文件内容的 sha256"
+        steps:
+          - "在 B 运行 sop-board init shop-b --json"
+          - "运行 sop-board init shop-b --join PID --json、sop-board status --json 与 sop-board check --json"
+          - "查看 config.yaml 的权限与 sha256；在各条命令的输出里查找 PW"
+        expected:
+          - "init 列出产品 demo，以 product-choice-required 结束（连接用的是 config.yaml 里的密码）"
+          - "--join 成功，status 的产品为共享"
+          - "config.yaml 的权限已是 600，内容的 sha256 不变"
+          - "各条命令的输出里没有 PW"
+        forbidden_effects: ["因为 config.yaml 里有 password 而判配置不合格", "sop-board 把密码写到别的文件"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["各条命令的输出", "config.yaml 的权限与 sha256 前后对照", "查找 PW 的命令与结果"]
+      - id: SET-09-P04
+        polarity: positive
+        title: 项目还没配共享库连接时，会话请使用者在设置页接入，不经手密码
+        actor: 开发者
+        priority: P1
+        verify: agent
+        initial_state:
+          - "机器 A 已在设置页新建产品 demo；机器 B 的项目 shop-b 配置合格，config.yaml 没有 shared_database，看板已启动；B 已执行 sop-board skills install"
+          - "记录 B 的 config.yaml 与 project.json 的 sha256"
+        steps:
+          - "在 B 的 app 目录新开 Claude Code 会话，请求“把这个项目接到团队的共享库”"
+          - "会话请使用者去设置页时，测试者在 B 的设置页填连接与密码并加入 demo，然后回答“已在设置页加入 demo”"
+          - "运行 sop-board status --json，查看会话记录以及会话写出或改动的文件"
+          - "在另一份同样状态的机器 B 上对 Codex 会话重复一次"
+        expected:
+          - "会话说明要在看板设置页接入，并给出设置页的地址；没有让使用者手写 config.yaml 或 ~/.pgpass，也没有向使用者要密码"
+          - "使用者答复后，会话运行 sop-board status --json 确认已绑定产品 demo，并把结果转告使用者"
+          - "会话没有写或改 config.yaml、project.json 与 ~/.pgpass"
+        forbidden_effects: ["会话索要、读取或输出共享库密码", "会话自行写入 shared_database 或绑定产品", "会话读取仓库 origin 或扫描目录来判断是不是同一个产品"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["会话记录导出", "status 输出", "B 的 config.yaml（密码遮蔽）与 project.json"]
+      - id: SET-09-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 密码不对或连不上时写明原因，不写入任何配置
+        actor: 开发者
+        priority: P0
+        verify: web
+        initial_state:
+          - "设置页接入前的双机中，机器 A 已在设置页新建产品 demo，机器 B 还没有接入"
+          - "记录 B 的 config.yaml 与 project.json 的 sha256"
+        steps:
+          - "在 B 的设置页“共享库”填正确的连接与一个错误的密码，点“测试连接”；页面允许的话再点加入或保存"
+          - "把端口改成一个没有服务监听的端口，填正确的密码，点“测试连接”"
+          - "计算两个文件的 sha256，运行 sop-board status --json"
+        expected:
+          - "密码错误时页面写明认证失败以及连的主机与用户名，不列出产品，不能加入或新建"
+          - "端口不对时页面写明连不上共享库以及主机与端口"
+          - "两个文件的 sha256 不变；status 照常返回本机库的状态，产品不共享"
+          - "页面与接口响应里没有出现填过的两个密码"
+        forbidden_effects: ["连接失败后留下 shared_database 或产品绑定", "错误信息里带出密码"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["两次测试连接的页面截图与响应", "两个文件的 sha256", "status 输出"]
+      - id: SET-09-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 有进行中的运行时不能断开或改连接，放弃运行后可以
+        actor: 开发者
+        priority: P1
+        verify: web
+        initial_state:
+          - "机器 B 已在设置页接入产品 demo；B 在 main 有一个 prepared 的运行 R1（run prepare --scope shop#A --session S1），环境在运行"
+          - "记录 B 的 config.yaml 与 project.json 的 sha256"
+        steps:
+          - "在 B 的设置页“共享库”点“断开”并确认"
+          - "在设置页把连接的库名改成别的并保存"
+          - "运行 sop-board run abandon --run R1（环境仍在运行），再点“断开”并确认"
+        expected:
+          - "前两次都被拒绝，error_code 为 settings-locked，列出运行 R1；两个文件的 sha256 不变，R1 仍为 prepared"
+          - "放弃运行后断开成功，环境在运行不妨碍断开"
+        forbidden_effects: ["看板为了断开而放弃或提交 R1", "R1 的结果被登记到另一个库"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["各次操作的页面截图与响应", "运行状态", "两个文件的 sha256"]
+      - id: SET-09-N03
+        polarity: negative
+        negative_type: not-found
+        title: 改连接时目标库里没有已绑定的产品则拒绝
+        actor: 开发者
+        priority: P2
+        verify: web
+        initial_state:
+          - "机器 B 已在设置页接入产品 demo，没有 prepared 的工作；同一个 PostgreSQL 里另有一个空库 other，同一用户可以连接"
+          - "记录 B 的 config.yaml 的 sha256"
+        steps:
+          - "在 B 的设置页把连接的库名改为 other，测试连接并保存"
+          - "运行 sop-board status --json"
+        expected:
+          - "保存被拒绝，写明目标库里没有产品 demo（带产品 ID），要换产品请用加入或新建"
+          - "config.yaml 的 sha256 不变；status 仍是产品 demo 的状态"
+        forbidden_effects: ["保存后项目连着新库却没有产品", "在目标库里自动新建同名产品"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["保存时的页面截图与响应", "config.yaml 的 sha256", "status 输出"]

@@ -2,8 +2,9 @@
 
 
 class APIError(Exception):
-    def __init__(self, status, code, problems):
+    def __init__(self, status, code, problems, **details):
         self.status, self.code, self.problems = status, code, problems
+        self.details = details
         super().__init__(code)
 
 

@@ -104,8 +104,12 @@ def register(app):
                        'peer_token=excluded.peer_token, updated_at=excluded.updated_at',
                        (machine['id'], machine['name'], json.dumps(app.addresses), app.peer_token, stamp))
         else:
+            db.execute('INSERT INTO machines(id, name, addresses, peer_token, updated_at) VALUES (?,?,NULL,NULL,?) '
+                       'ON CONFLICT(id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at',
+                       (machine['id'], machine['name'], stamp))
             unregister(app, db, stamp)
     app.registered = True
+    app.machine_name_sync_pending = False
 
 
 def unregister(app, db, stamp):

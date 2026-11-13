@@ -106,8 +106,8 @@ class App:
         except OSError:
             stamp = None
         if stamp != self.config_stamp:
-            self.config_stamp = stamp
             self.project.reload()
+            self.config_stamp = stamp
         return self.project
 
     def checkout(self, name=None):
@@ -159,8 +159,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, response, request):
         raw, headers = response.raw, response.headers
-        if not request.local and not request.path.startswith('/assets/') and not response.verbatim:
+        if (not request.local and not request.path.startswith('/assets/') and not response.verbatim
+                and response.status != 206 and not any(key.lower() == 'content-range' for key, _ in headers)):
             app = self.server.app
+            app.reload()
             names_ = app.credential_names()
             roots = app.local_roots()
             raw = response_bytes(raw, response.content_type, names_, local=False, local_roots=roots)
@@ -206,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == 'GET' and path.startswith('/p/'):
                 self.send(html_response(error_page(error.code, problems), error.status), request)
             else:
-                self.send(json_response(dict(ok=False, error_code=error.code, problems=problems), error.status), request)
+                self.send(json_response(dict(ok=False, error_code=error.code, problems=problems, **error.details), error.status), request)
         except (ValueError, OSError) as error:
             request = request or Request(self, None)
             code = 'env-busy' if type(error).__name__ == 'EnvBusy' else 'invalid'
@@ -218,7 +220,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send(json_response(body, status), request)
         except Exception as error:  # noqa: BLE001 - 任何未预期的错误都返回 500，不让连接无响应断开
             import traceback
-            traceback.print_exc(file=sys.stderr)
+            from .redaction import redact
+            print(redact(traceback.format_exc().encode(), ()).decode(), file=sys.stderr)
             request = request or Request(self, None)
             detail = f'{type(error).__name__}: {error}' if request.local else type(error).__name__
             self.send(json_response(dict(ok=False, error_code='internal-error',

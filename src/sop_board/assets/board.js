@@ -44,6 +44,8 @@
     if (!response.ok || body.ok === false) {
       const error = new Error((body.problems || []).map(p => p.problem).join('；') || `HTTP ${response.status}`);
       error.problems = body.problems || [];
+      error.code = body.error_code;
+      error.occupants = body.occupants || [];
       throw error;
     }
     return body;
@@ -56,6 +58,365 @@
     return search.toString();
   };
   const post = (path, body) => api(path, {method: 'POST', body: JSON.stringify(body)});
+
+  // ---- 设置：字段结构只描述编辑控件；校验和占用判断由设置接口统一执行 ----
+
+  const textField = (label, extra = {}) => ({label, type: 'text', ...extra});
+  const linesField = (label, extra = {}) => ({label, type: 'lines', ...extra});
+  const numberField = label => ({label, type: 'number'});
+  const boolField = label => ({label, type: 'choice', choices: [['true', '开启'], ['false', '关闭']], boolean: true});
+  const objectField = (label, fields, extra = {}) => ({label, type: 'object', fields, ...extra});
+  const mapField = (label, item, keyLabel = '名称') => ({label, type: 'map', item, keyLabel});
+  const listField = (label, item) => ({label, type: 'list', item});
+  const commandField = label => linesField(label, {hint: '每行一个参数，按行顺序执行，不经过 shell。'});
+  const agentField = objectField('会话配置', {
+    runner: {label: '代理', type: 'choice', choices: ['codex', 'claude'], required: true},
+    model: textField('模型'), effort: {label: '推理强度', type: 'choice', choices: ['low', 'medium', 'high', 'xhigh', 'max']},
+    args: commandField('附加参数'),
+  });
+  const identityField = objectField('身份', {
+    id: textField('身份编号', {required: true}), label: textField('身份说明', {required: true}),
+    account_env: textField('账号环境变量名'), real: boolField('真实账号（由人在窗口登录）'),
+    code: {label: '验证码来源', type: 'choice', choices: [['mailbox', '测试邮箱'], ['backend', '测试后台'], ['manual', '由人处理']]},
+    limits: objectField('使用次数上限', {logins_per_day: numberField('每日登录次数'), codes_per_hour: numberField('每小时验证码次数'), codes_per_day: numberField('每日验证码次数')}, {optional: true}),
+  });
+  const entryField = objectField('验证入口', {
+    surface: textField('入口类型（网页填 web，HTTP 接口填 http）', {required: true}),
+    operate: textField('操作说明', {multiline: true, required: true}),
+    observe: linesField('观察位置', {required: true}), evidence: linesField('证据要求', {required: true}),
+    isolation: textField('数据隔离说明', {multiline: true, required: true}),
+    address_env: textField('入口地址的环境变量名'), driver: textField('辅助验证技能目录名'),
+    credential_env: linesField('凭据环境变量名'),
+    identities: listField('浏览器身份', identityField),
+    web_evidence: objectField('网页录制开关', {video: boolField('录屏'), trace: boolField('操作追踪（trace）')}, {optional: true}),
+    atlas: objectField('交互地图', {repos: linesField('仓库别名', {required: true}), languages: linesField('语言')}, {optional: true}),
+    spec_library: textField('浏览器场景脚本目录（仓库别名:仓内目录）'),
+  });
+  const settingsSchemas = {
+    verification: objectField('验证入口', {entries: {...mapField('入口列表', entryField, '入口名称'), required: true},
+      skill: {label: '项目验证技能', type: 'skill', required: true}}),
+    environment: objectField('环境适配', {adapter: objectField('环境适配配置', {
+      env: {...commandField('环境启动命令'), required: true}, worktree: commandField('建立工作树命令'), cleanup: commandField('清理工作树命令'),
+      ports: linesField('基础端口', {numbers: true}), port_step: numberField('检出端口步长'), ready_timeout: numberField('就绪时限（秒）'),
+      service_timeout: numberField('服务停启时限（秒）'), services: mapField('服务列表', objectField('服务', {
+        about: textField('业务说明', {required: true}), stoppable: boolField('允许停启'),
+      }), '服务名称'),
+    })}),
+    fixtures: objectField('前置数据', {fixtures: objectField('前置数据配置', {
+      environment: textField('环境说明', {required: true, multiline: true}), scope: linesField('可写范围', {required: true}),
+      credential_env: linesField('凭据环境变量名'), adhoc: boolField('允许临时数据命令'), real_only: linesField('必须由人准备的数据'),
+      recipes: listField('数据配方', objectField('配方', {
+        name: textField('配方名称', {required: true}), title: textField('配方说明', {required: true}),
+        params: mapField('参数说明', textField('说明', {required: true}), '参数名称'), creates: linesField('创建的对象'),
+        run: {...commandField('准备命令'), required: true}, check: commandField('核对命令'),
+      })),
+    }, {optional: true})}),
+    agents: objectField('无头会话', {agents: objectField('各类工作使用的会话', Object.fromEntries(
+      [['default', '缺省'], ['run', '执行场景'], ['fix', '修复'], ['distill', '沉淀'], ['merge', '合并用例'],
+        ['author', '编写业务流程'], ['draft', '编写场景草稿'], ['atlas', '梳理交互地图']]
+        .map(([key, label]) => [key, {...agentField, label, optional: true}])))}),
+  };
+  const settingsTitles = {local: '本机', repositories: '仓库与场景目录', verification: '验证入口', environment: '环境适配',
+    fixtures: '前置数据', agents: '无头会话', shared: '共享库'};
+  const settingsState = {data: null, forms: new Map(), busy: false};
+
+  // 每个编辑器返回读取函数与字段位置函数，增删列表后仍能把服务返回的问题标在当前字段旁。
+  function settingsEditor(schema, value, path, fields) {
+    const host = el('div', {class: 'settings-field'});
+    const errors = el('div', {class: 'field-problems', role: 'status'});
+    fields.push({path, errors});
+    let read;
+    if (schema.type === 'object') {
+      const enabled = schema.optional ? el('input', {type: 'checkbox', checked: value !== undefined}) : null;
+      const body = el('div', {class: 'settings-object'});
+      if (enabled) {
+        host.append(el('label', {class: 'settings-enable'}, enabled, '启用' + schema.label));
+        const update = () => { body.hidden = !enabled.checked; };
+        enabled.addEventListener('change', update); update();
+      } else if (path()) host.append(el('h3', {}, schema.label));
+      const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      const children = Object.entries(schema.fields).map(([key, child]) => [key,
+        settingsEditor(child, source[key], () => path() ? path() + '.' + key : key, fields)]);
+      body.append(...children.map(([, editor]) => editor.host));
+      // 格式外字段显式列出，使用者可删除；保存其他字段时保留其原值供后端拒绝，避免无声丢失。
+      const extras = Object.entries(source).filter(([key]) => !(key in schema.fields));
+      const removed = new Set();
+      for (const [key, extra] of extras) body.append(el('div', {class: 'settings-item'},
+        el('p', {}, '格式外字段 ' + key + '：' + JSON.stringify(extra)),
+        el('button', {type: 'button', onclick: event => { removed.add(key); event.target.parentElement.remove(); }}, '删除这个字段')));
+      host.append(body);
+      read = () => enabled && !enabled.checked ? undefined : Object.fromEntries([
+        ...extras.filter(([key]) => !removed.has(key)), ...children.map(([key, editor]) => [key, editor.read()]).filter(([, v]) => v !== undefined)]);
+    } else if (schema.type === 'map' || schema.type === 'list') {
+      host.append(el('h3', {}, schema.label));
+      const items = el('div');
+      const rows = [];
+      const add = (key = '', item) => {
+        const row = {host: el('div', {class: 'settings-item'})};
+        rows.push(row);
+        if (schema.type === 'map') {
+          row.key = el('input', {type: 'text', value: key, 'aria-label': schema.keyLabel});
+          row.host.append(el('label', {class: 'field'}, el('span', {}, schema.keyLabel), row.key));
+        }
+        const itemPath = () => schema.type === 'map' ? path() + '.' + row.key.value : path() + '[' + rows.indexOf(row) + ']';
+        row.editor = settingsEditor(schema.item, item, itemPath, fields);
+        row.host.append(row.editor.host, el('button', {type: 'button', onclick: () => {
+          rows.splice(rows.indexOf(row), 1); row.host.remove();
+        }}, '删除这一项'));
+        items.append(row.host);
+      };
+      const source = schema.type === 'map' ? Object.entries(value || {}) : (Array.isArray(value) ? value.map((v, i) => [i, v]) : []);
+      source.forEach(([key, item]) => add(key, item));
+      host.append(items, el('button', {type: 'button', onclick: () => add()}, '添加' + schema.label.replace('列表', '')));
+      read = () => {
+        if (!rows.length && value === undefined && !schema.required) return undefined;
+        if (schema.type === 'list') return rows.map(row => row.editor.read());
+        const keys = rows.map(row => row.key.value);
+        if (new Set(keys).size !== keys.length) throw new Error(schema.label + '的名称不能重复');
+        return Object.fromEntries(rows.map(row => [row.key.value, row.editor.read()]));
+      };
+    } else {
+      let input;
+      if (schema.type === 'choice' || schema.type === 'skill') {
+        let choices = schema.type === 'skill' ? settingsState.data.skills.map(s => [s.name, s.name])
+          : schema.choices.map(c => Array.isArray(c) ? c : [c, c]);
+        if (value !== undefined && !choices.some(([v]) => v === String(value))) choices = [[String(value), String(value)], ...choices];
+        input = el('select', {}, el('option', {value: ''}, schema.required ? '请选择' : '未声明（沿用缺省）'),
+          choices.map(([v, label]) => el('option', {value: v, selected: String(value) === v}, label)));
+        read = () => input.value === '' ? (schema.required ? '' : undefined) : schema.boolean ? input.value === 'true' : input.value;
+      } else if (schema.type === 'lines' || schema.multiline) {
+        input = el('textarea', {rows: schema.type === 'lines' ? 3 : 2}, Array.isArray(value) ? value.join('\n') : value ?? '');
+        read = () => {
+          if (!input.value && value === undefined && !schema.required) return undefined;
+          if (schema.type !== 'lines') return input.value;
+          return input.value.split('\n').filter(v => v.trim() !== '').map(v => schema.numbers ? Number(v) : v);
+        };
+      } else {
+        input = el('input', {type: schema.type === 'number' ? 'number' : 'text', value: value ?? ''});
+        read = () => input.value === '' && !schema.required ? undefined : schema.type === 'number' ? Number(input.value) : input.value;
+      }
+      input.setAttribute('aria-label', schema.label);
+      host.append(el('label', {class: 'field'}, el('span', {}, schema.label), input));
+      if (schema.hint) host.append(el('p', {class: 'muted'}, schema.hint));
+      if (schema.type === 'skill') {
+        const problems = el('div', {class: 'problems'});
+        const show = () => {
+          const skill = settingsState.data.skills.find(s => s.name === input.value);
+          problems.replaceChildren(...(skill?.problems || []).map(p => el('p', {}, problemText(p))));
+        };
+        input.addEventListener('change', show); show(); host.append(problems);
+      }
+    }
+    host.append(errors);
+    return {host, read};
+  }
+
+  function settingsProblems(form, problems) {
+    form.fields.forEach(field => field.errors.replaceChildren());
+    form.problems.replaceChildren();
+    for (const problem of problems) {
+      const matches = form.fields.filter(f => f.errors.isConnected && (f.path() === problem.field ||
+        problem.field.startsWith(f.path() + '.') || problem.field.startsWith(f.path() + '[')));
+      matches.sort((a, b) => b.path().length - a.path().length);
+      (matches[0]?.errors || form.problems).append(el('p', {}, problemText(problem)));
+    }
+  }
+
+  function occupantText(item) {
+    if (item.kind === 'environment') return `检出 ${item.checkout} 的环境正在运行`;
+    if (item.kind === 'browser') return `检出 ${item.checkout} 的身份 ${item.identity} 的浏览器正在运行`;
+    const label = {work: '工作', launch: '启动', fix: '修复'}[item.kind] || item.kind;
+    return `${label} #${item.id}（检出 ${item.checkout}）`;
+  }
+
+  function settingsExtras() {
+    const data = settingsState.data;
+    $('#settings-notices').replaceChildren(...data.notices.map(p => el('p', {class: 'settings-note'}, problemText(p))));
+    $('#settings-other').replaceChildren(...(data.other_problems.length ? [el('div', {class: 'problems'},
+      el('h2', {}, '其他配置问题'), el('ul', {}, data.other_problems.map(p => el('li', {}, problemText(p)))))] : []));
+    for (const [key, form] of settingsState.forms) {
+      const section = data.sections[key];
+      form.heading.textContent = `${settingsTitles[key]} · ${section.problems.length} 个问题`;
+      settingsProblems(form, section.problems);
+      form.owners.replaceChildren(...section.occupants.map(o => el('p', {class: 'muted'}, occupantText(o))));
+    }
+    const credentials = $('#settings-credentials');
+    if (credentials) credentials.replaceChildren(el('div', {}, el('h3', {}, '凭据变量（仅显示声明与是否已设置）'),
+      ...data.credentials.map(c => el('p', {}, el('strong', {class: 'mono'}, c.name), `：${c.present ? '已设置' : '未设置'}`,
+        el('span', {class: 'muted'}, '；声明来源：' + c.source.field + (c.source.recipes?.length ? '；配方：' + c.source.recipes.join('、') : '')))),
+      !data.credentials.length ? el('p', {class: 'muted'}, '尚未声明凭据变量') : null));
+  }
+
+  async function settingsAction(form, path, body, {saved = true} = {}) {
+    if (settingsState.busy) return;
+    settingsState.busy = true;
+    const buttons = [...document.querySelectorAll('.settings-page button')];
+    buttons.forEach(b => { b.disabled = true; });
+    form.message.textContent = '正在处理…';
+    try {
+      const data = await post(path, body);
+      settingsProblems(form, []);
+      if (saved) {
+        settingsState.data = data;
+        renderSettingsSection(form.key);
+        settingsExtras();
+        settingsState.forms.get(form.key).message.textContent = '已保存，已生效';
+      }
+      return data;
+    } catch (error) {
+      const problems = error.problems || [];
+      const lead = {'settings-stale': '配置已被别处修改，请重新载入；这次修改没有保存。',
+        'settings-locked': '配置正在使用，未保存。', 'settings-invalid': '内容不合格，未保存。',
+        'database-authentication': '共享库认证失败，请核对用户名与密码。',
+        'database-unreachable': '连不上共享库，请核对连接地址、端口与服务状态。'}[error.code] || '操作没有完成。';
+      form.message.textContent = lead + (error.code ? `（${error.code}）` : '') + (problems.length ? '' : error.message);
+      settingsProblems(form, problems);
+      // 其他节的引用也可能被这次编辑破坏，在对应的控件旁展示同一份问题。
+      for (const other of settingsState.forms.values()) if (other !== form) {
+        const related = problems.filter(p => other.fields.some(f => f.path() === p.field));
+        if (related.length) settingsProblems(other, related);
+      }
+      if (error.occupants?.length) form.owners.replaceChildren(...error.occupants.map(o => el('p', {}, occupantText(o))));
+    } finally {
+      settingsState.busy = false;
+      buttons.forEach(b => { b.disabled = false; });
+    }
+  }
+
+  function repositoriesEditor(form, content) {
+    const rows = [], host = el('div'), items = el('div');
+    const add = (alias = '', path = '') => {
+      const row = {host: el('div', {class: 'settings-item'})}; rows.push(row);
+      row.alias = settingsEditor(textField('仓库别名（新仓库留空时自动生成）'), alias, () => 'repos.' + row.alias.read(), form.fields);
+      row.path = settingsEditor(textField('仓库路径', {required: true}), path, () => 'repos.' + (row.alias.read() || ''), form.fields);
+      if (alias) row.alias.host.querySelector('input').readOnly = true;
+      row.host.append(row.alias.host, row.path.host);
+      if (alias) row.host.append(el('p', {class: 'muted'}, '已登记的 origin 身份：' + (content.identities?.[alias] || '尚未登记')),
+        el('button', {type: 'button', onclick: () => {
+          if (confirm('按当前 origin 重新登记仓库 ' + alias + '？')) settingsAction(form, '/api/settings/repositories/reregister', {digest: settingsState.data.digest, alias});
+        }}, '按当前 origin 重新登记'));
+      row.host.append(el('button', {type: 'button', onclick: () => { rows.splice(rows.indexOf(row), 1); row.host.remove(); }}, '删除仓库'));
+      items.append(row.host);
+    };
+    Object.entries(content.repos || {}).forEach(([a, p]) => add(a, p));
+    const rest = settingsEditor(objectField('', {
+      scenarios: objectField('场景目录', {repo: textField('场景仓库别名', {required: true}), path: textField('仓内目录', {required: true})}),
+      snapshot_exclude: mapField('快照排除目录', linesField('仓内相对路径'), '仓库别名'),
+    }), Object.fromEntries(Object.entries(content).filter(([key]) => !['repos', 'identities'].includes(key))), () => '', form.fields);
+    host.append(items, el('button', {type: 'button', onclick: () => add()}, '添加仓库'), rest.host);
+    return {host, read: () => {
+      const {scenarios, snapshot_exclude} = rest.read();
+      return {repos: rows.map(r => ({path: r.path.read(), ...(r.alias.read() ? {alias: r.alias.read()} : {})})),
+        scenarios, ...(snapshot_exclude !== undefined ? {snapshot_exclude} : {})};
+    }};
+  }
+
+  function sharedEditor(form, section) {
+    const host = el('div');
+    const bound = section.product;
+    host.append(el('p', {}, bound ? `已接入产品：${bound.name}；产品 ID：${bound.id}` : '尚未接入共享产品'));
+    const editor = settingsEditor(objectField('', {shared_database: objectField('连接', {
+      host: textField('主机', {required: true}), port: numberField('端口（缺省 5432）'),
+      dbname: textField('库名', {required: true}), user: textField('用户名', {required: true}),
+    })}), section.content, () => '', form.fields);
+    const password = el('input', {type: 'password', autocomplete: 'new-password'});
+    const clear = el('input', {type: 'checkbox'});
+    password.addEventListener('input', () => { if (password.value !== '') clear.checked = false; });
+    clear.addEventListener('change', () => { if (clear.checked) password.value = ''; });
+    host.append(editor.host, el('p', {}, '密码：' + (section.password_saved ? '已保存' : '未保存（可使用本机密码文件）')),
+      el('label', {class: 'field'}, el('span', {}, '新密码'), password),
+      el('p', {class: 'muted'}, '新密码留空表示不修改；改用密码文件请勾选“清除”。'),
+      el('label', {class: 'settings-enable'}, clear, '清除已保存的密码，改用本机密码文件'));
+    const candidate = () => ({connection: editor.read().shared_database,
+      ...(password.value !== '' ? {password: password.value} : {}), ...(clear.checked ? {clear_password: true} : {})});
+    const choices = el('div');
+    let tested = null;
+    const invalidate = () => { tested = null; choices.replaceChildren(); };
+    host.addEventListener('input', invalidate); host.addEventListener('change', invalidate);
+    const connect = (action, extra = {}) => {
+      if (!tested && action !== 'keep') return;
+      const label = action === 'new' ? '新建产品 ' + extra.name : action === 'join' ? '加入所选产品' : '保存连接与密码';
+      if (confirm(label + '？本机已有的结果不带入共享库，已登记的守护须重新验收后再沉淀。')) {
+        settingsAction(form, '/api/settings/shared/connect', {digest: settingsState.data.digest, ...candidate(), action, ...extra});
+      }
+    };
+    host.append(el('div', {class: 'row-actions'}, el('button', {type: 'button', onclick: async () => {
+      invalidate();
+      const result = await settingsAction(form, '/api/settings/shared/test', candidate(), {saved: false});
+      if (!result) return;
+      tested = result;
+      form.message.textContent = '测试连接成功；尚未保存连接或绑定产品。';
+      const name = el('input', {type: 'text', value: config.project});
+      // 产品名称在测试区内编辑不会改变待测试的连接。
+      choices.replaceChildren(el('div', {}, el('h3', {}, '选择产品'),
+        result.empty ? el('p', {}, '库里还没有产品') : null,
+        ...result.products.map(product => el('article', {class: 'settings-item'}, el('h3', {}, product.name),
+          el('p', {class: 'mono'}, '产品 ID：' + product.id), el('p', {}, '创建人：' + product.created_by),
+          el('p', {}, `有结果的场景数：${product.scenarios_with_results}；最近写入时间：${product.latest_write || '暂无'}`),
+          el('p', {}, product.hint), bound?.id === product.id ? el('span', {class: 'chip'}, '当前产品')
+            : el('button', {type: 'button', onclick: () => connect('join', {product_id: product.id})}, '加入 ' + product.name))),
+        ...result.notes.map(note => el('p', {class: 'settings-note'}, note)),
+        el('p', {class: 'muted'}, result.unregistered_aliases.length ? '本机未登记的仓库别名：' + result.unregistered_aliases.join('、') : '没有引用本机未登记仓库的守护'),
+        el('label', {class: 'field'}, el('span', {}, '新产品名称'), name),
+        el('button', {type: 'button', onclick: () => connect('new', {name: name.value})}, '新建产品')));
+      choices.oninput = event => event.stopPropagation(); choices.onchange = event => event.stopPropagation();
+    }}, '测试连接'), bound ? el('button', {type: 'button', onclick: () => connect('keep')}, '保存连接与密码') : null,
+      section.content.shared_database || bound ? el('button', {type: 'button', onclick: () => {
+        if (confirm('断开共享库？\n共享库里的记录不删不搬，只是本机不再显示；\n接入之前本机库里的结果重新可见；\n别的机器读不到留在本机的证据；\n之后可以重新接入。')) {
+          settingsAction(form, '/api/settings/shared/disconnect', {digest: settingsState.data.digest});
+        }
+      }}, '断开') : null), choices);
+    return {host};
+  }
+
+  function renderSettingsSection(key) {
+    const section = settingsState.data.sections[key];
+    const form = {key, fields: [], host: el('form', {class: 'card settings-section', id: 'settings-' + key}),
+      heading: el('h2'), owners: el('div'), problems: el('div', {class: 'problems'}), message: el('span', {role: 'status', class: 'message'})};
+    form.host.append(form.heading, form.owners, form.problems);
+    let editor;
+    if (key === 'local') {
+      const content = section.content;
+      editor = settingsEditor(objectField('', {operator: textField('操作者姓名', {required: true}), machine: textField('机器显示名', {required: true})}),
+        {operator: content.operator, machine: content.machine}, () => '', form.fields);
+      form.host.append(editor.host, el('p', {class: 'muted'}, '操作者来源：' + content.operator_source),
+        el('p', {}, '浏览器运行时：' + (content.runtime ? '已安装' : '未安装')),
+        el('p', {class: 'mono'}, '安装命令：' + content.install_command), el('p', {}, '本机地址：' + content.local_address),
+        el('p', {}, '内网地址：' + (content.lan_addresses.join('、') || '未启用内网访问')), el('p', {}, '数据目录：' + content.data));
+    } else if (key === 'repositories') { editor = repositoriesEditor(form, section.content); form.host.append(editor.host); }
+    else if (key === 'shared') { editor = sharedEditor(form, section); form.host.append(editor.host); }
+    else {
+      editor = settingsEditor(settingsSchemas[key], section.content, () => '', form.fields); form.host.append(editor.host);
+      if (key === 'verification') form.host.append(el('div', {id: 'settings-credentials'}));
+    }
+    form.host.append(el('div', {class: 'form-actions'}, key !== 'shared' ? el('button', {type: 'submit', class: 'primary'}, '保存' + settingsTitles[key]) : null, form.message));
+    form.host.addEventListener('submit', event => {
+      event.preventDefault();
+      if (key === 'shared') return;
+      try {
+        const content = editor.read();
+        settingsAction(form, key === 'local' ? '/api/settings/local' : '/api/settings/sections/' + key,
+          key === 'local' ? content : {digest: settingsState.data.digest, content});
+      } catch (error) { form.message.textContent = error.message; }
+    });
+    const old = settingsState.forms.get(key);
+    if (old) old.host.replaceWith(form.host); else $('#settings-sections').append(form.host);
+    settingsState.forms.set(key, form);
+  }
+
+  async function startSettings() {
+    const reload = async () => {
+      const data = await api('/api/settings');
+      settingsState.data = data; settingsState.forms.clear();
+      $('#settings-sections').replaceChildren();
+      Object.keys(settingsTitles).forEach(renderSettingsSection); settingsExtras();
+      $('#settings-sections').setAttribute('aria-busy', 'false');
+    };
+    $('#settings-reload').onclick = () => {
+      if (confirm('重新载入会放弃页面上尚未保存的输入，继续？')) reload().catch(error => { $('#settings-message').textContent = error.message; });
+    };
+    await reload();
+  }
 
   function fillCheckouts(checkouts, current) {
     const select = $('#checkout');
@@ -276,6 +637,13 @@
     try { data = await api('/api/board?' + query()); }
     catch (error) { boardProblem(error.message); throw error; }
     boardProblem(null);
+    const hint = $('#configuration-hint');
+    if (hint) {
+      hint.hidden = data.configured;
+      hint.replaceChildren(...(data.configured ? [] : [el('h2', {}, '项目配置还没完成'),
+        el('ul', {}, (data.problems || []).map(p => el('li', {}, problemText(p)))),
+        config.local ? el('a', {href: `/p/${encodeURIComponent(config.project)}/settings`}, '去设置页补全配置') : null]));
+    }
     const signature = JSON.stringify([data.counts, data.files.map(f => [f.name, f.invalid, f.nodes]),
       Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.review, v.title, v.draft_review]), data.stats]);
     board.data = data;
@@ -1222,6 +1590,6 @@
   renderSigner();
   setupSidebar();
   setupTreeToggle();
-  const start = {workbench: startWorkbench, sop: startSop, runs: startRuns, inbox: startInbox}[config.page];
+  const start = {workbench: startWorkbench, sop: startSop, runs: startRuns, inbox: startInbox, settings: startSettings}[config.page];
   if (start) start().catch(error => $('main').prepend(el('p', {class: 'error-bar'}, error.message)));
 })();

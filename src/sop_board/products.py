@@ -16,7 +16,7 @@ def require_shared(project):
     if not project.shared:
         raise APIError(409, 'shared-database-required', [dict(field='shared_database', problem=(
             f'项目 {project.name} 的 config.yaml 没有写 shared_database：没配共享库时项目自己就是产品，不需要选择产品。'
-            '多人共享验收记录时，先在 config.yaml 写 shared_database（host、port、dbname、user，密码放 ~/.pgpass），再运行这条命令'))])
+            '多人共享验收记录时，先在 config.yaml 写 shared_database（host、port、dbname、user，password 可选，或由 ~/.pgpass 提供），再运行这条命令'))])
     return project.shared
 
 
@@ -85,12 +85,13 @@ def bind_notes(project, store):
     return dict(local_results=local, unregistered_aliases=absent, notes=notes)
 
 
-def init(project, *, join=None, new=False, name=None):
+def init(project, *, join=None, new=False, name=None, persist=None, prepared=None):
     """返回 (输出, 退出码)。"""
     shared = require_shared(project)
     store = records.Store(project)
     scenes = local_scenes(project)
-    connection, version = connect(shared)
+    notes = bind_notes(project, store)
+    connection, version = prepared if prepared is not None else connect(shared)
     try:
         if version is not None and version != records.VERSION:
             raise records.version_error(version)
@@ -111,9 +112,12 @@ def init(project, *, join=None, new=False, name=None):
                            (machine['id'], machine['name'], records.now()))
                 db.execute('INSERT INTO products(id, name, created_by, machine, created_at) VALUES (?,?,?,?,?)',
                            (product['id'], product['name'], config.operator(), machine['id'], records.now()))
-            project.bind(product)
+                if persist:
+                    persist(product)
+            if persist is None:
+                project.bind(product)
             result = dict(ok=True, action='new', product=product, created_tables=version is None, previous=current,
-                          **bind_notes(project, store))
+                          **notes)
             result['next'] = f'把产品 ID {product["id"]} 告诉要加入的同事，他们运行 sop-board init <项目> --join {product["id"]}'
             return result, 0
         products = listing(db, scenes) if version is not None else []
@@ -128,8 +132,11 @@ def init(project, *, join=None, new=False, name=None):
             with connection.transaction():
                 db.execute('INSERT INTO machines(id, name, addresses, peer_token, updated_at) VALUES (?,?,NULL,NULL,?) ON CONFLICT DO NOTHING',
                            (machine['id'], machine['name'], records.now()))
-            project.bind(product)
-            return dict(ok=True, action='join', product=product, previous=current, **bind_notes(project, store)), 0
+                if persist:
+                    persist(product)
+            if persist is None:
+                project.bind(product)
+            return dict(ok=True, action='join', product=product, previous=current, **notes), 0
         return dict(ok=False, error_code='product-choice-required', problems=[dict(field='product', problem=(
             '还没有选择产品：问使用者这个项目要加入下面哪个已有产品，还是新建一个；得到答复后运行 '
             f'sop-board init {project.name} --join <ID> 或 sop-board init {project.name} --new [--product <名称>]。'

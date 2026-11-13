@@ -88,7 +88,8 @@ def scene_board(context):
     """当前检出的场景、快照与状态（按本检出的分支，从业务记录库推导）。"""
     from . import guards
     project, checkout = context.project, context.checkout
-    found = scenarios.scan(checkout.scenarios_dir(project), set(project.entries))
+    directory = checkout.scenarios_dir(project)
+    found = scenarios.scan(directory, set(project.entries)) if directory else dict(files={}, scenarios={})
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)))
     view = status.viewer(context)
     with context.store.records() as db:
@@ -178,10 +179,21 @@ def cmd_checkout(args):
 
 
 def cmd_status(args):
+    from . import daemon
     context = load(args, require=False)
     project = context.project
     result = dict(ok=True, project=project.name, operator=config.operator(), checkout=context.checkout.public(local=True),
-                  configured=project.configured, problems=project.problems)
+                  configured=project.configured, problems=project.problems, notices=project.recovery_notices(),
+                  daemon=dict(daemon.describe(project), command=project.serve_command()))
+    if project.shared or project.shared_invalid:
+        try:
+            context.store.product
+            with context.store.records():
+                pass
+        except APIError as error:
+            result.update(ok=False, error_code=error.code, problems=project.problems + error.problems)
+            emit(result)
+            return 1
     if project.configured:
         found, snapshot, derived = scene_board(context)
         store = context.store
@@ -199,8 +211,6 @@ def cmd_status(args):
                       distilled_elsewhere={k: v['guard']['reason'] for k, v in sorted(derived['items'].items())
                                            if v['state'] == 'pass' and v['guard'].get('unsynced')},
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
-        from . import daemon
-        result['daemon'] = dict(daemon.describe(project), command=project.serve_command())
         from . import fixes, ledger
         with context.store.records() as db:
             result['attention'] = ledger.open_attention(db, context.store, local=True)
@@ -208,6 +218,8 @@ def cmd_status(args):
     if args.json:
         emit(result)
         return 0
+    for item in result['notices']:
+        print(f"{item['field']}：{item['problem']}")
     print(f"项目 {project.name} · 检出 {context.checkout.name} · 操作者 {result['operator'] or '未设置'}"
           + (f" · 产品 {result['product']['name']}（{result['product']['id']}，共享库）" if result.get('product', {}).get('shared') else '')
           + (f" · 分支 {result['branch']}" if result.get('branch') else ''))
@@ -274,13 +286,23 @@ def cmd_check(args):
     from . import daemon
     context = load(args, require=False)
     project = context.project
-    result = dict(ok=True, project=project.name, checkout=context.checkout.name, steps=[])
+    result = dict(ok=True, project=project.name, checkout=context.checkout.name, steps=[], notices=project.recovery_notices())
 
     def step(name, ok, detail):
         result['steps'].append(dict(step=name, ok=ok, detail=detail))
         result['ok'] = result['ok'] and ok
     step('配置', project.configured, project.problems or '合格')
-    if project.configured:
+    storage_ok = True
+    if project.shared or project.shared_invalid:
+        try:
+            context.store.product
+            with context.store.records():
+                pass
+            step('业务记录库', True, '连接与产品绑定合格')
+        except APIError as error:
+            storage_ok = False
+            step('业务记录库', False, error.problems)
+    if project.configured and storage_ok:
         state = daemon.describe(project)
         if not state['running']:
             step('环境', False, f'看板守护进程没有运行：先运行 sop-board serve --project {project.name}')

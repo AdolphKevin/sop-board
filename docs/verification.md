@@ -34,7 +34,7 @@ python3 examples/demo-shop/make_demo.py $G --with-stock --reuse --shop-only --da
 setup.yaml 文件头的“双机项目”在一台机器上模拟两台：一个 docker 起的 PostgreSQL、两个 `SOP_BOARD_HOME`（各自的数据根目录、`machine.json` 与 `evidence/`）、同一份演示仓库的两个 clone。只操作为验收新建的容器与卷，用不常见的端口和带前缀的容器名，结束时删除。
 
 ```sh
-# 共享库：密码只放 PGPASSFILE 指向的文件，不写进任何配置
+# 共享库：SET-06/07 用 PGPASSFILE；SET-09 经设置接口保存到本机 config.yaml（权限 600）
 docker run -d --name sbv-pg -p 127.0.0.1:55432:5432 -e POSTGRES_USER=sopboard -e POSTGRES_DB=sopboard \
   -e POSTGRES_PASSWORD="$PW" -v sbv-pgdata:/var/lib/postgresql/data postgres:16
 printf '127.0.0.1:55432:*:sopboard:%s\n' "$PW" > $T/pgpass && chmod 600 $T/pgpass && export PGPASSFILE=$T/pgpass
@@ -101,3 +101,34 @@ SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
 - 每条场景记录执行者、实现者、产品快照与场景指纹，原始证据逐项对应 expected 与 forbidden_effects。
 - 如实区分通过、失败、受阻、跳过、未执行；只通过了子集时，不写成整批完成。
 - 真实模型、浏览器或沙箱外操作无法运行时，保留未执行范围；模拟材料逐项注明，不能当作独立验收。
+
+## 设置接口的演示材料
+
+只登记的演示项目：运行 `python3 examples/demo-shop/make_demo.py "$T/repos" --data "$D" --registered-only`。
+生成器只用 init 写入 repos 和 identities，同时复制 env.py、worktree.py、seed.py 与 skills/；完整的候选配置参考 examples/demo-shop/data/config.yaml。
+设置接口契约见 reference.md“设置接口”。
+
+设置页接入前的双机：按上文生成 A、B，但两条生成命令都省略 --shared-database，并且不运行 init --new/--join。
+两边配置合格但未绑定共享库。让两边所有命令及看板的 PGPASSFILE 指向同一个空文件（权限 600）。
+另起空 PostgreSQL；密码随机生成，只存临时文件，通过容器的 POSTGRES_PASSWORD_FILE 读入，不把取值放进命令行或证据。
+测试者从临时文件取得密码，经共享库测试和接入接口提交；接口响应与截图中核对密码不出现。
+验收者自行选择未被占用的容器名、卷名、数据库端口、看板端口与环境端口；结束时只清理自己创建的资源。
+
+本机配置与 config.yaml.prev 含密码时为 600；不读取或修改 ~/.pgpass。
+浏览器操作、真实 HTTP 自检与独立验收分别留证，按实际执行入口和执行者报告覆盖范围。
+
+### SET-08：从只登记到配置合格
+
+用上面的 `--registered-only` 材料启动 `serve demo --data "$D" --lan`，启动环境设好 DEMO_SEED_TOKEN、DEMO_MERCHANT_PASSWORD。记录 PID、status 的 configured=false 与初始配置摘要。浏览器经看板守护进程提供的 Chrome for Testing 操作，按随包 playwright-acceptance 连接运行目录 run.env 的地址。
+
+从本机工作台的配置提示进入设置页，按 examples/demo-shop/data/config.yaml 逐节填场景目录与排除项、验证入口全部字段及验证技能、环境命令、前置数据与缺省代理。每节保存前后保留截图及不含凭据取值的请求、响应；数组一行一项、命令一行一个参数。核对每次只改变这一节、问题数归零、其他节尚有问题仍可保存；凭据变量名称、来源与是否已设置可见。保存后把配置解析成对象逐项对照演示模板（端口如为隔离而调整，单列差异与原因），核对 prev 为上次保存前内容。最后保存 status、check，确认配置与环境两项、工作台场景清单及 PID 未变。
+
+内网权限用 --lan 实际打印的非回环地址：浏览器截图顶栏没有设置，页面直访与 GET/POST 设置接口均为 403 local-only，不带配置；另存跨源本机 POST 的 cross-origin 响应和配置摘要不变的证据。陈旧页面用编辑器改临时项目的 ready_timeout 后从旧页面保存，保存 settings-stale 截图与响应；重新载入后保存，核对编辑器的改动保留。无效字段、引用与占用按 SET-08 其余场景原文执行，不能以这些主线代替全组。
+
+### SET-09：页面接入、断开与重连
+
+使用上述“设置页接入前的双机”材料，两个数据根目录、空 PostgreSQL、空 PGPASSFILE；密码只在临时文件中生成，通过密码框填写。密码填写和 POST 正文不录入 trace 或请求证据；截图中密码框只显示遮罩，保存后为空且仅写“已保存”。截图记录 A 的空产品清单与新建、B 的产品统计和两条绑定提示、加入后的产品名称与 ID。A 经演示真实入口产生并提交结果，B 从工作台历史核对产出机器；实现者自检如实登记，独立验收另由未参与实现者执行。
+
+断开前给 B 留一条本机标注，接入后再产生共享标注，记录共享库各表行数。保存断开确认框的四条后果、断开及重连后的 status、配置与产品绑定（密码项遮蔽），核对本机旧结果重现、共享结果恢复且表行数不变。停掉本轮 PostgreSQL 前经真实 fix prepare 留一个本机修复；停库后设置读取应在 notices 提示无法确认修复结束，occupants 不包含该未知修复。可将自己创建的同一数据卷在另一空闲端口启动，随后从设置页改为可用连接，核对不因旧连接下未知修复而锁住；确认为 open 的修复仍须锁住。不要停用外部数据库。
+
+分别收集页面源码、设置响应、status/init 输出、serve 启动输出、内网工作台 HTML 与 /api/board，程序从临时文件读密码，逐文件搜索只输出命中文件与计数，不输出密码。另核对测试账号凭据取值。含密码的原始请求、配置、浏览器追踪材料不放进证据包；保留脱敏副本、权限、摘要、截图清单、操作脚本与运行记录。真实 Codex/Claude 会话引导属于 SET-09-P04，未新开客户端执行时明确记未执行。

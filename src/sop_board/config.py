@@ -19,7 +19,7 @@ FORMAT = 'sop-board-project-6'
 HOME = Path(os.environ.get('SOP_BOARD_HOME', str(Path.home() / '.sop-board'))).expanduser()
 TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents',
               'shared_database'}
-SHARED_FIELDS = {'host', 'port', 'dbname', 'user'}
+SHARED_FIELDS = {'host', 'port', 'dbname', 'user', 'password'}
 ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout', 'services', 'service_timeout'}
 SERVICE_NAME = re.compile(r'[a-z][a-z0-9_-]{0,63}\Z')
 AGENT_KINDS = ('default', 'run', 'fix', 'distill', 'merge', 'author', 'draft', 'atlas')
@@ -208,13 +208,12 @@ def validate_services(value, problem):
 
 
 def validate_shared(value, problem):
-    """shared_database：{host, port（缺省 5432）, dbname, user}。密码只放 ~/.pgpass（或 PGPASSFILE），不写进配置。"""
+    """shared_database：{host, port（缺省 5432）, dbname, user}。password 可选；省略时由 libpq 使用 ~/.pgpass 或 PGPASSFILE。"""
     if not isinstance(value, dict):
         problem('shared_database', '须为含 host、port、dbname、user 的对象')
         return None
     for extra in value.keys() - SHARED_FIELDS:
-        problem('shared_database.' + extra, '密码只放 ~/.pgpass，不写进 config.yaml' if extra in ('password', 'passwd', 'pass')
-                else '格式外字段')
+        problem('shared_database.' + extra, '格式外字段')
     result = {}
     for field in ('host', 'dbname', 'user'):
         item = value.get(field)
@@ -227,7 +226,13 @@ def validate_shared(value, problem):
         problem('shared_database.port', '须为 1–65535 的端口')
     else:
         result['port'] = port
-    return result if len(result) == 4 and not (value.keys() - SHARED_FIELDS) else None
+    if 'password' in value:
+        password = value['password']
+        if not isinstance(password, str) or password == '':
+            problem('shared_database.password', '须为非空文字')
+            return None
+        result['password'] = password
+    return result if all(k in result for k in ('host', 'port', 'dbname', 'user')) and not (value.keys() - SHARED_FIELDS) else None
 
 
 _machines = {}
@@ -411,26 +416,49 @@ class Project:
         values = self.read()
         with self._publish:
             self.__dict__.update(values)
+            self.update_saved_password()
 
-    def read(self):
+    def update_saved_password(self):
+        from .redaction import saved_password
+        saved_password(self.config_path, self._saved_password)
+
+    def recovery_notices(self):
+        """只提示遗留文件，不自动恢复或删除；上一份副本本身是正常保存产物。"""
+        result = []
+        previous = self.config_path.with_name('config.yaml.prev')
+        if previous.exists():
+            result.append(dict(field=previous.name, problem='保留了上一份配置；这是正常保存的副本。需要恢复时先核对内容，再直接修改 config.yaml 或经设置接口保存；确认不需要后可自行删除副本'))
+        paths = {self.marker.with_suffix('.json.tmp')}
+        for pattern in ('.config.yaml-*', '.config.yaml.prev-*', '.project.json-*'):
+            paths.update(self.data.glob(pattern))
+        for path in sorted(paths):
+            if path.exists():
+                result.append(dict(field=path.name, problem='发现未完成替换的临时文件；核对 config.yaml、project.json 与产品绑定，使用设置接口或 init --join/--new 修正；确认后可自行删除此临时文件，不要直接覆盖现有配置'))
+        return result
+
+    def read(self, candidate=None):
         """读取并校验 config.yaml，返回全部配置字段；不修改本对象。"""
         repos, identities, entries, adapter = {}, {}, {}, {}
         snapshot_exclude, fixtures, agents = {}, None, {}
         shared, shared_invalid = None, False
+        saved_password_value = None
         scenario_repo, scenario_path = None, None
         problems = []
 
         def values(skill=None, driver_paths=None):
             return dict(repos=repos, identities=identities, entries=entries, adapter=adapter, snapshot_exclude=snapshot_exclude,
-                        fixtures=fixtures, agents=agents, shared=shared, shared_invalid=shared_invalid,
+                        fixtures=fixtures, agents=agents, shared=shared, shared_invalid=shared_invalid, _saved_password=saved_password_value,
                         scenario_repo=scenario_repo, scenario_path=scenario_path, skill=skill, driver_paths=driver_paths or {},
                         problems=problems)
 
         def problem(field, message):
             problems.append(dict(field=field, problem=message))
         try:
-            raw = self.config_path.read_text(encoding='utf-8')
-            config = strict_yaml(raw)
+            config = strict_yaml(self.config_path.read_text(encoding='utf-8')) if candidate is None else candidate
+            if isinstance(config, dict) and isinstance(config.get('shared_database'), dict) and 'password' in config['shared_database']:
+                saved_password_value = config['shared_database']['password']
+                if candidate is None:
+                    self.config_path.chmod(0o600)
             if not isinstance(config, dict):
                 raise ValueError('配置应为对象')
         except FileNotFoundError:
@@ -444,6 +472,8 @@ class Project:
         if 'shared_database' in config:
             shared = validate_shared(config['shared_database'], problem)
             shared_invalid = shared is None
+        elif self.binding():
+            problem('project.product', 'project.json 有产品绑定，但 config.yaml 没有 shared_database；要继续共享请在设置接口重新接入或直接补回连接，再用 init --join/--new 选择产品；要回到本机库请用设置接口断开，或直接删除 project.json 的 product')
         declared = config.get('repos')
         if not isinstance(declared, dict) or not declared:
             problem('repos', '至少声明一个仓库')

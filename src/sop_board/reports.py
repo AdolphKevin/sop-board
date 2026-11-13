@@ -198,11 +198,14 @@ def export(context, *, file=None, zip_evidence=False, out=None):
     result['evidence_note'] = ('没有缺少的证据' if not missing
                                else f'缺少 {len(missing)} 份证据（在别的机器上，取不到），报告里逐条写明“证据在 <机器> 的机器上，未包含”')
     if zip_evidence:
-        # 证据按登记时的原文放入 zip，sha256 与报告引用一致；从别的机器取回的已核对 sha256。执行时已按提示词脱敏。
+        # 导出时也遮蔽文本中的当前密码；图片、视频的内容保持原样。
         archive_path = directory / 'evidence.zip'
         with ZipFile(archive_path, 'x', ZIP_DEFLATED) as archive:
             archive.writestr('report.md', markdown)
             for path, sha in evidence:
-                archive.writestr(path, fetched[sha] if sha in fetched else context.store.read_evidence(sha))
+                from .redaction import response_bytes
+                from .evidence_types import content_type
+                raw = fetched[sha] if sha in fetched else context.store.read_evidence(sha)
+                archive.writestr(path, response_bytes(raw, content_type(path), (), local=True))
         result['zip'] = str(archive_path)
     return result

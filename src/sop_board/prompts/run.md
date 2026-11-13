@@ -56,6 +56,6 @@ $verify_note
 
     sop-board run submit --run $run [--implementer <实现者会话编号> | --implemented-by <实现者的操作者>]
 
-实现者按任务里的说明填：会话编号用 `--implementer`；实现者是别的机器上的另一位操作者用 `--implemented-by`；任务没说明就都不填。提交时共享库连不上（`database-unreachable`）时运行保持 prepared、结果留在运行目录，报告后等恢复再原样重新提交，只会登记一次。
+实现者按任务里的说明填：会话编号用 `--implementer`；实现者是别的机器上的另一位操作者用 `--implemented-by`；任务没说明就都不填。提交时共享库连不上（`database-unreachable`）时运行保持 prepared、结果留在运行目录，报告后等恢复再原样重新提交，只会登记一次。认证失败（`database-authentication`）时按 sop-board 技能的 references/shared.md 给出本机设置页地址，请使用者改密码，再原样重新提交；会话不读取、不输出 config.yaml 的 shared_database.password，也不经手密码。
 
 提交输出会列出登记、作废（运行期间场景内容变了）与未执行的场景，以及停启记录、自动恢复的服务和运行期间异常退出的服务。不要用其他方式登记结果。

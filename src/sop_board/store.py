@@ -413,10 +413,13 @@ def where(shared):
 
 
 def unreachable(shared, error=None):
-    detail = str(error).strip().splitlines()[0] if error and str(error).strip() else ''
+    from .redaction import redact
+    reason = str(error).splitlines()[0] if error and str(error).splitlines() else ''
+    detail = f'：{reason}' if reason else ''
+    problem = redact((f'连不上共享库（{where(shared)}）' + detail
+                      + '。业务记录只存在共享库里，没有离线队列与本地缓存；恢复后重新运行这条命令').encode(), ()).decode()
     return RecordsError(503, 'database-unreachable',
-                        f'连不上共享库（{where(shared)}）' + (f'：{detail}' if detail else '')
-                        + '。业务记录只存在共享库里，没有离线队列与本地缓存；恢复后重新运行这条命令',
+                        problem,
                         '连不上共享库，业务记录暂时无法读写；恢复后刷新页面')
 
 
@@ -431,7 +434,7 @@ class ProductUnbound(RecordsError):
     def __init__(self, project):
         super().__init__(409, 'product-unbound',
                          f'项目 {project.name} 的 config.yaml 写了 shared_database，但还没有绑定产品：'
-                         f'运行 sop-board init {project.name} 列出共享库里的产品，问使用者后用 --join <ID> 加入或 --new 新建',
+                         f'使用设置接口加入或新建产品，或运行 sop-board init {project.name} 列出产品，问使用者后用 --join <ID> 加入或 --new 新建；要回到本机库可在设置接口断开',
                          '这个项目还没有绑定共享库里的产品')
 
 
@@ -533,13 +536,16 @@ def sqlite_connect(path):
 
 
 def pg_connect(shared, *, timeout=5):
-    """连接共享库：密码由 libpq 从 ~/.pgpass（或 PGPASSFILE）读取，不经参数与配置。"""
+    """连接共享库：优先使用配置的 password，否则由 libpq 从 ~/.pgpass 或 PGPASSFILE 读取。"""
     import psycopg
     try:
         return psycopg.connect(host=shared['host'], port=shared['port'], dbname=shared['dbname'], user=shared['user'],
+                               **({'password': shared['password']} if 'password' in shared else {}),
                                connect_timeout=timeout, autocommit=True, row_factory=_pg_rows, application_name='sop-board')
     except psycopg.Error as error:
-        raise unreachable(shared, error) from error
+        if getattr(error, 'sqlstate', None) in ('28P01', '28000') or any(text in str(error) for text in ('password authentication failed', 'no password supplied')):
+            raise RecordsError(503, 'database-authentication', f'共享库认证失败（{where(shared)}）', '共享库认证失败') from None
+        raise unreachable(shared, error) from None
 
 
 def pg_version(connection):
@@ -716,14 +722,14 @@ class Store:
                 if attempt == 2:
                     raise unreachable(self.shared, error) from error
                 continue
-            if found != VERSION:
+            if found != VERSION and found is not None:
                 pool.give(connection)
                 raise version_error(found if found is not None else '（空库，没有表结构）')
             if row is None:
                 pool.give(connection)
                 raise RecordsError(404, 'product-not-found',
                                    f'绑定的产品 {product} 在共享库（{where(self.shared)}）中不存在；'
-                                   f'运行 sop-board init {self.project.name} 列出产品后重新绑定',
+                                   f'核对 config.yaml 是否指向正确的共享库；使用设置接口选择产品，或运行 sop-board init {self.project.name} 列出产品后用 --join <ID>/--new 重新绑定',
                                    '这个项目绑定的产品在共享库中不存在')
             break
         try:
@@ -794,8 +800,14 @@ class Store:
     def evidence_path(self, sha):
         return self.evidence_root() / sha[:2] / sha
 
-    def put_evidence(self, raw):
+    def put_evidence(self, raw, name=''):
         """把证据文件按内容存进本机证据目录（幂等，原子写入）；返回 sha256。"""
+        from .redaction import response_bytes
+        from .evidence_types import content_type
+        kind = content_type(name) if name else 'application/octet-stream'
+        if raw.startswith(b'PK\x03\x04'):
+            kind = 'application/zip'
+        raw = response_bytes(raw, kind, (), local=True)
         sha = hashlib.sha256(raw).hexdigest()
         path = self.evidence_path(sha)
         if not path.exists():
@@ -811,8 +823,8 @@ class Store:
                    (self.product, sha, self.machine['id'], size, name, now()))
 
     def save_evidence(self, db, raw, name):
-        sha = self.put_evidence(raw)
-        self.index_evidence(db, sha, len(raw), name)
+        sha = self.put_evidence(raw, name)
+        self.index_evidence(db, sha, self.evidence_path(sha).stat().st_size, name)
         return sha
 
     def has_evidence(self, sha):

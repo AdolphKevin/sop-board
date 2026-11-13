@@ -50,6 +50,12 @@ def manifest(context, checkout):
 
 
 def prepare(context, scope, *, session):
+    # 与设置切换共用本机锁：业务记录与本机修复登记完成前不能换库。
+    with context.store.lock:
+        return _prepare(context, scope, session=session)
+
+
+def _prepare(context, scope, *, session):
     from importlib.resources import files
     from string import Template
     from . import runs

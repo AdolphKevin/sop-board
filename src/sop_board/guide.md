@@ -1,6 +1,6 @@
 # 为项目搭建 Flow Board
 
-这份指引随 Flow Board（命令 `sop-board`）发行，Codex 与 Claude Code 共用，在开发者自己打开的会话里完成搭建。业务验收标准以 [docs/standard.md](https://github.com/AdolphKevin/sop-board/blob/main/docs/standard.md) 为准；凭据只经环境变量传递，配置、手册与报告只写变量名。
+这份指引随 Flow Board（命令 `sop-board`）发行，Codex 与 Claude Code 共用，在开发者自己打开的会话里完成搭建。业务验收标准以 [docs/standard.md](https://github.com/AdolphKevin/sop-board/blob/main/docs/standard.md) 为准；测试账号的凭据只经环境变量传递。共享库密码由使用者在本机设置页保存，或由本机密码文件提供；会话不读取、不输出 config.yaml 的 `shared_database.password`。
 
 ## 1. 安装与登记
 
@@ -14,6 +14,8 @@ sop-board init <项目> <仓库目录>... [--data <根目录>]
 询问开发者项目名称和全部 Git 仓库目录（可分散在任何位置）。init 逐个核对工作树根目录与 origin，全部合格才建立 `<根目录>/<项目>/`（缺省根目录 `~/.sop-board`），其中有 `project.json`、`config.yaml`、`board.sqlite3`。旧版数据目录直接拒绝，不迁移。本机操作者缺省取 `git config user.name`，需要时用 `sop-board operator set <姓名>` 设置一次，之后所有登记自动以它署名。
 
 当前会话不能写数据目录时，Codex 用 `--add-dir <数据目录>`，Claude Code 用 `/add-dir <数据目录>`。
+
+登记后即可运行 `sop-board serve <项目>`，在本机工作台点“设置”逐节补全；也可由会话按下文直接编写 config.yaml、适配脚本与验证技能。配置尚不完整不妨碍启动看板。
 
 ## 2. 查清实际环境并写真实验证手册
 
@@ -125,13 +127,13 @@ docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
 
 每台机器：
 
-1. `config.yaml` 加 `shared_database: {host: <主机>, port: 5432, dbname: sopboard, user: sopboard}`，不写密码。
-2. 密码写进 `~/.pgpass`（`<主机>:5432:sopboard:sopboard:<密码>`，`chmod 600`）。
-3. 运行 `sop-board init <项目>`：列出共享库里的产品（名称、创建人、有结果的场景数、最近写入时间、本机场景里有几条在该产品里已有结果），以 `product-choice-required` 结束，不自动绑定。**问使用者**是加入哪个已有产品还是新建，再运行 `sop-board init <项目> --join <ID>` 或 `--new [--product <名称>]`。不要按仓库 origin、目录名或场景重合数自行判断。
+1. 首选本机看板的“设置 → 共享库”：使用者填写主机、端口、库名、用户名与密码，点“测试连接”，再选择加入或新建产品。页面列出产品名称、创建人、有结果的场景数、最近写入时间与本机场景重合数，由使用者判断归属。
+2. 设置页把密码保存在本机数据目录 config.yaml 的可选 `shared_database.password`，文件与上一份副本权限为 600；页面只显示“已保存”，可以重填或清除。会话不经手密码。使用者也可照旧省略 password，用 `~/.pgpass`（权限 600）或 `PGPASSFILE` 提供，工具不会抄入配置。
+3. 已写好连接但尚未绑定时，运行 `sop-board init <项目>` 列出产品并以 `product-choice-required` 结束。问使用者加入哪个产品或新建，再运行 `init <项目> --join <ID>` 或 `--new [--product <名称>]`，用 status 核对。不要按 origin、目录名或重合数自行绑定。
 4. 绑定提示的两件事照实告诉使用者：本机已有的结果不带入共享库（已登记的守护要在共享库里重新验收后再沉淀）；`regression.yaml` 引用、但本机没有登记的仓库别名。
-5. 看板以 `sop-board serve <项目> --lan` 启动，别的机器才能读取本机产出的证据。
+5. 看板以 `sop-board serve <项目> --lan` 启动，别的机器才能读取本机产出的证据。断开和重新接入也在本机设置页操作。
 
-连不上共享库时业务命令与页面返回 `database-unreachable`，`env`、`browser` 照常；表结构版本不符时返回 `database-version`，换用匹配的 sop-board 版本。
+认证失败返回 `database-authentication`，请使用者在设置页改密码。连不上共享库时业务命令与页面返回 `database-unreachable`，`env`、`browser` 照常；表结构版本不符时返回 `database-version`，换用匹配的 sop-board 版本。
 
 ## 产品仓库约定（写进产品仓库的 AGENTS.md）
 

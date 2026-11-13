@@ -58,6 +58,7 @@ def board(app, request):
     counts['review'] = derived['review']
     stats = status.statistics(derived['book'])
     store = context.store
+    from .entries import public_problems
     result = dict(ok=True, project=app.project.name, local=request.local, checkout=context.checkout.name,
                   branch=derived['book'].viewer.branch, machine=store.machine['name'],
                   product=dict(name=store.product_name(), shared=bool(store.shared)),
@@ -65,7 +66,7 @@ def board(app, request):
                   labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items,
                   stats=dict(agent_confirm_rate=stats['agent_confirm_rate'], agent_review_coverage=stats['agent_review_coverage']),
                   product_snapshot=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
-                  configured=app.project.configured)
+                  configured=app.project.configured, problems=public_problems(app.project.problems, local=request.local))
     if request.local:
         # 本检出的环境与各服务状态只在本机页面显示，内网不返回；共享库的位置也只在本机页面显示。
         environment = app.envs.status(context.checkout)
@@ -206,6 +207,14 @@ def workbench(app, request):
         reject(404, 'project-not-found', 'project', '项目不存在')
     from .pages import workbench as page
     return html_response(page(app.project.name, local=request.local, operator=operator_for(request)))
+
+
+@route('GET', r'/p/([^/]+)/settings', 'local')
+def settings_page(app, request):
+    if request.arg(1) != app.project.name:
+        reject(404, 'project-not-found', 'project', '项目不存在')
+    from .pages import settings as page
+    return html_response(page(app.project.name, operator=operator_for(request)))
 
 
 @route('GET', '/api/board', 'lan')

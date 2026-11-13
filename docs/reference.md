@@ -58,7 +58,7 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 uv tool install <sop-board 检出或包地址>
 sop-board skills install          # 把 sop-board、regression-distill、playwright-acceptance 链接到 ~/.agents/skills 与 ~/.claude/skills
 sop-board init <名称> <仓库目录>...
-# 多人共享时：config.yaml 写 shared_database，密码放 ~/.pgpass，然后
+# 多人共享时：config.yaml 写 shared_database，密码写在本机 config.yaml 的 password 或由 ~/.pgpass 提供，然后
 sop-board init <名称>             # 列出共享库里的产品，以 product-choice-required 结束
 sop-board init <名称> --join <ID> # 或 --new [--product <产品名称>]
 sop-board serve <名称>            # 另开终端或在会话中启动守护进程
@@ -91,7 +91,7 @@ sop-board check
 | `adapter` | 是 | 见下文；至少要有 `env` |
 | `snapshot_exclude` | 否 | 别名 → 仓内相对路径数组，不计入产品快照 |
 | `fixtures` | 否 | 前置数据配方（见 §9） |
-| `shared_database` | 否 | 多人共享验收记录时的共享库 `{host, port（缺省 5432）, dbname, user}`；密码只放 `~/.pgpass`（或 `PGPASSFILE`），写了密码字段即不合格。不写时业务记录在本机 `board.sqlite3`，见 §12 |
+| `shared_database` | 否 | 多人共享验收记录时的共享库 `{host, port（缺省 5432）, dbname, user, password（可选）}`；password 须为非空单行文字，省略时由 libpq 使用 `~/.pgpass` 或 `PGPASSFILE`。含密码的配置及上一份副本权限为 600。不写时业务记录在本机 `board.sqlite3`，见 §12 |
 | `agents` | 否 | 工作类型 → `{runner: codex\|claude, model?, effort?, args?}`。类型：`default`、`run`、`fix`、`distill`、`merge`、`author`、`draft`、`atlas`；`effort` 取 `low/medium/high/xhigh/max`。启动器只用 `run`、`distill`，缺省回落 `default`，再回落 codex |
 
 入口字段：
@@ -468,6 +468,10 @@ fixtures:
 
 ## 10. 报告与看板页面
 
+只登记仓库后即可启动看板。配置不完整时，本机工作台显示“项目配置还没完成”、逐项问题与设置页链接；内网只显示问题类别，不带字段细节或设置入口。`/api/board` 的 configured 与 problems 对应此提示，problems 在内网按类别返回。
+
+`status --json` 在配置不完整或共享库连接报错时也返回 daemon（运行状态、已启动看板的回环地址与启动命令），供会话给出本机设置页链接。
+
 `report` 导出当前检出的 `report.md`（缺省目录 `<数据目录>/reports/<检出>-<时间>/`，不写进产品仓库）：快照与各仓提交、各状态计数、Agent 通过率与一次通过率、人工复测覆盖与通过率、Agent 独立通过的人工确认率与复核覆盖、独立性计数；每个场景的状态与原因、当前指纹上最近一次未执行（操作者、时间、运行、原因；不改变状态）、最近一次守护运行（注明不是真实入口执行）、最近 5 条结果（取证时的快照、独立性、执行时停着的服务、finding、证据 sha256）和人工复测；然后是误判明细、待沉淀与待人工复核；最后列出未执行范围（未执行、待复测、草稿），每条附最近一次未执行。`--zip` 另写 `evidence.zip`（含报告与所引证据原文）。正文按凭据取值脱敏。
 
 统计口径（全部取当前检出的结果记录，不限当前场景文件）：
@@ -486,6 +490,7 @@ fixtures:
 | 路由 | 级别 | 内容 |
 | --- | --- | --- |
 | `GET /` | lan | 跳转到 `/p/<项目>` |
+| `GET /p/<项目>/settings` | local | 七节设置、每节问题数与字段旁的问题、凭据声明来源及是否已设置、共享库测试与产品选择；逐节保存，无需重启。顶栏“设置”只在本机显示，内网直访返回 403 local-only，不带配置内容。接口见 §13 |
 | `GET /p/<项目>?checkout=<名称>#<场景键>` | lan | 场景工作台：左侧检出切换、搜索、状态筛选（含待沉淀、待人工复核与计数；待复测、失败、待人工复核、未执行、通过在计数为 0 时也显示）与 文件→节点→场景 树；不带 `#场景键` 时右栏是概况，显示各状态与徽标计数、Agent 独立通过的人工确认率与复核覆盖；右侧标题与徽标、状态与原因、四要素（附守护覆盖）、最新结果与证据（截图、视频、trace、文本）、复测标注、本机按钮、历史。草稿场景的详情与 `#review:<文件>`（文件面板）、`#review:<文件>#<节点>`（节点面板）见 §9“草稿” |
 | （左栏，工作台与业务 SOP 页共用） | | 「全部展开 / 全部收起」切换与手动展开收起一样按项目与页面记在浏览器 localStorage；「隐藏左栏」后右栏占满，左侧窄栏里的「显示左栏」恢复，隐藏状态两页共用。左栏右边缘的手柄拖拽调宽，范围 240px 到窗口宽度的 60%，双击恢复 360px；宽度记在 localStorage（`sop-board-sidebar-width`），两页共用、不分项目，刷新、轮询、隐藏再显示后保持，窗口变窄时按新边界显示。文件、节点与场景标题悬停显示全文。这些都只改本浏览器，不向看板写入 |
 | `GET /p/<项目>/runs` | lan | 启动记录与运行记录 |
@@ -515,8 +520,12 @@ fixtures:
 | `product-unbound` | config.yaml 写了 `shared_database`，项目还没绑定产品；`init <项目>` 列出产品，问使用者后 `--join` 或 `--new` |
 | `product-choice-required` | `init <项目>` 只列出产品（名称、创建人、有结果的场景数、最近写入时间、本机场景的重合条数），不自动绑定 |
 | `product-not-found` | `--join` 的 ID 在共享库里不存在（输出列出已有产品），或绑定的产品已不在共享库 |
-| `shared-database-required` / `shared-database-invalid` | 对没写 `shared_database` 的项目选择产品 / `shared_database` 不合格（例如写了密码） |
-| `database-unreachable` | 连不上共享库：本机输出写明主机、端口、库名与用户，内网只说明连不上；没有离线队列与本地缓存，恢复后重新运行（HTTP 503） |
+| `shared-database-required` / `shared-database-invalid` | 对没写 `shared_database` 的项目选择产品 / `shared_database` 不合格（例如端口不合格） |
+| `database-authentication` | 共享库认证失败；设置接口与命令行都会返回，本机写明连接位置，内网只显示认证失败（HTTP 503） |
+| `settings-invalid` | 设置不合格、破坏引用或引入其他节的问题；problems 标明字段（HTTP 422） |
+| `settings-locked` | 配置正被使用；problems 给出可读说明，occupants 单列结构化占用者（HTTP 409） |
+| `settings-stale` | config.yaml 已被别处修改；重新读取后再保存（HTTP 409） |
+| `database-unreachable` | 连不上共享库：本机输出写明主机、端口、库名、用户及驱动原因的第一行（只遮蔽当前已保存的密码），内网只说明连不上；没有离线队列与本地缓存，恢复后重新运行（HTTP 503） |
 | `database-version` | 共享库的表结构版本与本机 sop-board 不一致（新旧两个方向都拒绝）；换用匹配的 sop-board 版本，没有升级命令 |
 | `fix-not-local` | 修复产出于别的机器（写明机器与检出）：`fix submit`、`run prepare --fix`、`fix close`、`fix abandon` 只在产出机器上执行 |
 | `evidence-elsewhere` | 证据在别的机器上，产出机器的看板没开、没加 `--lan` 或地址已失效 |
@@ -623,7 +632,7 @@ docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
 0 3 * * * pg_dump -h <主机> -U sopboard -d sopboard -Fc -f ~/sopboard-backups/sopboard-$(date +\%F).dump
 ```
 
-**每台机器**：`config.yaml` 写 `shared_database: {host: <主机>, port: 5432, dbname: sopboard, user: sopboard}`（不写密码，写了以 `shared-database-invalid` 拒绝），密码放 `~/.pgpass`（`<主机>:5432:sopboard:sopboard:<密码>`，权限 600；也可用 `PGPASSFILE` 指向别的文件）。主机、端口、库名只出现在本机命令输出与本机页面，不进报告、证据和内网页面。驱动 `psycopg[binary]` 随包安装。
+**每台机器**：`config.yaml` 写 `shared_database: {host: <主机>, port: 5432, dbname: sopboard, user: sopboard}`，可加 `password` 保存密码（文件权限 600），也可省略、由 libpq 使用 `~/.pgpass`（`<主机>:5432:sopboard:sopboard:<密码>`，权限 600；也可用 `PGPASSFILE` 指向别的文件）。主机、端口、库名只出现在本机命令输出与本机页面，不进报告、证据和内网页面。驱动 `psycopg[binary]` 随包安装。
 
 **新建与加入产品**：写了 `shared_database` 而没绑定产品时，业务命令返回 `product-unbound`。`init <项目>` 列出共享库里的产品（名称、创建人、有结果的场景数、最近写入时间）和“本机 N 条场景中，有 M 条在该产品里已有结果（内容一致）”，以 `product-choice-required` 结束；由会话问使用者后，用 `init <项目> --join <ID>` 加入或 `init <项目> --new [--product <名称>]` 新建（名称缺省为本机项目名；空库时按当前版本建表）。`--join` 的 ID 不存在返回 `product-not-found`。绑定写在本机 `project.json`。绑定时另外提示两件事：本机已有的结果不带入共享库，已登记的守护会因验收结果不在共享库而失效、须重新验收后再沉淀；`regression.yaml` 引用、但本机没有登记的仓库别名。改绑重新运行 `--join` 或 `--new`，已写入原产品的记录留在原产品。新建、加入和共享都不读取、不比对仓库的 origin，不扫描目录，不往产品仓库写东西。
 
@@ -632,3 +641,48 @@ docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
 **证据在别的机器上**：证据文件只在产出它的机器上。带 `--lan` 启动的看板把机器标识、显示名、内网地址与对等令牌登记到 `machines`（不带 `--lan` 或退出时撤下本端口的登记）。别的看板的证据地址仍是本看板的 `/evidence/<sha256>/<名称>`：本机没有文件时，看板凭登记的令牌从产出机器看板的 `/peer/evidence/<sha256>` 读取，核对 sha256 后转给页面，不在本机保存；读不到时场景详情写“证据在 <机器显示名> 的机器上”。`report --zip` 同样取回并核对；取不到的逐条写“证据在 <机器显示名> 的机器上，未包含”，输出 `missing_evidence` 为缺少的条数。
 
 **机器与检出**：非结论按“机器标识 + 检出名”归属。同一个数据根目录（同一台机器）上绑定同一产品的两个项目，若检出名相同，会被当成同一个检出。
+
+## 13. 设置接口（已定决策 27）
+
+全部路径仅允许实际回环连接，内网返回 403 `local-only`。写入使用 JSON，沿用同源校验（403 `cross-origin`）。不返回密码及凭据取值。
+每节 content 使用 config.yaml 原字段名：repositories 为 repos、scenarios、snapshot_exclude（identities 由服务登记）；verification 为 entries、skill；environment 为 adapter；fixtures 为 fixtures；agents 为 agents。省略字段表示删除该字段。
+
+| 方法与路径 | 请求 | 成功响应 |
+| --- | --- | --- |
+| GET `/api/settings` | 无 | ok、digest（config.yaml 字节的 SHA-256）、sections、other_problems、notices、references、skills、credentials |
+| POST `/api/settings/sections/{section}` | digest、content（上述五节之一） | 与读取相同的新状态 |
+| POST `/api/settings/repositories/reregister` | digest、alias | 按当前 origin 登记身份，返回新状态 |
+| POST `/api/settings/local` | operator、machine（均为非空单行文字，最长 64 字） | 新状态 |
+| POST `/api/settings/shared/test` | connection、可选 password、clear_password | ok、version（空库 null）、expected_version、empty、products、local_results、unregistered_aliases、notes |
+| POST `/api/settings/shared/connect` | digest、connection、可选 password、clear_password、action（join/new/keep）、product_id（join 必填）、name（new 可选） | 新状态 |
+| POST `/api/settings/shared/disconnect` | digest | 新状态，回到本机业务库 |
+
+connection 为 host、port、dbname、user 对象。password 省略表示保留当前保存的密码；页面的新密码框留空时省略 password，填入内容时使用新值。显式传空字符串返回 422 settings-invalid，field 为 password。只有 clear_password 为 true 时清除已保存密码、改用密码文件（同时提供非空 password 则使用新值）。两者都没有保存值时由 libpq 使用密码文件。测试连接只读，不保存。
+repositories.content.repos 可为别名到路径的对象，也可为 `{path, alias?}` 列表；缺省别名按 init 规则生成。服务读取 origin，已登记仓库不能改名。重新登记身份也受仓库占用限制。
+
+sections 每节含 content、problems（field、problem）、occupants（占用者列表）。local 的 content 含 operator、operator_source、machine、runtime、install_command、local_address、lan_addresses、data、machine_name_sync_pending（业务库中的机器名尚未同步）。shared 的 content 只含无密码连接，另含 password_saved 和 product。
+references 为入口名到 `{count, scenarios}` 的对象（列前五条场景，遍历本机所有检出、按场景键去重）。skills 为数据目录 skills/ 下的技能目录 name 与校验 problems。credentials 每条为 `{name, present, source}`，同名变量按声明来源分别列出，仅表示启动看板的环境里是否有非空值。source 含 kind、field；入口声明的 kind 为 entry，另含 entry；身份声明的 kind 为 identity，另含 entry、identity（account_env）；前置数据声明的 kind 为 fixtures，另含 recipes（使用这组凭据的配方名称列表，凭据统一声明在 fixtures.credential_env）。不返回取值。
+other_problems 为无法归入七节的 `{field, problem}` 列表，包括顶层格式外字段和只有产品绑定却没有连接的问题。notices 列出 config.yaml.prev 与残留临时文件的说明及人工修法；上一份副本本身是正常产物，不计为配置不合格。
+occupants 含 kind、checkout；kind 为 environment、work、launch、fix、browser。工作与启动另含 id、work_kind；修复含 id、state（只列确认为 open 的修复）；环境含 state；浏览器含 identity，仅禁止删除正在用的身份。prepared 的运行、沉淀、合并、编写、草稿与交互地图，以及 open 修复和运行中的启动，均占用仓库与共享库。共享库连不上、无法确认本机已知修复是否结束时不占用、不返回 settings-locked；读取结果的 notices 逐条提示“共享库连不上，无法确认修复 #N 是否结束”，允许使用者修正连接或密码。其他已确认的占用仍照常生效。
+products 的字段与 CLI init 的清单相同：id、name、created_by、created_at、scenarios_with_results、latest_write、local_overlap、hint。设置接口的 created_at、latest_write 使用与看板其他页面相同的本机时间格式 YYYY-MM-DD HH:mm:ss ±HH:mm（latest_write 没有记录时为 null），CLI init 的原始时间格式不变。页面将 ID 等于已绑定产品 ID 的条目标为“当前产品”，不提供加入按钮；其他产品仍可加入以切换产品。
+
+| 错误码 | HTTP 与含义 |
+| --- | --- |
+| settings-stale | 409，磁盘摘要变化，须重新读取 |
+| settings-locked | 409，problems 逐条用可读文字说明原因，错误体单列 occupants（格式同读取），保持现有工作与环境 |
+| settings-invalid | 422，本节不合格、其他节新增问题或入口仍被引用；problems 含字段和说明 |
+| database-authentication | 503，认证失败，本机说明主机、端口、库名与用户 |
+| database-unreachable | 503，连不上共享库 |
+| database-version | 409，表结构版本不符 |
+| product-not-found / product-unbound | 409，目标产品不存在 / keep 时未绑定；须明确加入或新建 |
+
+保存重写标准 YAML，原注释和排版不保留；上一份留为 config.yaml.prev。临时文件以 600 创建后替换。
+接入按明确选择加入、新建或保持产品；发生错误恢复两个本机文件。共享库记录不迁移；断开尽力撤下当前看板的机器地址，即使共享库不可达也可断开。
+
+本机姓名与机器名先保存在 operator 和 machine.json。只改操作者姓名或机器名未变时不访问业务库；机器名变更后尽力同步，失败仍保存成功，machine_name_sync_pending 为 true。下一次工作台请求触发机器登记，或看板重启并成功连接业务库时同步；带不带 --lan 都更新机器名。机器名未同步时不影响本机保存。
+
+config.yaml 解析失败时，设置读取与保存返回 settings-invalid，保留解析器原始错误（含行号、列号和出错内容）。status/check 同样保留细节；内网只显示问题类别。测试连接不持跨进程文件锁；接入先在锁外建立连接，持锁再次核对摘要与占用，产品事务和文件写入仍持锁。
+
+保存、接入、换产品、断开不提供崩溃恢复或跨文件、跨库原子性。status/check 指出有连接却未绑定、有绑定却没有连接、目标库无绑定产品等情况并给出设置接口、init --join/--new 或直接编辑配置的修法；不自动恢复副本或清理临时文件。普通步骤异常仍恢复原文件。命令行 init 只在数据库提交成功后写产品绑定。
+
+本机响应与命令输出不包含 password 配置项，不对全文做密码取值替换。只有当前保存在 config.yaml 的密码参与内网文本、报告、文本证据及会话材料的遮蔽；测试连接与未保存的接入候选值不登记，替换或清除后移除旧值。静态资源、verbatim 对等响应、Range 片段及图片、视频等二进制内容保持原字节。密码须为非空文字，不设长度或单行限制，不裁剪空白。

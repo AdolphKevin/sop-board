@@ -38,6 +38,17 @@ def statuses(entries):
             for entry, value in entries.items() for name in names({entry: value})]
 
 
+_saved_passwords = {}
+
+
+def saved_password(path, value):
+    """只由已发布的磁盘配置更新；候选校验与测试连接没有副作用。"""
+    if isinstance(value, str) and value:
+        _saved_passwords[str(path)] = value
+    else:
+        _saved_passwords.pop(str(path), None)
+
+
 class AgentEnvironment(dict):
     """附带日志脱敏信息，不把它编码为环境变量或任务配置。"""
     def __init__(self, values, credential_names):
@@ -57,7 +68,7 @@ def shell_options(environment):
 
 def patterns(secrets):
     variants = set()
-    for value in secrets:
+    for value in (*secrets, *tuple(_saved_passwords.values())):
         if value:
             escaped = {value}
             for _ in range(2):
@@ -76,13 +87,15 @@ def redact(raw, secrets):
 class StreamRedactor:
     """保留可能跨读块的凭据前缀，完整取值在写入日志前替换。"""
     def __init__(self, secrets):
-        self.values = patterns(secrets)
-        self.expression = re.compile(b'|'.join(re.escape(v) for v in self.values)) if self.values else None
+        self.secrets = tuple(secrets)
         self.pending = b''
 
     def feed(self, raw, *, final=False):
+        self.values = patterns(self.secrets)
+        self.expression = re.compile(b'|'.join(re.escape(v) for v in self.values)) if self.values else None
         if self.expression is None:
-            return raw
+            result, self.pending = self.pending + raw, b''
+            return result
         self.pending += raw
         output = []
         while (match := self.expression.search(self.pending)) is not None:
@@ -194,19 +207,20 @@ def looks_like_text(raw, content_type):
 def response_bytes(raw, content_type, credential_names, *, local, local_roots=()):
     secrets = [os.environ[name] for name in credential_names if os.environ.get(name)]
     def clean(value, text=True):
+        if not text:
+            return value
         value = redact(value, secrets)
         if local:
             return value
-        if not text:
-            return value
         return hide_local_paths(hide_names(value, credential_names), local_roots)
-    if content_type == 'application/zip' and (credential_names or not local):
+    if content_type == 'application/zip' and (credential_names or _saved_passwords or not local):
         output = BytesIO()
         with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as target:
             for entry in source.infolist():
                 from .evidence_types import content_type as guess, is_text
                 content = source.read(entry.filename)
-                text = is_text(guess(entry.filename)) or looks_like_text(content, 'application/octet-stream')
+                kind = guess(entry.filename)
+                text = is_text(kind) or looks_like_text(content, kind)
                 target.writestr(clean(entry.filename.encode()).decode(), clean(content, text))
             target.comment = clean(source.comment)
         return output.getvalue()
@@ -313,8 +327,8 @@ class RedactedProcess:
 
 
 def launch(argv, directory, environment, work_directory):
-    secrets = getattr(environment, 'secrets', ())
-    if secrets:
+    secrets = tuple(getattr(environment, 'secrets', ()))
+    if secrets or _saved_passwords:
         # -o 会让子进程直接写未经脱敏的最终答复；改从 stdout 的最终消息落盘。
         position = argv.index('-o')
         argv = argv[:position] + argv[position + 2:]
