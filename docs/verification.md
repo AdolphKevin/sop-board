@@ -72,8 +72,9 @@ SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
 | 数据配方 | `seed-order`：参数 `order_id`、`paid`、`days`，写入本检出的 `$D/demo/env/<检出>/shop.sqlite3`；输出含凭据取值，用来核对留痕遮蔽 |
 | 守护命令 | app `docs/sop/regression.yaml` 的 `unit`：`python3 tests/junit_runner.py --junit {junit}`（unittest，测试放 `tests/test_*.py`） |
 | 端口 | 基础端口 28080，`port_step` 100：main 用 28080，槽位 1 的检出用 28180；`APP_URL` 与 `WEB_URL` 取自 ready 行 |
-| 浏览器端口 | 身份浏览器的缺省调试端口是 `9400 + 槽位×20 + 身份序号`，不分项目：main 的 merchant 缺省用 9401，槽位 1 用 9421。缺省端口被别的进程（例如使用者自己的看板的浏览器）占用时顺延到下一个空闲端口，实际端口见 `browser status` 的 `port`（`default_port` 是缺省端口）与 `run.env` 的 `PW_CDP_ENDPOINT`。BRW-02-N01 的占用进程：本机已有进程监听 9401 时直接用它并记下进程号；没有时用一个与项目无关的占位进程，例如 `python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1", 9401)); s.listen(); time.sleep(3600)'`，验收后结束它 |
-| 合成账号 | merchant，密码取 `DEMO_MERCHANT_PASSWORD`；限额 每日登录 2 次、每日验证码 2 次 |
+| 浏览器端口 | 身份浏览器每个身份一个、各检出共用，缺省调试端口是 `9400 + 身份序号`，不分项目：merchant 缺省用 9401，merchant2 用 9402（已定决策 28）。缺省端口被别的进程（例如使用者自己的看板的浏览器）占用时顺延到下一个空闲端口，实际端口见 `browser status` 的 `port`（`default_port` 是缺省端口）与 `run.env` 的 `PW_CDP_ENDPOINT`。BRW-02-N01 的占用进程：本机已有进程监听 9401 时直接用它并记下进程号；没有时用一个与项目无关的占位进程，例如 `python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1", 9401)); s.listen(); time.sleep(3600)'`，验收后结束它 |
+| 合成账号 | merchant，密码取 `DEMO_MERCHANT_PASSWORD`；merchant2（第二个商家账号，也能执行 `shop#W`，决策 28 的场景用），密码取 `DEMO_MERCHANT2_PASSWORD`；限额都是 每日登录 2 次、每日验证码 2 次 |
+| 静态脚本缓存（BRW-02-P02） | 商城首页引用的静态脚本响应带 `Cache-Control: max-age=86400`，首页显示脚本里的标记文字；改这份脚本即可核对换检出时是否清空了 HTTP 缓存 |
 | 环境日志 | `env.py` 把收到的 `SOP_*` 变量逐行写进 `$D/demo/env/<检出>/<序号>.log`，并存 `received.json`（变量名中的别名为大写，如 `SOP_REPO_APP`）；商城与库存服务的输出在同目录 `shop.log`、`stock.log` |
 | `stock#K` | 库存演示项目 `stock#STOCK-O1-P01`：库存可用时 `POST /api/purchases` 下单成功（201），订单生成，DEMO-1 库存减 1 |
 | `stock#S` | 库存演示项目 `stock#STOCK-O1-N01`：起点“库存查询不可用”，下单返回 503 与“库存服务暂不可用，请稍后再试”，不生成订单 |

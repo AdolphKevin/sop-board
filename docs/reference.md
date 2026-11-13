@@ -28,10 +28,10 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 
 状态按检出推导，不存储，只看当前指纹的记录。哪些场景需要执行由场景内容（指纹）决定，代码改动不改变状态。参与推导的记录：
 
-- **结论**（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。**本分支优先**：当前指纹在本检出的分支上有结论时只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，状态旁标出来源分支（`source_branch`）。
+- **结论**（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。**本分支优先**：当前指纹在本检出的分支上有结论时只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，状态旁标出来源分支（`source_branch`）。**已并入**的结论也算本分支的（已定决策 28）：结论所在运行准备时的快照（`work.snapshot`）里各仓库的 `dirty` 都为 0，结果的 `product_changed` 为空，并且快照里每个仓库的 `commit` 都是本检出对应仓库 HEAD 的祖先；提交在本机找不到、仓库在本机没有登记的不算。已并入的结论带 `source_branch` 与 `merged: true`，状态旁与历史里显示“来自 <分支>（已并入）”。祖先关系按提交对缓存。
 - **非结论**（Agent 的受阻与跳过、守护未通过）只取本机本检出产出的；别的机器与检出的显示在场景详情的“其他机器上的情况”，不改变本机状态。
 - 先后只比较业务记录库分配的统一序号（结果、标注、守护运行、修复关闭与运行记录共用一串），执行时间只用于显示。
-- 历史列出参与本看板推导的记录，每条写明产出机器与分支：当前内容（当前指纹）上按上面的规则选出的记录；旧内容（场景改过之前的指纹）上只列本分支的结论和本检出的非结论，别的分支上内容不同的结果不列入，也不回落到全部分支（检出不在任何分支上时，旧内容只列本检出的非结论）。概况的通过率与人工确认率用同一组记录。没配共享库的单机项目用同一规则。
+- 历史列出参与本看板推导的记录，每条写明产出机器与分支：当前内容（当前指纹）上按上面的规则选出的记录；旧内容（场景改过之前的指纹）上只列本分支（含已并入）的结论和本检出的非结论，别的分支上内容不同的结果不列入，也不回落到全部分支（检出不在任何分支上时，旧内容只列本检出的非结论）。概况的通过率与人工确认率用同一组记录。没配共享库的单机项目用同一规则。
 
 | 状态 | 键 | 条件 |
 | --- | --- | --- |
@@ -163,6 +163,13 @@ sop-board check
 
 `sop-board serve [项目] [--port 8787] [--lan]` 在前台运行一个项目的守护进程，可在终端或 agent 会话中启动。它负责网页、各检出的 adapter 环境、浏览器代理、守护测试运行与无头会话启动器。启动时写 `<数据目录>/daemon.json`（pid、端口、URL、内网地址）与 `daemon.token`（权限 0600），清理上次遗留的环境进程组，认回有界面的浏览器、清理遗留的无头浏览器，保留核对不通过的有界面窗口、清空各检出的服务状态目录、把遗留的运行中启动记为 failed；收到 SIGINT/SIGTERM 时停掉全部环境、无头浏览器和会话启动，输出保留的有界面浏览器后删除状态文件。同一项目已在运行时拒绝再启动。
 
+停止与重启用命令（已定决策 28）：
+
+- `sop-board stop [项目]`：让守护进程按上面的规则正常停止，等它退出后输出保留的有界面窗口（身份、进程号、调试端口）。
+- `sop-board restart [项目]`：换一个守护进程，不打断进行中的工作。旧进程停掉全部环境后退出，不结束任何浏览器（有界面的和无头的）和启动的会话，浏览器租约与 prepared 的运行保持原样。新进程沿用原来的端口与 `--lan`，在后台运行，输出追加到 `<数据目录>/serve.log`；启动时认回这些浏览器（无头的只认回 restart 交接下来的）与会话，租约照旧有效，并重新拉起原来在运行的环境。命令等新进程就绪后返回，输出列出保留与认回的浏览器和会话，以及正在重新拉起的环境。
+- 重启期间 `daemon.json` 标明正在重启，CLI 等新进程就绪（最多 120 秒），不返回 `daemon-not-running`。环境重新就绪之前，每个 prepared 的运行记一条“环境随看板重启中断”（起止时间），提交时写进运行摘要的 `interruptions`。
+- 两条命令在守护进程没运行时都返回 `daemon-not-running`。`restart` 在 Codex 沙箱里（有 `CODEX_SANDBOX`）拒绝执行，提示在终端运行。
+
 CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回环 HTTP 调用守护进程；守护进程没运行时返回 `daemon-not-running`，并给出 `sop-board serve <名称>` 命令。`status` 也显示守护进程是否运行。
 
 | 访问级别 | 谁可以调用 | 用于 |
@@ -191,6 +198,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `operator [show\|set <姓名>]` | 查看来源或设置本机操作者（单行，最长 64） |
 | | `skills install` | 安装随包技能链接 |
 | | `serve [项目] [--port] [--lan]` | 见 §3 |
+| | `stop [项目]` / `restart [项目]` | 停止看板 / 换守护进程而不打断进行中的工作；见 §3 |
 | | `status [项目] [--json]` | 检出、操作者、快照、各状态计数、待沉淀数（顶层 `distill`）、待人工复核数（顶层 `review`）、草稿按审阅状态的计数（`draft_review`：`pending` 待审、`annotated` 有批注、`approved` 已同意）、`queues`（retest/fail/blocked/not-run）、`distill_queue`、`review_queue`、不合格场景文件、守护进程、待人处理；文字输出的场景行末尾总是列出“待沉淀 N；待人工复核 N”，有草稿时另起一行“草稿审阅：待审 N；有批注 N；已同意 N” |
 | | `check` | 见 §2 |
 | 检出 | `checkout list` | 全部检出及槽位、偏移、路径 |
@@ -198,13 +206,13 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `checkout create <名称> [--repo 别名]... [--from ref]` | 名称规则同检出名、不能是 main；`--repo` 只为这些仓库建 worktree；日志 `<数据目录>/checkouts/<名称>.log` |
 | | `checkout remove <名称>` | 环境须先停；main 不能移除；记录标为已移除，槽位释放 |
 | 环境 | `env up\|down\|restart\|status [--all]` | 经守护进程启停或重启当前检出环境；`status --all` 列出全部检出。输出 `state`、`address_env`、`variables`（ready 行的全部变量）、`services`（名称、业务说明、可停、状态、`stop_requested`，异常退出附 `log` 与 `log_tail`）、`not_running`、`missing_address_env` |
-| | `env stop\|start <服务>` | 只在本检出有 prepared 运行时可用（`run-required`），只对 `stoppable` 的服务；等状态变为已停止或运行中才返回（`service-timeout`），停启记进该运行（`service_events`），提交或放弃时自动恢复。已在目标状态时返回 `changed: false`，不记录。运行之外恢复环境用 `env restart` |
+| | `env stop\|start <服务> [--run N]` | 运行取 `--run`，其次 `SOP_BOARD_RUN`；本检出有多个 prepared 运行又没指明时返回 `run-ambiguous`。只在本检出有 prepared 运行时可用（`run-required`），且这套环境上只有这一个 prepared 运行（`env-shared`，列出其他运行）；有服务被停着时别的运行要用这套环境就排队。只对 `stoppable` 的服务；等状态变为已停止或运行中才返回（`service-timeout`），停启记进该运行（`service_events`），提交或放弃时自动恢复。已在目标状态时返回 `changed: false`，不记录。运行之外恢复环境用 `env restart` |
 | 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
-| | `browser status [--identity]` | 各身份浏览器：`port` 为实际调试端口（运行中的，或最近一次启动所用的）、`default_port` 为缺省端口、`alive`、`endpoint`（运行中时）、持有者与崩溃记录；守护进程未运行时只给运行时信息 |
+| | `browser status [--identity]` | 各身份浏览器：`port` 为实际调试端口（运行中的，或最近一次启动所用的）、`default_port` 为缺省端口、`alive`、`endpoint`（运行中时）、持有者、最近一次交给的检出（`last_checkout`）与崩溃记录；守护进程未运行时只给运行时信息 |
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
 | | `browser release [--identity]` | 真人完成后交还：只释放真人租约，窗口保持打开，之后的运行沿用；见 §6 |
 | | `browser close [--identity]` | 结束浏览器并释放真人租约 |
-| 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
+| 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S] [--identity I…] [--wait 秒]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
 | | `run submit --run N [--implementer X \| --implemented-by 操作者]` | 见 §5 |
 | | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`） |
 | | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者]` | 由守护进程启动无头执行会话；启动前与 `run prepare` 共用范围核对，`pending` 由守护进程展开为具体场景；`--fix` 启动修复的独立复验 |
@@ -240,7 +248,13 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | 键或编号 | 指定场景；含草稿则 `draft-not-runnable` | 同 pending 的映射，其余 `rerun` |
 | `--fix N` | 修复的问题场景 | `rerun` |
 
-同一检出同时只能有一个 prepared 的运行（`run-prepared`，提示 `run abandon`）。准备时经守护进程拉起本检出环境（快照与环境启动时不同则重启；`port_step: 0` 且别的检出环境在运行时返回 `env-busy`），为本轮 Web 入口的全部身份取得浏览器租约，再创建运行目录，缺省 `<数据目录>/runs/<编号>/`；已存在时使用 `<编号>-2`、`<编号>-3` 等未占用目录，原目录和文件原样保留。实际目录写入 `local_work.dir`，以 prepare 返回的 `directory` 为准，提交、放弃及报告通过记录定位，不按编号推算。准备失败时只清理本次确实新建的目录。修复、沉淀、合并、SOP 编写、草稿、交互地图、启动记录和 retest 输出也使用未占用目录。环境只要 adapter 输出就绪就可以准备，不要求每个服务都在运行；输出另有 `services`、`not_running` 与 `missing_address_env`。
+同一检出可以有多个 prepared 的运行，按身份分开（已定决策 28）：`--identity`（可重复）只为这些身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占。`--scope pending` 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 `scenario-in-run`，写明是哪个运行。
+
+准备时经守护进程拉起本检出环境：快照与环境启动时不同则重启，这套环境上还有别的 prepared 运行时等它们结束。`port_step: 0` 时环境由当前检出的 prepared 运行占住；没有 prepared 运行就是空闲，守护进程停掉它、为本检出拉起，输出 `switched_from`；被别的检出占着时返回 `env-busy`。有别的检出在等环境时，占用环境的检出不能开始新的运行，同样返回 `env-busy`。身份被别的运行或真人占着时返回 `browser-busy`；这套环境上有服务被别的运行停着时返回 `env-busy`。
+
+**排队**：带 `--wait <秒>` 时，上面这些情况在本机排队，最多等这么久，轮到了照常准备，超时返回原来的错误码；不带时立即返回。两种情况的错误输出都带 `holder`（占用的检出、运行与身份）与 `queue`（排第几，前面每个等待者的检出、运行、会话与已等秒数）。队列只在守护进程内存里，按到达先后；等待者按会话编号识别，请求结束后 60 秒内同一会话再来，保留原来的位置；看板重启后清空。
+
+然后为本运行的身份取得浏览器租约，再创建运行目录，缺省 `<数据目录>/runs/<编号>/`；已存在时使用 `<编号>-2`、`<编号>-3` 等未占用目录，原目录和文件原样保留。实际目录写入 `local_work.dir`，以 prepare 返回的 `directory` 为准，提交、放弃及报告通过记录定位，不按编号推算。准备失败时只清理本次确实新建的目录。修复、沉淀、合并、SOP 编写、草稿、交互地图、启动记录和 retest 输出也使用未占用目录。环境只要 adapter 输出就绪就可以准备，不要求每个服务都在运行；输出另有 `services`、`not_running` 与 `missing_address_env`。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -250,7 +264,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | `scenarios.yaml`、`pending.json` | 本轮场景（带 key、reason）与范围 |
 | `entries.json`、`repos.json` | 用到的入口与地址；检出仓库路径 |
 | `snapshot.json`、`product-files.json` | 准备时的快照与逐文件清单 |
-| `run.env` | 入口地址变量、`SOP_BOARD_RUN`、`SOP_BOARD_CHECKOUT`；有 Web 场景时另有 `PW_CDP_ENDPOINT`（default 身份或第一个身份）、`PW_IDENTITIES`、`PW_SCOPE`、`PW_SCENARIO_FILE`、`PW_OUT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT` |
+| `run.env` | 入口地址变量、`SOP_BOARD_RUN`、`SOP_BOARD_CHECKOUT`；有 Web 场景时另有 `PW_CDP_ENDPOINT`（default 身份或第一个身份）、`PW_IDENTITIES`（只列本运行持有的身份）、`PW_SCOPE`、`PW_SCENARIO_FILE`、`PW_OUT`、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT` |
 | `scope.json`、`identities.json`、`node_modules`（链接到运行时） | 仅 Web：Playwright 范围；各身份及其 CDP endpoint |
 | `evidence/` | 证据放这里 |
 | `fixtures/` | `fixtures run/exec --run N` 的留痕 |
@@ -287,7 +301,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 6. 登记结果、证据入库；某场景最近一次守护运行通过而本次失败时记漏检（§7）；释放浏览器租约；修复复验时更新修复状态（§8）。
 7. **服务**：本轮每条停止事件记下服务停着期间执行的场景（`executed_at` 落在停止与下一次启动或恢复之间，按秒比较），结果详情据此显示“执行时 <服务>（<业务说明>）已停止”。结果登记后恢复还停着的服务（守护进程未运行时只撤回停止请求），每个记一条 `restore`；声明了服务时另列出提交时异常退出的服务，`during_run` 表示准备时它还没有异常退出。
 
-输出 `recorded`、`voided`、`not_executed`（`scenario`、`finding`、`fingerprint`）、`product_changed`、`browser_crashes`、`independence`、`submitted_by`；声明了服务或本轮停过服务时另有 `restored`、`crashed_services`、`service_events`（服务、`stop|start|restore`、`ok`、操作者、时间、说明、停着期间执行的场景），恢复出错时有 `services_problem`。这些也写进运行摘要（`work.result`）。校验不合格时不登记任何结果，运行保持 prepared，也不恢复服务，修正后重交。
+输出 `recorded`、`voided`、`not_executed`（`scenario`、`finding`、`fingerprint`）、`product_changed`、`browser_crashes`、`independence`、`submitted_by`；声明了服务或本轮停过服务时另有 `restored`、`crashed_services`、`service_events`（服务、`stop|start|restore`、`ok`、操作者、时间、说明、停着期间执行的场景），恢复出错时有 `services_problem`；运行期间看板重启过时另有 `interruptions`（每条“环境随看板重启中断”的起止时间，已定决策 28）。这些也写进运行摘要（`work.result`）。校验不合格时不登记任何结果，运行保持 prepared，也不恢复服务，修正后重交。
 
 ### 独立性
 
@@ -303,16 +317,18 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>/output.prompt.md`（目录被占用时顺延后缀）（随包 `launch.md`：先运行 `sop-board run prepare --scope …` 或 `distill prepare …`，按 prompt.md 执行并提交，需要人时 `attention add` 后结束），日志为同目录 `output.jsonl`（实际位置取启动记录的 `log`）。
 - 注入 `SOP_BOARD_LAUNCH`、`SOP_BOARD_CHECKOUT`、`SOP_BOARD_IMPLEMENTER?`。Claude：启动器生成 UUID 作为 `--session-id` 并注入 `SOP_BOARD_SESSION`，缺省参数 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。Codex：`codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check -C <目录>`，会话编号取日志中的 `thread.started`。两者都 `--add-dir` 项目数据目录与数据根目录下的 `evidence` 目录，路径先解析为真实路径；浏览器运行时只读使用。
 - 状态 `running` → `exited`（退出码 0）/`failed`/`stopped`。启动记录与其会话编号就是独立执行的证据；运行通过 `SOP_BOARD_LAUNCH` 关联启动。
+- 会话输出由随会话存活的转写进程遮蔽后写进日志，不经守护进程；遮蔽范围不变（已保存的共享库密码）。看板 `restart` 时会话继续运行，新守护进程按进程号与命令行认回，用零信号检查存活；取不到退出码时，产出了运行或沉淀记 `exited`，否则按 `no-work` 处理（已定决策 28）。`stop` 与 SIGTERM 照旧结束会话。
+- 会话准备运行时按提示词带 `--wait`，环境或身份被占着时排队（§5）。
 - `run launch` 在启动前与 `run prepare` 共用范围检查；范围不合格不产生启动记录。指定文件不合格时返回 `scenario-file-invalid`，附文件、字段及行号。`pending`/`all` 只从合格文件选场景，不因其他文件不合格拒绝；prepare 输出及 launch 输出的 `launch` 对象附 `invalid_files`（文件、字段、行号），brief.md 的“未纳入的不合格文件”要求执行会话转述。选出范围为空仍返回 `nothing-to-run`，problems 同时列出不合格文件。交给客户端的目录解析为真实路径；浏览器运行时只读，不授予写权限。
 - `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。会话正常退出（`exited`）却没有产生运行或沉淀时，启动公开状态为 `no-work`（未产生运行），本机输出附 `log_tail`；wait 返回 `launch-no-work`、退出码 1。失败的启动保持 `failed`，本机同样附 `log_tail`，wait 返回 `launch-failed`、退出码 1。`exited` 关联工作中存在 `prepared` 或 `abandoned` 时，输出 `unsubmitted` 列出工作编号、类型、状态，problem 写明未提交或已放弃，本机附日志末尾；wait 返回 `launch-unsubmitted`、退出码 1。`failed` 有这些工作时同样列明，错误码仍为 `launch-failed`。不自动提交或放弃工作；其余已结束情况返回成功。
 
 ## 6. 浏览器代理
 
 - **运行时**：`browser install` 把随包 `package.json`/`package-lock.json`（固定 `@playwright/test` 1.64.1）复制到 `~/.sop-board/runtime/`，`npm ci` 后以 `PLAYWRIGHT_BROWSERS_PATH=<runtime>/browsers` 执行 `playwright install --no-shell chromium ffmpeg`，把 Playwright 版本、CfT 修订号与版本、可执行文件路径写入 `runtime.json`。需要 Node ≥ 20 与 npm。不读写共享的 ms-playwright 缓存，不安装 WebKit/Firefox/headless shell。
-- **启动**：只有守护进程启动浏览器，执行者只经 CDP 连接，不自己启动或安装。每个 检出×身份 一个 CfT：`--user-data-dir=<数据目录>/browsers/<检出>/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`，缺省加 `--headless=new`，不加 `--enable-automation`；输出写同目录 `chrome.log`。`/json/version` 15 秒内有应答才算就绪。
-- **端口**：缺省端口 `9400 + slot × 20 + 身份序号`，不分项目和数据根目录。序号：`default` 为 0，其后按各 Web 入口声明顺序；超过 20 个身份报错。缺省端口被别的进程占用（127.0.0.1 上有进程监听或绑定不上）时顺延到下一个空闲端口，不报错，不结束、不连接占用者；到 65535 都找不到才报错。实际端口记在 `browser_instances.port`，`browser status` 显示它（另给 `default_port`），`run.env` 的 `PW_CDP_ENDPOINT` 与 `PW_IDENTITIES` 里各身份的 `endpoint` 指向它；守护命令声明 `browser:` 时同样。就绪须确认 `/json/version` 应答的是本次启动的浏览器（`chrome.log` 里本次的监听行为 `127.0.0.1:<端口>` 且浏览器标识一致；没有监听行时用 lsof 核对监听进程）：探测之后端口才被别人占去时 CfT 会改在 `[::1]` 上监听，这时结束这次启动、从下一个端口再找。浏览器运行期间端口不变；下一次启动重新从缺省端口找起。（已定决策 24）
-- **看板停止与重启**：正常停止保留有界面浏览器的进程、窗口与页面，输出检出、身份、进程号和调试端口；无头浏览器与环境照旧停止。启动时逐个读取 profile 的 `SingletonLock`，核实本机进程仍在、命令行的可执行文件是运行时登记的 CfT、`--user-data-dir` 完整匹配这个 profile，从命令行取模式与调试端口。有界面窗口在后台最多用 15 秒反复核对，每次核对后等待最多 0.2 秒再试；该身份的租约和打开请求等待核对结束，期间不另起浏览器。端口监听者正是该进程且 `/json/version` 有应答时认回；lsof 无输出或不可用时，改用 chrome.log 最后一条 DevTools 监听行的端口和浏览器标识核对调试应答。lsof 明确返回其他监听者时不请求该端口。核对始终不通过时保留进程，状态为未认回（`unrecovered`），status 带进程号与 `reason`，不提供 endpoint。租约、`run prepare` 与 `browser open` 返回 `browser-unrecovered`，包含原因及恢复应答后重试、或用 `browser close --identity <身份>` 结束窗口这两条出路。下一次请求会重新核对，通过即沿用原进程与端口；`browser close` 可以结束未认回的窗口，看板停止仍保留它。认回后沿用原端口并释放旧租约，`started_at` 为进程实际启动时间。核实属于该 profile 的无头浏览器结束并清理；锁指向的进程已消失时忽略，不登记新崩溃。数据库重建时按 profile 所在检出名保管实例，检出再次登记后绑定记录。认回的进程每秒用零信号检查存活，每五秒至多一次按启动时间和命令行核对身份，发信号前强制重核，无法取得退出信号时写“已退出（取不到退出信号）”，崩溃处理与普通实例相同；`browser close` 同样结束认回的进程。运行时登记缺失、锁或进程身份不符时不操作该进程。（已定决策 26）
-- **租约**（`browser_instances.holder`）：持有者 `run:<编号>`、`retest:<检出>`、`distill:<检出>` 或 `human`。别的持有者占用时返回 `browser-busy`；状态 crashed 时返回 `browser-crashed`；启动即退出不抛错，问题写进 brief.md，相关场景应记受阻。运行提交或放弃时释放。
+- **启动**：只有守护进程启动浏览器，执行者只经 CDP 连接，不自己启动或安装。每个身份一个 CfT，各检出共用（已定决策 28）：`--user-data-dir=<数据目录>/browsers/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`，缺省加 `--headless=new`，不加 `--enable-automation`；输出写同目录 `chrome.log`。`/json/version` 15 秒内有应答才算就绪。
+- **端口**：缺省端口 `9400 + 身份序号`（已定决策 28 起不含槽位），不分项目和数据根目录。序号：`default` 为 0，其后按各 Web 入口声明顺序；超过 20 个身份报错。缺省端口被别的进程占用（127.0.0.1 上有进程监听或绑定不上）时顺延到下一个空闲端口，不报错，不结束、不连接占用者；到 65535 都找不到才报错。实际端口记在 `browser_instances.port`，`browser status` 显示它（另给 `default_port`），`run.env` 的 `PW_CDP_ENDPOINT` 与 `PW_IDENTITIES` 里各身份的 `endpoint` 指向它；守护命令声明 `browser:` 时同样。就绪须确认 `/json/version` 应答的是本次启动的浏览器（`chrome.log` 里本次的监听行为 `127.0.0.1:<端口>` 且浏览器标识一致；没有监听行时用 lsof 核对监听进程）：探测之后端口才被别人占去时 CfT 会改在 `[::1]` 上监听，这时结束这次启动、从下一个端口再找。浏览器运行期间端口不变；下一次启动重新从缺省端口找起。（已定决策 24）
+- **看板停止与重启**：正常停止保留有界面浏览器的进程、窗口与页面，输出检出、身份、进程号和调试端口；无头浏览器与环境照旧停止。启动时逐个读取 profile 的 `SingletonLock`，核实本机进程仍在、命令行的可执行文件是运行时登记的 CfT、`--user-data-dir` 完整匹配这个 profile，从命令行取模式与调试端口。有界面窗口在后台最多用 15 秒反复核对，每次核对后等待最多 0.2 秒再试；该身份的租约和打开请求等待核对结束，期间不另起浏览器。端口监听者正是该进程且 `/json/version` 有应答时认回；lsof 无输出或不可用时，改用 chrome.log 最后一条 DevTools 监听行的端口和浏览器标识核对调试应答。lsof 明确返回其他监听者时不请求该端口。核对始终不通过时保留进程，状态为未认回（`unrecovered`），status 带进程号与 `reason`，不提供 endpoint。租约、`run prepare` 与 `browser open` 返回 `browser-unrecovered`，包含原因及恢复应答后重试、或用 `browser close --identity <身份>` 结束窗口这两条出路。下一次请求会重新核对，通过即沿用原进程与端口；`browser close` 可以结束未认回的窗口，看板停止仍保留它。认回后沿用原端口并释放旧租约，`started_at` 为进程实际启动时间。核实属于该 profile 的无头浏览器结束并清理；锁指向的进程已消失时忽略，不登记新崩溃。经 `restart` 交接时不同：无头浏览器也认回，租约不释放（已定决策 28）。数据库重建时按 profile 所在的身份登记实例。认回的进程每秒用零信号检查存活，每五秒至多一次按启动时间和命令行核对身份，发信号前强制重核，无法取得退出信号时写“已退出（取不到退出信号）”，崩溃处理与普通实例相同；`browser close` 同样结束认回的进程。运行时登记缺失、锁或进程身份不符时不操作该进程。（已定决策 26）
+- **租约**（`browser_instances.holder`）：持有者 `run:<编号>`、`retest:<检出>`、`distill:<检出>` 或 `human`。身份租约整机独占，同一身份同一时刻只有一个持有者（已定决策 28）。别的持有者占用时返回 `browser-busy`（`run prepare` 带 `--wait` 时排队，§5）。交给与上一次不同检出的持有者之前，经 CDP 的 `Network.clearBrowserCache` 清空 HTTP 缓存，cookie、本地存储与登录保留；`browser_instances` 记下最近一次交给的检出（`browser status` 的 `last_checkout`）。状态 crashed 时返回 `browser-crashed`；启动即退出不抛错，问题写进 brief.md，相关场景应记受阻。运行提交或放弃时释放。
 - **真人登录与交还**：`browser open --identity X --headed` 以有界面窗口打开（缺省地址为该检出第一个 Web 入口的地址），并持有 `human` 租约；窗口已在运行时只取得租约，不重启，正在运行的无头浏览器则重启为有界面窗口（profile 不变）。用户在窗口里登录、完成人机验证或二次验证后，`browser release --identity X` 交还：只释放 `human` 租约，进程、窗口与页面保持运行，下一次取得租约的运行直接沿用这个窗口，不重启；身份被运行持有时返回 `browser-busy`。不带 `--headed` 的 `browser open` 遇到运行中的有界面窗口时沿用它，不取得租约。`browser close` 结束浏览器并释放租约，之后的运行重新以无头启动。出现 “browser may not be secure” 时停止，该身份的场景记受阻；不回退到日常 Chrome，不改 UA 或参数绕过。
 - **崩溃**：监视线程等待进程退出。非主动停止的退出记录退出码、信号名、日志路径与启动后写出的 `~/Library/Logs/DiagnosticReports/Google Chrome for Testing*.ips`，并登记一条“浏览器崩溃”待人处理。租约期间不自动重启，下次取得租约时再启动。30 分钟内异常退出两次进入 `crashed`，须人运行 `browser open --identity X --reset-crash`。
 - **身份计数**：真实登录或请求验证码前，执行者运行 `identity record --identity X --kind login|code`；达到 `limits` 上限时拒绝（`identity-limit`）并登记待人处理。
@@ -499,7 +515,7 @@ fixtures:
 | `GET /p/<项目>/inbox` | lan | 上传用例/SOP、待答复问题 |
 | `GET /p/<项目>/sop` | lan | 场景目录下的 SOP 原文渲染 |
 | `GET /p/<项目>/atlas` | lan | 交互地图与过期页面 |
-| `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据；`/api/board` 的每个场景带 `distill`、`review` 徽标，`counts` 含 `distill`、`review`，`stats` 含 `agent_confirm_rate`、`agent_review_coverage`（numerator、denominator、value）；只在本机响应中另有 `environment`（环境状态与各服务的名称、业务说明、状态、可停），概况页据此显示“本检出的服务”。`/api/scenario` 另有 `not_executed`（当前指纹上最近一次未执行：`run`、`by`、`at`、`finding`，没有为 null），历史中的 Agent 结果带 `stopped_services`（`[{name, about, text: "执行时 stock（库存查询与扣减）已停止"}]`），内网同样返回，变量名照常遮蔽。`/api/runs` 的运行只在本机带 `service_events` |
+| `GET /api/board`、`/api/scenario?key=`、`/api/runs`、`/api/annotations` | lan | 工作台数据；`/api/board` 的每个场景带 `distill`、`review` 徽标，`counts` 含 `distill`、`review`，`stats` 含 `agent_confirm_rate`、`agent_review_coverage`（numerator、denominator、value）；只在本机响应中另有 `environment`（环境状态与各服务的名称、业务说明、状态、可停；`holder` 为环境当前属于的检出及在用的运行与身份，`waiting` 为排队的等待者：检出、运行、会话与已等秒数，已定决策 28），概况页据此显示“本检出的服务”和环境的占用与排队。`/api/scenario` 另有 `not_executed`（当前指纹上最近一次未执行：`run`、`by`、`at`、`finding`，没有为 null），历史中的 Agent 结果带 `stopped_services`（`[{name, about, text: "执行时 stock（库存查询与扣减）已停止"}]`），内网同样返回，变量名照常遮蔽。`/api/runs` 的运行只在本机带 `service_events` |
 | `GET /evidence/<sha256>/<文件名>` | lan | 证据下载；视频支持 Range；trace zip 允许 trace.playwright.dev 跨域读取 |
 | `POST /api/mark` | lan | 复测标注：`verdict` 取 pass/fail/blocked/changed，`defect`、`note`、`by` 都可不填（本机缺省为操作者，内网不填记为未署名） |
 | `POST /api/inbox`、`/api/answer`、`/api/annotate` | lan | 上传、答复、批注；须有姓名（顶栏署名填一次，浏览器 localStorage 记住，各页面共用；批注在本机不填时为操作者） |
@@ -531,24 +547,26 @@ fixtures:
 | `evidence-elsewhere` | 证据在别的机器上，产出机器的看板没开、没加 `--lan` 或地址已失效 |
 | `invalid-arguments` | 参数组合不合格（`--join` 与 `--new` 同用、`--implementer` 与 `--implemented-by` 同用、`--implemented-by` 是本机操作者），退出码 2 |
 | `database-error` | 数据库返回了未预期的错误，见 problems |
-| `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …` |
+| `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …`。`restart` 期间 CLI 先等新进程就绪（最多 120 秒），超时才返回 |
 | `invalid` | 其他参数或配置问题（含配置不合格、检出不存在等），见 problems |
 | `check-failed` | `check` 有不合格项：`problems` 逐项列出，`steps` 是三项的完整结果 |
-| `env-busy` | 端口被其他检出或项目的环境租用（`port_step: 0` 时写明占用的检出、正在使用的运行编号与 `env down` 命令），或端口已被其他进程监听（附 lsof 信息） |
-| `browser-busy` | 该身份浏览器被真人登录或其他运行占用；真人占用时，真人完成后 `browser release` 交还 |
+| `env-busy` | 环境被别的检出的 prepared 运行占着、有别的检出在等环境、环境要重启而还有别的运行在用，或这套环境上有服务被别的运行停着（输出 `holder` 与 `queue`；`run prepare` 带 `--wait` 时先排队，超时才返回）；或端口被其他项目的环境租用、已被其他进程监听（附 lsof 信息） |
+| `browser-busy` | 该身份浏览器被真人登录或其他运行占用（身份租约整机独占）；输出 `holder` 与 `queue`，`run prepare` 带 `--wait` 时先排队；真人占用时，真人完成后 `browser release` 交还 |
 | `browser-unrecovered` | 有界面窗口未认回；输出进程号与原因。恢复应答后重试会重新核对，确实不要窗口时用 `browser close --identity <身份>` 结束 |
 | `browser-crashed` | 30 分钟内两次异常退出；`browser open --reset-crash` |
 | `browser-runtime-missing` | 未安装运行时；`browser install` |
 | `session-required` | 取不到执行者会话编号；加 `--session` |
 | `run-required` | `env stop\|start` 时本检出没有 prepared 的运行；运行之外恢复环境用 `env restart` |
+| `run-ambiguous` | 本检出有多个 prepared 运行，命令没有用 `--run` 或 `SOP_BOARD_RUN` 指明是哪个；输出列出各运行 |
+| `env-shared` | `env stop\|start` 时这套环境上还有别的 prepared 运行；输出列出它们，等它们提交或放弃后再停启 |
 | `service-not-declared` | 项目没有声明 `adapter.services`，不能停启单个服务 |
 | `service-unknown` | 服务名不在 `adapter.services` 中；输出列出已声明的服务 |
 | `service-not-stoppable` | 服务没有声明 `stoppable: true` |
 | `service-timeout` | adapter 没在 `service_timeout` 秒内把状态改成目标值；停止请求已撤回 |
 | `service-unavailable` | 环境没有运行，或服务当前不是可停启的状态（本机未搭建、异常退出、未上报，或要启动的服务不是由 `env stop` 停下的） |
-| `run-prepared` | 本检出已有准备好的运行；提交或 `run abandon` |
 | `run-not-prepared` / `run-not-found` | 运行不是 prepared / 不存在 |
-| `nothing-to-run` | 范围为空 |
+| `nothing-to-run` | 范围为空（`pending` 跳过别的 prepared 运行里的场景后为空也是） |
+| `scenario-in-run` | 指定的场景已在本检出另一个 prepared 运行里；输出写明是哪个运行 |
 | `scenario-not-found` | 场景键或编号不存在或不唯一 |
 | `draft-not-runnable` | 草稿场景不能执行或复测 |
 | `scope-invalid` | `--fix` 与 `--scope` 同用 |
@@ -609,11 +627,11 @@ fixtures:
 | --- | --- |
 | `meta` | 格式号与本机库标识（`instance`，运行在业务记录库里的唯一性用它区分同一机器上重建过的项目） |
 | `checkouts` | 名称、槽位（均唯一）、kind main/worktree、路径、adapter 返回的变量、移除时间 |
-| `local_work` | 运行与编写工作的本机部分：检出、会话、操作者、修复、启动、目录、范围、快照、分支、状态 prepared/submitted/abandoned、对应的业务记录编号；同一检出的 run 与 distill 各只能有一个 prepared |
+| `local_work` | 运行与编写工作的本机部分：检出、会话、操作者、修复、启动、目录、范围、快照、分支、状态 prepared/submitted/abandoned、对应的业务记录编号；同一检出的 distill 只能有一个 prepared，run 可以有多个、按身份分开（已定决策 28） |
 | `local_fixes` | 修复目录、文件基线、改动、复验运行与文件摘要 |
 | `launches` | 无头启动：类型、runner、范围、会话、pid、日志、状态；同一检出只能有一个 running |
 | `environments` | 各检出 adapter 环境：状态、pid、端口、ready 变量、快照、日志 |
-| `browser_instances` | 检出×身份浏览器：实际调试端口（缺省端口被占用时为顺延后的端口）、pid、profile、有无界面、状态、租约持有者、退出码/信号、日志、崩溃报告、近期崩溃 |
+| `browser_instances` | 身份浏览器（各检出共用，记下最近一次交给的检出）：实际调试端口（缺省端口被占用时为顺延后的端口）、pid、profile、有无界面、状态、租约持有者、退出码/信号、日志、崩溃报告、近期崩溃 |
 | `service_events` | 运行中服务的停启与自动恢复；提交时随运行记录写进 `work.services` |
 | `identity_events`、`fixture_runs` | 身份登录与验证码计数（不跨机器合并）、前置数据留痕 |
 

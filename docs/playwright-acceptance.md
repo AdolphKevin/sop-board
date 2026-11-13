@@ -15,7 +15,7 @@ sop-board playwright guide      # 只看 Web 操作
 
 ## 一次 Web 运行
 
-1. 看板守护进程（`sop-board serve`）持有浏览器：为每个 检出×身份 启动一个 Google Chrome for Testing，默认无头（`--headless=new`），一份持久 profile 保存登录态。用户日常 Chrome 不受影响。
+1. 看板守护进程（`sop-board serve`）持有浏览器：为每个身份启动一个 Google Chrome for Testing（各检出共用，同一时刻只给一个运行），默认无头（`--headless=new`），一份持久 profile 保存登录态。用户日常 Chrome 不受影响。
 2. `sop-board run prepare` 租用所需身份的浏览器，写出运行目录：`prompt.md`、`brief.md`、`scenarios.yaml`、`pending.json`、`entries.json`、`scope.json`、`identities.json`、`run.env`、`evidence/`，以及指向看板运行时的 `node_modules`。`run.env` 含 `PW_CDP_ENDPOINT`、`PW_IDENTITIES`、`PW_SCOPE`、`PW_SCENARIO_FILE`、`PW_OUT` 等。
 3. 执行会话把技能的模板复制到运行目录，经 `PW_CDP_ENDPOINT` 连接浏览器，用 `workers: 1`、`retries: 0`、`maxFailures: 1` 执行。用例标题以场景 key 开头（`shop#W 标题`）。
 4. 报告转换并登记：

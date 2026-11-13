@@ -13,10 +13,12 @@
 #   版本 6 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#独立性（取代交接仪式） 的“范围核对与启动结果”）：
 #   新增 RUN-04-N02（范围不合格时 run launch 直接拒绝、不启动会话；场景所在文件不合格返回 scenario-file-invalid）与 RUN-04-N03（启动的会话没有产生运行）；
 #   按使用者 2026-11-13 决定新增 RUN-04-N04（启动的会话准备了运行却没提交就退出）。
+#   版本 7 按 docs/design.md 已定决策 28（使用者 2026-11-13 决定）修订，由起草该决策的会话在实现前写成：取消“同一检出同时只能有一个 prepared 的运行”，
+#   改为按身份分开的多个运行（新增 RUN-01-P02，RUN-01-N01 改为 scenario-in-run 与 pending 跳过别的运行里的场景）。merchant2 见 browser.yaml 文件头。
 
 metadata:
-  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入"
-  version: 6
+  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景"
+  version: 7
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -38,7 +40,10 @@ metadata:
     - ref: "docs/design.md 已定决策 23：验收时机按情况决定"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
-  tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault"]
+    - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用（同一环境里按身份并行多个运行）"
+      version: "2026-11-13"
+      confirmed_by: "blur.yin"
+  tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault", "parallel"]
 
 sops:
   - id: RUN-01
@@ -47,7 +52,8 @@ sops:
     entry: "sop-board run prepare --scope pending|all|F#ID… --session S、run submit --run N"
     must:
       - "结果绑定场景指纹与运行开始时的产品快照，记录产出机器、检出与分支；通过与失败按分支归属，受阻与跳过只影响产出它的检出"
-      - "同一检出同时只能有一个 prepared 的运行"
+      - "同一检出可以有多个 prepared 的运行，按身份分开：--identity 只为指定的身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占"
+      - "--scope pending 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 scenario-in-run，写明是哪个运行"
     scenarios:
       - id: RUN-01-P01
         polarity: positive
@@ -69,21 +75,53 @@ sops:
         forbidden_effects: ["看板改写场景文件", "登记范围以外的场景结果", "草稿场景进入执行"]
         refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#保留能力的简化形态"]
         evidence_hints: ["run 目录清单", "submit 输出", "results 表只读查询"]
+      - id: RUN-01-P02
+        polarity: positive
+        title: 两个会话在同一检出分开身份同时执行，pending 不重复取场景；另一检出用第二个身份并行
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "演示项目 web 入口声明了 merchant 与 merchant2 两个合成测试账号；main 与 wt1 的环境都在运行"
+          - "main 与 wt1 上 shop 的场景都是未执行；没有 prepared 的运行"
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#W --identity merchant --session S1，得到运行 R1，读取 run.env"
+          - "在 main 运行 sop-board run prepare --scope pending --session S2，得到运行 R2，查看 pending.json"
+          - "在 wt1 运行 sop-board run prepare --scope shop#W --session S3 --json（不写 --identity）"
+          - "在 wt1 运行 sop-board run prepare --scope shop#W --identity merchant2 --session S3，得到运行 R3，读取 run.env；用 ps 查看 CfT 进程"
+          - "三位执行者同时执行各自范围内的场景，分别 run submit；在 main 与 wt1 运行 sop-board status --json"
+        expected:
+          - "R1 的 run.env 中 PW_IDENTITIES 只有 merchant"
+          - "R2 的范围是 shop#X、shop#A、shop#B，不含 shop#W；R2 不持有任何浏览器租约"
+          - "第 3 步以业务失败退出（退出码 1），错误为 browser-busy，写明 merchant 正被 main 的运行 R1 持有"
+          - "R3 的 run.env 中 PW_IDENTITIES 只有 merchant2，endpoint 指向 merchant2 自己的浏览器，与 merchant 的浏览器不是同一个进程"
+          - "三个运行都提交成功：main 的 shop#W 来自 R1，shop#X、shop#A、shop#B 来自 R2；wt1 的 shop#W 来自 R3"
+        forbidden_effects:
+          - "两个运行同时持有同一个身份"
+          - "同一个场景同时出现在 R1 与 R2 的范围里"
+          - "一个运行的提交覆盖或作废另一个运行"
+          - "R3 的 run.env 列出 merchant"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）", "docs/reference.md#5. 运行"]
+        evidence_hints: ["三份运行目录的 pending.json、run.env（凭据脱敏）与 identities.json", "第 3 步的输出", "ps 输出", "两边的 status --json"]
       - id: RUN-01-N01
         polarity: negative
         negative_type: concurrency
-        title: 同一检出已有 prepared 运行时不能再准备，其他检出不受影响
+        title: 指定的场景已在本检出另一个 prepared 运行里时返回 scenario-in-run，pending 跳过它们，别的检出不受影响
         actor: 执行会话
         priority: P1
         verify: cli
-        initial_state: ["main 已有 prepared 运行 R1"]
-        steps: ["在 main 运行 sop-board run prepare --scope all --session S2 --json", "在 wt1 运行 sop-board run prepare --scope all --session S3 --json"]
+        initial_state: ["main 已运行 sop-board run prepare --scope all --session S1，得到运行 R1"]
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#A --session S2 --json"
+          - "在 main 运行 sop-board run prepare --scope pending --session S2 --json"
+          - "在 wt1 运行 sop-board run prepare --scope all --session S3 --json"
         expected:
-          - "main 的命令以业务失败退出（退出码 1），error_code 为 run-prepared，写明已有运行 R1"
-          - "R1 仍为 prepared，范围与快照不变"
+          - "第 1 条以业务失败退出（退出码 1），error_code 为 scenario-in-run，写明 shop#A 在运行 R1 里"
+          - "第 2 条以业务失败退出，error_code 为 nothing-to-run：pending 跳过 R1 里的场景后范围为空"
+          - "R1 仍为 prepared，范围与快照不变；main 没有新建运行"
           - "wt1 的 run prepare 成功"
-        forbidden_effects: ["覆盖或作废 R1", "wt1 被 main 的运行阻挡"]
-        refs: ["docs/design.md#数据库（格式 7）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+        forbidden_effects: ["覆盖或作废 R1", "同一个场景同时出现在 main 的两个运行里", "wt1 被 main 的运行阻挡"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#数据库（格式 7）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
 
   - id: RUN-02
     title: 代码改动不改变场景状态

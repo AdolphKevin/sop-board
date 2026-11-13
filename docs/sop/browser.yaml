@@ -19,10 +19,15 @@
 #   BRW-07-P02 写明环境先停掉、原有运行目录不得被删除。BRW-07-P01、P02 的“不出现登录表单”依赖演示商城的登录会话在商城进程重启后仍然有效。
 #   版本 8 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#进程与入口）：BRW-05-N01 写明运行准备的输出带退出时间与信号；
 #   BRW-05-P01 的 Codex 那次以完整权限运行；新增 BRW-05-N02（Codex 沙箱里不自行启动看板）。
+#   版本 9 按 docs/design.md 已定决策 28（使用者 2026-11-13 决定）修订，由起草该决策的会话在实现前写成：身份浏览器按身份一份、各检出共用，
+#   缺省端口为 9400 + 身份序号，身份租约整机独占（BRW-02 的规则与 P01 改写，新增 P02、N02）；BRW-03 写明带 --wait 时排队等交还；
+#   BRW-07 的第二个浏览器改用身份 merchant2，去掉“main 上”的限定。
+#   另需（版本 9 起）：演示项目 web 入口另声明合成测试账号 merchant2（第二个商家账号，凭据只经环境变量，也能执行 shop#W）；
+#   演示商城首页引用的静态脚本响应带长缓存头（max-age 不少于一天），供 BRW-02-P02 核对换检出时清空 HTTP 缓存。
 
 metadata:
-  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，按 检出×身份 使用独立持久 profile；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人，等人处理的场景记未执行并登记待人处理；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
-  version: 8
+  requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，每个身份一份持久 profile、各检出共用，身份租约整机独占，换检出时只清 HTTP 缓存；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人，等人处理的场景记未执行并登记待人处理；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
+  version: 9
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -42,6 +47,9 @@ metadata:
       version: "2026-11-12"
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 26：看板重启后保留有界面的浏览器窗口"
+      version: "2026-11-13"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用（身份浏览器各检出共用）"
       version: "2026-11-13"
       confirmed_by: "blur.yin"
   tags: ["browser", "chrome-for-testing", "identity", "crash", "release", "declared-account"]
@@ -71,42 +79,69 @@ sops:
         evidence_hints: ["安装输出", "runtime.json", "browsers 目录清单", "ms-playwright 缓存前后清单对比"]
 
   - id: BRW-02
-    title: Web 运行使用守护进程启动的 CfT 与独立 profile
+    title: Web 运行使用守护进程启动的 CfT，每个身份一份 profile、各检出共用
     actor: 执行会话
-    entry: "sop-board run prepare 写出的 runs/<编号>/run.env，执行者经 CDP 连接"
+    entry: "sop-board run prepare [--identity 身份…] [--wait 秒] 写出的 runs/<编号>/run.env，执行者经 CDP 连接；browser status"
     must:
-      - "每个 检出×身份 一个浏览器，profile 为 <数据目录>/browsers/<检出>/<身份>/profile，缺省端口为 9400 + 槽位×20 + 身份序号"
+      - "每个身份一个浏览器，profile 为 <数据目录>/browsers/<身份>/profile，各检出共用；缺省端口为 9400 + 身份序号"
+      - "身份租约整机独占：同一个身份同一时刻只给一个运行或一位真人；被占着时 run prepare 返回 browser-busy，带 --wait 时排队；--identity 只为指定的身份取得租约，run.env 与 identities.json 只列这些身份"
+      - "交给与上一次不同的检出之前，清空这个浏览器的 HTTP 缓存；cookie、本地存储和登录保留"
       - "缺省端口被别的进程占用时顺延到下一个空闲端口，不报错；实际端口写在 run.env 与 browser status 里，不干扰占用缺省端口的进程"
       - "执行者只通过 CDP 连接，不启动浏览器，也不运行 playwright install"
       - "不碰用户日常 Chrome"
     scenarios:
       - id: BRW-02-P01
         polarity: positive
-        title: main 与 wt1 的 Web 运行各用一个无头 CfT，日常 Chrome 不受影响
+        title: main 与 wt1 的 Web 运行先后使用同一个 merchant 浏览器，日常 Chrome 不受影响
         actor: 执行会话
         priority: P0
         verify: cli
         initial_state: ["浏览器运行时已安装（BRW-01-P01）", "身份 merchant 是声明的测试账号：profile 没有登录态时，由执行者先 identity record 再用声明的凭据登录，登录不录进证据", "没有运行中的 CfT"]
         steps:
-          - "在 main 运行 sop-board run prepare --scope shop#W --session S1，读取 runs/<编号>/run.env"
+          - "在 main 运行 sop-board run prepare --scope shop#W --identity merchant --session S1，读取 runs/<编号>/run.env"
           - "用 ps 查看新出现的浏览器进程的可执行文件、命令行参数与父进程；curl PW_CDP_ENDPOINT 的 /json/version"
           - "执行者用 playwright-acceptance 模板经 PW_CDP_ENDPOINT 执行 shop#W 并 run submit"
-          - "在 wt1 重复以上步骤（会话 S2）"
+          - "在 wt1 重复以上步骤（会话 S2），用 ps 查看 CfT 进程"
           - "检查日常 Chrome 的进程号、profile 目录清单与 mtime，以及 ms-playwright 缓存清单"
         expected:
-          - "run.env 含 PW_CDP_ENDPOINT、PW_IDENTITIES（merchant 带 endpoint）、PLAYWRIGHT_BROWSERS_PATH（运行时的 browsers 目录）、PW_NODE_ROOT，以及取自 adapter ready 输出的入口地址变量"
+          - "run.env 含 PW_CDP_ENDPOINT、PW_IDENTITIES（只有 merchant，带 endpoint）、PLAYWRIGHT_BROWSERS_PATH（运行时的 browsers 目录）、PW_NODE_ROOT，以及取自 adapter ready 输出的入口地址变量"
           - "浏览器可执行文件为 runtime.json 记录的 CfT，父进程是 sop-board serve 守护进程"
-          - "main 的参数含 --user-data-dir=$D 下的 browsers/main/merchant/profile、--remote-debugging-port（缺省端口 9400 + merchant 序号；它被别的进程占用时为顺延后的端口，与 run.env 一致）、--no-first-run、--no-default-browser-check、--use-mock-keychain、--headless=new，不含 --enable-automation"
-          - "wt1 的 CfT 使用 browsers/wt1/merchant/profile 与缺省端口 9400 + s1×20 + merchant 序号（被占用时为顺延后的端口），两个浏览器同时存在"
+          - "参数含 --user-data-dir=$D 下的 browsers/merchant/profile、--remote-debugging-port（缺省端口 9400 + merchant 序号；它被别的进程占用时为顺延后的端口，与 run.env 一致）、--no-first-run、--no-default-browser-check、--use-mock-keychain、--headless=new，不含 --enable-automation"
+          - "wt1 的运行沿用同一个 CfT：进程号与调试端口不变，PW_CDP_ENDPOINT 与 main 那次相同，没有启动新的浏览器"
           - "/json/version 有应答；shop#W 的结果在两个检出各自登记并附截图证据"
           - "日常 Chrome 进程号不变，没有 CfT 进程打开或写入日常 Chrome 的 profile 目录，ms-playwright 缓存没有变化"
         forbidden_effects:
           - "启动、结束、连接或改动用户日常 Chrome 及其 profile"
           - "执行者自行启动浏览器或运行 playwright install"
           - "使用共享 ms-playwright 缓存或 WebKit"
-          - "两个检出共用一个 profile"
-        refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 7 条"]
+          - "为 wt1 另起一个 merchant 浏览器，或另建一份 merchant 的 profile"
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）", "使用者 2026-11-10 对场景集待确认问题的答复 第 7 条"]
         evidence_hints: ["run.env（凭据脱敏）", "ps 输出", "/json/version 响应", "日常 Chrome 与缓存前后对比"]
+      - id: BRW-02-P02
+        polarity: positive
+        title: port_step 为 0 时环境换到 wt1，merchant 浏览器沿用同一进程与登录，页面加载的是 wt1 的静态脚本
+        actor: 执行会话
+        priority: P0
+        verify: web
+        initial_state:
+          - "config.yaml 中 port_step 为 0；演示商城首页引用的静态脚本响应带长缓存头"
+          - "main 上已用 merchant 执行过 shop#W 并提交：merchant 的无头浏览器加载过 main 的首页与静态脚本，处于登录状态；记录它的进程号；main 没有 prepared 的运行"
+          - "wt1 修改了该静态脚本，使首页显示“wt1 脚本”（未提交）"
+        steps:
+          - "在 wt1 运行 sop-board run prepare --scope shop#W --identity merchant --session S2，读取 run.env"
+          - "执行者经 PW_CDP_ENDPOINT 打开入口首页，查看页面上的脚本标记与登录状态；用 ps 查看 CfT 进程，运行 sop-board browser status --json"
+          - "执行者执行 shop#W 并 run submit"
+        expected:
+          - "run prepare 成功（环境换到 wt1，见 ENV-03），PW_CDP_ENDPOINT 与 main 那次相同；CfT 进程号不变"
+          - "首页显示“wt1 脚本”：静态脚本重新取自 wt1 的环境，没有用 main 时缓存下来的版本"
+          - "merchant 仍是登录状态，不出现登录表单"
+          - "browser status 显示 merchant 最近一次交给的检出是 wt1"
+        forbidden_effects:
+          - "页面用的是 main 时缓存下来的静态脚本"
+          - "换检出时 cookie 或登录被清掉"
+          - "为 wt1 另起一个 merchant 浏览器"
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["首页截图（含脚本标记）", "ps 输出", "browser status 输出", "run.env（凭据脱敏）"]
       - id: BRW-02-N01
         polarity: negative
         negative_type: concurrency
@@ -116,7 +151,7 @@ sops:
         verify: cli
         initial_state:
           - "浏览器运行时已安装；没有运行中的 CfT；身份 merchant 是声明的测试账号，profile 没有登录态时由执行者先 identity record 再用声明的凭据登录"
-          - "main 检出上 merchant 的缺省调试端口（9400 + merchant 序号）正被一个与项目无关的进程监听，记录它的进程号"
+          - "merchant 的缺省调试端口（9400 + merchant 序号）正被一个与项目无关的进程监听，记录它的进程号"
         steps:
           - "在 main 运行 sop-board run prepare --scope shop#W --session S1 --json，读取 runs/<编号>/run.env"
           - "运行 sop-board browser status --json；用 ps 查看 CfT 的 --remote-debugging-port；curl PW_CDP_ENDPOINT 的 /json/version"
@@ -133,13 +168,37 @@ sops:
           - "run.env 给出的端口与 CfT 实际监听的端口不一致"
         refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
         evidence_hints: ["占用缺省端口的进程前后的 ps 与 lsof 输出", "run prepare 输出与 run.env（凭据脱敏）", "browser status 输出", "/json/version 响应", "shop#W 的结果与截图"]
+      - id: BRW-02-N02
+        polarity: negative
+        negative_type: concurrency
+        title: merchant 被 main 的运行占着时，wt1 的准备返回 browser-busy；带 --wait 等到 main 的运行提交后拿到同一个浏览器
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "port_step 为 100，main 与 wt1 的环境都在运行"
+          - "main 已运行 sop-board run prepare --scope shop#W --identity merchant --session S1，得到运行 R1；记录 merchant 的 CfT 进程号"
+        steps:
+          - "在 wt1 运行 sop-board run prepare --scope shop#W --identity merchant --session S2 --json"
+          - "在 wt1 后台运行 sop-board run prepare --scope shop#W --identity merchant --session S2 --wait 300 --json；随后 R1 的执行者执行 shop#W 并提交 R1"
+          - "wt1 的命令返回后，读取它的 run.env，用 ps 查看 CfT 进程"
+        expected:
+          - "第 1 步立即以业务失败退出（退出码 1），错误为 browser-busy，写明 merchant 正被 main 的运行 R1 持有；wt1 没有新建 prepared 运行"
+          - "R1 提交后 wt1 的准备成功，得到运行 R2"
+          - "R2 的 PW_CDP_ENDPOINT 指向同一个 merchant 浏览器，CfT 进程号不变，没有启动新的浏览器"
+        forbidden_effects:
+          - "两个运行同时持有 merchant"
+          - "为 wt1 另起一个 merchant 浏览器"
+          - "R1 提交后 wt1 仍返回 browser-busy，或一直等到超时"
+        refs: ["docs/design.md#浏览器代理（问题 5、6）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["各命令的输出与耗时", "ps 输出", "R2 的 run.env（凭据脱敏）"]
 
   - id: BRW-03
     title: 真人在有界面的 CfT 窗口完成登录或验证，用 browser release 交还
     actor: 开发者
     entry: "sop-board browser open --identity merchant [--headed]、browser release、browser status、browser close"
     must:
-      - "有界面窗口与无头运行使用同一份 profile；真人操作期间持有 human 租约，期间该身份的 Web 运行返回 browser-busy"
+      - "有界面窗口与无头运行使用同一份 profile；真人操作期间持有 human 租约，期间该身份的 Web 运行返回 browser-busy，带 --wait 时排队等交还"
       - "browser release 只解除 human 租约，窗口与页面保持打开；之后取得租约的运行和不带 --headed 的 browser open 都沿用这个浏览器进程，不重启成无头"
       - "browser close 结束浏览器并释放租约，只在要关掉浏览器时使用"
       - "出现 browser may not be secure 时停止，该身份的场景记为受阻并写明原文；不回退到用户日常 Chrome，也不改 UA 或参数绕过"
@@ -194,7 +253,7 @@ sops:
           - "运行 sop-board run prepare --scope shop#W --session S2，执行者经 PW_CDP_ENDPOINT 重跑 shop#W 并 run submit；期间用 ps 查看 CfT 进程"
           - "在工作台打开 shop#W 并展开历史，运行 sop-board attention list"
         expected:
-          - "browser open --headed 弹出有界面的 CfT 窗口并打开演示项目入口；merchant 在 main 只有这一个 CfT 进程，参数不含 --headless=new"
+          - "browser open --headed 弹出有界面的 CfT 窗口并打开演示项目入口；merchant 只有这一个 CfT 进程，参数不含 --headless=new"
           - "release 后 human 租约解除，CfT 进程号不变，窗口与登录后的订单页仍然打开"
           - "重跑的 run prepare 成功，没有启动新的浏览器进程：CfT 进程号与 release 前相同，仍是有界面窗口"
           - "重跑的执行者直接看到订单页，没有出现登录页；shop#W 登记为通过并附截图"
@@ -219,7 +278,7 @@ sops:
         expected:
           - "以业务失败退出（退出码 1），错误为 browser-busy"
           - "有界面窗口保持打开，human 租约不变"
-        forbidden_effects: ["关闭或接管真人正在使用的窗口", "排队等待租约"]
+        forbidden_effects: ["关闭或接管真人正在使用的窗口", "没带 --wait 却排队等待租约"]
         refs: ["docs/design.md#浏览器代理（问题 5、6）"]
 
   - id: BRW-04
@@ -427,8 +486,8 @@ sops:
         verify: cli
         initial_state:
           - "浏览器运行时已安装，看板在运行，main 的环境在运行"
-          - "main 上 merchant 的有界面窗口已由 sop-board browser open --identity merchant --headed 打开；执行者先 identity record，再用声明的凭据在其中登录并停在订单页（登录不录进证据），随后 browser release。记录这个 CfT 的进程号与调试端口"
-          - "wt1 上 merchant 的无头浏览器也在运行（由 wt1 的一次 run prepare 启动），记录其进程号"
+          - "merchant 的有界面窗口已由 sop-board browser open --identity merchant --headed 打开；执行者先 identity record，再用声明的凭据在其中登录并停在订单页（登录不录进证据），随后 browser release。记录这个 CfT 的进程号与调试端口"
+          - "merchant2 的无头浏览器也在运行（由 wt1 的一次 run prepare --scope shop#W --identity merchant2 启动，该运行已提交），记录其进程号"
         steps:
           - "向 sop-board serve 进程发 SIGTERM，等它退出，保存它的输出；用 ps 查看两个 CfT 进程与环境进程，curl 有界面窗口调试端口的 /json/list"
           - "重新运行 sop-board serve demo --data $D --lan，运行 sop-board browser status --json"
@@ -436,8 +495,8 @@ sops:
           - "运行 sop-board browser close --identity merchant，用 ps 与 browser status 查看"
         expected:
           - "看板退出后，有界面窗口的 CfT 进程仍在、进程号不变，/json/list 中仍有登录后的订单页；serve 的输出写明保留了 merchant 的有界面窗口"
-          - "wt1 的无头 CfT 进程与环境进程都已结束"
-          - "重新启动后 browser status 显示 main 的 merchant 为运行中、有界面，进程号与调试端口和停止前相同，没有租约"
+          - "merchant2 的无头 CfT 进程与环境进程都已结束"
+          - "重新启动后 browser status 显示 merchant 为运行中、有界面，进程号与调试端口和停止前相同，没有租约"
           - "run prepare 成功，没有启动新的浏览器进程：PW_CDP_ENDPOINT 指向原来的调试端口，CfT 进程号不变"
           - "执行者打开入口时已是 merchant 登录状态，不出现登录表单；shop#W 登记成功并附截图"
           - "browser close 后该 CfT 进程结束，browser status 显示 merchant 的浏览器未运行"
@@ -456,7 +515,7 @@ sops:
         verify: cli
         initial_state:
           - "浏览器运行时已安装，看板在运行"
-          - "main 上 merchant 的有界面窗口已打开、已登录并已 browser release（同 BRW-07-P01 的起点）；wt1 上 merchant 的无头浏览器也在运行。记录两个 CfT 的进程号与调试端口"
+          - "merchant 的有界面窗口已打开、已登录并已 browser release（同 BRW-07-P01 的起点）；merchant2 的无头浏览器也在运行。记录两个 CfT 的进程号与调试端口"
           - "main 与 wt1 的环境都已用 sop-board env down 停掉（看板被强杀并且数据库重建时，遗留的环境进程不会被清理）"
         steps:
           - "用 kill -9 结束 sop-board serve 进程，用 ps 确认两个 CfT 进程都还在"
@@ -464,7 +523,7 @@ sops:
           - "重新运行 sop-board serve demo --data $D --lan；运行 sop-board browser status --json，用 ps 查看两个 CfT 进程"
           - "在 main 运行 sop-board run prepare --scope shop#W --session S2，执行者经 PW_CDP_ENDPOINT 打开入口；期间用 ps 查看 CfT 进程"
         expected:
-          - "重新启动后 main 的 merchant 有界面窗口被认回：browser status 显示运行中、有界面，进程号与调试端口不变"
+          - "重新启动后 merchant 的有界面窗口被认回：browser status 显示运行中、有界面，进程号与调试端口不变"
           - "遗留的无头 CfT 进程已被结束"
           - "run prepare 成功，没有启动新的浏览器进程，PW_CDP_ENDPOINT 指向原来的调试端口；执行者看到的仍是登录后的页面"
           - "$D/demo/runs 下原有的运行目录及其中的文件都还在，新的运行用了没有被占用的目录"
@@ -483,7 +542,7 @@ sops:
         priority: P1
         verify: cli
         initial_state:
-          - "浏览器运行时已安装，看板在运行；main 上 merchant 的有界面窗口已打开并已 browser release，记录它的进程号"
+          - "浏览器运行时已安装，看板在运行；merchant 的有界面窗口已打开并已 browser release，记录它的进程号"
         steps:
           - "向 sop-board serve 进程发 SIGTERM，等它退出"
           - "结束那个有界面的 CfT 进程（代表使用者在看板停着时关掉了窗口），用 ps 确认它已不在"
@@ -506,7 +565,7 @@ sops:
         priority: P1
         verify: cli
         initial_state:
-          - "main 上 merchant 的有界面窗口在看板重启后已被认回（按 BRW-07-P01 的前三步产生）"
+          - "merchant 的有界面窗口在看板重启后已被认回（按 BRW-07-P01 的前三步产生）"
           - "已在 main 运行 sop-board run prepare --scope shop#W --session S1，得到运行 R；没有未解决的待人处理"
         steps:
           - "执行期间用 kill -ABRT 结束那个认回的 CfT 进程，等待 10 秒，用 ps 查看是否有新的 CfT 进程"
@@ -529,7 +588,7 @@ sops:
         priority: P0
         verify: cli
         initial_state:
-          - "浏览器运行时已安装，看板在运行；main 上 merchant 的有界面窗口已打开、已登录并已 browser release，记录它的进程号与调试端口"
+          - "浏览器运行时已安装，看板在运行；merchant 的有界面窗口已打开、已登录并已 browser release，记录它的进程号与调试端口"
         steps:
           - "向 sop-board serve 进程发 SIGTERM，等它退出；用 kill -STOP 暂停那个有界面的 CfT 进程，使它的调试端口不再应答"
           - "重新运行 sop-board serve demo --data $D --lan，等待 20 秒；运行 sop-board browser status --json，用 ps 查看那个 CfT 进程"

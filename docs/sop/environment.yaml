@@ -1,4 +1,4 @@
-# v10 现行场景：按检出启停环境、端口偏移、port_step: 0 的租约冲突
+# v10 现行场景：按检出启停环境、端口偏移、port_step: 0 时环境在检出之间排队轮流使用、看板的停止与重启
 # 预期依据：docs/design.md（2026-11-10 blur.yin 批准）。版本 1 由未参与实现的审核方在实现前编写；实现与返工会话只读本文件。
 # 共用前置：演示项目同 setup.yaml 文件头（app、lib 两仓，项目 demo，数据目录 $D，场景 shop#X/A/B/W）。
 #   另需：已用 checkout create wt1 建立检出 wt1（槽位记为 s1）；看板已以 sop-board serve demo --data $D --lan 启动；
@@ -6,6 +6,9 @@
 #   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 22（使用者 2026-11-12 决定）修订：新增 ENV-05（服务状态与部分就绪）、ENV-06（停启服务与自动恢复）。
 #   版本 3 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：ENV-02 的“结果按检出隔离”改为结果按分支归属、本分支有结论的场景不受其他检出影响。
 #   版本 4 由未参与实现的审核方按统一验收（2026-11-12）指出的问题修订 ENV-02-P01 的禁止项：写明别的分支上内容不同的结果不得列入本检出的历史。
+#   版本 5 按 docs/design.md 已定决策 28（使用者 2026-11-13 决定）修订，由起草该决策的会话在实现前写成：ENV-03 由“直接返回 env-busy、不排队”
+#   改为环境由 prepared 运行占住、空闲时自动换给等待的检出、--wait 排队（重写 P01、N01，新增 P02、N02）；ENV-06 增加“这套环境上只有这一个
+#   prepared 运行”的条件与 run-ambiguous（新增 N04）；新增 ENV-07（stop 与 restart）。merchant2 是演示项目 web 入口的第二个合成测试账号，见 browser.yaml 文件头。
 # 库存演示项目（ENV-05、ENV-06 使用，run.yaml、guard.yaml、workbench.yaml、report.yaml 引用）：
 #   - 生成命令加 --with-stock，在临时目录生成 app、lib、stock 三个 Git 仓库。stock 是库存服务，商城下单依赖它。
 #     以另一个临时数据目录 $S init 为项目 demo，登记三个仓库（下称“三个仓库都已登记”），看板以 sop-board serve demo --data $S --lan 启动。
@@ -17,8 +20,8 @@
 #   - 演示 env.py 的两个验收开关（取自启动守护进程时的环境）：DEMO_STOCK_IGNORE_STOP=1 时忽略对 stock 的停止请求；DEMO_STOCK_CRASH=1 时库存服务启动后立即异常退出。
 
 metadata:
-  requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时按租约轮流使用，冲突时返回 env-busy 并写明占用者；adapter 声明并上报各服务的状态，环境不要求所有服务都在运行；运行中可用 env stop|start 停启声明为可停的服务，提交或放弃运行时自动恢复"
-  version: 4
+  requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时环境在检出之间轮流使用：由 prepared 运行占住，空闲时自动换给等待的检出，被占着时返回写明占用者与排队情况的 env-busy，带 --wait 时在本机排队；adapter 声明并上报各服务的状态，环境不要求所有服务都在运行；运行中可用 env stop|start 停启声明为可停的服务，要求这套环境上只有这一个运行，提交或放弃运行时自动恢复；stop 正常停止看板，restart 换守护进程而不打断进行中的工作"
+  version: 5
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -34,7 +37,10 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（结论按分支归属、本分支优先）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
-  tags: ["environment", "checkout", "ports", "lease", "services", "fault"]
+    - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用"
+      version: "2026-11-13"
+      confirmed_by: "blur.yin"
+  tags: ["environment", "checkout", "ports", "lease", "services", "fault", "queue", "restart"]
 
 sops:
   - id: ENV-01
@@ -118,46 +124,104 @@ sops:
         evidence_hints: ["两份 run 目录清单", "两个入口的请求响应", "results 表按检出的只读查询", "工作台两个检出的截图"]
 
   - id: ENV-03
-    title: port_step 为 0 时各检出按租约轮流使用同一组端口
+    title: port_step 为 0 时环境在检出之间排队轮流使用
     actor: 开发者
-    entry: "sop-board env up|down、run prepare"
-    must: ["租约属于持有端口的检出；另一检出的 run prepare 与 env up 直接返回 env-busy，写明占用的检出、运行编号和 env down 命令；不排队，也不互相覆盖"]
+    entry: "sop-board run prepare [--wait 秒]、run submit、env up|status；本机看板概况页"
+    must:
+      - "环境由当前检出的 prepared 运行占住；没有 prepared 运行时就是空闲，别的检出要用时由守护进程停掉它、为那个检出拉起，不用谁去 env down；只用 env up 拉起、没有运行在用的环境不算占用"
+      - "环境被别的检出占着时，run prepare 不带 --wait 立即返回 env-busy；带 --wait 时在本机排队，最多等给定的秒数，轮到了照常准备，超时返回 env-busy；两种输出都写明占用的检出与运行，以及排第几、前面是谁（检出、运行、会话、等了多久）"
+      - "队列按到达先后；等待者按会话编号识别，请求结束后 60 秒内同一会话再来，保留原来的位置"
+      - "有别的检出在等环境时，占用环境的检出不能再开始新的运行，新运行排在等待者后面"
+      - "env up 遇到别的检出占着环境时直接返回 env-busy；不互相覆盖"
+      - "本机看板概况页显示环境当前属于哪个检出、哪些运行在用、谁在等"
     scenarios:
       - id: ENV-03-P01
         polarity: positive
-        title: 持有方 env down 后，另一检出可以使用同一组端口
-        actor: 开发者
-        priority: P1
-        verify: cli
-        initial_state: ["config.yaml 中 port_step 为 0", "main 的环境在运行，wt1 没有环境", "wt1 的 app 首页标题改为“wt1 版本”（未提交）"]
-        steps:
-          - "在 main 运行 sop-board env down"
-          - "在 wt1 运行 sop-board env up，curl 入口首页"
-          - "在 main 运行 sop-board env up"
-        expected:
-          - "wt1 env up 成功，端口为 P，入口返回“wt1 版本”"
-          - "main 的 env up 返回 env-busy，写明占用检出为 wt1 及 env down 命令"
-        forbidden_effects: ["main 的 env up 停掉 wt1 的环境或抢占端口"]
-        refs: ["docs/design.md#检出与环境（问题 3）"]
-      - id: ENV-03-N01
-        polarity: negative
-        negative_type: concurrency
-        title: 端口被 main 的运行占用时，wt1 得到写明占用者的 env-busy
+        title: main 的运行提交后，wt1 排队中的准备自动换到 wt1 的环境
         actor: 开发者
         priority: P0
         verify: cli
-        initial_state: ["config.yaml 中 port_step 为 0", "main 已运行 sop-board run prepare --scope all --session S1，得到运行 R1，环境在运行"]
+        initial_state:
+          - "config.yaml 中 port_step 为 0"
+          - "main 已运行 sop-board run prepare --scope shop#A --session S1，得到运行 R1，环境在运行；记录 main 环境的进程号"
+          - "wt1 的 app 首页标题改为“wt1 版本”（未提交）"
+        steps:
+          - "在 wt1 后台运行 sop-board run prepare --scope shop#A --session S2 --wait 300 --json 并计时"
+          - "等待期间本机浏览器打开看板概况页"
+          - "执行者经 R1 的入口执行 shop#A，写出结果后在 main 运行 sop-board run submit --run R1"
+          - "wt1 的命令返回后 curl 入口首页，运行 sop-board env status --all --json，再在 main 运行 sop-board env up --json"
+        expected:
+          - "等待期间 wt1 的命令没有返回；概况页显示环境属于 main、运行 R1 在用，wt1 的会话 S2 在排队、排第 1"
+          - "R1 提交后，wt1 的 run prepare 在环境拉起所需的时间内成功（退出码 0）并得到运行 R2，输出写明环境从 main 换到了 wt1"
+          - "main 原来的环境进程已结束；入口首页返回“wt1 版本”；env status --all 显示 main 的环境已停止、wt1 的环境就绪"
+          - "main 的 env up 以业务失败退出（退出码 1），错误为 env-busy，写明占用的检出 wt1 与运行 R2"
+        forbidden_effects:
+          - "R1 还是 prepared 时环境就被换走"
+          - "R1 提交后 wt1 的命令仍返回 env-busy，或一直等到超时"
+          - "main 的 env up 停掉 wt1 的环境"
+          - "R1 的结果丢失或被记到 wt1"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["wt1 命令的输出与耗时", "等待期间的概况页截图", "环境进程号前后对照", "curl 响应与 env status 输出"]
+      - id: ENV-03-P02
+        polarity: positive
+        title: main 的环境没有运行在用时，wt1 的准备直接换用环境，不用 env down
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["config.yaml 中 port_step 为 0", "main 的环境由 sop-board env up 拉起并在运行，main 没有 prepared 的运行；记录其进程号", "wt1 的 app 首页标题改为“wt1 版本”（未提交）"]
+        steps:
+          - "在 wt1 运行 sop-board run prepare --scope shop#A --session S2 --json（不带 --wait）"
+          - "curl 入口首页，运行 sop-board env status --all --json"
+        expected:
+          - "run prepare 成功（退出码 0），输出写明环境从 main 换到了 wt1"
+          - "main 原来的环境进程已结束，入口首页返回“wt1 版本”；env status --all 显示 main 的环境已停止、wt1 的环境就绪"
+        forbidden_effects: ["因为 main 的环境在运行而返回 env-busy", "要求先运行 env down"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+      - id: ENV-03-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 环境被 main 的运行占着时，wt1 不带 --wait 立即得到写明占用者的 env-busy，带 --wait 等到超时再返回
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["config.yaml 中 port_step 为 0", "main 已运行 sop-board run prepare --scope all --session S1，得到运行 R1，环境在运行；记录其进程号"]
         steps:
           - "在 wt1 运行 sop-board env up --json"
           - "在 wt1 运行 sop-board run prepare --scope all --session S2 --json"
+          - "在 wt1 运行 sop-board run prepare --scope all --session S2 --wait 5 --json 并计时"
           - "在 main 运行 sop-board env status，并 curl main 的入口"
         expected:
-          - "两条 wt1 命令都以业务失败退出（退出码 1），错误为 env-busy，写明占用检出 main、运行编号 R1 和 sop-board env down 命令"
+          - "前两条 wt1 命令立即以业务失败退出（退出码 1），错误为 env-busy，写明占用的检出 main 与运行 R1"
+          - "带 --wait 5 的命令约 5 秒后以 env-busy 退出，输出写明会话 S2 排第 1、已等约 5 秒"
           - "wt1 没有新建 prepared 运行"
           - "main 环境进程号不变，入口照常应答"
-        forbidden_effects: ["wt1 的请求排队等待", "wt1 的环境覆盖或停止 main 的环境", "错误信息不写占用者"]
-        refs: ["docs/design.md#检出与环境（问题 3）"]
-        evidence_hints: ["命令原文与输出", "leases 表只读查询"]
+        forbidden_effects: ["wt1 的环境覆盖或停止 main 的环境", "错误信息不写占用者", "带 --wait 的命令超过给定秒数仍不返回"]
+        refs: ["docs/design.md#检出与环境（问题 3）", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["命令原文、输出与耗时", "leases 表只读查询"]
+      - id: ENV-03-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 有别的检出在等环境时，占用环境的检出不能插队开始新的运行；等待者断开后很快再来，保留原来的位置
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["config.yaml 中 port_step 为 0", "main 已运行 sop-board run prepare --scope shop#A --session S1，得到运行 R1，环境在运行"]
+        steps:
+          - "在 wt1 运行 sop-board run prepare --scope shop#B --session S2 --wait 5 --json"
+          - "在第 1 步结束后 60 秒内，在 main 运行 sop-board run prepare --scope shop#B --session S3 --wait 5 --json"
+          - "在第 1 步结束后 60 秒内，在 wt1 后台再次运行 sop-board run prepare --scope shop#B --session S2 --wait 300 --json；随后执行者执行 shop#A 并提交 R1"
+          - "wt1 的命令返回后，在 main 运行 sop-board run prepare --scope shop#B --session S3 --json"
+        expected:
+          - "第 1 步约 5 秒后以 env-busy 退出，S2 排第 1"
+          - "第 2 步约 5 秒后以 env-busy 退出，写明前面有 wt1 的会话 S2；main 没有新建 prepared 运行"
+          - "第 3 步中 S2 仍排第 1；R1 提交后 wt1 的准备成功，环境换到 wt1"
+          - "第 4 步以 env-busy 退出，写明占用的检出 wt1 与 S2 的运行"
+        forbidden_effects:
+          - "S2 在排队时，main 的 S3 准备成功"
+          - "S2 断开后 60 秒内再来，却排到 S3 之后"
+          - "wt1 的运行还是 prepared 时环境换回 main"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["各命令的输出与耗时", "排队期间的概况页截图"]
 
   - id: ENV-04
     title: 守护进程重启后清理孤儿进程组
@@ -266,7 +330,8 @@ sops:
     entry: "sop-board env stop <服务>、env start <服务>、env status、env restart；run submit、run abandon"
     must:
       - "只能停 stoppable 为真的服务；命令等状态变为目标值才返回，超过 adapter.service_timeout（缺省 60 秒）返回 service-timeout"
-      - "两条命令只在本检出有 prepared 运行时可用，否则返回 run-required；运行之外要恢复环境，用 env restart"
+      - "两条命令只在本检出有 prepared 运行、且这套环境上只有这一个 prepared 运行时可用：没有运行返回 run-required（运行之外要恢复环境，用 env restart），还有别的运行返回 env-shared 并列出它们；有服务被停着时，别的运行要用这套环境就排队"
+      - "命令按 --run 找运行，其次 SOP_BOARD_RUN；本检出有多个 prepared 运行又没有指明时返回 run-ambiguous，列出各运行"
       - "每次停启记进本轮运行：谁、什么时候、哪个服务、停还是启；run submit 或 run abandon 时还停着的服务自动恢复并记录"
       - "没声明 services 返回 service-not-declared，名称不在声明里返回 service-unknown，不可停返回 service-not-stoppable"
     scenarios:
@@ -371,3 +436,109 @@ sops:
         forbidden_effects: ["命令一直等待不返回", "超时后停止请求仍留着，库存服务稍后被停掉", "把 stock 记为已停止"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
         evidence_hints: ["命令输出与耗时", "services 目录清单", "env status 输出", "curl 响应"]
+      - id: ENV-06-N04
+        polarity: negative
+        negative_type: concurrency
+        title: 同一环境上还有别的运行时不能停服务；只剩一个运行时可以停，停着期间别的运行排队
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "库存演示项目（三个仓库都已登记）的环境在运行，shop 与 stock 都是运行中"
+          - "已运行 sop-board run prepare --scope stock#S --session S1 得到运行 R1，再运行 sop-board run prepare --scope stock#K --session S2 得到运行 R2"
+        steps:
+          - "在没有设置 SOP_BOARD_RUN 的终端运行 sop-board env stop stock --json"
+          - "运行 sop-board env stop stock --run R1 --json，再运行 sop-board env status --json"
+          - "执行者执行 stock#K 并提交 R2；再运行 sop-board env stop stock --run R1 --json"
+          - "运行 sop-board run prepare --scope stock#K --session S3 --wait 5 --json 并计时"
+          - "运行 sop-board env start stock --run R1 --json，再运行 sop-board run prepare --scope stock#K --session S3 --json"
+          - "只读查询运行 R1 与 R2 的停启记录"
+        expected:
+          - "第 1 步以业务失败退出（退出码 1），error_code 为 run-ambiguous，列出 R1 与 R2"
+          - "第 2 步以业务失败退出，error_code 为 env-shared，列出运行 R2；stock 仍为运行中"
+          - "R2 提交后，第 3 步的停止成功，stock 为已停止"
+          - "第 4 步约 5 秒后以 env-busy 退出，写明 stock 正被运行 R1 停着"
+          - "启动 stock 后 S3 的准备成功"
+          - "R1 依次有停止 stock、启动 stock 两条记录；R2 没有停启记录"
+        forbidden_effects:
+          - "还有别的 prepared 运行时 stock 被停掉"
+          - "stock 停着期间别的运行准备成功"
+          - "被拒绝的停止记进运行的停启记录"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#检出与环境（问题 3）"]
+        evidence_hints: ["各命令的输出与耗时", "env status 输出", "运行 R1、R2 停启记录的只读查询"]
+
+  - id: ENV-07
+    title: 用命令停止或重启看板，重启不打断进行中的工作
+    actor: 开发者
+    entry: "sop-board stop、sop-board restart；env status、browser status、launch status、run submit；<数据目录>/serve.log"
+    must:
+      - "stop 让守护进程按现有规则正常停止（停掉环境、无头浏览器和启动的会话，保留有界面的窗口），等它退出后输出保留了哪些窗口；守护进程没在运行时返回 daemon-not-running"
+      - "restart 换一个守护进程：保留全部浏览器（有界面的和无头的）、浏览器租约、启动的会话和 prepared 的运行；旧进程停掉环境，新进程沿用原来的端口与 --lan，在后台运行，输出追加到 <数据目录>/serve.log，并重新拉起原来在运行的环境"
+      - "restart 的输出列出保留与认回的浏览器和会话，以及正在重新拉起的环境"
+      - "重启期间 CLI 等新进程就绪（最多 120 秒），不返回 daemon-not-running；受影响的 prepared 运行记一条“环境随看板重启中断”（起止时间），运行摘要里列出"
+      - "在 Codex 沙箱里 restart 拒绝执行，提示在终端运行"
+    scenarios:
+      - id: ENV-07-P01
+        polarity: positive
+        title: 执行中运行 restart，浏览器、租约、启动的会话与运行都还在，环境重新拉起后继续执行
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "看板以 sop-board serve demo --data $D --lan 在后台运行，记录它的进程号、端口与内网地址；main 与 wt1 的环境都在运行（port_step 为 100）"
+          - "main 已运行 sop-board run prepare --scope shop#W --session S1，得到运行 R1；merchant 的无头浏览器由 R1 持有租约，记录其进程号与调试端口"
+          - "wt1 已运行 sop-board run launch --scope shop#A，启动的会话正在执行，记录启动编号 L1 与会话进程号"
+        steps:
+          - "运行 sop-board restart --json，保存输出"
+          - "紧接着运行 sop-board env status --all --json、sop-board browser status --json 与 sop-board launch status --json；用 ps 查看看板、两个检出的环境、merchant 的 CfT 与 L1 的会话进程"
+          - "环境就绪后，R1 的执行者经 PW_CDP_ENDPOINT 执行 shop#W，在 main 运行 sop-board run submit --run R1；等 L1 结束"
+          - "查看 R1 的运行摘要与 <数据目录>/serve.log；内网设备从原来的内网地址打开看板"
+        expected:
+          - "restart 以退出码 0 返回，输出列出保留与认回的 merchant 浏览器和启动 L1，以及正在重新拉起的 main 与 wt1 环境"
+          - "新的看板进程号与原来不同，端口与内网地址不变；serve.log 在原有内容之后追加了新进程的输出"
+          - "紧接着运行的命令都成功返回（期间等新进程就绪），没有返回 daemon-not-running"
+          - "merchant 的 CfT 进程号与调试端口不变，仍是无头，browser status 显示租约仍由 R1 持有；L1 的会话进程号不变，launch status 显示 L1 仍在运行"
+          - "两个检出的环境进程是新的，并重新就绪"
+          - "R1 提交成功，shop#W 登记了实际执行的结果；R1 的运行摘要有一条“环境随看板重启中断”，写明起止时间"
+          - "L1 结束后不是 failed，wt1 有它提交的运行"
+        forbidden_effects:
+          - "重启结束或重开任何浏览器，或释放 R1 的租约"
+          - "重启结束 L1 的会话，或把 L1 记为 failed"
+          - "重启把 R1 作废或改成别的状态"
+          - "重启期间的命令返回 daemon-not-running"
+          - "shop#W 因为重启造成的中断被记为失败或受阻"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#进程与入口", "docs/design.md#浏览器代理（问题 5、6）"]
+        evidence_hints: ["restart 输出", "重启前后的 ps 输出（进程号、参数）", "env status、browser status、launch status 输出", "R1 的运行摘要", "serve.log 片段"]
+      - id: ENV-07-P02
+        polarity: positive
+        title: stop 等看板退出后列出保留的有界面窗口，环境与无头浏览器都已停止
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "看板在运行，main 的环境在运行"
+          - "merchant 的有界面窗口已由 sop-board browser open --identity merchant --headed 打开并已 browser release；merchant2 的无头浏览器在运行（由一次 run prepare --scope shop#W --identity merchant2 启动，该运行已提交）。记录两个 CfT 与环境的进程号"
+        steps:
+          - "运行 sop-board stop --json，命令返回后立即用 ps 查看看板、环境与两个 CfT 进程，查看 <数据目录>/daemon.json 是否存在"
+          - "再运行一次 sop-board stop --json"
+        expected:
+          - "第一次 stop 以退出码 0 返回，返回时看板进程已退出；输出列出保留的 merchant 有界面窗口及其进程号与调试端口"
+          - "merchant 的 CfT 进程仍在、进程号不变；merchant2 的无头 CfT 与环境进程都已结束；daemon.json 已删除"
+          - "第二次 stop 以业务失败退出（退出码 1），错误为 daemon-not-running"
+        forbidden_effects: ["stop 在看板退出之前返回", "结束有界面的窗口", "看板退出后环境或无头浏览器仍在运行"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#进程与入口"]
+        evidence_hints: ["两次 stop 的输出", "ps 输出", "daemon.json 是否存在"]
+      - id: ENV-07-N01
+        polarity: negative
+        negative_type: permission
+        title: 在 Codex 沙箱里运行 restart 时拒绝执行，提示在终端运行
+        actor: 执行会话
+        priority: P2
+        verify: cli
+        initial_state: ["看板在运行，记录它的进程号", "替代做法（只核对提示，不核对沙箱本身）：在终端以环境变量 CODEX_SANDBOX=seatbelt 运行命令"]
+        steps: ["以 CODEX_SANDBOX=seatbelt 运行 sop-board restart --json", "用 ps 查看看板进程"]
+        expected:
+          - "以业务失败退出（退出码 1），说明在沙箱里启动的看板起不了浏览器，请使用者在终端运行 sop-board restart"
+          - "看板进程号不变"
+        forbidden_effects: ["在沙箱环境里启动新的看板", "停掉原来的看板"]
+        refs: ["docs/design.md#进程与入口", "docs/design.md#已定决策（2026-11-10 用户答复）"]

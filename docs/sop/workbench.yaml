@@ -14,6 +14,8 @@
 #   没有要求刷新后保留筛选与搜索，原写法把两者也列进了“刷新”的禁止范围；改为拖动或双击不得改变筛选与搜索，刷新不得改变树的展开状态与打开的场景。
 #   版本 11 由未参与实现的审核方按统一验收（2026-11-12）指出的问题修订 WB-02-P01：内网无法让 https 的 Trace Viewer 直接读取看板上的 trace，改为下载后按页面说明打开。
 #   版本 10 由未参与实现的审核方按决策 21 实现者指出的问题修订：检出所在的分支名以 checkout create 实际建立的为准；证据改为由本机看板从产出机器取回并核对后转给页面。
+#   版本 12 按 docs/design.md 已定决策 28（使用者 2026-11-13 决定）修订，由起草该决策的会话在实现前写成：WB-08 增加“已并入当前分支的结论也算本分支的”，
+#   新增 WB-08-P04（wt1 分支提交后验收的结论合并回 main 后显示为已并入，工作区不干净时登记的结论不并入）。
 #   “双机结果”（WB-08 使用，双机项目见 setup.yaml 文件头）：A 在 main 分支提交了运行 RA（执行者 TA、实现者 I1，独立验收）：shop#A 通过（附请求响应证据）、
 #   shop#W 通过（附截图与录像）、shop#X 失败；B 没有提交过运行；两边都没有守护与人工标注。
 # 共用前置：演示项目同 setup.yaml 文件头（项目 demo 是数据目录 $D 中唯一的项目）；看板已以 sop-board serve demo --data $D --lan 启动。
@@ -32,7 +34,7 @@
 
 metadata:
   requirement: "sop-board v10：测试同学在三栏场景工作台按场景找到、查看四要素与证据、复测标注并查看历史，按“待人工复核”找到待复核的 Agent 独立通过并看到人工确认率与复核覆盖，内网全程可用；工作台与业务 SOP 页的左栏树可一键全部展开或收起，左栏可隐藏与恢复、可拖拽调宽，标题悬停显示全文，状态记在浏览器中；内网只显示业务字段，不能发起 AI 重跑"
-  version: 11
+  version: 12
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -59,6 +61,9 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（结论按分支归属、本分支优先，非结论只影响产出它的检出，证据留在产出机器）"
       version: "2026-11-12"
+      confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用（结论随合并带回）"
+      version: "2026-11-13"
       confirmed_by: "blur.yin"
   tags: ["workbench", "web", "lan", "annotation", "review", "sidebar", "resize"]
 
@@ -532,6 +537,7 @@ sops:
       - "证据文件留在产出它的机器上：别的看板从产出机器的看板取回、核对 sha256 后转给页面，不在本机保存；那台看板没开、没加 --lan 或地址失效时，显示“证据在 <机器显示名> 的机器上”"
       - "非结论（受阻、跳过、守护未通过）只改变产出它的机器和检出上的状态；别的机器在场景详情的“其他机器上的情况”里看到：谁、哪台机器、什么时候、原因"
       - "本分支优先：当前指纹在本分支上有结论时只用本分支的；没有时用全部分支的，并标出来源分支"
+      - "已并入当前分支的结论也算本分支的：取证时各仓库没有未提交改动、执行期间产品没变，且各仓库的提交都已是本检出 HEAD 的祖先；状态旁与历史里标“来自 <分支>（已并入）”"
       - "历史里每条记录写明产出机器与分支"
     scenarios:
       - id: WB-08-P01
@@ -606,6 +612,33 @@ sops:
           - "feat 检出下 shop#W 显示为未执行，或显示了 main 的结果却不标来源分支"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#场景状态（按检出推导，不存储）"]
         evidence_hints: ["B 的 feat 检出的 submit 输出", "A 的看板 shop#A 详情与历史截图", "B 的看板两个检出下的截图"]
+      - id: WB-08-P04
+        polarity: positive
+        title: wt1 分支提交后验收的结论合并回 main 后显示为已并入；工作区不干净时登记的结论不并入
+        actor: 测试同学
+        priority: P0
+        verify: web
+        initial_state:
+          - "单机的演示项目（setup.yaml 文件头）；main 上 shop#X 为失败（预埋缺陷），shop#B 为通过，都是 main 分支的结论"
+          - "wt1 检出所在的分支下称 wt1 分支；wt1 中修好了预埋缺陷并已提交，场景文件与 main 相同"
+        steps:
+          - "在 wt1 运行 sop-board run prepare --scope shop#X --session S1，执行者执行 shop#X 并提交（通过）"
+          - "在 wt1 把 shop#B 所验证的业务逻辑改坏（不提交），运行 sop-board run prepare --scope shop#B --session S2，执行并提交（失败）；然后撤销这处改动"
+          - "本机浏览器打开 main 的工作台，查看 shop#X 与 shop#B"
+          - "把 wt1 分支在各仓库的提交合并进 main（git merge）；刷新 main 的工作台，查看 shop#X 与 shop#B 的状态与历史"
+          - "在 main 运行 sop-board status --json 与 sop-board report"
+        expected:
+          - "合并前 main 的 shop#X 仍为失败，shop#B 仍为通过"
+          - "合并后 main 的 shop#X 为通过，状态旁标“来自 <wt1 分支>（已并入）”；历史里这条通过写明分支为 wt1 分支"
+          - "合并后 main 的 shop#B 仍为 main 自己的通过：wt1 分支上那条失败取证时工作区有未提交改动，不算已并入"
+          - "status 与报告中 shop#X 同样为通过并标来源，shop#B 为通过"
+        forbidden_effects:
+          - "合并之前 wt1 分支的结论就改变了 main 的状态"
+          - "合并后 main 的 shop#X 仍显示失败"
+          - "wt1 分支上工作区不干净时登记的失败改变 main 的 shop#B"
+          - "已并入的结论不标来源分支"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#场景状态（按检出推导，不存储）"]
+        evidence_hints: ["两次 submit 输出", "合并前后 main 工作台的截图", "git log --graph", "status --json 与报告片段"]
       - id: WB-08-N01
         polarity: negative
         negative_type: disconnect
