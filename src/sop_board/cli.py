@@ -555,7 +555,9 @@ def cmd_browser(args):
         return 0
     if args.action == 'open':
         body.update(headed=args.headed, reset_crash=args.reset_crash, url=args.url)
-    emit(daemon.call(context.project, 'POST', f'/local/browser/{args.action}', body, timeout=120))
+    # 有界面的 open 可能要先拉起环境（等就绪），给足时间。
+    emit(daemon.call(context.project, 'POST', f'/local/browser/{args.action}', body,
+                     timeout=900 if args.action == 'open' else 120))
     return 0
 
 

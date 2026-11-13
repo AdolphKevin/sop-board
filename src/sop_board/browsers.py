@@ -653,7 +653,8 @@ class Manager:
 
     # ---- 真人操作 ----
 
-    def open(self, checkout, identity, *, headed, reset_crash=False, url=None):
+    def check_open(self, identity, reset_crash=False):
+        """browser open 能不能进行：crashed 未重置、被运行占着时抛错；返回该身份的记录。"""
         with self.guard:
             self.ensure_recovered(self.instance(identity))
             row = self.row(identity)
@@ -661,6 +662,11 @@ class Manager:
                 raise APIError(409, 'browser-crashed', [dict(field=identity, problem='浏览器处于 crashed，加 --reset-crash 重置')])
             if row and row['holder'] and row['holder'] != 'human':
                 raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
+            return row
+
+    def open(self, checkout, identity, *, headed, reset_crash=False, url=None):
+        with self.guard:
+            row = self.check_open(identity, reset_crash)
             if reset_crash and row:
                 with self.store.local_tx() as db:
                     db.execute("UPDATE browser_instances SET state='exited', crashes='[]' WHERE identity=?", (identity,))
@@ -918,6 +924,13 @@ def _entry_url(app, checkout):
     return None
 
 
+def _has_web_address(app):
+    """项目声明了环境命令和带地址变量的 Web 入口：有界面窗口才有入口地址可开。"""
+    return bool(app.project.adapter.get('env')) and any(
+        isinstance(entry, dict) and entry.get('surface') == 'web' and entry.get('address_env')
+        for entry in app.project.entries.values())
+
+
 def _register():
     from .server import json_response, route
 
@@ -948,9 +961,17 @@ def _register():
         checkout = checkout_of(app, request)
         identity = request.json_field('identity') or 'default'
         headed = bool(request.json_field('headed'))
-        url = request.json_field('url') or (_entry_url(app, checkout) if headed else None)
-        return json_response(dict(ok=True, browser=app.browsers.open(
-            checkout, identity, headed=headed, reset_crash=bool(request.json_field('reset_crash')), url=url)))
+        reset_crash = bool(request.json_field('reset_crash'))
+        url = request.json_field('url')
+        environment = None
+        if headed and not url and _has_web_address(app):
+            # 有界面窗口打开入口地址：环境没在运行时先拉起（使用者 2026-11-13）。先核对身份，免得白等环境。
+            app.browsers.check_open(identity, reset_crash)
+            checkout, started = app.gate.window_checkout(checkout)
+            url = _entry_url(app, checkout)
+            environment = dict(checkout=checkout.name, started=started)
+        browser = app.browsers.open(checkout, identity, headed=headed, reset_crash=reset_crash, url=url)
+        return json_response(dict(ok=True, browser=browser, url=url, environment=environment))
 
     @route('POST', '/local/browser/close', 'token')
     def close(app, request):

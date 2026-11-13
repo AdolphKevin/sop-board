@@ -131,7 +131,7 @@
 
 真人只做三类事：真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码。执行会话遇到它们时，把相关场景记未执行并登记待人处理（`sop-board attention list` 可见）；人完成并交还后，这些场景仍在 pending，直接重跑。需要人做时：
 
-1. `sop-board browser open --identity <身份> --headed`：在该身份的 Chrome for Testing 窗口打开入口（窗口已开着时只取得真人租约，不重启），请使用者在窗口里完成。
+1. `sop-board browser open --identity <身份> --headed`：在该身份的 Chrome for Testing 窗口打开入口（环境没在运行时先拉起，要等它就绪；窗口已开着时只取得真人租约，不重启），请使用者在窗口里完成。
 2. 使用者说完成后，`sop-board browser release --identity <身份>` 交还。窗口保持打开，之后的运行直接沿用其中的登录与验证。
 
 `browser close` 会结束浏览器，人做过的验证随之作废，只在使用者要关掉浏览器时用。出现 `browser may not be secure` 时停止，相关场景记受阻并照录原文。身份处于 crashed 状态时，经使用者同意后 `sop-board browser open --identity <身份> --reset-crash`。

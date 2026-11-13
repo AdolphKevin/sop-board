@@ -186,6 +186,31 @@ class Gate:
                 switched = name
         return switched
 
+    def window_checkout(self, checkout):
+        """有界面窗口要打开入口地址：返回 (提供入口地址的检出, 是否刚为它拉起环境)。
+
+        本检出的环境在运行就用它。各检出共用端口时，别的检出的环境在运行，入口地址相同，直接用它、不切换；
+        没有环境在运行而别的检出有 prepared 运行时不拉起本检出的环境（会把它们的代码换掉），返回 env-busy。
+        其余情况拉起本检出的环境并等就绪（同 env up）。"""
+        envs = self.app.envs
+        if envs.environment(checkout).alive():
+            return checkout, False
+        if self.shared_environment():
+            running = envs.running()
+            if running:
+                return self.app.checkout(running[0]), False
+            with self.cond:
+                holders = self.holders()
+            others = sorted(r for r, c in holders.items() if c != checkout.id)
+            if others:
+                owner = self.names().get(holders[others[0]])
+                raise APIError(409, 'env-busy', [dict(field='environment', problem=
+                    f"环境没在运行，检出 {owner} 的运行 {'、'.join(f'#{r}' for r in others)} 还要用它，"
+                    f"不为本检出拉起；等它们提交或放弃后再开，或带 --url 只打开窗口")],
+                    holder=dict(kind='environment', checkout=owner, runs=others))
+        envs.up(checkout)
+        return checkout, True
+
     def wake(self):
         with self.cond:
             self.cond.notify_all()

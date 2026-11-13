@@ -18,7 +18,7 @@
 - **人做的部分**：真实账号与未声明账号的登录、人机验证、只发到使用者本人设备（手机、身份验证器）的验证码。开始前或运行中遇到时记 not-executed：`throw notExecuted('<身份> 需要真人<做什么>（<哪一页>）')`，并 `sop-board attention add` 登记，写明哪个身份、在哪一页、需要人做什么。未执行不改变场景状态。人在看板窗口完成后交还，窗口保持打开，下一轮直接沿用：
 
   ```bash
-  sop-board browser open --identity <身份> --headed   # 窗口已开着时只取得真人租约，不重启
+  sop-board browser open --identity <身份> --headed   # 打开入口，环境没在运行时先拉起；窗口已开着时只取得真人租约，不重启
   sop-board browser release --identity <身份>          # 人完成后交还，窗口不关
   ```
 
