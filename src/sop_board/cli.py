@@ -27,7 +27,10 @@ class Context:
 GROUPS = {
     '搭建': {'init': '登记项目与仓库', 'guide': '完整搭建指引', 'check': '校验配置、拉起环境并核对浏览器运行时',
              'operator': '查看或设置本机操作者', 'skills': '安装随包技能到 Codex 与 Claude Code',
-             'serve': '在终端启动看板守护进程（网页、环境、浏览器、无头会话）', 'status': '查看场景状态与待处理事项'},
+             'serve': '在终端启动看板守护进程（网页、环境、浏览器、无头会话）',
+             'stop': '停止看板守护进程（保留有界面的浏览器窗口）',
+             'restart': '换一个看板守护进程，浏览器、会话与进行中的运行不受影响',
+             'status': '查看场景状态与待处理事项'},
     '检出': {'checkout': '列出、查看、建立或移除 main 与 worktree 检出'},
     '执行': {'env': '按检出启停产品环境，查看各服务状态，运行中停启单个服务', 'browser': '安装与管理 Chrome for Testing',
              'run': '准备、提交、启动执行会话', 'retest': '运行守护测试发现代码回归', 'mark': '登记人工复测结论',
@@ -253,7 +256,67 @@ def cmd_status(args):
 def cmd_serve(args):
     from . import server
     project = config.Project(config.resolve_data(project_name(args), args.data))
-    return server.serve(project, port=args.port, lan=args.lan)
+    return server.serve(project, port=args.port, lan=args.lan, after_pid=args.after_pid)
+
+
+def daemon_project(args):
+    """stop 与 restart 只需要项目，不需要检出。"""
+    from . import daemon
+    project = config.Project(config.resolve_data(project_name(args), args.data))
+    state = daemon.describe(project)
+    if not state['running']:
+        raise daemon.DaemonUnavailable(f'项目 {project.name} 的看板守护进程没有运行：启动用 {project.serve_command()}')
+    return project, state
+
+
+def cmd_stop(args):
+    """正常停止看板：环境、无头浏览器与启动的会话随之停止，有界面的窗口保留（已定决策 26、28）。"""
+    from . import daemon
+    project, state = daemon_project(args)
+    result = daemon.call(project, 'POST', '/local/stop', {})
+    if not daemon.wait_exit(state['pid'], 600):
+        return fail('daemon-stop-timeout', [dict(field='daemon', problem=
+            f"等了 600 秒，看板守护进程（pid {state['pid']}）仍未退出；查看 {project.data / 'serve.log'} 或终端输出")])
+    emit(dict(ok=True, project=project.name, stopped=state['pid'], kept_browsers=result.get('kept', [])))
+    return 0
+
+
+def cmd_restart(args):
+    """换一个守护进程而不打断进行中的工作：浏览器、租约、启动的会话与 prepared 运行都保留，环境重新拉起（已定决策 28）。"""
+    import os
+    import time
+    from . import daemon
+    if 'CODEX_SANDBOX' in os.environ:
+        return fail('sandboxed', [dict(field='environment', problem=
+            '在 Codex 沙箱里重启的看板起不了浏览器，启动的会话也读不到客户端的登录凭据；请使用者在终端运行 sop-board restart')])
+    project, state = daemon_project(args)
+    handed = daemon.call(project, 'POST', '/local/restart', {})
+    if not daemon.wait_exit(state['pid'], 600):
+        return fail('daemon-stop-timeout', [dict(field='daemon', problem=
+            f"等了 600 秒，原来的看板守护进程（pid {state['pid']}）仍未退出；查看 {handed.get('log')}")])
+    deadline = time.monotonic() + daemon.HANDOVER_SECONDS
+    report, current = None, None
+    while time.monotonic() < deadline:
+        current = daemon.describe(project)
+        if current['running'] and current['pid'] != state['pid']:
+            try:
+                report = daemon.call(project, 'GET', '/local/health').get('restart') or {}
+            except daemon.DaemonUnavailable:
+                report = None
+            # 浏览器的认回核对最多十五秒；核对完再输出，环境可以还在拉起。
+            if report is not None and not any(item['state'] == 'checking' for item in report.get('browsers', [])):
+                break
+        time.sleep(.5)
+    if not (current and current['running'] and current['pid'] != state['pid']):
+        return fail('daemon-not-running', [dict(field='daemon', problem=
+            f"新的看板守护进程没有在 {daemon.HANDOVER_SECONDS} 秒内就绪；查看 {handed.get('log')}")])
+    emit(dict(ok=True, project=project.name, previous_pid=state['pid'], pid=current['pid'], url=current['url'],
+              lan=current['lan'], log=handed.get('log'),
+              kept=dict(browsers=handed.get('browsers', []), launches=handed.get('launches', []), runs=handed.get('runs', [])),
+              adopted=dict(browsers=(report or {}).get('browsers', []), launches=(report or {}).get('launches', [])),
+              environments=(report or {}).get('environments', [dict(checkout=name, state='starting')
+                                                               for name in handed.get('environments', [])])))
+    return 0
 
 
 def daemon_call(context, path, body=None, timeout=900):
@@ -732,7 +795,16 @@ def parser():
     p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
     p.add_argument('--port', type=int, default=8787)
     p.add_argument('--lan', action='store_true', help='同时在内网地址上开放（内网只能查看、复测标注、答复、批注与同意草稿、上传）')
+    p.add_argument('--after-pid', type=int, help=argparse.SUPPRESS)  # restart 由旧守护进程启动新进程时使用
     p.set_defaults(handler=cmd_serve)
+
+    for name, handler in (('stop', cmd_stop), ('restart', cmd_restart)):
+        p = sub.add_parser(name)
+        p.add_argument('--json', action='store_true')
+        p.add_argument('name_or_project', nargs='?', metavar='项目')
+        p.add_argument('--project', '-p')
+        p.add_argument('--data', help='项目数据目录所在的根目录（缺省 ~/.sop-board）')
+        p.set_defaults(handler=handler)
 
     p = common(sub.add_parser('env'))
     p.add_argument('action', choices=('up', 'down', 'restart', 'status', 'stop', 'start'),

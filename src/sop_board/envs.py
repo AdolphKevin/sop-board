@@ -602,6 +602,11 @@ class Manager:
                 db.execute("UPDATE environments SET state='stopped', pid=NULL, ended_at=? WHERE checkout=?", (now(), row['checkout']))
         self.recover_services()
 
+    def running(self):
+        """环境在运行的检出名。"""
+        with self.guard:
+            return [e.checkout.name for e in self.environments.values() if e.alive()]
+
     def close(self):
         self.stopping.set()
         for environment in list(self.environments.values()):

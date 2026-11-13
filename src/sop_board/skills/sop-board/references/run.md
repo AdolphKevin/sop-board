@@ -132,7 +132,7 @@
 
 `browser close` 会结束浏览器，人做过的验证随之作废，只在使用者要关掉浏览器时用。出现 `browser may not be secure` 时停止，相关场景记受阻并照录原文。身份处于 crashed 状态时，经使用者同意后 `sop-board browser open --identity <身份> --reset-crash`。
 
-看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。
+看板停止时保留有界面的浏览器窗口，重启后认回仍在运行且调试端口有应答的窗口，之后直接沿用。无头浏览器与产品环境照旧停止；要结束窗口用 `sop-board browser close --identity <身份>`。用 `sop-board restart` 重启时，无头浏览器、租约与进行中的运行也都保留，环境几十秒后重新就绪。
 
 窗口未认回时，`browser status` 显示进程号与原因，租约、`run prepare` 和 `browser open` 返回 `browser-unrecovered`，不会另起浏览器。把进程号与原因转告使用者；窗口恢复应答后再次请求会重新核对。只有使用者确认不要这个窗口（里面的登录与验证随之作废）时，才用 `sop-board browser close --identity <身份>` 结束。看板停止仍保留未认回窗口。
 

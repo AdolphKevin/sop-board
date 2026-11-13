@@ -388,6 +388,34 @@ def validate_row(directory, key, row):
         raise ValueError(f'{key} 实际执行的 pass、fail 至少要有一份真实证据')
 
 
+INTERRUPTIONS = 'interruptions.json'
+
+
+def note_interruption(directory, *, start=None, end=None, error=None):
+    """在运行目录记下“环境随看板重启中断”：旧守护进程交接时写开始，新守护进程重新拉起环境后写结束（已定决策 28）。"""
+    path = Path(directory) / INTERRUPTIONS
+    items = interruptions(directory)
+    if start:
+        items.append({'reason': 'board-restart', 'text': '环境随看板重启中断', 'from': start, 'to': None})
+    if end:
+        for item in items:
+            if item.get('to') is None:
+                item['to'] = end
+                if error:
+                    item['error'] = error
+    temporary = path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(items, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def interruptions(directory):
+    try:
+        items = json.loads((Path(directory) / INTERRUPTIONS).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    return items if isinstance(items, list) else []
+
+
 def submit(context, run_id, *, implementer=None, implemented_by=None):
     """提交运行，依次三步（已定决策 21）：
     1. 证据文件存进本机证据目录（按内容寻址，幂等）；
@@ -464,6 +492,9 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
     summary = dict(recorded=[], voided=voided, not_executed=not_executed, product_changed=product_changed,
                    browser_crashes=sorted(crashed), independence=independence, submitted_by=operator,
                    implementer=implemented_by or implementer)
+    interrupted = interruptions(directory)
+    if interrupted:
+        summary['interruptions'] = interrupted
     # 第二步：一个事务登记运行记录、结果与证据索引。
     with store.records_tx() as db:
         record, fresh = works.publish(db, store, work, checkout=checkout.name, branch=branch, result=summary,

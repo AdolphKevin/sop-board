@@ -292,6 +292,7 @@ class Instance:
         self.recovered.set()
         self.recovery_thread = None
         self.recovery_error = None
+        self.keep_holder = None   # restart 交接下来的租约持有者，认回后照旧有效（已定决策 28）
 
     @property
     def project(self):
@@ -634,14 +635,22 @@ class Manager:
             row['endpoint'] = f"http://127.0.0.1:{row['port']}" if row['alive'] and confirmed else None
         return dict(checkout=checkout.name, runtime=runtime_info(), browsers=rows)
 
-    def recover(self):
-        """仅检查本项目 profile 的锁；认回有界面窗口，保留未认回窗口，清理核实过的无头浏览器。"""
+    def recover(self, handover=None):
+        """仅检查本项目 profile 的锁；认回有界面窗口，保留未认回窗口，清理核实过的无头浏览器。
+
+        handover 是 sop-board restart 交接的记录（daemon.read_handover）：其中列出的浏览器（含无头的）也认回，
+        租约持有者照旧有效（已定决策 28）。"""
         from . import checkouts
         from types import SimpleNamespace
+        kept = {item['profile']: item.get('holder') for item in (handover or {}).get('browsers', [])}
         with self.store.local_tx() as db:
             checkouts.ensure_main(db, self.project)
             registered = {c.name: c for c in checkouts.active(db)}
             db.execute("UPDATE browser_instances SET holder=NULL, pid=NULL, state=CASE WHEN state='crashed' THEN 'crashed' ELSE 'exited' END")
+            # 交接下来的租约立即恢复：认回核对期间别的运行也拿不走这个身份。
+            for profile, holder in kept.items():
+                if holder:
+                    db.execute('UPDATE browser_instances SET holder=? WHERE profile=?', (holder, profile))
         info = runtime_info()
         if info is None:
             return
@@ -658,16 +667,35 @@ class Manager:
             instance = Instance(self, checkout, identity)
             instance.process, instance.actual, instance.headed = process, port, headed
             instance.started = process.started
-            if not headed:
+            handed_over = str(profile) in kept
+            if not headed and not handed_over:
                 instance.stop()
                 continue
+            instance.keep_holder = kept.get(str(profile))
             instance.recovered.clear()
             if checkout.id is None:
                 self.pending[name, identity] = instance
             else:
                 self.instances[checkout.id, identity] = instance
-                self.record(instance, 'starting')
+                self.record(instance, 'starting', holder=instance.keep_holder)
             self.start_recovery(instance)
+
+    def handover_report(self, handover):
+        """restart 交接下来的各浏览器现在的情况：认回、核对中、未认回或已不在。"""
+        found = {str(i.profile()): i for i in list(self.instances.values()) + list(self.pending.values())}
+        result = []
+        for item in (handover or {}).get('browsers', []):
+            instance = found.get(item['profile'])
+            if instance is None or not instance.alive():
+                state = 'gone'
+            elif not instance.recovered.is_set():
+                state = 'checking'
+            else:
+                state = 'unrecovered' if instance.recovery_error else 'adopted'
+            result.append(dict(checkout=item.get('checkout'), identity=item.get('identity'), pid=item.get('pid'),
+                               port=item.get('port'), headed=item.get('headed'), holder=item.get('holder'), state=state,
+                               reason=instance.recovery_error if instance is not None else None))
+        return result
 
     def start_recovery(self, instance):
         instance.recovered.clear()
@@ -718,8 +746,8 @@ class Manager:
                     if ws and matched and process.poll() is None:
                         if instance.detached.is_set():
                             return
-                        self.record(instance, 'ready', holder=None)
-                        print(f'已认回有界面浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                        self.record(instance, 'ready', holder=instance.keep_holder)
+                        print(f"已认回{'有界面' if instance.headed else '无头'}浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，"
                               f'进程 {process.pid}，调试端口 {port}', flush=True)
                         instance.recovered.set()
                         instance.watcher = threading.Thread(target=instance.watch, args=(process,), daemon=True,
@@ -729,23 +757,39 @@ class Manager:
                 if instance.detached.wait(min(.2, max(0, deadline - time.monotonic()))):
                     return
             if not instance.detached.is_set():
-                if process.poll() is None:
+                if process.poll() is None and not instance.headed:
+                    # 交接下来的无头浏览器核对不通过：里面没有真人的登录与验证，结束它；租约留给原持有者，下次取得时重新启动。
+                    instance.stop()
+                    self.record(instance, 'exited', pid=None, holder=instance.keep_holder)
+                    print(f'交接下来的无头浏览器没有认回，已结束：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                          f'进程 {process.pid}，原因：{reason}', flush=True)
+                elif process.poll() is None:
                     instance.recovery_error = reason
-                    self.record(instance, 'starting', holder=None)
+                    self.record(instance, 'starting', holder=instance.keep_holder)
                     print(f'有界面浏览器未认回：检出 {instance.checkout.name}，身份 {instance.identity}，'
                           f'进程 {process.pid}，原因：{reason}', flush=True)
                 else:
-                    self.record(instance, 'exited', pid=None, holder=None)
+                    self.record(instance, 'exited', pid=None, holder=instance.keep_holder)
         except Exception as error:  # noqa: BLE001
             # 核对自身失败时不另起浏览器，也不结束窗口；请求明确报错。
             instance.recovery_error = f'核对失败：{error}'
-            self.record(instance, 'starting', holder=None)
+            self.record(instance, 'starting', holder=instance.keep_holder)
         finally:
             if instance.detached.is_set() and not instance.recovered.is_set():
                 instance.recovery_error = '看板正在停止，已取消认回核对'
             instance.recovered.set()
 
-    def shutdown(self):
+    def alive_instances(self):
+        """运行中的浏览器：检出、身份、进程号、调试端口、有无界面、profile 与租约持有者。"""
+        with self.store.local() as db:
+            holders = {(r['checkout'], r['identity']): r['holder'] for r in db.execute('SELECT checkout, identity, holder FROM browser_instances')}
+        return [dict(checkout=i.checkout.name, identity=i.identity, pid=i.process.pid, port=i.port(), headed=i.headed,
+                     profile=str(i.profile()), holder=holders.get((i.checkout.id, i.identity)))
+                for i in list(self.instances.values()) + list(self.pending.values()) if i.alive()]
+
+    def shutdown(self, *, handover=False):
+        """正常停止保留有界面的窗口、结束无头浏览器；restart 交接时全部保留（已定决策 28）。返回保留的浏览器。"""
+        kept_items = {(item['checkout'], item['identity']): item for item in self.alive_instances()}
         instances = list(self.instances.values()) + list(self.pending.values())
         for instance in instances:
             if instance.recovery_thread:
@@ -753,16 +797,21 @@ class Manager:
         for instance in instances:
             if instance.recovery_thread:
                 instance.recovery_thread.join()
+        kept = []
         for instance in instances:
-            if instance.headed and instance.alive():
+            if (instance.headed or handover) and instance.alive():
                 instance.stopping = True
                 instance.detached.set()
                 if instance.watcher:
                     instance.watcher.join(timeout=5)
-                print(f'已保留有界面浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                kept.append(kept_items.get((instance.checkout.name, instance.identity)) or dict(
+                    checkout=instance.checkout.name, identity=instance.identity, pid=instance.process.pid,
+                    port=instance.port(), headed=instance.headed, profile=str(instance.profile()), holder=None))
+                print(f"已保留{'有界面' if instance.headed else '无头'}浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，"
                       f'进程 {instance.process.pid}，调试端口 {instance.port()}', flush=True)
             else:
                 instance.stop()
+        return kept
 
 
 # ---- 守护进程挂载与本机令牌接口 ----
@@ -770,8 +819,8 @@ class Manager:
 def attach(app):
     from . import extensions
     app.browsers = Manager(app.project, app.store)
-    extensions.RECOVER.append(lambda app: app.browsers.recover())
-    extensions.CLOSE.append(lambda app: app.browsers.shutdown())
+    extensions.RECOVER.append(lambda app: app.browsers.recover(app.handed_over))
+    extensions.CLOSE.append(lambda app: app.browsers.shutdown(handover=app.handover))
 
 
 def _entry_url(app, checkout):

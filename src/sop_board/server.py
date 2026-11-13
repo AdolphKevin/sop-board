@@ -97,6 +97,11 @@ class App:
         self.config_stamp = None
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.extensions = {}
+        # sop-board restart（已定决策 28）：handover 为真时本进程正在交接，停止时保留浏览器与会话；
+        # handed_over 是上一个守护进程交接给本进程的记录（保留的浏览器、会话、环境与运行）。
+        self.handover = False
+        self.handed_over = None
+        self.env_restarts = {}   # 交接后重新拉起的环境：检出名 → dict(state, error)
         self.reload()
 
     def reload(self):
@@ -305,7 +310,89 @@ def _checkout_of(app, request):
 
 @route('GET', '/local/health', 'token')
 def health(app, request):
-    return json_response(dict(ok=True, project=app.project.name, pid=os.getpid(), started_at=app.started_at))
+    result = dict(ok=True, project=app.project.name, pid=os.getpid(), started_at=app.started_at)
+    if app.handed_over:
+        result['restart'] = handover_report(app)
+    return json_response(result)
+
+
+def handover_report(app):
+    """上一个守护进程交接下来的浏览器、会话与环境现在的情况，供 sop-board restart 输出。"""
+    handed = app.handed_over
+    adopted = {item['launch'] for item in getattr(app.launcher, 'adopted', [])} if hasattr(app, 'launcher') else set()
+    return dict(
+        from_pid=handed.get('from_pid'),
+        browsers=app.browsers.handover_report(handed) if hasattr(app, 'browsers') else [],
+        launches=[dict(item, state='adopted' if item['launch'] in adopted else 'gone') for item in handed.get('launches', [])],
+        environments=[dict(checkout=name, **app.env_restarts.get(name, dict(state='starting')))
+                      for name in handed.get('environments', [])],
+        runs=[dict(run=item['id'], checkout=item['checkout']) for item in handed.get('runs', [])])
+
+
+def _signal_self():
+    """先把响应发出去，再让主线程按 SIGTERM 的规则收尾。"""
+    import threading
+    threading.Timer(.3, os.kill, (os.getpid(), signal.SIGTERM)).start()
+
+
+@route('POST', '/local/stop', 'token')
+def stop_daemon(app, request):
+    """sop-board stop：按正常停止的规则收尾；返回将要保留的有界面窗口（已定决策 28）。"""
+    kept = [item for item in app.browsers.alive_instances() if item['headed']] if hasattr(app, 'browsers') else []
+    _signal_self()
+    return json_response(dict(ok=True, pid=os.getpid(), kept=kept))
+
+
+@route('POST', '/local/restart', 'token')
+def restart_daemon(app, request):
+    """sop-board restart：写下交接记录，记下受影响运行的中断开始，起一个等本进程退出后启动的新守护进程，然后交接式退出。
+
+    新守护进程由本进程启动，继承本进程的环境变量（测试账号的凭据只在环境变量里）。"""
+    import subprocess
+    from . import runs
+    if app.handover:
+        reject(409, 'restarting', 'daemon', '看板已在重启')
+    at = datetime.now(timezone.utc).isoformat()
+    environments = app.envs.running()
+    with app.store.local() as db:
+        prepared = [dict(id=r['id'], checkout=r['name'], dir=r['dir']) for r in db.execute(
+            "SELECT w.id, w.dir, c.name FROM local_work w JOIN checkouts c ON c.id=w.checkout "
+            "WHERE w.kind='run' AND w.status='prepared' ORDER BY w.id")]
+    handed = dict(at=at, from_pid=os.getpid(), port=app.port, lan=app.lan,
+                  browsers=app.browsers.alive_instances() if hasattr(app, 'browsers') else [],
+                  launches=app.launcher.running() if hasattr(app, 'launcher') else [],
+                  environments=environments, runs=prepared)
+    daemon.write_handover(app.project, handed)
+    for item in prepared:
+        if item['checkout'] in environments and item['dir']:
+            runs.note_interruption(item['dir'], start=at)
+    successor = [sys.executable, '-m', 'sop_board.cli', 'serve', app.project.name, '--port', str(app.port),
+                 '--data', str(app.project.data.parent), '--after-pid', str(os.getpid())] + (['--lan'] if app.lan else [])
+    with (app.project.data / 'serve.log').open('ab') as log:
+        subprocess.Popen(successor, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                         start_new_session=True, cwd=str(app.project.data))
+    app.handover = True
+    _signal_self()
+    return json_response(dict(ok=True, pid=os.getpid(), log=str(app.project.data / 'serve.log'),
+                              **{key: handed[key] for key in ('browsers', 'launches', 'environments', 'runs')}))
+
+
+def restore_environments(app):
+    """交接后重新拉起原来在运行的环境；就绪（或失败）后补上受影响运行的中断结束时间。"""
+    from . import runs
+    for name in app.handed_over.get('environments', []):
+        error = None
+        try:
+            app.envs.up(app.checkout(name))
+            app.env_restarts[name] = dict(state='ready')
+        except Exception as exc:  # noqa: BLE001 - 失败写进中断记录与 restart 输出
+            error = f'{type(exc).__name__}: {exc}'
+            app.env_restarts[name] = dict(state='failed', error=error)
+        end = datetime.now(timezone.utc).isoformat()
+        for item in app.handed_over.get('runs', []):
+            if item['checkout'] == name and item.get('dir'):
+                runs.note_interruption(item['dir'], end=end, error=error)
+        print(f"重启后重新拉起环境：检出 {name}，" + ('就绪' if error is None else '失败：' + error), flush=True)
 
 
 @route('POST', '/local/env/up', 'token')
@@ -355,22 +442,30 @@ def env_status(app, request):
     return json_response(dict(ok=True, environments=[app.envs.status(c) for c in app.checkouts()]))
 
 
-def serve(project, *, port=8787, lan=False):
-    """在前台运行守护进程，直到收到 SIGINT/SIGTERM。"""
+def serve(project, *, port=8787, lan=False, after_pid=None):
+    """在前台运行守护进程，直到收到 SIGINT/SIGTERM。
+
+    after_pid：sop-board restart 由旧守护进程启动本进程时给出，先等旧进程退出，再按它的交接记录认回（已定决策 28）。"""
     if 'CODEX_SANDBOX' in os.environ:
         print('提示：在 Codex 沙箱里启动的看板无法启动浏览器，启动的会话读不到客户端的登录凭据；请在终端启动看板。', flush=True)
     from . import extensions
+    if after_pid is not None and not daemon.wait_exit(after_pid, 600):
+        raise ValueError(f'等了 600 秒，原来的看板守护进程（pid {after_pid}）仍未退出；没有启动新的守护进程')
     state = daemon.describe(project)
     if state['running']:
         raise ValueError(f"项目 {project.name} 的守护进程已在运行：{state['url']}（pid {state['pid']}）")
     store = Store(project)
     app = App(project, store, port=port, lan=lan)
+    app.handed_over = daemon.read_handover(project, from_pid=after_pid)
+    if app.handed_over:
+        app.env_restarts = {name: dict(state='starting') for name in app.handed_over.get('environments', [])}
     extensions.attach(app)
     host = '0.0.0.0' if lan else '127.0.0.1'
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
     server.app = app
     actual = server.server_address[1]
+    app.port = actual
     addresses = [f'http://{address}:{actual}' for address in local_ipv4_addresses()] if lan else []
     app.addresses = addresses
     app.envs.recover()
@@ -380,6 +475,13 @@ def serve(project, *, port=8787, lan=False):
     from . import peers
     peers.ensure_registered(app)
     app.token = daemon.write_state(project, os.getpid(), actual, addresses, app.started_at)
+    if app.handed_over:
+        # 状态文件写好之后再删交接记录：等待重启的 CLI 看到的总是旧进程、正在重启或新进程之一。
+        daemon.clear_handover(project)
+        print(f"已从守护进程 {app.handed_over.get('from_pid')} 交接：重新拉起环境 "
+              + ('、'.join(app.handed_over.get('environments', [])) or '（无）'), flush=True)
+        import threading
+        threading.Thread(target=restore_environments, args=(app,), daemon=True, name='restart-environments').start()
     def shutdown(*_):
         # serve_forever 在主线程；信号处理只抛出中断，由 finally 统一清理，避免在信号处理中等待其他线程。
         raise KeyboardInterrupt

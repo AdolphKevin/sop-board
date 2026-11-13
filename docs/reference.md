@@ -525,7 +525,7 @@ fixtures:
 | `GET /p/<项目>/sop`、`GET /api/sop?checkout=<名称>` | lan | 业务 SOP：场景目录下的 Markdown 按 1～3 级标题分节，左树右文；含“答复”小节的节标出已答复 / 待答复 |
 | `POST /api/launch`、`/api/retest`、`/api/distill` | local | AI 重跑此场景、运行守护、沉淀 |
 | `GET /api/launches/<编号>/log` | local | 启动日志末尾 512 KiB |
-| `/local/health`、`/local/env/{up,down,restart,status,service,restore}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
+| `/local/health`（restart 交接后另带 `restart`：认回的浏览器与会话、重新拉起的环境）、`/local/stop`、`/local/restart`、`/local/env/{up,down,restart,status,service,restore}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
 
 ## 11. 错误码
 
@@ -548,6 +548,9 @@ fixtures:
 | `invalid-arguments` | 参数组合不合格（`--join` 与 `--new` 同用、`--implementer` 与 `--implemented-by` 同用、`--implemented-by` 是本机操作者），退出码 2 |
 | `database-error` | 数据库返回了未预期的错误，见 problems |
 | `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …`。`restart` 期间 CLI 先等新进程就绪（最多 120 秒），超时才返回 |
+| `daemon-stop-timeout` | `stop` 或 `restart` 等了 600 秒，原来的守护进程仍未退出；查看 `serve.log` 或启动它的终端 |
+| `restarting` | 看板已在重启，又收到一次 `restart` |
+| `sandboxed` | 在 Codex 沙箱里运行 `restart`（有 `CODEX_SANDBOX`）；请使用者在终端运行 |
 | `invalid` | 其他参数或配置问题（含配置不合格、检出不存在等），见 problems |
 | `check-failed` | `check` 有不合格项：`problems` 逐项列出，`steps` 是三项的完整结果 |
 | `env-busy` | 环境被别的检出的 prepared 运行占着、有别的检出在等环境、环境要重启而还有别的运行在用，或这套环境上有服务被别的运行停着（输出 `holder` 与 `queue`；`run prepare` 带 `--wait` 时先排队，超时才返回）；或端口被其他项目的环境租用、已被其他进程监听（附 lsof 信息） |

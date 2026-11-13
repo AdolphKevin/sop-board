@@ -4,7 +4,7 @@ scope: ["self:src/sop_board/browsers.py", "self:docs/reference.md", "self:src/so
 source: ["self:docs/design.md", "用户确认，2026-11-13，已定决策 26"]
 status: "accepted"
 tags: ["浏览器", "重启", "真人登录", "认回"]
-verified: {"self": {"commit": "c0b61cfac0fee48a6493a02ee3658fb2e6d73d95", "date": "2026-11-13"}}
+verified: {"self": {"commit": "7eac35f81854f69f54b1bcd4a586041aaa915318", "date": "2026-11-13"}}
 ---
 # 看板重启保留并认回有界面浏览器
 
@@ -24,3 +24,5 @@ verified: {"self": {"commit": "c0b61cfac0fee48a6493a02ee3658fb2e6d73d95", "date"
 审核方按使用者确认的设计修订（2026-11-13）：十五秒核对不通过的有界面窗口不再自动结束。实例保留进程号、原端口与原因，status 显示 unrecovered；租约与打开请求返回 browser-unrecovered，并提示恢复后重试或用 browser close 结束。下一次请求重新核对，通过后沿用原进程；未认回状态不记崩溃。状态由守护进程内实例维护，数据库中的 starting 表示尚未就绪，status 依据实例显示未认回及原因；重启时仍按 profile 重新核对，不依赖旧状态。close 可以结束未认回窗口，正常停止看板保留它。
 
 认回时 started_at 使用进程实际启动时间；取不到退出信号时，崩溃记录保持空信号，提交说明写“已退出（取不到退出信号）”。
+
+sop-board restart 交接（已定决策 28，2026-11-13）：旧守护进程把运行中的浏览器（含无头的）与租约持有者写进项目数据目录的 restart.json，退出时不结束它们；新守护进程由旧进程启动（继承它的环境变量），按 restart.json 里的 profile 认回，无头的也认回。交接下来的租约在核对开始前就写回，核对期间别的运行拿不走；交接下来的无头浏览器核对不通过就结束它，租约留给原持有者，下次取得时重新启动。没有交接记录的启动照旧：只认回有界面窗口、释放旧租约、结束遗留的无头浏览器。

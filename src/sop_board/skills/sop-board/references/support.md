@@ -22,6 +22,7 @@
 - `sop-board checkout list|show` 查看检出；使用者要新建 worktree 检出时 `sop-board checkout create <名称> [--from <ref>] [--repo <别名> …]`，移除用 `sop-board checkout remove <名称>`（先停该检出的环境）。
 - `sop-board env status|up|down|restart` 查看、启停当前检出的产品环境（`env status --all` 列出全部检出）；`run prepare` 会自己拉起环境。adapter 输出就绪即环境可用，`env status` 的 `services` 列出各服务的状态（运行中、已停止、本机未搭建、异常退出、未上报）与业务说明，异常退出附日志末尾。停止其他检出的环境须经使用者同意。
 - `sop-board env stop|start <服务>` 只在本检出有 prepared 运行时用来模拟依赖故障（见 [run.md](run.md)「依赖故障的场景」）；运行之外要恢复环境，用 `sop-board env restart`。
+- 停止看板：`sop-board stop`，环境、无头浏览器与启动的会话随之停止，有界面的窗口保留。重启看板（例如升级 sop-board 之后）：`sop-board restart`，浏览器、租约、启动的会话与 prepared 运行都保留，环境几十秒内重新拉起；在 Codex 沙箱里请使用者在终端运行。
 - 浏览器运行时：`sop-board browser install`、`sop-board browser status`。看板停止与重启时有界面窗口的保留、认回与 `browser-unrecovered` 见 [run.md](run.md)「账号与真人操作」。
 
 ## 报告

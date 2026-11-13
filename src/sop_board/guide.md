@@ -105,6 +105,7 @@ fixtures:                                   # 可选：前置数据配方
 
 ```sh
 sop-board serve <项目> [--lan]   # 守护进程：网页、按检出的环境、浏览器、无头会话
+sop-board stop|restart [项目]    # 停止看板；或换守护进程（浏览器、会话与进行中的运行保留，环境重新拉起）
 sop-board check                  # 配置、当前检出的环境就绪（列出没在运行的服务与缺失的入口地址，不算失败）、浏览器运行时
 sop-board status
 ```

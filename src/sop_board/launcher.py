@@ -2,6 +2,8 @@
 
 只记录进程号、日志、会话编号与退出码；会话自己经 CLI 准备与提交。同一检出同时只运行一个启动。
 启动器取得的会话编号就是独立执行的证据：Claude 由 --session-id 指定，Codex 取 thread.started。
+会话输出经随会话存活的转写进程（relay.py）写进日志，不经守护进程；sop-board restart 时会话照常运行，
+新守护进程按进程号、启动时间与命令行认回（已定决策 28）。
 """
 from importlib.resources import files
 import json
@@ -56,6 +58,7 @@ class Launcher:
     def __init__(self, project, store):
         self.project, self.store = project, store
         self.processes = {}
+        self.adopted = []   # 本进程启动时认回的启动（restart 交接或看板被强杀后仍在运行的会话）
         self.guard = threading.Lock()
 
     def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None, implemented_by=None):
@@ -109,20 +112,7 @@ class Launcher:
             writable = [str(path.resolve()) for path in (self.project.data, self.project.data.parent / 'evidence')]
             argv = self.argv(agent, prompt, work, writable, session)
             try:
-                process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, start_new_session=True)
-                from .redaction import StreamRedactor
-                def collect():
-                    redactor = StreamRedactor([])
-                    with log.open('wb') as output:
-                        while True:
-                            chunk = process.stdout.read1(65536)
-                            output.write(redactor.feed(chunk, final=not chunk))
-                            output.flush()
-                            if not chunk:
-                                break
-                    process.stdout.close()
-                threading.Thread(target=collect, daemon=True, name=f'launch-log-{launch_id}').start()
+                process = self.spawn(argv, work, env, log)
             except OSError as error:
                 log.write_text(f"无法启动 {agent['runner']}：{error}\n", encoding='utf-8')
                 with self.store.local_tx() as db:
@@ -135,6 +125,32 @@ class Launcher:
         result = self.read(launch_id)
         result['invalid_files'] = excluded
         return result
+
+    def spawn(self, argv, work, env, log):
+        """先起转写进程读管道，再起会话写管道；守护进程不持有管道两端，自己退出也不影响会话写日志。"""
+        read_end, write_end = os.pipe()
+        relay = None
+        try:
+            relay = subprocess.Popen([sys.executable, '-m', 'sop_board.relay', '--data', str(self.project.data), '--log', str(log)],
+                                     stdin=read_end, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                process = subprocess.Popen(argv, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=write_end,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+            except OSError:
+                os.close(write_end)
+                write_end = None
+                # 等转写进程读到文件尾退出，再由调用方写入失败原因，免得被它清空。
+                try:
+                    relay.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    relay.kill()
+                raise
+        finally:
+            os.close(read_end)
+            if write_end is not None:
+                os.close(write_end)
+        threading.Thread(target=relay.wait, daemon=True, name='launch-relay').start()
+        return process
 
     def argv(self, agent, prompt, work, writable, session):
         if agent['runner'] == 'claude':
@@ -157,6 +173,7 @@ class Launcher:
 
     def watch(self, launch_id, process, log):
         session = None
+        adopted = not isinstance(process, subprocess.Popen)
         while process.poll() is None:
             if session is None:
                 session = self.session_from_log(log)
@@ -164,11 +181,15 @@ class Launcher:
                     with self.store.local_tx() as db:
                         db.execute('UPDATE launches SET session=COALESCE(session, ?) WHERE id=?', (session, launch_id))
             time.sleep(1)
-        code = process.returncode
+        # 认回的会话不是本进程的子进程，取不到退出码：记 exited，有没有产出运行由 public() 判断（没有即 no-work）。
+        code = None if adopted else process.returncode
         session = session or self.session_from_log(log)
         with self.store.local_tx() as db:
             row = db.execute('SELECT status FROM launches WHERE id=?', (launch_id,)).fetchone()
-            status = 'stopped' if row and row['status'] == 'stopped' else ('exited' if code == 0 else 'failed')
+            if row and row['status'] == 'stopped':
+                status = 'stopped'
+            else:
+                status = 'exited' if adopted or code == 0 else 'failed'
             db.execute('UPDATE launches SET status=?, exit_code=?, ended_at=?, session=COALESCE(session, ?) WHERE id=?',
                        (status, code, now(), session, launch_id))
         self.processes.pop(launch_id, None)
@@ -202,7 +223,13 @@ class Launcher:
         process = self.processes.get(launch_id)
         if process and process.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if isinstance(process, subprocess.Popen):
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    # 认回的会话：发信号前重新核对启动时间与命令行，防止进程号已被别的进程复用。
+                    from .browsers import process_snapshot
+                    if process_snapshot(process.pid) == process.snapshot:
+                        os.killpg(process.pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
         return self.read(launch_id)
@@ -214,16 +241,63 @@ class Launcher:
         return public(row, runs, local=local) if row else None
 
     def recover(self):
-        """守护进程启动时：上次运行中的启动若进程已不在，记为 failed。"""
-        from .daemon import alive
-        with self.store.local_tx() as db:
-            for row in db.execute("SELECT id, pid FROM launches WHERE status='running'").fetchall():
-                if not row['pid'] or not alive(row['pid']):
+        """守护进程启动时：上次运行中的启动若进程还在、核对是同一个会话，就认回并继续监视；否则记为 failed。"""
+        with self.store.local() as db:
+            rows = [dict(r) for r in db.execute("SELECT id, pid, agent, log, started_at FROM launches WHERE status='running'")]
+        adopted = []
+        for row in rows:
+            process = adoptable(row)
+            if process is None:
+                with self.store.local_tx() as db:
                     db.execute("UPDATE launches SET status='failed', ended_at=? WHERE id=?", (now(), row['id']))
+                continue
+            self.processes[row['id']] = process
+            threading.Thread(target=self.watch, args=(row['id'], process, Path(row['log'])), daemon=True,
+                             name=f"launch-{row['id']}").start()
+            adopted.append(dict(launch=row['id'], pid=row['pid']))
+            print(f"已认回启动 #{row['id']}：会话进程 {row['pid']}", flush=True)
+        self.adopted = adopted
+        return adopted
 
-    def shutdown(self):
+    def running(self):
+        """正在运行的启动：编号、检出与会话进程号。"""
+        with self.store.local() as db:
+            return [dict(launch=r['id'], checkout=r['name'], pid=r['pid'])
+                    for r in db.execute("SELECT l.id, l.pid, c.name FROM launches l JOIN checkouts c ON c.id=l.checkout "
+                                        "WHERE l.status='running' ORDER BY l.id")
+                    if r['id'] in self.processes]
+
+    def shutdown(self, *, handover=False):
+        """正常停止时结束全部会话；restart 交接时会话照常运行，由新守护进程认回。"""
+        if handover:
+            kept = self.running()
+            for item in kept:
+                print(f"已保留启动 #{item['launch']}：会话进程 {item['pid']}", flush=True)
+            return kept
         for launch_id in list(self.processes):
             self.stop(launch_id)
+        return []
+
+
+def adoptable(row):
+    """进程还在，命令行是这种会话，启动时间与启动记录吻合，才认回；否则返回 None。"""
+    from .browsers import RecoveredProcess, process_snapshot
+    from .status import instant
+    if not row['pid'] or not row['log']:
+        return None
+    snapshot = process_snapshot(row['pid'])
+    if not snapshot:
+        return None
+    marker = 'sop_board.claude_runner' if row['agent'] == 'claude' else 'codex'
+    if marker not in snapshot[1]:
+        return None
+    try:
+        process = RecoveredProcess(row['pid'], snapshot)
+        launched = instant(row['started_at']).timestamp()
+    except (ValueError, TypeError):
+        return None
+    # ps 的启动时间精确到秒；会话在登记启动记录之后几秒内启动。
+    return process if launched - 5 <= process.started <= launched + 120 else None
 
 
 def public(row, runs, *, local):
@@ -265,7 +339,7 @@ def attach(app):
     from . import extensions
     app.launcher = Launcher(app.project, app.store)
     extensions.RECOVER.append(lambda app: app.launcher.recover())
-    extensions.CLOSE.append(lambda app: app.launcher.shutdown())
+    extensions.CLOSE.append(lambda app: app.launcher.shutdown(handover=app.handover))
 
 
 def _register():
