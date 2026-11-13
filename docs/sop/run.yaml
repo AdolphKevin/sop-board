@@ -15,10 +15,11 @@
 #   按使用者 2026-11-13 决定新增 RUN-04-N04（启动的会话准备了运行却没提交就退出）。
 #   版本 7 按 docs/design.md 已定决策 28（使用者 2026-11-13 决定）修订，由起草该决策的会话在实现前写成：取消“同一检出同时只能有一个 prepared 的运行”，
 #   改为按身份分开的多个运行（新增 RUN-01-P02，RUN-01-N01 改为 scenario-in-run 与 pending 跳过别的运行里的场景）。merchant2 见 browser.yaml 文件头。
+#   版本 8 按决策 28 统一验收（2026-11-13）的结果、经使用者当日确认修订：RUN-01-N01 原起点让 R1 租下全部身份，wt1 再要身份必然 browser-busy，#   与“身份租约整机独占”矛盾；改为 R1 带 --identity merchant、wt1 带 --identity merchant2，预期不变。
 
 metadata:
   requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景"
-  version: 7
+  version: 8
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -110,11 +111,11 @@ sops:
         actor: 执行会话
         priority: P1
         verify: cli
-        initial_state: ["main 已运行 sop-board run prepare --scope all --session S1，得到运行 R1"]
+        initial_state: ["main 已运行 sop-board run prepare --scope all --identity merchant --session S1，得到运行 R1"]
         steps:
           - "在 main 运行 sop-board run prepare --scope shop#A --session S2 --json"
           - "在 main 运行 sop-board run prepare --scope pending --session S2 --json"
-          - "在 wt1 运行 sop-board run prepare --scope all --session S3 --json"
+          - "在 wt1 运行 sop-board run prepare --scope all --identity merchant2 --session S3 --json"
         expected:
           - "第 1 条以业务失败退出（退出码 1），error_code 为 scenario-in-run，写明 shop#A 在运行 R1 里"
           - "第 2 条以业务失败退出，error_code 为 nothing-to-run：pending 跳过 R1 里的场景后范围为空"

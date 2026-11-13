@@ -6,6 +6,8 @@ python3 server.py --port 8100 --db shop.sqlite3 --lib <lib 仓库目录> [--stoc
 返回 503 与降级提示“库存服务暂不可用，请稍后再试”，不生成订单（库存演示项目的 SOP stock.md 规则 R2）。
 """
 import argparse
+import hashlib
+import hmac
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
@@ -24,6 +26,24 @@ HERE = Path(__file__).resolve().parent
 STOCK_UNAVAILABLE = '库存服务暂不可用，请稍后再试'
 
 
+# 登录会话是用演示密钥签名的 cookie，不存数据库：商城进程重启后、换到别的检出后照样有效
+# （各检出的商城都从看板守护进程的环境里取同一个密钥）。cookie 不带过期时间，浏览器进程结束即失效。
+SESSION_SECRET = os.environ.get('DEMO_SESSION_SECRET', 'demo-shop-session-secret').encode()
+
+
+def sign_session(shop, user):
+    body = f'{shop}.{user}.{secrets.token_hex(8)}'
+    return body + '.' + hmac.new(SESSION_SECRET, body.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def verify_session(token):
+    body, _, mac = token.rpartition('.')
+    expected = hmac.new(SESSION_SECRET, body.encode(), hashlib.sha256).hexdigest()[:32]
+    if not body or not hmac.compare_digest(mac, expected):
+        return None
+    return body.split('.', 1)[0]
+
+
 def connect(path):
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
@@ -31,8 +51,7 @@ def connect(path):
                           paid REAL NOT NULL, delivered_days_ago INTEGER NOT NULL);
                         CREATE TABLE IF NOT EXISTS refunds(id INTEGER PRIMARY KEY, order_id TEXT NOT NULL UNIQUE, amount REAL NOT NULL,
                           status TEXT NOT NULL DEFAULT '已退款');
-                        CREATE TABLE IF NOT EXISTS order_items(order_id TEXT PRIMARY KEY, sku TEXT NOT NULL, qty INTEGER NOT NULL);
-                        CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, shop TEXT NOT NULL);''')
+                        CREATE TABLE IF NOT EXISTS order_items(order_id TEXT PRIMARY KEY, sku TEXT NOT NULL, qty INTEGER NOT NULL);''')
     return db
 
 
@@ -123,9 +142,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def user(self, db):
         cookie = SimpleCookie(self.headers.get('Cookie', ''))
-        token = cookie['shop_session'].value if 'shop_session' in cookie else None
-        row = db.execute('SELECT shop FROM sessions WHERE token=?', (token,)).fetchone()
-        return row['shop'] if row else None
+        return verify_session(cookie['shop_session'].value) if 'shop_session' in cookie else None
 
     def do_GET(self):
         path = urlsplit(self.path).path
@@ -175,16 +192,10 @@ class Handler(BaseHTTPRequestHandler):
             accounts = {'merchant': os.environ.get('DEMO_MERCHANT_PASSWORD', 'merchant-pass'),
                         'merchant2': os.environ.get('DEMO_MERCHANT2_PASSWORD', 'merchant2-pass')}
             if data.get('user') in accounts and data.get('password') == accounts[data.get('user')]:
-                token = secrets.token_hex(16)
-                db.execute("INSERT INTO sessions(token,shop) VALUES (?,'demo')", (token,))
-                db.commit()
+                token = sign_session('demo', data['user'])
                 return self.send(302, '', headers=[('Location', '/orders'), ('Set-Cookie', f'shop_session={token}; HttpOnly; Path=/')])
             return self.send(401, '<p>账号或密码错误</p>', 'text/html; charset=utf-8')
         if path == '/logout':
-            cookie = SimpleCookie(self.headers.get('Cookie', ''))
-            if 'shop_session' in cookie:
-                db.execute('DELETE FROM sessions WHERE token=?', (cookie['shop_session'].value,))
-                db.commit()
             return self.send(302, '', headers=[('Location', '/login'),
                                                ('Set-Cookie', 'shop_session=; HttpOnly; Path=/; Max-Age=0')])
         if path == '/api/orders':

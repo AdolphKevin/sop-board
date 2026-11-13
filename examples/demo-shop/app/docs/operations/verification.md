@@ -9,7 +9,7 @@
 - **api**：用 curl 调用 `APP_URL` 下的 `/api/orders`、`/api/refunds`。测试订单用数据配方 `seed-order`，或 `POST /api/orders {id, paid, delivered_days_ago}` 准备（只准备无关前置，不准备退款本身）。
 - **web**：经看板浏览器（身份 merchant 或 merchant2）打开 `WEB_URL`。合成账号 merchant 的密码在环境变量 `DEMO_MERCHANT_PASSWORD`，merchant2（同一家店的第二个商家账号）的在 `DEMO_MERCHANT2_PASSWORD`；都是声明的测试账号，执行者用本轮持有的那个身份直接登录。
 
-商家的登录会话保存在同一 SQLite 的 `sessions` 表中，商城进程重启后原 cookie 继续有效。登录 cookie 不带到期时间，浏览器进程结束后失效。`POST /logout` 删除当前会话并清除 cookie；之后访问 `/orders` 跳转 `/login`。登录次数仍由看板 `identity record` 记录，重启不另记登录。
+商家的登录会话是用演示密钥（环境变量 `DEMO_SESSION_SECRET`，缺省为固定值）签名的 cookie，不存数据库：商城进程重启后、换到别的检出后原 cookie 继续有效。登录 cookie 不带到期时间，浏览器进程结束后失效。`POST /logout` 清除 cookie；之后访问 `/orders` 跳转 `/login`。登录次数仍由看板 `identity record` 记录，重启不另记登录。
 
 ## 3. 观察与证据
 

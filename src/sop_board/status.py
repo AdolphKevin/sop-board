@@ -2,8 +2,9 @@
 
 记录分两类，都限于场景的当前指纹：
 - 结论（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。本分支优先：当前指纹在本分支上有结论时
-  只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，并标出来源分支。已并入本检出的 Agent 结论也算本分支的
-  （已定决策 28）：所在运行准备时的快照各仓库都没有未提交改动、执行期间产品没变，且各仓库的提交都是本检出 HEAD 的祖先。
+  只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，并标出来源分支。本分支有结论时，别的分支上已并入本检出、
+  又比本分支最近一次结论更晚的 Agent 结论也算本分支的（已定决策 28，只算合并进来的）：所在运行准备时的快照各仓库都没有
+  未提交改动、执行期间产品没变，且各仓库的提交都是本检出 HEAD 的祖先。
 - 非结论（Agent 的受阻与跳过、守护未通过）只取本机本检出产出的；别的机器与检出的显示在“其他机器上的情况”。
 选出的记录按业务记录库分配的序号（seq）排先后，执行时间只用于显示：
 - not-run 未执行：没有选出任何结果。
@@ -167,21 +168,30 @@ class Book:
                 return False
         return True
 
-    def on_line(self, row):
-        """结论是否属于本检出：记在本分支上，或已并入。"""
+    def line(self, conclusions, own_fixes=()):
+        """本检出的结论：记在本分支上的，加上别的分支上已并入、又比本分支最近一次结论更晚的（已定决策 28，只算合并进来的）。
+
+        本分支没有结论（也没有修复关闭）时返回空，由调用方决定是否回落到全部分支。从别的分支分出来时带着的旧结论不算进来。"""
         branch = self.viewer.branch
-        return (branch is not None and row['branch'] == branch) or self.merged(row)
+        own = [r for r in conclusions if branch is not None and r['branch'] == branch]
+        if not own and not own_fixes:
+            return []
+        newest = max((r['seq'] for r in own), default=0)
+        merged = [r for r in conclusions if r not in own and r['seq'] > newest and self.merged(r)]
+        for row in own:
+            row['merged'] = False
+        for row in merged:
+            row['merged'] = True
+        return own + merged
 
     def select(self, key):
         group = self.groups.get(key, [])
         fixes = self.fixes.get(key, [])
         conclusions = [row for row in group if conclusion(row)]
         branch = self.viewer.branch
-        line = [r for r in conclusions if self.on_line(r)]
         line_fixes = [f for f in fixes if branch and f['branch'] == branch]
+        line = self.line(conclusions, line_fixes)
         if line or line_fixes:
-            for row in line:
-                row['merged'] = not (branch is not None and row['branch'] == branch)
             chosen, fixes, fallback = line, line_fixes, False
         else:
             chosen, fallback = conclusions, bool(conclusions or fixes)
@@ -252,8 +262,9 @@ class Book:
         旧内容上只取本分支的结论和本检出的非结论，别的分支上内容不同的结果不列入，也不回落。"""
         if current:
             return self.select(key).records
-        return [row for row in self.groups.get(key, [])
-                if (conclusion(row) and self.on_line(row)) or (not conclusion(row) and self.own(row))]
+        group = self.groups.get(key, [])
+        chosen = self.line([row for row in group if conclusion(row)])
+        return sorted(chosen + [row for row in group if not conclusion(row) and self.own(row)], key=lambda r: r['seq'], reverse=True)
 
     def history(self, scene):
         """场景的历史：各指纹上参与本看板推导的记录（见 involved），新到旧。"""
