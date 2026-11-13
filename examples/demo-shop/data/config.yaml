@@ -12,12 +12,13 @@ entries:
   web:
     surface: web
     address_env: WEB_URL
-    operate: "按同手册第 2 节 web 入口，经看板浏览器（身份 merchant）打开 WEB_URL"
+    operate: "按同手册第 2 节 web 入口，经看板浏览器（身份 merchant 或 merchant2）打开 WEB_URL"
     observe: ["按同手册第 3 节核对页面显示与 SQLite 数据"]
     evidence: ["截图", "页面文本"]
     isolation: "按同手册第 4 节"
-    credential_env: [DEMO_MERCHANT_PASSWORD]
-    identities: [{id: merchant, label: 商家, limits: {logins_per_day: 2, codes_per_day: 2}}]
+    credential_env: [DEMO_MERCHANT_PASSWORD, DEMO_MERCHANT2_PASSWORD]
+    identities: [{id: merchant, label: 商家, limits: {logins_per_day: 2, codes_per_day: 2}},
+                 {id: merchant2, label: 第二个商家账号, limits: {logins_per_day: 2, codes_per_day: 2}}]
     spec_library: app:acceptance
     atlas: {repos: [app], languages: [zh]}
     web_evidence: {video: true, trace: true}

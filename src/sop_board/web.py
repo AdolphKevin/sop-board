@@ -48,6 +48,8 @@ def board(app, request):
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
         if info.get('source_branch'):
             items[key]['source_branch'] = info['source_branch']
+            if info.get('merged'):
+                items[key]['merged'] = True
         if info['state'] == 'pass' and info['guard'].get('unsynced'):
             items[key]['unsynced'] = info['guard']['reason']
         if 'draft_review' in info:
@@ -73,6 +75,9 @@ def board(app, request):
         result['environment'] = dict(state=environment['state'], services=[
             dict(name=s['name'], about=s['about'], state=s['state'], label=s['label'], stoppable=s['stoppable'])
             for s in environment['services']])
+        # 环境当前属于哪个检出、哪些运行与身份在用、谁在等（已定决策 28）。
+        if hasattr(app, 'gate'):
+            result['environment'].update(app.gate.snapshot())
         if store.shared:
             result['product']['database'] = f"{store.shared['host']}:{store.shared['port']}/{store.shared['dbname']}"
     return result
@@ -103,7 +108,8 @@ def history_entry(db, store, book, row, *, local, stopped=None, project=None, av
     item = dict(id=row['id'], kind=row['kind'], status=row['status'], executed_at=local_time(row['executed_at']),
                 actual=row['actual'], finding=row['finding'], note=row['note'], defect=row['defect'],
                 machine=book.machine_name(row['machine']), branch=status.branch_label(row['branch']), checkout=row['checkout'],
-                here=row['machine'] == viewer.machine, other_branch=bool(viewer.branch != row['branch'] and status.conclusion(row)))
+                here=row['machine'] == viewer.machine, other_branch=bool(viewer.branch != row['branch'] and status.conclusion(row)),
+                merged=bool(row.get('merged') and viewer.branch != row['branch']))
     if row['kind'] == 'manual':
         item.update(label='人工复测' + status.MANUAL[row['status']], marked_by=row['marked_by'] or '未署名')
     else:
@@ -168,7 +174,8 @@ def detail(app, request):
                              polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
                              fingerprint=scene['fingerprint'], **fields),
                   state=dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                             review=info['review'], guard=info['guard'], source_branch=info.get('source_branch')),
+                             review=info['review'], guard=info['guard'], source_branch=info.get('source_branch'),
+                             merged=bool(info.get('merged'))),
                   coverage=coverage, latest=latest, history=history, guard_runs=guard_runs, annotations=[],
                   # 最近一次未执行（谁、什么时候、缺什么）：不是结果，不改变状态，也不进历史。
                   not_executed=dict(skipped, at=local_time(skipped['at'])) if skipped else None,

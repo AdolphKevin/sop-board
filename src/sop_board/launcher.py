@@ -33,9 +33,9 @@ def work_directory(project, checkout):
 
 def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemented_by=None):
     if fix is not None:
-        command = f'sop-board run prepare --fix {fix}'
+        command = f'sop-board run prepare --wait 540 --fix {fix}'
     elif kind == 'run':
-        command = 'sop-board run prepare --scope ' + ' '.join(scope)
+        command = 'sop-board run prepare --wait 540 --scope ' + ' '.join(scope)
     else:
         command = 'sop-board distill prepare ' + ' '.join(scope)
     text = Template(files('sop_board').joinpath('prompts', 'launch.md').read_text(encoding='utf-8')).substitute(
@@ -67,7 +67,7 @@ class Launcher:
         if not scope:
             raise ValueError('须给出场景')
         self.project.require()
-        # 已有运行中的启动时先报 launch-running：它可能已准备了运行，范围检查会误报 run-prepared。
+        # 已有运行中的启动时先报 launch-running：它可能已准备了运行，范围检查会把那些场景当成别的运行占着的。
         with self.store.local() as db:
             running_launch(db, checkout)
         from .cli import Context

@@ -132,6 +132,10 @@ class Handler(BaseHTTPRequestHandler):
         db = connect(self.server.db_path)
         if path == '/':
             return self.send(200, (HERE / 'templates' / 'home.html').read_text(encoding='utf-8'), 'text/html; charset=utf-8')
+        if path == '/static/app.js':
+            # 长缓存：换检出后页面要用到新脚本，看板须在交接浏览器时清空 HTTP 缓存。
+            return self.send(200, (HERE / 'static' / 'app.js').read_text(encoding='utf-8'), 'text/javascript; charset=utf-8',
+                             headers=[('Cache-Control', 'public, max-age=86400')])
         if path == '/login':
             return self.send(200, '<!doctype html><html><head><meta charset="utf-8"><title>商家登录</title></head><body>'
                              '<form method="post" action="/login"><label>账号 <input name="user"></label>'
@@ -167,7 +171,10 @@ class Handler(BaseHTTPRequestHandler):
         db = connect(self.server.db_path)
         data = self.body()
         if path == '/login':
-            if data.get('user') == 'merchant' and data.get('password') == os.environ.get('DEMO_MERCHANT_PASSWORD', 'merchant-pass'):
+            # 两个合成商家账号属于同一家店：merchant 与 merchant2（已定决策 28 的并行运行用第二个账号）。
+            accounts = {'merchant': os.environ.get('DEMO_MERCHANT_PASSWORD', 'merchant-pass'),
+                        'merchant2': os.environ.get('DEMO_MERCHANT2_PASSWORD', 'merchant2-pass')}
+            if data.get('user') in accounts and data.get('password') == accounts[data.get('user')]:
                 token = secrets.token_hex(16)
                 db.execute("INSERT INTO sessions(token,shop) VALUES (?,'demo')", (token,))
                 db.commit()

@@ -69,7 +69,7 @@ sop-board check
 - `skills install` 只更新本安装器拥有的链接（记录在各目录 `.sop-board-links.json`），其他来源的同名目录列出并跳过。
 - `init`：每个目录须是 Git 工作树根目录、有可规范化的 origin、不能重复；数据目录 `<根目录>/<名称>` 不能已存在，也不能位于仓库内。名称以字母或数字开头，只含字母、数字、`.`、`_`、`-`，最长 64。别名取目录名小写化（不以字母开头时加 `r-`，重复时加 `-2`…）。写出 `project.json`（`{"format": "sop-board-project-6", "name": …}`，绑定产品后另有 `product: {id, name}`）与只含 `repos`、`identities` 的 `config.yaml`。对已登记的项目不写仓库目录时，`init <项目> [--join <ID> | --new [--product 名称]]` 列出或绑定共享库里的产品，见 §12。
 - 运行时根目录是 `SOP_BOARD_HOME`（缺省 `~/.sop-board`）；`--data` 指定项目所在的根目录。本机操作者文件 `~/.sop-board/operator` 与浏览器运行时 `~/.sop-board/runtime/` 也在这里。
-- 旧格式数据目录（含 `workspace.json` / `workspace.sqlite3`、`project.json` 格式不符、数据库 `user_version` 不是 7）一律返回 `project-format`，不读取、不迁移。
+- 旧格式数据目录（含 `workspace.json` / `workspace.sqlite3`、`project.json` 格式不符、本机库 `user_version` 不是 8）一律返回 `project-format`，不读取、不迁移。本机库从格式 7 升到 8（已定决策 28）时，把 `board.sqlite3`（连同 `-wal`、`-shm`）移走后重新启动看板即重建；配了共享库的项目业务记录不受影响，没配共享库的项目连同其中的业务记录一起重建。
 - 数据根目录（`SOP_BOARD_HOME` 或 `--data`）下另有 `machine.json`（本机标识与显示名，第一次需要时生成一次）与 `evidence/`（本机产出的证据文件，按 sha256 存放，不随项目数据目录重建而丢失）。共享库的搭建、产品的新建与加入见 §12。
 
 ### 项目与检出的识别
@@ -326,7 +326,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 - **运行时**：`browser install` 把随包 `package.json`/`package-lock.json`（固定 `@playwright/test` 1.64.1）复制到 `~/.sop-board/runtime/`，`npm ci` 后以 `PLAYWRIGHT_BROWSERS_PATH=<runtime>/browsers` 执行 `playwright install --no-shell chromium ffmpeg`，把 Playwright 版本、CfT 修订号与版本、可执行文件路径写入 `runtime.json`。需要 Node ≥ 20 与 npm。不读写共享的 ms-playwright 缓存，不安装 WebKit/Firefox/headless shell。
 - **启动**：只有守护进程启动浏览器，执行者只经 CDP 连接，不自己启动或安装。每个身份一个 CfT，各检出共用（已定决策 28）：`--user-data-dir=<数据目录>/browsers/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`，缺省加 `--headless=new`，不加 `--enable-automation`；输出写同目录 `chrome.log`。`/json/version` 15 秒内有应答才算就绪。
-- **端口**：缺省端口 `9400 + 身份序号`（已定决策 28 起不含槽位），不分项目和数据根目录。序号：`default` 为 0，其后按各 Web 入口声明顺序；超过 20 个身份报错。缺省端口被别的进程占用（127.0.0.1 上有进程监听或绑定不上）时顺延到下一个空闲端口，不报错，不结束、不连接占用者；到 65535 都找不到才报错。实际端口记在 `browser_instances.port`，`browser status` 显示它（另给 `default_port`），`run.env` 的 `PW_CDP_ENDPOINT` 与 `PW_IDENTITIES` 里各身份的 `endpoint` 指向它；守护命令声明 `browser:` 时同样。就绪须确认 `/json/version` 应答的是本次启动的浏览器（`chrome.log` 里本次的监听行为 `127.0.0.1:<端口>` 且浏览器标识一致；没有监听行时用 lsof 核对监听进程）：探测之后端口才被别人占去时 CfT 会改在 `[::1]` 上监听，这时结束这次启动、从下一个端口再找。浏览器运行期间端口不变；下一次启动重新从缺省端口找起。（已定决策 24）
+- **端口**：缺省端口 `9400 + 身份序号`（已定决策 28 起不含槽位），不分项目和数据根目录。序号：`default` 为 0，其后按各 Web 入口声明顺序。缺省端口被别的进程占用（127.0.0.1 上有进程监听或绑定不上）时顺延到下一个空闲端口，不报错，不结束、不连接占用者；到 65535 都找不到才报错。实际端口记在 `browser_instances.port`，`browser status` 显示它（另给 `default_port`），`run.env` 的 `PW_CDP_ENDPOINT` 与 `PW_IDENTITIES` 里各身份的 `endpoint` 指向它；守护命令声明 `browser:` 时同样。就绪须确认 `/json/version` 应答的是本次启动的浏览器（`chrome.log` 里本次的监听行为 `127.0.0.1:<端口>` 且浏览器标识一致；没有监听行时用 lsof 核对监听进程）：探测之后端口才被别人占去时 CfT 会改在 `[::1]` 上监听，这时结束这次启动、从下一个端口再找。浏览器运行期间端口不变；下一次启动重新从缺省端口找起。（已定决策 24）
 - **看板停止与重启**：正常停止保留有界面浏览器的进程、窗口与页面，输出检出、身份、进程号和调试端口；无头浏览器与环境照旧停止。启动时逐个读取 profile 的 `SingletonLock`，核实本机进程仍在、命令行的可执行文件是运行时登记的 CfT、`--user-data-dir` 完整匹配这个 profile，从命令行取模式与调试端口。有界面窗口在后台最多用 15 秒反复核对，每次核对后等待最多 0.2 秒再试；该身份的租约和打开请求等待核对结束，期间不另起浏览器。端口监听者正是该进程且 `/json/version` 有应答时认回；lsof 无输出或不可用时，改用 chrome.log 最后一条 DevTools 监听行的端口和浏览器标识核对调试应答。lsof 明确返回其他监听者时不请求该端口。核对始终不通过时保留进程，状态为未认回（`unrecovered`），status 带进程号与 `reason`，不提供 endpoint。租约、`run prepare` 与 `browser open` 返回 `browser-unrecovered`，包含原因及恢复应答后重试、或用 `browser close --identity <身份>` 结束窗口这两条出路。下一次请求会重新核对，通过即沿用原进程与端口；`browser close` 可以结束未认回的窗口，看板停止仍保留它。认回后沿用原端口并释放旧租约，`started_at` 为进程实际启动时间。核实属于该 profile 的无头浏览器结束并清理；锁指向的进程已消失时忽略，不登记新崩溃。经 `restart` 交接时不同：无头浏览器也认回，租约不释放（已定决策 28）。数据库重建时按 profile 所在的身份登记实例。认回的进程每秒用零信号检查存活，每五秒至多一次按启动时间和命令行核对身份，发信号前强制重核，无法取得退出信号时写“已退出（取不到退出信号）”，崩溃处理与普通实例相同；`browser close` 同样结束认回的进程。运行时登记缺失、锁或进程身份不符时不操作该进程。（已定决策 26）
 - **租约**（`browser_instances.holder`）：持有者 `run:<编号>`、`retest:<检出>`、`distill:<检出>` 或 `human`。身份租约整机独占，同一身份同一时刻只有一个持有者（已定决策 28）。别的持有者占用时返回 `browser-busy`（`run prepare` 带 `--wait` 时排队，§5）。交给与上一次不同检出的持有者之前，经 CDP 的 `Network.clearBrowserCache` 清空 HTTP 缓存，cookie、本地存储与登录保留；`browser_instances` 记下最近一次交给的检出（`browser status` 的 `last_checkout`）。状态 crashed 时返回 `browser-crashed`；启动即退出不抛错，问题写进 brief.md，相关场景应记受阻。运行提交或放弃时释放。
 - **真人登录与交还**：`browser open --identity X --headed` 以有界面窗口打开（缺省地址为该检出第一个 Web 入口的地址），并持有 `human` 租约；窗口已在运行时只取得租约，不重启，正在运行的无头浏览器则重启为有界面窗口（profile 不变）。用户在窗口里登录、完成人机验证或二次验证后，`browser release --identity X` 交还：只释放 `human` 租约，进程、窗口与页面保持运行，下一次取得租约的运行直接沿用这个窗口，不重启；身份被运行持有时返回 `browser-busy`。不带 `--headed` 的 `browser open` 遇到运行中的有界面窗口时沿用它，不取得租约。`browser close` 结束浏览器并释放租约，之后的运行重新以无头启动。出现 “browser may not be secure” 时停止，该身份的场景记受阻；不回退到日常 Chrome，不改 UA 或参数绕过。
@@ -525,14 +525,14 @@ fixtures:
 | `GET /p/<项目>/sop`、`GET /api/sop?checkout=<名称>` | lan | 业务 SOP：场景目录下的 Markdown 按 1～3 级标题分节，左树右文；含“答复”小节的节标出已答复 / 待答复 |
 | `POST /api/launch`、`/api/retest`、`/api/distill` | local | AI 重跑此场景、运行守护、沉淀 |
 | `GET /api/launches/<编号>/log` | local | 启动日志末尾 512 KiB |
-| `/local/health`（restart 交接后另带 `restart`：认回的浏览器与会话、重新拉起的环境）、`/local/stop`、`/local/restart`、`/local/env/{up,down,restart,status,service,restore}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
+| `/local/health`（restart 交接后另带 `restart`：认回的浏览器与会话、重新拉起的环境）、`/local/stop`、`/local/restart`、`/local/run/acquire`（run prepare 取得环境与身份，带排队）、`/local/env/{up,down,restart,status,service,restore}`、`/local/browser/{lease,release,crashes,open,close,status}`、`/local/retest`、`/local/distill/submit`、`/local/launch`、`/local/launch/stop` | token | CLI 调用 |
 
 ## 11. 错误码
 
 | 错误码 | 含义 / 处理 |
 | --- | --- |
 | `project-not-found` | 找不到项目或当前仓库未登记；`init` 或写 `--project` |
-| `project-format` | 旧格式数据目录或数据库（本机库格式不是 7）；用 `init` 新建项目，不迁移 |
+| `project-format` | 旧格式数据目录或数据库（本机库格式不是 8）；移走旧的 `board.sqlite3` 后重新启动看板，或用 `init` 新建项目；不迁移 |
 | `product-unbound` | config.yaml 写了 `shared_database`，项目还没绑定产品；`init <项目>` 列出产品，问使用者后 `--join` 或 `--new` |
 | `product-choice-required` | `init <项目>` 只列出产品（名称、创建人、有结果的场景数、最近写入时间、本机场景的重合条数），不自动绑定 |
 | `product-not-found` | `--join` 的 ID 在共享库里不存在（输出列出已有产品），或绑定的产品已不在共享库 |

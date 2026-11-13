@@ -757,7 +757,8 @@
       el('span', {class: 'stitle', title: item.title}, item.title),
       item.review ? el('span', {class: 'tag review', title: '待人工复核'}, '核') : null,
       item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null,
-      item.source_branch ? el('span', {class: 'tag branch', title: '来源分支 ' + item.source_branch}, item.source_branch) : null,
+      item.source_branch ? el('span', {class: 'tag branch', title: item.merged ? `来自 ${item.source_branch}（已并入）` : '来源分支 ' + item.source_branch},
+        item.merged ? `${item.source_branch}（已并入）` : item.source_branch) : null,
       item.unsynced ? el('span', {class: 'tag guard', title: item.unsynced}, '未同步') : null);
   }
 
@@ -912,7 +913,8 @@
     return el('li', {class: 'event'},
       el('div', {class: 'event-head'}, pill(stateOf(entry), entry.label), el('span', {class: 'muted'}, entry.executed_at),
         el('span', {class: 'muted'}, who), entry.current ? null : el('span', {class: 'tag old'}, '旧内容'),
-        entry.other_branch ? el('span', {class: 'tag branch', title: '这条结论来自其他分支'}, '来源分支 ' + entry.branch) : null),
+        entry.merged ? el('span', {class: 'tag branch', title: '这条结论来自已并入本分支的提交'}, `来自 ${entry.branch}（已并入）`)
+          : entry.other_branch ? el('span', {class: 'tag branch', title: '这条结论来自其他分支'}, '来源分支 ' + entry.branch) : null),
       el('p', {class: 'origin muted'}, '产出：' + origin(entry)),
       entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
       stoppedServices(entry),
@@ -1231,7 +1233,9 @@
         el('span', {class: 'chip'}, scene.polarity === 'positive' ? '正向' : '反向' + (scene.negative_type ? ' · ' + scene.negative_type : '')),
         el('span', {class: 'chip'}, '角色 ' + scene.actor)),
       el('div', {class: `banner ${data.state.state}`}, pill(data.state.state, data.state.label),
-        data.state.source_branch ? el('span', {class: 'tag branch', title: '本分支还没有结论，状态取自其他分支的结论'}, '来源分支 ' + data.state.source_branch) : null,
+        data.state.source_branch ? (data.state.merged
+          ? el('span', {class: 'tag branch', title: '这条结论取证时的提交已并入本分支'}, `来自 ${data.state.source_branch}（已并入）`)
+          : el('span', {class: 'tag branch', title: '本分支还没有结论，状态取自其他分支的结论'}, '来源分支 ' + data.state.source_branch)) : null,
         el('span', {class: 'reason'}, data.state.reason || ''), data.state.review ? el('span', {class: 'tag review'}, '待人工复核') : null,
         data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null,
         (data.state.state === 'pass' && data.state.guard?.unsynced) || data.state.guard?.unrunnable ? el('span', {class: 'tag guard'}, data.state.guard.reason) : null),
@@ -1241,7 +1245,8 @@
       ...contentSections(scene, data.coverage),
       section('最新执行结果与证据', latest ? el('div', {},
         el('div', {class: 'event-head'}, pill(stateOf(latest), latest.label), el('span', {class: 'muted'}, latest.executed_at),
-          latest.other_branch ? el('span', {class: 'tag branch'}, '来源分支 ' + latest.branch) : null),
+          latest.merged ? el('span', {class: 'tag branch'}, `来自 ${latest.branch}（已并入）`)
+            : latest.other_branch ? el('span', {class: 'tag branch'}, '来源分支 ' + latest.branch) : null),
         el('p', {class: 'origin muted'}, '产出：' + origin(latest)),
         latest.actual ? el('p', {}, latest.actual) : null, latest.finding ? el('p', {class: 'finding'}, latest.finding) : null,
         stoppedServices(latest),
@@ -1273,6 +1278,22 @@
         s.stoppable ? el('span', {class: 'tag'}, '可停') : null))));
   }
 
+  // 环境当前属于哪个检出、在用的运行与身份、排队的会话（已定决策 28），只在本机页面显示。
+  function occupancyBlock(environment) {
+    if (!config.local || !environment?.holder) return null;
+    const {holder, waiting = []} = environment;
+    const runs = holder.runs || [];
+    const owner = runs.length
+      ? el('p', {}, `环境属于检出 ${holder.checkouts.join('、')}：` + runs.map(r => `运行 #${r.run}` + (r.identities.length ? `（${r.identities.join('、')}）` : '')).join('；'))
+      : el('p', {class: 'muted'}, '环境空闲：没有运行在用。');
+    const queue = waiting.length
+      ? el('ol', {class: 'queue-list'}, waiting.map(w => el('li', {},
+          `检出 ${w.checkout} · 会话 ${w.session}` + (w.identities.length ? ` · 身份 ${w.identities.join('、')}` : '')
+          + ` · 已等 ${w.waited} 秒` + (w.waiting ? '' : '（暂时断开，保留位置）'))))
+      : el('p', {class: 'muted'}, '没有排队的会话。');
+    return el('section', {class: 'block occupancy'}, el('h3', {}, '环境占用与排队'), owner, queue);
+  }
+
   function renderOverview() {
     const pane = $('#detail');
     const {counts, total, items} = board.data;
@@ -1288,6 +1309,7 @@
         ['not-run', '未执行'], ['pass', '通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
       el('p', {class: 'muted metrics'}, `Agent 独立通过的人工确认率 ${ratio(board.data.stats.agent_confirm_rate)} · 复核覆盖 ${ratio(board.data.stats.agent_review_coverage)}`),
       servicesBlock(board.data.environment),
+      occupancyBlock(board.data.environment),
       el('section', {class: 'block'}, el('h3', {}, `需要处理（${urgent.length}）`),
         urgent.length ? el('ul', {class: 'todo'}, urgent.map(([key, item]) => el('li', {},
           el('div', {class: 'row selectable', onclick: () => select(key, {fromHash: true})},

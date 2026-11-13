@@ -28,7 +28,6 @@ from .errors import APIError
 from .store import dumps, now
 
 BASE_PORT = 9400
-SLOT_WIDTH = 20
 LAST_PORT = 65535
 LAUNCH_ATTEMPTS = 5
 READY_SECONDS = 15
@@ -106,15 +105,88 @@ def identity_order(project):
     return order
 
 
-def port_for(project, checkout, identity):
-    """缺省调试端口：9400 + 槽位×20 + 身份序号。实际端口见 Instance.port（被占用时顺延）。"""
+def port_for(project, identity):
+    """缺省调试端口：9400 + 身份序号（已定决策 28 起不含槽位）。实际端口见 Instance.port（被占用时顺延）。"""
     order = identity_order(project)
     if identity not in order:
         raise ValueError(f'没有声明身份 {identity}')
-    index = order.index(identity)
-    if index >= SLOT_WIDTH:
-        raise ValueError(f'身份超过 {SLOT_WIDTH} 个，无法分配调试端口')
-    return BASE_PORT + checkout.slot * SLOT_WIDTH + index
+    return BASE_PORT + order.index(identity)
+
+
+def clear_http_cache(port, *, timeout=5):
+    """经调试协议清空浏览器的 HTTP 缓存（cookie、本地存储与登录保留）：新开一个空白页，发 Network.clearBrowserCache，再关掉它。"""
+    from urllib.request import Request
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(Request(f'http://127.0.0.1:{port}/json/new?about:blank', method='PUT'), timeout=timeout) as response:
+        target = json.loads(response.read())
+    try:
+        reply = websocket_command(target['webSocketDebuggerUrl'], dict(id=1, method='Network.clearBrowserCache'), timeout=timeout)
+        if 'error' in reply:
+            raise OSError(f"Network.clearBrowserCache 失败：{reply['error']}")
+    finally:
+        try:
+            opener.open(f"http://127.0.0.1:{port}/json/close/{target['id']}", timeout=timeout).read()
+        except OSError:
+            pass
+
+
+def websocket_command(url, payload, *, timeout=5):
+    """最小的 WebSocket 客户端：发一条 CDP 命令，读到同一 id 的应答为止。只用于本机回环上的调试端口。"""
+    import base64
+    import struct
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    connection = socket.create_connection((parts.hostname, parts.port), timeout=timeout)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode()
+        connection.sendall((f'GET {parts.path} HTTP/1.1\r\nHost: {parts.hostname}:{parts.port}\r\nUpgrade: websocket\r\n'
+                            f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+        buffer = b''
+        while b'\r\n\r\n' not in buffer:
+            chunk = connection.recv(4096)
+            if not chunk:
+                raise OSError('调试端口在 WebSocket 握手时断开')
+            buffer += chunk
+        head, buffer = buffer.split(b'\r\n\r\n', 1)
+        if b' 101 ' not in head.split(b'\r\n', 1)[0] + b' ':
+            raise OSError('调试端口拒绝了 WebSocket 握手')
+        data = json.dumps(payload).encode()
+        mask = os.urandom(4)
+        size = len(data)
+        header = bytes([0x81]) + (bytes([0x80 | size]) if size < 126 else
+                                  bytes([0x80 | 126]) + struct.pack('!H', size) if size < 65536 else
+                                  bytes([0x80 | 127]) + struct.pack('!Q', size))
+        connection.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+        def read(count):
+            nonlocal buffer
+            while len(buffer) < count:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    raise OSError('调试端口的 WebSocket 连接已关闭')
+                buffer += chunk
+            result, buffer = buffer[:count], buffer[count:]
+            return result
+
+        while True:
+            first, second = read(2)
+            length = second & 0x7f
+            if length == 126:
+                length = struct.unpack('!H', read(2))[0]
+            elif length == 127:
+                length = struct.unpack('!Q', read(8))[0]
+            if second & 0x80:
+                read(4)
+            body = read(length)
+            opcode = first & 0x0f
+            if opcode == 8:
+                raise OSError('调试端口关闭了 WebSocket 连接')
+            if opcode == 1:
+                message = json.loads(body)
+                if message.get('id') == payload['id']:
+                    return message
+    finally:
+        connection.close()
 
 
 def port_in_use(port):
@@ -280,13 +352,15 @@ def exit_description(at, code, name, log):
 
 
 class Instance:
-    def __init__(self, manager, checkout, identity):
-        self.manager, self.checkout, self.identity = manager, checkout, identity
+    """一个身份的浏览器，各检出共用（已定决策 28）。last_checkout 是最近一次交给的检出，交给别的检出前清空 HTTP 缓存。"""
+
+    def __init__(self, manager, identity):
+        self.manager, self.identity = manager, identity
+        self.last_checkout = None
         self.process, self.watcher = None, None
         self.started, self.stopping = 0.0, False
         self.headed = False
         self.actual = None   # 本次启动实际使用的调试端口
-        self.deferred_record = None
         self.detached = threading.Event()
         self.recovered = threading.Event()
         self.recovered.set()
@@ -299,13 +373,13 @@ class Instance:
         return self.manager.project
 
     def profile(self):
-        return self.project.data / 'browsers' / self.checkout.name / self.identity / 'profile'
+        return self.project.data / 'browsers' / self.identity / 'profile'
 
     def log(self):
         return self.profile().parent / 'chrome.log'
 
     def default_port(self):
-        return port_for(self.project, self.checkout, self.identity)
+        return port_for(self.project, self.identity)
 
     def port(self):
         """实际端口：启动过就是本次（或最近一次）启动所用的端口，否则是缺省端口。"""
@@ -353,7 +427,7 @@ class Instance:
         log.close()
         self.manager.record(self, 'starting')
         self.watcher = threading.Thread(target=self.watch, args=(self.process,), daemon=True,
-                                        name=f'browser-{self.checkout.name}-{self.identity}')
+                                        name=f'browser-{self.identity}')
         self.watcher.start()
         deadline = time.monotonic() + READY_SECONDS
         while time.monotonic() < deadline:
@@ -420,66 +494,49 @@ class Instance:
 
 
 class Manager:
-    """守护进程里的全部浏览器；同一 检出×身份 的操作串行执行。"""
+    """守护进程里的全部身份浏览器：每个身份一个，各检出共用（已定决策 28）；同一身份的操作串行执行。"""
 
     def __init__(self, project, store):
         self.project, self.store = project, store
         self.instances = {}
-        self.pending = {}  # 数据库重建时，按 profile 所在检出名等待检出登记
         self.guard = threading.RLock()
 
-    def instance(self, checkout, identity):
-        key = (checkout.id, identity)
+    def instance(self, identity):
         with self.guard:
-            current = self.instances.get(key)
-            if current is None or current.checkout.slot != checkout.slot:
-                current = self.pending.get((checkout.name, identity))
-                if current:
-                    current.wait_recovery()
-                    self.pending.pop((checkout.name, identity))
-                    current.checkout = checkout
-                    self.instances[key] = current
-                    self.record(current, 'starting')
-                    state, fields = current.deferred_record or ('ready' if current.alive() else 'exited', {})
-                    self.record(current, state, **dict(fields, holder=None))
-                    current.deferred_record = None
-                else:
-                    current = self.instances[key] = Instance(self, checkout, identity)
+            current = self.instances.get(identity)
+            if current is None:
+                current = self.instances[identity] = Instance(self, identity)
             current.wait_recovery()
             return current
 
-    def row(self, checkout, identity):
-        self.instance(checkout, identity)
+    def row(self, identity):
+        self.instance(identity)
         with self.store.local() as db:
-            return db.execute('SELECT * FROM browser_instances WHERE checkout=? AND identity=?',
-                              (checkout.id, identity)).fetchone()
+            return db.execute('SELECT * FROM browser_instances WHERE identity=?', (identity,)).fetchone()
 
     def record(self, instance, state, **fields):
-        if instance.checkout.id is None:
-            instance.deferred_record = (state, fields)
-            return
         values = dict(port=instance.port(), pid=instance.process.pid if instance.process else None,
                       profile=str(instance.profile()), headed=int(instance.headed), state=state, log=str(instance.log()))
+        if instance.last_checkout is not None:
+            values['last_checkout'] = instance.last_checkout.id
         values.update(fields)
         with self.store.local_tx() as db:
-            db.execute('INSERT OR IGNORE INTO browser_instances(checkout,identity,port,profile,state) VALUES (?,?,?,?,?)',
-                       (instance.checkout.id, instance.identity, values['port'], values['profile'], state))
+            db.execute('INSERT OR IGNORE INTO browser_instances(identity,port,profile,state) VALUES (?,?,?,?)',
+                       (instance.identity, values['port'], values['profile'], state))
             assignments = ', '.join(f'{name}=?' for name in values)
             if state == 'starting':
                 assignments += ', started_at=?, exited_at=NULL, exit_code=NULL, signal=NULL, crash_report=NULL'
                 parameters = list(values.values()) + [datetime.fromtimestamp(instance.started, timezone.utc).isoformat()]
             else:
                 parameters = list(values.values())
-            db.execute(f'UPDATE browser_instances SET {assignments} WHERE checkout=? AND identity=?',
-                       (*parameters, instance.checkout.id, instance.identity))
+            db.execute(f'UPDATE browser_instances SET {assignments} WHERE identity=?', (*parameters, instance.identity))
 
     def exited(self, instance, code, *, expected):
         """浏览器进程退出：主动停止记为 exited；其他退出记录崩溃，并登记待人处理。"""
         name = signal_name(code)
         report = crash_report(instance.started)
         with self.store.local() as db:
-            row = db.execute('SELECT * FROM browser_instances WHERE checkout=? AND identity=?',
-                             (instance.checkout.id, instance.identity)).fetchone() if instance.checkout.id is not None else None
+            row = db.execute('SELECT * FROM browser_instances WHERE identity=?', (instance.identity,)).fetchone()
         crashes = json.loads(row['crashes']) if row else []
         state = 'exited'
         if not expected:
@@ -488,7 +545,8 @@ class Manager:
             crashes.append(dict(at=moment.isoformat(), code=code, signal=name, log=str(instance.log()), report=report,
                                 holder=row['holder'] if row else None))
             state = 'crashed' if len(crashes) >= 2 else 'exited'
-            text = (f"身份 {instance.identity} 的 Chrome for Testing（检出 {instance.checkout.name}）"
+            where = f'（最近交给检出 {instance.last_checkout.name}）' if instance.last_checkout else ''
+            text = (f'身份 {instance.identity} 的 Chrome for Testing{where}'
                     + exit_description(moment.isoformat(), code, name, str(instance.log()))
                     + (f'，崩溃报告 {report}' if report else ''))
         self.record(instance, state, pid=None, exited_at=now(), exit_code=code, signal=signal_name(code), crash_report=report,
@@ -499,60 +557,95 @@ class Manager:
             from .ledger import insert_attention
             try:
                 with self.store.records_tx() as db:
-                    insert_attention(db, self.store, instance.checkout.name, '浏览器崩溃', text, by='sop-board')
+                    insert_attention(db, self.store, instance.last_checkout.name if instance.last_checkout else 'main',
+                                     '浏览器崩溃', text, by='sop-board')
             except Exception as error:  # noqa: BLE001
                 import sys
                 print(f'浏览器崩溃没能登记待人处理：{error}', file=sys.stderr)
 
-    # ---- 租约 ----
+    # ---- 租约（整机独占，已定决策 28） ----
+
+    def busy(self, identity, holder):
+        """身份被别的持有者占用时返回 browser-busy 的说明，否则 None。"""
+        row = self.row(identity)
+        if row and row['holder'] and row['holder'] != holder:
+            return (f"身份 {identity} 的浏览器正由{self.holder_text(row['holder'])}使用"
+                    + (f'；真人完成后运行 sop-board browser release --identity {identity} 交还（窗口保持打开，运行直接沿用）'
+                       if row['holder'] == 'human' else ''))
+        return None
+
+    def holder_text(self, holder):
+        """租约持有者的说法：真人登录，或某个检出的运行 #N。"""
+        if holder == 'human':
+            return '真人登录'
+        kind, _, number = holder.partition(':')
+        if kind == 'run' and number.isdigit():
+            with self.store.local() as db:
+                row = db.execute('SELECT c.name FROM local_work w JOIN checkouts c ON c.id=w.checkout WHERE w.id=?',
+                                 (int(number),)).fetchone()
+            return f" {row['name']} 的运行 #{number} " if row else f' 运行 #{number} '
+        return f' {holder} '
 
     def lease(self, checkout, identities, holder, *, url=None):
         """为一次运行取得身份浏览器；返回 身份 → dict(endpoint 或 problem)。
 
-        真人租约或其他持有者占用时 browser-busy；crashed 时 browser-crashed；启动即崩溃时返回 problem，不抛错。"""
+        真人租约或其他持有者占用时 browser-busy；crashed 时 browser-crashed；启动即崩溃时返回 problem，不抛错。
+        交给与上一次不同的检出之前清空 HTTP 缓存。"""
         require_runtime()
         result = {}
         with self.guard:
             for identity in identities:
-                self.ensure_recovered(self.instance(checkout, identity))
-                row = self.row(checkout, identity)
+                self.ensure_recovered(self.instance(identity))
+                row = self.row(identity)
                 if row and row['state'] == 'crashed':
                     raise APIError(409, 'browser-crashed', [dict(field=identity, problem=
                         f'身份 {identity} 的浏览器 30 分钟内两次异常退出；检查后运行 sop-board browser open --identity {identity} --reset-crash')])
-                if row and row['holder'] and row['holder'] != holder:
-                    raise APIError(409, 'browser-busy', [dict(field=identity, problem=
-                        f"身份 {identity} 的浏览器正由 {'真人登录' if row['holder'] == 'human' else row['holder']} 使用"
-                        + (f'；真人完成后运行 sop-board browser release --identity {identity} 交还（窗口保持打开，运行直接沿用）'
-                           if row['holder'] == 'human' else ''))])
+                problem = self.busy(identity, holder)
+                if problem:
+                    raise APIError(409, 'browser-busy', [dict(field=identity, problem=problem)])
             for identity in identities:
-                instance = self.instance(checkout, identity)
-                self.set_holder(checkout, identity, holder)
-                if not instance.alive():
+                instance = self.instance(identity)
+                self.set_holder(identity, holder)
+                if instance.alive():
+                    self.hand_to(instance, checkout)
+                else:
+                    instance.last_checkout = checkout
                     endpoint = instance.launch(headed=False, url=url)
                     if endpoint is None:
-                        row = self.row(checkout, identity)
+                        row = self.row(identity)
                         result[identity] = dict(problem=f"浏览器进程 {row['exited_at']} 因 {row['signal'] or '退出码 ' + str(row['exit_code'])} "
                                                         f"退出，日志 {row['log']}" + (f"，崩溃报告 {row['crash_report']}" if row['crash_report'] else ''))
                         continue
                 result[identity] = dict(endpoint=instance.endpoint())
         return result
 
-    def set_holder(self, checkout, identity, holder):
+    def hand_to(self, instance, checkout):
+        """把运行中的浏览器交给某个检出：与上一次不同（或不知道上一次）时先清空 HTTP 缓存，cookie、本地存储与登录保留。"""
+        if instance.last_checkout is not None and instance.last_checkout.id == checkout.id:
+            return
+        try:
+            clear_http_cache(instance.port())
+        except (OSError, ValueError, KeyError) as error:
+            print(f'身份 {instance.identity} 的浏览器交给检出 {checkout.name} 前没能清空 HTTP 缓存：{error}', flush=True)
+        instance.last_checkout = checkout
         with self.store.local_tx() as db:
-            db.execute('INSERT OR IGNORE INTO browser_instances(checkout,identity,port,profile,state) VALUES (?,?,?,?,?)',
-                       (checkout.id, identity, port_for(self.project, checkout, identity),
-                        str(self.instance(checkout, identity).profile()), 'exited'))
-            db.execute('UPDATE browser_instances SET holder=? WHERE checkout=? AND identity=?', (holder, checkout.id, identity))
+            db.execute('UPDATE browser_instances SET last_checkout=? WHERE identity=?', (checkout.id, instance.identity))
+
+    def set_holder(self, identity, holder):
+        with self.store.local_tx() as db:
+            db.execute('INSERT OR IGNORE INTO browser_instances(identity,port,profile,state) VALUES (?,?,?,?)',
+                       (identity, port_for(self.project, identity), str(self.instance(identity).profile()), 'exited'))
+            db.execute('UPDATE browser_instances SET holder=? WHERE identity=?', (holder, identity))
 
     def release(self, holder):
         with self.store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
 
-    def crashes_since(self, checkout, holder, since):
+    def crashes_since(self, holder, since):
         """该持有者租约期间记录的异常退出：身份 → [crash]。"""
         result = {}
         with self.store.local() as db:
-            for row in db.execute('SELECT identity, crashes FROM browser_instances WHERE checkout=?', (checkout.id,)):
+            for row in db.execute('SELECT identity, crashes FROM browser_instances'):
                 found = [c for c in json.loads(row['crashes']) if c['at'] >= since and c.get('holder') == holder]
                 if found:
                     result[row['identity']] = found
@@ -562,70 +655,73 @@ class Manager:
 
     def open(self, checkout, identity, *, headed, reset_crash=False, url=None):
         with self.guard:
-            self.ensure_recovered(self.instance(checkout, identity))
-            row = self.row(checkout, identity)
+            self.ensure_recovered(self.instance(identity))
+            row = self.row(identity)
             if row and row['state'] == 'crashed' and not reset_crash:
                 raise APIError(409, 'browser-crashed', [dict(field=identity, problem='浏览器处于 crashed，加 --reset-crash 重置')])
             if row and row['holder'] and row['holder'] != 'human':
                 raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
             if reset_crash and row:
                 with self.store.local_tx() as db:
-                    db.execute("UPDATE browser_instances SET state='exited', crashes='[]' WHERE checkout=? AND identity=?",
-                               (checkout.id, identity))
-            instance = self.instance(checkout, identity)
+                    db.execute("UPDATE browser_instances SET state='exited', crashes='[]' WHERE identity=?", (identity,))
+            instance = self.instance(identity)
             # 只有要窗口而现有进程是无头时才重启；有界面窗口一律沿用，不把人做过的登录与验证关掉。
             if headed and instance.alive() and not instance.headed:
                 instance.stop()
             if headed:
-                self.set_holder(checkout, identity, 'human')
-            endpoint = instance.endpoint() if instance.alive() else instance.launch(headed=headed, url=url)
+                self.set_holder(identity, 'human')
+            if instance.alive():
+                self.hand_to(instance, checkout)
+                endpoint = instance.endpoint()
+            else:
+                instance.last_checkout = checkout
+                endpoint = instance.launch(headed=headed, url=url)
             if endpoint is None:
                 if headed:
-                    self.release_identity(checkout, identity)
+                    self.release_identity(identity)
                 raise ValueError(f'Chrome for Testing 启动即退出；日志：{instance.log()}')
-            return self.status(checkout, identity)
+            return self.status(identity)
 
-    def release_identity(self, checkout, identity):
+    def release_identity(self, identity):
         with self.store.local_tx() as db:
-            db.execute('UPDATE browser_instances SET holder=NULL WHERE checkout=? AND identity=?', (checkout.id, identity))
+            db.execute('UPDATE browser_instances SET holder=NULL WHERE identity=?', (identity,))
 
-    def handover(self, checkout, identity):
+    def handover(self, identity):
         """真人交还：只解除 human 租约，浏览器进程与窗口保持运行，下一次取得租约的运行直接沿用。"""
-        port_for(self.project, checkout, identity)
+        port_for(self.project, identity)
         with self.guard:
-            row = self.row(checkout, identity)
+            row = self.row(identity)
             if row and row['holder'] and row['holder'] != 'human':
                 raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
-            self.release_identity(checkout, identity)
-            return self.status(checkout, identity)
+            self.release_identity(identity)
+            return self.status(identity)
 
-    def close(self, checkout, identity):
+    def close(self, identity):
         with self.guard:
-            instance = self.instance(checkout, identity)
-            row = self.row(checkout, identity)
+            instance = self.instance(identity)
+            row = self.row(identity)
             if row and row['holder'] and row['holder'] != 'human':
                 raise APIError(409, 'browser-busy', [dict(field=identity, problem=f"身份 {identity} 的浏览器正由 {row['holder']} 使用")])
             instance.stop()
             instance.recovery_error = None
             if not instance.alive():
                 self.record(instance, 'exited', pid=None, holder=None)
-            self.release_identity(checkout, identity)
-            return self.status(checkout, identity)
+            self.release_identity(identity)
+            return self.status(identity)
 
-    def status(self, checkout, identity=None):
-        for name, pending_identity in list(self.pending):
-            if name == checkout.name:
-                self.instance(checkout, pending_identity)
+    def status(self, identity=None):
         with self.store.local() as db:
-            rows = [dict(row) for row in db.execute('SELECT * FROM browser_instances WHERE checkout=? ORDER BY identity', (checkout.id,))
+            names = {r['id']: r['name'] for r in db.execute('SELECT id, name FROM checkouts')}
+            rows = [dict(row) for row in db.execute('SELECT * FROM browser_instances ORDER BY identity')
                     if identity is None or row['identity'] == identity]
         for row in rows:
-            instance = self.instances.get((checkout.id, row['identity']))
+            instance = self.instances.get(row['identity'])
             row['alive'] = bool(instance and instance.alive())
             row['crashes'] = json.loads(row['crashes'])
+            row['last_checkout'] = names.get(row['last_checkout'])
             # port 是实际（运行中）或最近一次启动所用的端口；缺省端口被占用时两者不同。
             try:
-                row['default_port'] = port_for(self.project, checkout, row['identity'])
+                row['default_port'] = port_for(self.project, row['identity'])
             except ValueError:
                 row['default_port'] = None
             if instance and instance.recovery_error and row['alive']:
@@ -633,19 +729,15 @@ class Manager:
                 row['reason'] = instance.recovery_error
             confirmed = instance and instance.recovered.is_set() and not instance.recovery_error
             row['endpoint'] = f"http://127.0.0.1:{row['port']}" if row['alive'] and confirmed else None
-        return dict(checkout=checkout.name, runtime=runtime_info(), browsers=rows)
+        return dict(runtime=runtime_info(), browsers=rows)
 
     def recover(self, handover=None):
-        """仅检查本项目 profile 的锁；认回有界面窗口，保留未认回窗口，清理核实过的无头浏览器。
+        """仅检查本项目 browsers/<身份>/profile 的锁；认回有界面窗口，保留未认回窗口，清理核实过的无头浏览器。
 
         handover 是 sop-board restart 交接的记录（daemon.read_handover）：其中列出的浏览器（含无头的）也认回，
-        租约持有者照旧有效（已定决策 28）。"""
-        from . import checkouts
-        from types import SimpleNamespace
+        租约持有者照旧有效。已定决策 28 之前按检出存放的 profile（browsers/<检出>/<身份>/profile）不再认回，也不结束。"""
         kept = {item['profile']: item.get('holder') for item in (handover or {}).get('browsers', [])}
         with self.store.local_tx() as db:
-            checkouts.ensure_main(db, self.project)
-            registered = {c.name: c for c in checkouts.active(db)}
             db.execute("UPDATE browser_instances SET holder=NULL, pid=NULL, state=CASE WHEN state='crashed' THEN 'crashed' ELSE 'exited' END")
             # 交接下来的租约立即恢复：认回核对期间别的运行也拿不走这个身份。
             for profile, holder in kept.items():
@@ -655,34 +747,28 @@ class Manager:
         if info is None:
             return
         root = self.project.data / 'browsers'
-        for profile in sorted(root.glob('*/*/profile')):
-            if any(p.is_symlink() for p in (root, profile.parent.parent, profile.parent, profile)):
+        for profile in sorted(root.glob('*/profile')):
+            if any(p.is_symlink() for p in (root, profile.parent, profile)):
                 continue
             found = profile_process(profile, info)
             if not found:
                 continue
             process, port, headed = found
-            name, identity = profile.parent.parent.name, profile.parent.name
-            checkout = registered.get(name) or SimpleNamespace(id=None, name=name, slot=0)
-            instance = Instance(self, checkout, identity)
+            instance = Instance(self, profile.parent.name)
             instance.process, instance.actual, instance.headed = process, port, headed
             instance.started = process.started
-            handed_over = str(profile) in kept
-            if not headed and not handed_over:
+            if not headed and str(profile) not in kept:
                 instance.stop()
                 continue
             instance.keep_holder = kept.get(str(profile))
             instance.recovered.clear()
-            if checkout.id is None:
-                self.pending[name, identity] = instance
-            else:
-                self.instances[checkout.id, identity] = instance
-                self.record(instance, 'starting', holder=instance.keep_holder)
+            self.instances[instance.identity] = instance
+            self.record(instance, 'starting', holder=instance.keep_holder)
             self.start_recovery(instance)
 
     def handover_report(self, handover):
         """restart 交接下来的各浏览器现在的情况：认回、核对中、未认回或已不在。"""
-        found = {str(i.profile()): i for i in list(self.instances.values()) + list(self.pending.values())}
+        found = {str(i.profile()): i for i in list(self.instances.values())}
         result = []
         for item in (handover or {}).get('browsers', []):
             instance = found.get(item['profile'])
@@ -692,8 +778,8 @@ class Manager:
                 state = 'checking'
             else:
                 state = 'unrecovered' if instance.recovery_error else 'adopted'
-            result.append(dict(checkout=item.get('checkout'), identity=item.get('identity'), pid=item.get('pid'),
-                               port=item.get('port'), headed=item.get('headed'), holder=item.get('holder'), state=state,
+            result.append(dict(identity=item.get('identity'), pid=item.get('pid'), port=item.get('port'),
+                               headed=item.get('headed'), holder=item.get('holder'), state=state,
                                reason=instance.recovery_error if instance is not None else None))
         return result
 
@@ -701,7 +787,7 @@ class Manager:
         instance.recovered.clear()
         instance.recovery_error = None
         instance.recovery_thread = threading.Thread(target=self.confirm_recovery, args=(instance,), daemon=True,
-                                                   name=f'browser-recover-{instance.checkout.name}-{instance.identity}')
+                                                   name=f'browser-recover-{instance.identity}')
         instance.recovery_thread.start()
 
     def ensure_recovered(self, instance):
@@ -747,11 +833,11 @@ class Manager:
                         if instance.detached.is_set():
                             return
                         self.record(instance, 'ready', holder=instance.keep_holder)
-                        print(f"已认回{'有界面' if instance.headed else '无头'}浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，"
+                        print(f"已认回{'有界面' if instance.headed else '无头'}浏览器：身份 {instance.identity}，"
                               f'进程 {process.pid}，调试端口 {port}', flush=True)
                         instance.recovered.set()
                         instance.watcher = threading.Thread(target=instance.watch, args=(process,), daemon=True,
-                                                           name=f'browser-{instance.checkout.name}-{instance.identity}')
+                                                           name=f'browser-{instance.identity}')
                         instance.watcher.start()
                         return
                 if instance.detached.wait(min(.2, max(0, deadline - time.monotonic()))):
@@ -761,12 +847,12 @@ class Manager:
                     # 交接下来的无头浏览器核对不通过：里面没有真人的登录与验证，结束它；租约留给原持有者，下次取得时重新启动。
                     instance.stop()
                     self.record(instance, 'exited', pid=None, holder=instance.keep_holder)
-                    print(f'交接下来的无头浏览器没有认回，已结束：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                    print(f'交接下来的无头浏览器没有认回，已结束：身份 {instance.identity}，'
                           f'进程 {process.pid}，原因：{reason}', flush=True)
                 elif process.poll() is None:
                     instance.recovery_error = reason
                     self.record(instance, 'starting', holder=instance.keep_holder)
-                    print(f'有界面浏览器未认回：检出 {instance.checkout.name}，身份 {instance.identity}，'
+                    print(f'有界面浏览器未认回：身份 {instance.identity}，'
                           f'进程 {process.pid}，原因：{reason}', flush=True)
                 else:
                     self.record(instance, 'exited', pid=None, holder=instance.keep_holder)
@@ -780,17 +866,17 @@ class Manager:
             instance.recovered.set()
 
     def alive_instances(self):
-        """运行中的浏览器：检出、身份、进程号、调试端口、有无界面、profile 与租约持有者。"""
+        """运行中的浏览器：身份、进程号、调试端口、有无界面、profile、租约持有者与最近一次交给的检出。"""
         with self.store.local() as db:
-            holders = {(r['checkout'], r['identity']): r['holder'] for r in db.execute('SELECT checkout, identity, holder FROM browser_instances')}
-        return [dict(checkout=i.checkout.name, identity=i.identity, pid=i.process.pid, port=i.port(), headed=i.headed,
-                     profile=str(i.profile()), holder=holders.get((i.checkout.id, i.identity)))
-                for i in list(self.instances.values()) + list(self.pending.values()) if i.alive()]
+            holders = {r['identity']: r['holder'] for r in db.execute('SELECT identity, holder FROM browser_instances')}
+        return [dict(identity=i.identity, pid=i.process.pid, port=i.port(), headed=i.headed, profile=str(i.profile()),
+                     holder=holders.get(i.identity), last_checkout=i.last_checkout.name if i.last_checkout else None)
+                for i in list(self.instances.values()) if i.alive()]
 
     def shutdown(self, *, handover=False):
         """正常停止保留有界面的窗口、结束无头浏览器；restart 交接时全部保留（已定决策 28）。返回保留的浏览器。"""
-        kept_items = {(item['checkout'], item['identity']): item for item in self.alive_instances()}
-        instances = list(self.instances.values()) + list(self.pending.values())
+        kept_items = {item['identity']: item for item in self.alive_instances()}
+        instances = list(self.instances.values())
         for instance in instances:
             if instance.recovery_thread:
                 instance.detached.set()
@@ -804,10 +890,10 @@ class Manager:
                 instance.detached.set()
                 if instance.watcher:
                     instance.watcher.join(timeout=5)
-                kept.append(kept_items.get((instance.checkout.name, instance.identity)) or dict(
-                    checkout=instance.checkout.name, identity=instance.identity, pid=instance.process.pid,
-                    port=instance.port(), headed=instance.headed, profile=str(instance.profile()), holder=None))
-                print(f"已保留{'有界面' if instance.headed else '无头'}浏览器：检出 {instance.checkout.name}，身份 {instance.identity}，"
+                kept.append(kept_items.get(instance.identity) or dict(
+                    identity=instance.identity, pid=instance.process.pid, port=instance.port(), headed=instance.headed,
+                    profile=str(instance.profile()), holder=None, last_checkout=None))
+                print(f"已保留{'有界面' if instance.headed else '无头'}浏览器：身份 {instance.identity}，"
                       f'进程 {instance.process.pid}，调试端口 {instance.port()}', flush=True)
             else:
                 instance.stop()
@@ -850,14 +936,12 @@ def _register():
 
     @route('POST', '/local/browser/release', 'token')
     def release(app, request):
-        checkout = checkout_of(app, request)
-        return json_response(dict(ok=True, browser=app.browsers.handover(checkout, request.json_field('identity') or 'default')))
+        return json_response(dict(ok=True, browser=app.browsers.handover(request.json_field('identity') or 'default')))
 
     @route('POST', '/local/browser/crashes', 'token')
     def crashes(app, request):
-        checkout = checkout_of(app, request)
         return json_response(dict(ok=True, crashes=app.browsers.crashes_since(
-            checkout, request.json_field('holder'), request.json_field('since') or '')))
+            request.json_field('holder'), request.json_field('since') or '')))
 
     @route('POST', '/local/browser/open', 'token')
     def open_(app, request):
@@ -870,13 +954,11 @@ def _register():
 
     @route('POST', '/local/browser/close', 'token')
     def close(app, request):
-        checkout = checkout_of(app, request)
-        return json_response(dict(ok=True, browser=app.browsers.close(checkout, request.json_field('identity') or 'default')))
+        return json_response(dict(ok=True, browser=app.browsers.close(request.json_field('identity') or 'default')))
 
     @route('POST', '/local/browser/status', 'token')
     def status(app, request):
-        checkout = checkout_of(app, request)
-        return json_response(dict(ok=True, **app.browsers.status(checkout, request.json_field('identity'))))
+        return json_response(dict(ok=True, **app.browsers.status(request.json_field('identity'))))
 
 
 _register()

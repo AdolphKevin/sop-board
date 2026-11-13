@@ -21,7 +21,8 @@ import uuid
 
 from .errors import APIError
 
-VERSION = 7
+VERSION = 7          # 业务记录表（共享库与本机库里的业务记录）的格式
+LOCAL_VERSION = 8    # 本机状态库（board.sqlite3 的 user_version）的格式；已定决策 28 起与业务记录分开
 LOCAL_PRODUCT = 'local'
 
 LOCAL_SCHEMA = """
@@ -56,8 +57,9 @@ CREATE TABLE IF NOT EXISTS local_work(
   record INTEGER,
   created_at TEXT NOT NULL,
   ended_at TEXT);
-CREATE UNIQUE INDEX IF NOT EXISTS local_work_one_prepared ON local_work(checkout, kind)
-  WHERE status='prepared' AND kind IN ('run','distill');
+-- 同一检出可以有多个 prepared 的运行（按身份分开，已定决策 28）；沉淀仍只能有一个。
+CREATE UNIQUE INDEX IF NOT EXISTS local_work_one_distill ON local_work(checkout)
+  WHERE status='prepared' AND kind='distill';
 
 CREATE TABLE IF NOT EXISTS local_fixes(
   fix INTEGER PRIMARY KEY,
@@ -97,9 +99,10 @@ CREATE TABLE IF NOT EXISTS environments(
   started_at TEXT,
   ended_at TEXT);
 
+-- 每个身份一个浏览器，各检出共用；last_checkout 是最近一次交给的检出（已定决策 28）。
 CREATE TABLE IF NOT EXISTS browser_instances(
-  checkout INTEGER NOT NULL REFERENCES checkouts(id),
-  identity TEXT NOT NULL,
+  identity TEXT PRIMARY KEY,
+  last_checkout INTEGER REFERENCES checkouts(id),
   port INTEGER NOT NULL,
   pid INTEGER,
   profile TEXT NOT NULL,
@@ -112,8 +115,7 @@ CREATE TABLE IF NOT EXISTS browser_instances(
   signal TEXT,
   log TEXT,
   crash_report TEXT,
-  crashes TEXT NOT NULL DEFAULT '[]',
-  PRIMARY KEY(checkout, identity));
+  crashes TEXT NOT NULL DEFAULT '[]');
 
 CREATE TABLE IF NOT EXISTS identity_events(
   id INTEGER PRIMARY KEY,
@@ -628,9 +630,10 @@ class Store:
         with self.local() as db:
             version = db.execute('PRAGMA user_version').fetchone()[0]
             tables = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone()
-            if tables and version != VERSION:
+            if tables and version != LOCAL_VERSION:
                 from .config import ProjectFormat
-                raise ProjectFormat(f'数据库格式 {version} 不是当前格式 {VERSION}；用 sop-board init 新建项目，不读取或迁移旧库')
+                raise ProjectFormat(f'本机库 {self.path} 的格式 {version} 不是当前格式 {LOCAL_VERSION}：不读取、不迁移。'
+                                    f'把 board.sqlite3（连同 -wal、-shm）移走后重新启动看板即重建；配了共享库时业务记录不受影响')
             db.execute('PRAGMA journal_mode=WAL')
             if not tables:
                 with self.lock:
@@ -642,7 +645,7 @@ class Store:
                     db.execute("INSERT INTO meta(key, value) VALUES ('instance', ?) ON CONFLICT DO NOTHING", (uuid.uuid4().hex,))
                     db.execute('INSERT INTO products(id, name, created_by, created_at) VALUES (?,?,?,?) ON CONFLICT DO NOTHING',
                                (LOCAL_PRODUCT, project.name, None, now()))
-                    db.execute(f'PRAGMA user_version={VERSION}')
+                    db.execute(f'PRAGMA user_version={LOCAL_VERSION}')
                     db.commit()
             self.origin = db.execute("SELECT value FROM meta WHERE key='instance'").fetchone()[0]
 

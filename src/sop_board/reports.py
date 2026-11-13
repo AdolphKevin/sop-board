@@ -102,14 +102,16 @@ def build(context, *, file=None, local=True, fetch=False):
     def origin(result):
         text = f"产出机器 {book.machine_name(result['machine'])}，分支 {status.branch_label(result['branch'])}"
         if branch != result['branch'] and status.conclusion(result):
-            text += f"（来源分支 {status.branch_label(result['branch'])}）"
+            text += (f"（来自 {status.branch_label(result['branch'])}，已并入）" if result.get('merged')
+                     else f"（来源分支 {status.branch_label(result['branch'])}）")
         return text
     for key in sorted(scenes):
         scene, info = scenes[key], derived['items'][key]
         history = histories[key]
         lines += [f"### {key} {scene['title']}", '',
                   f"- 状态：**{info['label']}**" + (f"（{info['reason']}）" if info['reason'] else '')
-                  + (f"；结论来自其他分支，来源分支 {info['source_branch']}" if info.get('source_branch') else ''),
+                  + ((f"；结论来自 {info['source_branch']}（已并入）" if info.get('merged')
+                      else f"；结论来自其他分支，来源分支 {info['source_branch']}") if info.get('source_branch') else ''),
                   f"- 入口 {scene['verify']} · {scene['priority']} · {'正向' if scene['polarity'] == 'positive' else '反向'}"]
         if skipped_text(scene):
             lines.append('- ' + skipped_text(scene))

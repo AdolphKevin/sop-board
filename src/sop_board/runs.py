@@ -151,15 +151,35 @@ def validate_scope(context, requested, fix=None):
     if not scope:
         raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')] + invalid_files(found))
     with context.store.local() as db:
-        running = db.execute("SELECT id, session FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
-                             (context.checkout.id,)).fetchone()
-    if running:
-        reject(409, 'run-prepared', 'run', f"检出 {context.checkout.name} 已有准备好的运行 #{running['id']}（会话 {running['session']}）；"
-               f"提交或放弃后再准备：sop-board run abandon --run {running['id']}")
+        scope = without_taken(scope, taken_scenarios(db, context.checkout), requested, fix)
+    if not scope:
+        raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')]
+                       + invalid_files(found))
     return found, snapshot, derived, scope
 
 
-def prepare(context, requested, *, session=None, fix_id=None, launch=None):
+def taken_scenarios(db, checkout, exclude=None):
+    """本检出别的 prepared 运行里的场景 → 运行编号（已定决策 28：同一检出可以有多个运行，按身份分开）。"""
+    taken = {}
+    for row in db.execute("SELECT id, scope FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'", (checkout.id,)):
+        if row['id'] != exclude:
+            for item in json.loads(row['scope'] or '[]'):
+                taken.setdefault(item['scenario'], row['id'])
+    return taken
+
+
+def without_taken(scope, taken, requested, fix=None):
+    """pending 与 all 跳过别的运行里的场景；明确指定的场景（含修复的问题场景）在别的运行里时返回 scenario-in-run。"""
+    if fix is None and requested in (['pending'], ['all']):
+        return [item for item in scope if item['scenario'] not in taken]
+    clashes = [item['scenario'] for item in scope if item['scenario'] in taken]
+    if clashes:
+        raise APIError(409, 'scenario-in-run', [dict(field='scope', problem=f"{key} 已在本检出的运行 #{taken[key]} 里；"
+                                                     f"等它提交或放弃，或换别的场景") for key in clashes])
+    return scope
+
+
+def prepare(context, requested, *, session=None, fix_id=None, launch=None, identities=None, wait=0):
     project, checkout, store = context.project, context.checkout, context.store
     launch = launch or (int(os.environ['SOP_BOARD_LAUNCH']) if os.environ.get('SOP_BOARD_LAUNCH', '').isdigit() else None)
     executor = session_id(session)
@@ -170,27 +190,36 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
         fix = fixes.for_verify(context, fix_id, executor)
     found, snapshot, derived, scope = validate_scope(context, requested, fix)
     scenes = found['scenarios']
-    environment = daemon.call(project, 'POST', '/local/env/up', dict(checkout=checkout.name), timeout=900)['environment']
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)
-    selected = [scenes[item['scenario']] for item in scope]
-    entries = {name: project.entries[name] for name in sorted({scene['verify'] for scene in selected})}
     from .checkouts import branch_of
+    # 登记运行与占住场景在同一个本机事务里：并行准备的两个会话不会拿到同一个场景。
     with store.local_tx() as db:
+        scope = without_taken(scope, taken_scenarios(db, checkout), requested, fix)
+        if not scope:
+            raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')])
         cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,implementer,fix,launch,dir,scope,branch,"
                             "created_at) VALUES ('run',?,'prepared',?,?,?,?,?,'',?,?,?)",
                             (checkout.id, executor, operator, fix['session'] if fix else None, fix_id, launch,
                              dumps(scope), branch_of(project, checkout), now()))
         work_id = cursor.lastrowid
+    selected = [scenes[item['scenario']] for item in scope]
+    entries = {name: project.entries[name] for name in sorted({scene['verify'] for scene in selected})}
     directory = None
     holder = f'run:{work_id}'
     try:
-        browsers, browser_problems = {}, {}
-        identities = sorted({identity for name, entry in entries.items() if web_entry(entry) for identity in entry_identities(entry)})
+        declared = sorted({identity for name, entry in entries.items() if web_entry(entry) for identity in entry_identities(entry)})
         if identities:
-            leased = daemon.call(project, 'POST', '/local/browser/lease',
-                                 dict(checkout=checkout.name, identities=identities, holder=holder), timeout=120)['browsers']
-            browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
-            browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
+            unknown = sorted(set(identities) - set(declared))
+            if unknown:
+                reject(422, 'invalid', 'identity', f"{'、'.join(unknown)} 不是本轮 Web 场景的入口声明的身份；可用："
+                       + ('、'.join(declared) or '（本轮没有 Web 场景）'))
+        chosen = sorted(set(identities)) if identities else declared
+        acquired = daemon.call(project, 'POST', '/local/run/acquire', dict(
+            checkout=checkout.name, run=work_id, identities=chosen, session=executor, pid=os.getpid(), wait=wait,
+            digest=snapshot['product_digest']), timeout=max(0, wait) + 1800)
+        environment, leased = acquired['environment'], acquired['browsers']
+        browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
+        browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
         directory = workdirs.create(project.data / 'runs', work_id)
         materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix, invalid_files(found))
     except BaseException:
@@ -206,7 +235,8 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None):
                    (str(directory), dumps(product), snapshot['product_digest'], work_id))
     # 部分就绪：adapter 输出就绪即可执行；没在运行的服务与缺失的入口地址只列出，由执行会话按场景判断。
     return dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
-                outputs=dict(results=str(directory / 'results.jsonl')),
+                outputs=dict(results=str(directory / 'results.jsonl')), identities=sorted(leased),
+                switched_from=acquired.get('switched_from'),
                 session=executor, scope=scope, browser_problems=browser_problems, invalid_files=invalid_files(found),
                 environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
                 services=public_services(environment.get('services', [])),
@@ -246,8 +276,9 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
         from .playwright import write_scope
         runtime = broker.runtime_info()
         write_scope(directory / 'scope.json', project.name, checkout.name, web, entries, directory / 'scenarios.yaml')
-        identities = {name: [dict(item, endpoint=browsers.get(item['id'])) for item in entry.get('identities', [])]
-                      or [dict(id='default', label='default', endpoint=browsers.get('default'))]
+        held = set(browsers) | set(browser_problems)
+        identities = {name: [dict(item, endpoint=browsers.get(item['id'])) for item in entry.get('identities', []) if item['id'] in held]
+                      or ([dict(id='default', label='default', endpoint=browsers.get('default'))] if not entry.get('identities') else [])
                       for name, entry in entries.items() if web_entry(entry)}
         (directory / 'identities.json').write_text(dumps(dict(entries=identities)), encoding='utf-8')
         maps = atlas_excerpt(context, entries)
@@ -625,7 +656,7 @@ def crash_findings(context, work, prepared):
     project = context.project
     holder = f"run:{work['id']}"
     with context.store.local() as db:
-        rows = list(db.execute('SELECT identity, crashes FROM browser_instances WHERE checkout=?', (work['checkout'],)))
+        rows = list(db.execute('SELECT identity, crashes FROM browser_instances'))
     crashed = {}
     for row in rows:
         for crash in json.loads(row['crashes']):

@@ -4,7 +4,7 @@ scope: ["self:src/sop_board/browsers.py", "self:docs/reference.md", "self:src/so
 source: ["self:docs/design.md", "用户确认，2026-11-13，已定决策 26"]
 status: "accepted"
 tags: ["浏览器", "重启", "真人登录", "认回"]
-verified: {"self": {"commit": "7eac35f81854f69f54b1bcd4a586041aaa915318", "date": "2026-11-13"}}
+verified: {"self": {"commit": "411e5e3045d22f546f8dd0c013f5e3653eb39850", "date": "2026-11-13"}}
 ---
 # 看板重启保留并认回有界面浏览器
 
@@ -26,3 +26,5 @@ verified: {"self": {"commit": "7eac35f81854f69f54b1bcd4a586041aaa915318", "date"
 认回时 started_at 使用进程实际启动时间；取不到退出信号时，崩溃记录保持空信号，提交说明写“已退出（取不到退出信号）”。
 
 sop-board restart 交接（已定决策 28，2026-11-13）：旧守护进程把运行中的浏览器（含无头的）与租约持有者写进项目数据目录的 restart.json，退出时不结束它们；新守护进程由旧进程启动（继承它的环境变量），按 restart.json 里的 profile 认回，无头的也认回。交接下来的租约在核对开始前就写回，核对期间别的运行拿不走；交接下来的无头浏览器核对不通过就结束它，租约留给原持有者，下次取得时重新启动。没有交接记录的启动照旧：只认回有界面窗口、释放旧租约、结束遗留的无头浏览器。
+
+已定决策 28 起每个身份一个浏览器、各检出共用（2026-11-13）：profile 在 `browsers/<身份>/profile`，启动时只扫这一层；之前按检出存放的 `browsers/<检出>/<身份>/profile` 不认回也不结束（使用者确认升级时重新登录一次，旧窗口由使用者关掉）。实例按身份登记，数据库重建后不再需要等检出登记。交给与上一次不同的检出之前经 CDP（`/json/new` 开空白页，发 `Network.clearBrowserCache`）清空 HTTP 缓存，cookie 与登录保留。

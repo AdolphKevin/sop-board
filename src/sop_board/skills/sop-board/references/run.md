@@ -20,6 +20,10 @@
 
 `--scope pending|all` 只从合格的场景文件里选场景。`run launch` 输出的 `launch.invalid_files`、`run prepare` 输出的 `invalid_files` 非空时，这些文件里的场景没有纳入本轮：把文件与问题转告使用者，报告范围时写明。
 
+几个会话并行执行同一个检出时，各用 `--identity <身份>` 分开身份；`--scope pending|all` 会跳过本检出别的 prepared 运行里的场景。环境或身份正被占着时，加 `--wait <秒>` 在本机排队。
+
+验收结论要随合并带回 main，就在验收前提交改动：工作区有未提交改动时取的证只算原分支。
+
 ## 实现者与独立性
 
 实现者是改了被验收产品代码的会话或操作者，按事实填，二者只给一个：
@@ -113,9 +117,9 @@
 | `scenario-not-found` | 范围里的场景键不存在，或省略文件后编号不唯一：对照场景文件写全 `<文件>#<场景编号>` |
 | `scenario-file-invalid` | 指名的场景所在文件不合格：按列出的文件、字段与行号转告使用者，修正后再准备 |
 | `nothing-to-run` | 范围里没有要执行的场景；`problems` 同时列出不合格文件时，转告使用者这些文件的场景没有纳入 |
-| `run-prepared` | 本检出已有 prepared 运行：报告编号；是本会话的就完成并 submit；使用者同意放弃后 `sop-board run abandon --run <编号>` |
-| `env-busy` | 端口被另一检出的环境占用，输出写明占用者与 `env down` 命令：转告使用者，由他决定 |
-| `browser-busy` | 该身份正被真人占用：使用者说完成后 `sop-board browser release --identity <身份>` 交还，再准备 |
+| `scenario-in-run` | 指名的场景已在本检出另一个 prepared 运行里：换别的场景，或等那个运行提交 |
+| `env-busy` | 环境正被别的检出的运行占着、有服务被别的运行停着，或代码变了要重启而还有运行在用；输出的 `holder` 与 `queue` 写明占用者与排队：加 `--wait <秒>` 排队，排到时间仍返回就再运行一次 |
+| `browser-busy` | 该身份正被别的运行或真人占着：换一个空闲身份（`--identity`），或加 `--wait <秒>` 排队；真人占着时，使用者说完成后 `sop-board browser release --identity <身份>` 交还 |
 | `browser-unrecovered` | 看板重启后没认回的有界面窗口，处理见「账号与真人操作」末段 |
 | `draft-not-runnable` | 范围含草稿场景：先按 [draft.md](draft.md) 确认 |
 

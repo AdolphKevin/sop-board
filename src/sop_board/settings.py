@@ -64,7 +64,8 @@ def occupants(app, *, query_fixes=True, fix_db=None, notices=None):
                 item = dict(kind=kind, id=row['id'], work_kind=row['kind'], checkout=row['name'])
                 for key in ('repositories', 'shared'):
                     result[key].append(item)
-        for row in db.execute("SELECT b.identity,c.name FROM browser_instances b JOIN checkouts c ON c.id=b.checkout WHERE b.state IN ('starting','ready')"):
+        for row in db.execute("SELECT b.identity,c.name FROM browser_instances b LEFT JOIN checkouts c ON c.id=b.last_checkout "
+                              "WHERE b.state IN ('starting','ready')"):
             result['verification'].append(dict(kind='browser', identity=row['identity'], checkout=row['name']))
     if local_fixes:
         try:

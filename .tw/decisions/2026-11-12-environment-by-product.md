@@ -14,7 +14,7 @@ related: ["rules/adapter-services-contract.md", "rules/not-executed-vs-blocked.m
 
 - `adapter.services` 声明服务（业务说明、是否可停）；adapter 按[服务契约](../rules/adapter-services-contract.md)上报状态、响应停启请求。没声明 `services` 的 adapter 照旧只有整体就绪与否。
 - adapter 输出就绪即环境可用：`check` 与 `run prepare` 只列出没在运行的服务与缺失的入口地址，不算失败；`env status`、本机看板概况与运行目录（`services.json`、brief.md“服务”一节）列出各服务的状态与业务说明，供执行会话按场景判断。内网不显示服务状态。
-- `env stop|start <服务>` 只在本检出有 prepared 运行时可用，停启记进该运行（`service_events` 表）；提交或放弃时还停着的服务自动恢复并记一条 `restore`。提交时按 `executed_at` 落在停止与下一次启动或恢复之间（按秒比较）记下停着期间执行的场景，结果详情据此显示“执行时 <服务>（<业务说明>）已停止”。
+- `env stop|start <服务>` 只在本检出有 prepared 运行、且这套环境上只有这一个（已准备好的）运行时可用（已定决策 28：否则 `env-shared`；运行取 `--run`，其次 `SOP_BOARD_RUN`，多个又没指明时 `run-ambiguous`），停启记进该运行（`service_events` 表）；提交或放弃时还停着的服务自动恢复并记一条 `restore`。提交时按 `executed_at` 落在停止与下一次启动或恢复之间（按秒比较）记下停着期间执行的场景，结果详情据此显示“执行时 <服务>（<业务说明>）已停止”。
 - 未执行与受阻按性质划分（见 rules/not-executed-vs-blocked.md）。未执行记在运行摘要 `work.result.not_executed`（带指纹与提交人），场景详情与报告显示当前指纹上最近一次，不新建存储。
 - `retest` 不判断失败原因：守护未通过时，原因在失败的测试之后写明运行开始时没在运行的服务（声明了服务时）与各仓库工作区是否有未提交改动（`git status`，含未跟踪文件）。
 - 故障场景的守护写在不需要真实停服的层，用替身模拟依赖不可用；写不出时不沉淀并写明原因（regression-distill 技能的分层选择）。
@@ -33,4 +33,4 @@ related: ["rules/adapter-services-contract.md", "rules/not-executed-vs-blocked.m
 - 未执行不形成结论、不改变任何人看到的状态；独立复验仍须完整执行，不接受未执行。
 - 服务异常退出不由 sop-board 自动判定场景结论：执行会话按 `env status` 或 `services.json` 的日志末尾写 blocked 并登记待人处理；`run submit` 输出列出提交时异常退出的服务，`during_run` 区分准备前还是运行期间。
 - 只限本机由 adapter 启动的服务；外部共享的中间件不能停，需要这类故障的场景记受阻。延迟、错误注入等其他故障方式不做。
-- 浏览器调试端口按 `9400 + 槽位×20 + 身份序号`、不分项目；本机同时运行多个看板时，后启动的浏览器顺延到下一个空闲端口（见 decisions/2026-11-12-browser-port-roll-forward.md）。
+- 浏览器调试端口按 `9400 + 身份序号`（已定决策 28 起不含槽位）、不分项目；本机同时运行多个看板时，后启动的浏览器顺延到下一个空闲端口（见 decisions/2026-11-12-browser-port-roll-forward.md）。

@@ -59,8 +59,8 @@ def emit(value):
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def fail(code, problems, status=1):
-    emit(dict(ok=False, error_code=code, problems=problems))
+def fail(code, problems, status=1, **details):
+    emit(dict(ok=False, error_code=code, problems=problems, **details))
     return status
 
 
@@ -210,7 +210,8 @@ def cmd_status(args):
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
                       review_queue=sorted(k for k, v in derived['items'].items() if v['review']),
-                      from_other_branch={k: v['source_branch'] for k, v in sorted(derived['items'].items()) if v.get('source_branch')},
+                      from_other_branch={k: v['source_branch'] + ('（已并入）' if v.get('merged') else '')
+                                         for k, v in sorted(derived['items'].items()) if v.get('source_branch')},
                       distilled_elsewhere={k: v['guard']['reason'] for k, v in sorted(derived['items'].items())
                                            if v['state'] == 'pass' and v['guard'].get('unsynced')},
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
@@ -329,8 +330,10 @@ def cmd_env(args):
     if args.action in ('stop', 'start'):
         if not args.service:
             return fail('service-required', [dict(field='service', problem=f'请写出服务名：sop-board env {args.action} <服务>')], 2)
+        import os
+        run = args.run or (int(os.environ['SOP_BOARD_RUN']) if os.environ.get('SOP_BOARD_RUN', '').isdigit() else None)
         result = daemon_call(context, '/local/env/service', dict(
-            service=args.service, action=args.action, operator=config.operator() or '本机'))
+            service=args.service, action=args.action, operator=config.operator() or '本机', run=run))
         emit(result)
         return 0 if result.get('ok') else 1
     if args.service:
@@ -425,7 +428,7 @@ def cmd_run(args):
         scope = args.scope or ['pending']
         if args.fix is not None and args.scope:
             return fail('scope-invalid', [dict(field='scope', problem='--fix 复验的范围由修复决定，不能再写 --scope')], 2)
-        emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix))
+        emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix, identities=args.identity, wait=args.wait))
     elif args.action == 'submit':
         problem = implementer_problem(args)
         if problem:
@@ -811,6 +814,7 @@ def parser():
                    help='stop|start <服务>：运行中停启 adapter.services 中可停的服务（模拟依赖故障），停启记进运行，提交或放弃时自动恢复')
     p.add_argument('service', nargs='?', help='stop|start：服务名')
     p.add_argument('--all', action='store_true', help='status：列出全部检出')
+    p.add_argument('--run', type=int, help='stop|start：停启记进哪个运行（缺省取 SOP_BOARD_RUN；本检出只有一个 prepared 运行时可省）')
     p.set_defaults(handler=cmd_env)
 
     p = common(sub.add_parser('check'))
@@ -821,6 +825,10 @@ def parser():
     p.add_argument('--scope', nargs='+', help='prepare：pending（缺省）、all，或场景（<文件>#<编号>，编号唯一时可省文件）')
     p.add_argument('--session', help='prepare：执行者会话编号（缺省取 SOP_BOARD_SESSION、CODEX_THREAD_ID 或 CLAUDE_CODE_SESSION_ID）')
     p.add_argument('--fix', type=int, help='prepare / launch：修复的独立复验，范围为该修复的问题场景')
+    p.add_argument('--identity', action='append', metavar='身份',
+                   help='prepare：只为这些身份取得浏览器（可重复）；同一环境上的多个运行按身份分开。缺省取本轮 Web 入口的全部身份')
+    p.add_argument('--wait', type=int, default=0, metavar='秒',
+                   help='prepare：环境或身份被占着时在本机排队，最多等这么久（缺省 0：立即返回 env-busy / browser-busy）')
     p.add_argument('--run', type=int, help='submit / abandon / wait：运行编号')
     p.add_argument('--implementer', help='submit / launch：实现者会话编号；不填记为独立性未声明')
     p.add_argument('--implemented-by', dest='implemented_by', metavar='操作者',
@@ -1024,7 +1032,7 @@ def main(argv=None):
     except daemon_module().DaemonUnavailable as error:
         return fail('daemon-not-running', [dict(field='daemon', problem=str(error))])
     except APIError as error:
-        return fail(error.code, error.problems)
+        return fail(error.code, error.problems, **error.details)
     except database_errors() as error:
         return fail('database-error', [dict(field='database', problem=f'{type(error).__name__}: {error}')])
     except (ValueError, OSError, subprocess.SubprocessError) as error:

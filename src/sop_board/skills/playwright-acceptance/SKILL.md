@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 ## 边界
 
-- 浏览器：只连接 run.env 的 `PW_CDP_ENDPOINT`，即看板守护进程为本检出×身份启动的 Chrome for Testing（默认无头，持久 profile）。执行者不启动浏览器、不运行 `playwright install`、不接触用户日常 Chrome。
+- 浏览器：只连接 run.env 的 `PW_CDP_ENDPOINT`，即看板守护进程为本轮身份启动的 Chrome for Testing（每个身份一个、各检出共用，默认无头，持久 profile）。执行者不启动浏览器、不运行 `playwright install`、不接触用户日常 Chrome。
 - 账号：只在测试环境操作。项目声明的测试账号（含测试邮箱）由你用声明的凭据变量直接登录、读取验证码，不另向使用者要授权。真实账号登录、人机验证、只发到使用者本人设备的验证码由人在看板窗口完成后交还，你沿用那个窗口；运行中遇到它们记 not-executed（`throw notExecuted(…)`）并 `sop-board attention add` 登记。出现 "browser may not be secure" 即停止并记 blocked。测试环境在浏览器里触发的提示（本地网络访问、localhost 证书警告）由你处理。
 - 独立性：执行者不能是实现者，实现者跑脚本只算自检。
 - 证据：按场景 `verify` 所引用入口的 `evidence` 逐项留证，截图与只读查询用 `testInfo.attach` 附到报告。录屏与 trace 开关已按场景固定在 `scope.json`，不自行覆盖。

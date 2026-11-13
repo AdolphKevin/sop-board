@@ -2,7 +2,7 @@
 
 ## 浏览器与连接
 
-看板守护进程（`sop-board serve`）为每个 检出×身份 启动一个 Chrome for Testing（运行时由 `sop-board browser install` 固定版本安装，默认 `--headless=new`），持久 profile 保存登录态。`run prepare` 租用这些浏览器并把地址写进运行目录：
+看板守护进程（`sop-board serve`）为每个身份启动一个 Chrome for Testing（各检出共用；运行时由 `sop-board browser install` 固定版本安装，默认 `--headless=new`），持久 profile 保存登录态。`run prepare` 租用本轮的身份并把地址写进运行目录，同一身份同一时刻只给一个运行：
 
 - `PW_CDP_ENDPOINT`：默认身份浏览器的调试地址，`connection.mjs` 只读它；缺失时报错并记 blocked。
 - `PW_IDENTITIES`：`identities.json`，列出每个入口的身份及各自的 `endpoint`；`identity.mjs` 的 `as(身份)` 据此连接。

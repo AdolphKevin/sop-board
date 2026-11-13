@@ -38,7 +38,7 @@ $verify_note
 起点要求某个依赖不可用（例如“库存查询不可用”）时：
 
 1. 按 brief.md“服务”一节的业务说明找到对应的服务，确认它可停且正在运行。
-2. `sop-board env stop <服务>`：命令等服务真正停下才返回，失败时按返回的 error_code 处理（service-not-stoppable 写 blocked；service-timeout 如实写进 finding 后写 blocked）。
+2. `sop-board env stop <服务>`：命令等服务真正停下才返回，停启记进 run.env 里 SOP_BOARD_RUN 指的运行。失败时按返回的 error_code 处理（service-not-stoppable 写 blocked；service-timeout 如实写进 finding 后写 blocked；env-shared 说明这套环境上还有别的运行，写 not-executed，finding 写明是哪些运行）。
 3. 经真实入口执行场景，executed_at 写停着期间的实际执行时刻。结果详情会显示“执行时 <服务> 已停止”。
 4. 写好结果后 `sop-board env start <服务>`；忘了也没关系，提交时自动恢复并记录。
 

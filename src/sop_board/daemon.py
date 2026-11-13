@@ -145,7 +145,8 @@ def call(project, method, path, body=None, *, timeout=60):
                 payload = {}
             from .errors import APIError
             raise APIError(error.code, payload.get('error_code', 'daemon-error'),
-                           payload.get('problems') or [dict(field='daemon', problem=f'HTTP {error.code}')]) from error
+                           payload.get('problems') or [dict(field='daemon', problem=f'HTTP {error.code}')],
+                           **{k: v for k, v in payload.items() if k not in ('ok', 'error_code', 'problems')}) from error
         except (URLError, OSError) as error:
             reason = getattr(error, 'reason', error)
             if read_handover(project) is not None:

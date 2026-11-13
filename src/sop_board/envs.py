@@ -466,12 +466,34 @@ class Manager:
             result.append(item)
         return result
 
-    # ---- 服务停启（故障模拟）：只在本检出有 prepared 运行时可用，停启记进该运行 ----
+    # ---- 服务停启（故障模拟）：只在这套环境上只有这一个 prepared 运行时可用，停启记进该运行（已定决策 22、28） ----
 
-    def prepared_run(self, checkout):
+    def service_run(self, checkout, run_id):
+        """停启记进哪个运行：--run，其次 SOP_BOARD_RUN（CLI 传入）；本检出只有一个 prepared 运行时就是它。
+
+        这套环境上还有别的（已准备好的）运行时返回 env-shared：停服务会影响它们。"""
         with self.store.local() as db:
-            return db.execute("SELECT id FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
-                              (checkout.id,)).fetchone()
+            rows = db.execute("SELECT id, dir FROM local_work WHERE checkout=? AND kind='run' AND status='prepared' ORDER BY id",
+                              (checkout.id,)).fetchall()
+        prepared = [r['id'] for r in rows]
+        if run_id is None:
+            if not prepared:
+                raise APIError(409, 'run-required', [dict(field='run', problem=(
+                    f'检出 {checkout.name} 没有 prepared 的运行：env stop|start 只用于运行中模拟依赖故障，停启记进该运行；'
+                    '运行之外要恢复环境，用 sop-board env restart'))])
+            if len(prepared) > 1:
+                raise APIError(409, 'run-ambiguous', [dict(field='run', problem=(
+                    f"检出 {checkout.name} 有多个 prepared 的运行（{'、'.join(f'#{r}' for r in prepared)}）："
+                    '用 --run 指明停启记进哪个运行（运行目录的 run.env 里有 SOP_BOARD_RUN）'))], runs=prepared)
+            run_id = prepared[0]
+        elif run_id not in prepared:
+            raise APIError(409, 'run-required', [dict(field='run', problem=f'运行 #{run_id} 不是检出 {checkout.name} 上 prepared 的运行')])
+        others = [r['id'] for r in rows if r['dir'] and r['id'] != run_id]
+        if others:
+            raise APIError(409, 'env-shared', [dict(field='run', problem=(
+                f"这套环境上还有别的运行（{'、'.join(f'#{r}' for r in others)}）：停启服务会影响它们，等它们提交或放弃之后再停启"))],
+                runs=others)
+        return run_id
 
     def record_service(self, checkout, work_id, name, action, operator, *, ok=True, note=None):
         with self.store.local_tx() as db:
@@ -489,7 +511,7 @@ class Manager:
                 return state
             time.sleep(.2)
 
-    def service(self, checkout, name, action, *, operator):
+    def service(self, checkout, name, action, *, operator, run=None):
         """env stop|start <服务>：写或删请求文件，等状态变为目标值才返回；超时撤回停止请求并返回 service-timeout。"""
         self.project.reload()
         declared = self.project.adapter.get('services') or {}
@@ -502,11 +524,7 @@ class Manager:
         if not declared[name]['stoppable']:
             raise APIError(409, 'service-not-stoppable', [dict(field='service', problem=(
                 f"服务 {name}（{declared[name]['about']}）没有声明为可停（stoppable: true），不能用 env stop|start 停启"))])
-        run = self.prepared_run(checkout)
-        if run is None:
-            raise APIError(409, 'run-required', [dict(field='run', problem=(
-                f'检出 {checkout.name} 没有 prepared 的运行：env stop|start 只用于运行中模拟依赖故障，停启记进该运行；'
-                '运行之外要恢复环境，用 sop-board env restart'))])
+        run = dict(id=self.service_run(checkout, run))
         about = declared[name]['about']
         timeout = self.project.adapter.get('service_timeout', 60)
         with self.lock(checkout):

@@ -416,12 +416,14 @@ def env_restart(app, request):
 
 @route('POST', '/local/env/service', 'token')
 def env_service(app, request):
-    """env stop|start <服务>：只在本检出有 prepared 运行时可用，停启记进该运行。"""
+    """env stop|start <服务>：只在这套环境上只有这一个 prepared 运行时可用，停启记进该运行（已定决策 28）。"""
     checkout = _checkout_of(app, request)
     action, name = request.json_field('action'), request.json_field('service')
     if action not in ('stop', 'start') or not isinstance(name, str) or not name:
         reject(422, 'invalid', 'service', '须给出 action（stop 或 start）与服务名')
-    return json_response(app.envs.service(checkout, name, action, operator=request.json_field('operator') or '本机'))
+    run = request.json_field('run')
+    return json_response(app.envs.service(checkout, name, action, operator=request.json_field('operator') or '本机',
+                                          run=run if type(run) is int else None))
 
 
 @route('POST', '/local/env/restore', 'token')

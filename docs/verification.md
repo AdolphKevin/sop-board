@@ -27,7 +27,7 @@ python3 examples/demo-shop/make_demo.py $G --with-stock --reuse --shop-only --da
 
 两个数据目录登记了同一组仓库，命令都带 `--data`（`-p demo`）指定项目；两者要同时运行环境时，把其中一个 `config.yaml` 的 `adapter.ports` 改开，避免端口租约冲突。
 
-`--data` 时脚本合并 init 写入的 `repos`、`identities` 与 `data/config.yaml`（库存演示项目用 `with-stock/config.yaml`），复制 `env.py`、`worktree.py`、`seed.py` 与验证技能 `skills/demo-verification/`；被测版本不在 PATH 上时加 `--sop-board "uv run --project <本仓检出> sop-board"`。启动看板守护进程时在同一环境设置凭据变量：`DEMO_SEED_TOKEN`（任意值，配方的写库凭据）与 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass）。验证运行时安装或缺失（BRW-01-P01、SET-05-N01）时，看板与 CLI 都设同一个临时 `SOP_BOARD_HOME`。
+`--data` 时脚本合并 init 写入的 `repos`、`identities` 与 `data/config.yaml`（库存演示项目用 `with-stock/config.yaml`），复制 `env.py`、`worktree.py`、`seed.py` 与验证技能 `skills/demo-verification/`；被测版本不在 PATH 上时加 `--sop-board "uv run --project <本仓检出> sop-board"`。启动看板守护进程时在同一环境设置凭据变量：`DEMO_SEED_TOKEN`（任意值，配方的写库凭据）与 `DEMO_MERCHANT_PASSWORD`（缺省 merchant-pass）与 `DEMO_MERCHANT2_PASSWORD`（缺省 merchant2-pass）。验证运行时安装或缺失（BRW-01-P01、SET-05-N01）时，看板与 CLI 都设同一个临时 `SOP_BOARD_HOME`。
 
 ### 双机项目（已定决策 21）
 

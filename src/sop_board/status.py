@@ -2,7 +2,8 @@
 
 记录分两类，都限于场景的当前指纹：
 - 结论（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。本分支优先：当前指纹在本分支上有结论时
-  只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，并标出来源分支。
+  只用本分支的；一条都没有（或检出不在任何分支上）时用全部分支的，并标出来源分支。已并入本检出的 Agent 结论也算本分支的
+  （已定决策 28）：所在运行准备时的快照各仓库都没有未提交改动、执行期间产品没变，且各仓库的提交都是本检出 HEAD 的祖先。
 - 非结论（Agent 的受阻与跳过、守护未通过）只取本机本检出产出的；别的机器与检出的显示在“其他机器上的情况”。
 选出的记录按业务记录库分配的序号（seq）排先后，执行时间只用于显示：
 - not-run 未执行：没有选出任何结果。
@@ -18,7 +19,9 @@
 """
 from collections import namedtuple
 from datetime import datetime, timezone
+import functools
 import json
+import subprocess
 
 LABELS = {'not-run': '未执行', 'pass': '通过', 'retest': '待复测',
           'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'skip': '跳过', 'draft': '草稿'}
@@ -29,14 +32,29 @@ INDEPENDENCE = {'independent': '独立验收', 'self-check': '实现者自检', 
 ELSEWHERE = {'blocked': '受阻', 'skip': '跳过', 'not-executed': '未执行', 'guard-failed': '守护未通过'}
 NO_BRANCH = '（无分支）'
 
-# 看板的视角：哪个产品、哪台机器、哪个检出、检出的场景仓库在哪个分支上（None 表示不在任何分支上）。
-Viewer = namedtuple('Viewer', 'product machine checkout branch')
+# 看板的视角：哪个产品、哪台机器、哪个检出、检出的场景仓库在哪个分支上（None 表示不在任何分支上），
+# 以及检出各仓库的目录与 HEAD 提交（别名 → (目录, 提交)），用于判断别的分支上的结论是否已并入。
+Viewer = namedtuple('Viewer', 'product machine checkout branch repos', defaults=({},))
 
 
 def viewer(context):
     from .checkouts import branch_of
+    from . import gitops
     store = context.store
-    return Viewer(store.product, store.machine['id'], context.checkout.name, branch_of(context.project, context.checkout))
+    repos = {alias: (str(path), gitops.head(path)) for alias, path in context.checkout.paths.items()}
+    return Viewer(store.product, store.machine['id'], context.checkout.name, branch_of(context.project, context.checkout), repos)
+
+
+@functools.lru_cache(maxsize=8192)
+def is_ancestor(path, commit, head):
+    """commit 是否是 head 的祖先（含相同）；本机找不到这个提交时为假。按（目录, 提交, HEAD）缓存。"""
+    if not commit or not head:
+        return False
+    try:
+        return subprocess.run(['git', '-C', path, 'merge-base', '--is-ancestor', commit, head],
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def instant(value):
@@ -105,10 +123,14 @@ class Book:
             for problem in json.loads(row['problems']):
                 self.fixes.setdefault((problem['file'], problem['scenario'], problem.get('fingerprint')), []).append(dict(row))
         self.works, self.skipped = {}, {}
-        for row in db.execute("SELECT id, machine, checkout, branch, seq, local_id, launch, operator, ended_at, result FROM work "
+        for row in db.execute("SELECT id, machine, checkout, branch, seq, local_id, launch, operator, ended_at, result, snapshot FROM work "
                               "WHERE product=? AND kind='run' ORDER BY seq", (view.product,)):
             row = dict(row)
             summary = json.loads(row.pop('result') or '{}')
+            try:
+                row['snapshot'] = json.loads(row['snapshot'] or '{}')
+            except ValueError:
+                row['snapshot'] = {}
             row['submitted_by'] = summary.get('submitted_by') or row['operator']
             self.works[row['id']] = row
             for item in summary.get('not_executed') or []:
@@ -122,15 +144,45 @@ class Book:
     def own(self, row):
         return row['machine'] == self.viewer.machine and row['checkout'] == self.viewer.checkout
 
+    def merged(self, row):
+        """别的分支上已并入本检出的 Agent 结论（已定决策 28）：所在运行准备时的快照各仓库都没有未提交改动，
+        执行期间产品没变（product_changed 为空），且快照里每个仓库的提交都是本检出对应仓库 HEAD 的祖先；
+        仓库在本机没有登记、提交在本机找不到的不算。"""
+        if row['kind'] != 'agent' or not conclusion(row) or not row.get('work'):
+            return False
+        work = self.works.get(row['work'])
+        if not work:
+            return False
+        try:
+            changed = json.loads(row.get('product_changed') or '[]')
+        except ValueError:
+            changed = ['?']
+        snapshot = work.get('snapshot') or {}
+        repos = snapshot.get('repos') or {}
+        if changed or not repos or snapshot.get('dirty') or any(info.get('dirty') for info in repos.values()):
+            return False
+        for alias, info in repos.items():
+            local = self.viewer.repos.get(alias)
+            if not local or not is_ancestor(local[0], info.get('commit'), local[1]):
+                return False
+        return True
+
+    def on_line(self, row):
+        """结论是否属于本检出：记在本分支上，或已并入。"""
+        branch = self.viewer.branch
+        return (branch is not None and row['branch'] == branch) or self.merged(row)
+
     def select(self, key):
         group = self.groups.get(key, [])
         fixes = self.fixes.get(key, [])
         conclusions = [row for row in group if conclusion(row)]
         branch = self.viewer.branch
-        if branch and (any(r['branch'] == branch for r in conclusions) or any(f['branch'] == branch for f in fixes)):
-            chosen = [r for r in conclusions if r['branch'] == branch]
-            fixes = [f for f in fixes if f['branch'] == branch]
-            fallback = False
+        line = [r for r in conclusions if self.on_line(r)]
+        line_fixes = [f for f in fixes if branch and f['branch'] == branch]
+        if line or line_fixes:
+            for row in line:
+                row['merged'] = not (branch is not None and row['branch'] == branch)
+            chosen, fixes, fallback = line, line_fixes, False
         else:
             chosen, fallback = conclusions, bool(conclusions or fixes)
         records = sorted(chosen + [r for r in group if not conclusion(r) and self.own(r)], key=lambda r: r['seq'], reverse=True)
@@ -200,9 +252,8 @@ class Book:
         旧内容上只取本分支的结论和本检出的非结论，别的分支上内容不同的结果不列入，也不回落。"""
         if current:
             return self.select(key).records
-        branch = self.viewer.branch
         return [row for row in self.groups.get(key, [])
-                if (conclusion(row) and branch is not None and row['branch'] == branch) or (not conclusion(row) and self.own(row))]
+                if (conclusion(row) and self.on_line(row)) or (not conclusion(row) and self.own(row))]
 
     def history(self, scene):
         """场景的历史：各指纹上参与本看板推导的记录（见 involved），新到旧。"""
@@ -230,10 +281,11 @@ def derive(scene, selection, *, guard_run=None):
     if not results:
         return dict(state='not-run', reason='当前内容还没有结果')
     latest = results[0]
-    source = latest['branch'] if selection.fallback and conclusion(latest) else None
     info = derive_state(results, latest, selection.fixed_seq, guard_run)
-    if selection.fallback and conclusion(latest):
-        info['source_branch'] = branch_label(source)
+    if conclusion(latest) and (selection.fallback or latest.get('merged')):
+        info['source_branch'] = branch_label(latest['branch'])
+        if latest.get('merged') and not selection.fallback:
+            info['merged'] = True
     return info
 
 
