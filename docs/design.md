@@ -147,6 +147,40 @@
     - **新项目的上手路径**：`init <项目> <仓库…>` 之后就能 `serve`。配置还不完整时，本机工作台显示“项目配置还没完成”和问题清单，并带去设置页的链接；内网页面照旧只显示问题类别。会话仍可按 `guide` 直接写 config.yaml。
     - **不做**：不在页面里编辑适配脚本、验证技能正文和场景文件；不在页面登记新项目（仍用 `init`）；不保存测试账号的凭据取值。
 
+28. 一台机器一套环境，多个 Agent 轮流和并行使用（2026-11-13 使用者决定）：同一台机器上几个 Agent 在不同 worktree 并行开发同一个产品，开发完各自验收时互相挡住。看板守护进程一停，就停掉全部环境、无头浏览器和它启动的会话；升级看板要手工结束进程、等它退出、在后台重新启动、再核对窗口是否认回，进行中的验收都被打断。`port_step: 0` 时只有一套环境，另一个检出的 `run prepare` 直接返回 `env-busy`，不排队，要有人去 `env down` 别人的环境。同一检出同时只能有一个 prepared 的运行，一次运行又会租下入口的全部身份，几个执行会话不能在同一套环境里分开身份同时跑。浏览器按 检出×身份 各一份 profile，换一个检出就要把真实账号重新人工登录一遍。结论按分支名归属，worktree 分支上验收过的场景合并回 main 后不算数。也考虑过每个检出各起一套环境（包括 Docker Compose 这类现成方案），按 cw2 的梳理（2026-11-13）：一套环境约 3.2 GB（两个前端开发服务器占 2.2 GB），另加 Kafka 1.2 GB，16 GB 的机器已经在大量使用 swap；主题名是代码常量、消费组写死，每套都要单独的 Kafka；定时任务的锁和雪花 ID 的节点号靠共享 Redis 协调，不能每套各用一个；前端访问后端和 Shopify Webhook 都经唯一的 ngrok 入口。使用者认定一台机器多开环境是伪需求：大多数电脑的内存撑不起多套环境；要更多并行就加机器、加人，多台机器共享验收记录已由已定决策 21 做到。真正要的是一套环境让多个 Agent 轮流用、并行用，互不打断。改为：
+    - **停止与重启命令**：
+      - `sop-board stop [项目]`：让守护进程按现有规则正常停止（停掉环境、无头浏览器和启动的会话，保留有界面的窗口，已定决策 26），等它退出后输出保留了哪些窗口。守护进程没在运行时返回 `daemon-not-running`。
+      - `sop-board restart [项目]`：换一个守护进程，进行中的工作不受影响。保留全部浏览器（有界面的和无头的）、浏览器租约、启动的会话和 prepared 的运行。环境不跨重启保留：旧进程照常停掉环境，新进程启动后重新拉起原来在运行的环境（cw2 在热缓存下 8～42 秒就绪）。新进程沿用原来的端口和 `--lan`，在后台运行，输出追加到 `<数据目录>/serve.log`；命令输出列出保留与认回的浏览器和会话，以及正在重新拉起的环境。守护进程没在运行时返回 `daemon-not-running`。在 Codex 沙箱里拒绝执行并提示在终端运行：沙箱里启动的看板起不了浏览器（见“进程与入口”）。
+      - **认回**：新进程按已定决策 26 的核对认回浏览器，租约照旧有效；无头浏览器只认回 `restart` 交接下来的，看板被强杀后遗留的照旧清理，强杀后的认回也照旧释放旧租约。启动的会话按进程号和命令行认回，用查看进程是否还在的办法监视；取不到退出码时按有没有产出运行判断（沿用 `no-work`）。为此会话输出不再经守护进程转写，改由随会话存活的转写进程遮蔽后写进启动日志，遮蔽范围不变（已定决策 27 保存的共享库密码）。
+      - **重启窗口**：`daemon.json` 标明正在重启，这期间 CLI 等新进程就绪（最多 120 秒），不直接返回 `daemon-not-running`。环境重新就绪之前，prepared 的运行用不了环境：每个这样的运行记一条“环境随看板重启中断”（起止时间），运行摘要里列出；执行提示词写明，这段时间里失败的步骤等 `env status` 就绪后重做该场景，不记失败或受阻。
+    - **一套环境在检出之间轮流用**（`port_step: 0`）：
+      - 环境由当前检出的 prepared 运行占住；没有 prepared 运行时就是空闲，别的检出要用时由守护进程直接停掉它、为那个检出拉起，不用谁去 `env down`。只用 `env up` 拉起、没有运行在用的环境不算占用，随时可能被换走。
+      - `run prepare` 新增 `--wait <秒>`：环境被别的检出占着、要用的身份被别的运行或真人占着，或者环境要重启而还有别的运行在用时，在本机排队，最多等这么久；轮到了就照常准备，超时返回原来的错误码（`env-busy`、`browser-busy`）。不带 `--wait` 时照旧立即返回这些错误。两种情况的输出都带队列：排第几，前面是谁（检出、运行、会话、等了多久）。看板启动的会话按提示词带 `--wait`。
+      - **队列**只在守护进程内存里，按到达先后。等待者按会话编号识别：请求结束（超时或断开）后 60 秒内同一会话再来，保留原来的位置；超过就出队。不持久保存，看板重启后清空。
+      - **不插队**：有别的检出在等环境时，占用环境的检出不能再开始新的运行，新运行排在等待者后面，直到环境换出去。
+      - 看板概况页显示环境当前属于哪个检出、哪些运行和身份在用、谁在等。
+      - `port_step` 不为 0 时各检出照旧各有一套环境，只按身份排队。
+    - **同一环境里并行跑多个运行**：
+      - 取消“同一检出同时只能有一个 prepared 的运行”。同一套环境上可以有多个 prepared 的运行，按身份分开：`run prepare --identity <身份>`（可重复）只为这些身份取得浏览器租约，`run.env` 与 `identities.json` 只列这些身份；不写时照旧取本轮 Web 入口的全部身份。
+      - 身份租约整机独占：同一个身份同一时刻只给一个运行或一位真人（human 租约，已定决策 16）。
+      - **分开场景**：`--scope pending` 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 `scenario-in-run`，写明是哪个运行。
+      - **按运行定位**：`env stop|start` 等原来按“本检出的 prepared 运行”找运行的命令，改为取 `--run`，其次 `SOP_BOARD_RUN`（`run.env` 里有）；本检出有多个 prepared 运行又没有指明时返回 `run-ambiguous`，列出各运行。
+      - **停服务要独占环境**：`env stop|start <服务>` 只在这套环境上只有这一个 prepared 运行时可用，否则返回 `env-shared` 并列出其他运行；有服务被停着时，别的运行要用这套环境就排队。
+      - 环境因快照变化要重启时，等这套环境上没有别的 prepared 运行（排队，或返回 `env-busy`）。
+      - 看板的“AI 重跑”照旧同一检出只启动一个会话。
+    - **身份浏览器各检出共用**：
+      - 每个身份一个浏览器，profile 放在 `<数据目录>/browsers/<身份>/profile`，不再按检出分开：真人每个身份只登录一次，哪个检出的运行拿到租约就用它。缺省调试端口改为 `9400 + 身份序号`，被占用时照旧顺延（已定决策 24）。
+      - 交给与上一次不同的检出之前，经调试协议清空这个浏览器的 HTTP 缓存，cookie、本地存储和登录保留，避免上一个检出的前端资源被当成本检出的代码。
+      - 升级到这一版时，原来按检出存放的 profile 不迁移，旧窗口不再认回：使用者关掉它们，在新窗口里把真实账号重新登录一次（v10 不写迁移和兼容旧数据的代码；使用者 2026-11-13 选择重新登录一次，不沿用 main 检出下的旧目录）。
+    - **结论随合并带回**（补充已定决策 21 的“本分支优先”）：
+      - 当前分支的结论除了记在本分支上的，还包括“已并入”的：结论所在运行准备时的快照里各仓库都没有未提交的改动，执行期间产品也没有变化（`product_changed` 为空），并且快照里每个仓库的提交都已是本检出对应仓库 HEAD 的祖先。本分支的结论（含已并入的）里有当前指纹的，就只用它们；一条都没有时照旧用全部分支的结论，并标出来源分支。
+      - 已并入的结论在状态旁和历史里标“来自 <分支>（已并入）”。
+      - 提交在本机找不到（例如别人还没推送）、仓库在本机没有登记、快照里有未提交改动的，都不算已并入，照旧只按分支名归属。要让验收结论随合并带回 main，验收前先提交；随包技能写明这一点。
+      - 只用已有的记录：共享的运行记录里本来就存着准备时的快照（各仓库的提交、分支与未提交改动数），不改表结构。祖先关系按提交对缓存。
+    - **实施顺序**：先做停止与重启；再一起做轮流使用、并行运行和身份浏览器共用（多个运行要靠身份租约分开，换检出要靠共用的身份浏览器）；最后做结论随合并带回。各步什么时候验收，开工前按已定决策 23 定。
+    - **同步修改**：`docs/reference.md`（守护进程、命令一览、运行准备、浏览器代理、错误码 `scenario-in-run`、`run-ambiguous`、`env-shared`）；`prompts/run.md` 与 sop-board 技能（`--wait`、`--identity` 的用法，环境随重启中断时重做场景，验收前先提交）；playwright-acceptance 技能（身份浏览器各检出共用）；现行场景集 `docs/sop/environment.yaml`、`browser.yaml`、`run.yaml`（`port_step: 0` 由直接返回 `env-busy` 改为排队与自动切换、同一检出多个 prepared 运行、按身份的 profile、`stop` 与 `restart`）；`.tw/` 里已定决策 24、26 和共享记录的知识。
+    - **不做**：一台机器上多套环境并行（不加槽位池，不做按身份转发流量的浏览器代理）；`port_step` 保持现状，适合演示项目这类轻量产品，真实产品一般设为 0。环境跨看板重启保留。看板“AI 重跑”同一检出启动多个会话。队列持久保存或跨机器排队。多台机器共用同一批测试账号时的互相干扰（已定决策 21 推迟的，仍不做）。
+
 ## 目标架构
 
 ### 核心概念（只有这些）
@@ -173,7 +207,7 @@
 
 参与推导的记录按已定决策 21 选出，都限于场景的当前指纹：
 
-- **结论**（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。本分支上有结论时只用本分支的；一条都没有时用全部分支的，并在状态旁标出来源分支。
+- **结论**（Agent 的通过与失败、人工标注、修复关闭）在产品内共享，按分支归属。本分支上有结论时只用本分支的；一条都没有时用全部分支的，并在状态旁标出来源分支。已并入当前分支的结论也算本分支的：取证时各仓库没有未提交改动、执行期间产品没变，且各仓库的提交都已是本检出 HEAD 的祖先；显示为“来自 <分支>（已并入）”（已定决策 28）。
 - **非结论**（受阻、跳过、守护未通过）只取本机本检出产出的。
 - 未执行记录不参与推导，只显示在场景详情里。
 
@@ -190,17 +224,17 @@
 
 ### 进程与入口
 
-- `sop-board serve [项目] [--lan] [--port]`：**看板守护进程**，可以在终端或 agent 会话中启动（使用者 2026-11-10：可以根据验收需要启动服务和浏览器）。在 Codex 沙箱里（环境有 `CODEX_SANDBOX`）启动的看板及其子进程仍受沙箱限制：浏览器启动即中止，启动的会话读不到客户端的登录凭据。serve 在这种环境下启动时先打印这条提示；技能要求会话在沙箱里不自行启动看板，请使用者在终端启动（2026-11-13 真实会话验收发现）。负责：网页、按检出管理 adapter 环境、浏览器代理、本机无头会话启动器。CLI 需要环境或浏览器时，通过回环 HTTP 调用守护进程（数据目录里的本机令牌文件鉴权）；守护进程没运行时直接报错并给出启动命令。配了共享库且带 `--lan` 启动时，把机器标识、显示名和内网地址登记到共享库，供别的看板读取本机的证据（已定决策 21）。
+- `sop-board serve [项目] [--lan] [--port]`：**看板守护进程**，可以在终端或 agent 会话中启动（使用者 2026-11-10：可以根据验收需要启动服务和浏览器）。在 Codex 沙箱里（环境有 `CODEX_SANDBOX`）启动的看板及其子进程仍受沙箱限制：浏览器启动即中止，启动的会话读不到客户端的登录凭据。serve 在这种环境下启动时先打印这条提示；技能要求会话在沙箱里不自行启动看板，请使用者在终端启动（2026-11-13 真实会话验收发现）。负责：网页、按检出管理 adapter 环境、浏览器代理、本机无头会话启动器。CLI 需要环境或浏览器时，通过回环 HTTP 调用守护进程（数据目录里的本机令牌文件鉴权）；守护进程没运行时直接报错并给出启动命令。配了共享库且带 `--lan` 启动时，把机器标识、显示名和内网地址登记到共享库，供别的看板读取本机的证据（已定决策 21）。停止与重启用 `sop-board stop|restart`：`restart` 保留浏览器、浏览器租约、启动的会话与 prepared 的运行，由新进程认回，并重新拉起原来在运行的环境（已定决策 28）。
 - **会话 CLI** 是 Agent 工作的唯一入口。看板上的“AI 重跑”“沉淀”按钮（仅本机）用同一份 `sop-board` 技能在检出目录启动 `codex exec` 或 `claude -p`（按 `agents` 配置），只记录进程号、日志和退出码；同一检出同时只运行一个。
 
 ### 检出与环境（问题 3）
 
 - **识别**：`gitops` 对 cwd 运行 `git rev-parse --show-toplevel --git-common-dir`。common dir 等于某个已登记仓库时，该仓库就属于当前检出；同一父目录下的兄弟目录，如果是其他已登记仓库的 worktree，也并入同一检出；剩下的仓库回落到 main。检出第一次被看到时登记并分配槽位，main 的槽位固定为 0。`checkout create <名称> [--from ref]` 沿用 adapter.worktree 和 cleanup 契约，复用 cw2 的 `worktree.py`，并沿用 `worktrees.validate_path` 的三项核对。
 - **环境**：守护进程按检出运行 `adapter.env`，传入 `SOP_CHECKOUT`、该检出各仓库的 `SOP_REPO_<别名>` 和 `SOP_PORT_OFFSET = slot × port_step`。实际端口为 `ports + offset`；入口地址变量从 adapter 的 ready 输出里读取。
-  - `port_step: 0` 时各检出共用同一组端口。此时租约属于持有端口的检出，另一检出的 `run prepare` 和 `env up` 直接返回 `env-busy`，并写明占用的检出、运行编号和 `env down` 命令。不排队，也不互相覆盖。
-  - 环境记录启动时的快照，快照变化后由 `run prepare` 重启。
-  - 守护进程重启时，清理记录在案、但已成为孤儿的进程组。
-- **服务与部分就绪**（已定决策 22）：`adapter.services` 声明服务的名称、业务说明和是否可停。adapter 把各服务的状态写到 `SOP_ENV_LOG_DIR/services/<名称>.state`（运行中、已停止、本机未搭建、异常退出），守护进程用同目录的 `<名称>.request` 文件请求停止、删除它请求启动。adapter 输出就绪即环境可用，不要求所有服务都在运行；`env status`、本机看板和运行目录列出各服务的状态。`env stop|start <服务>` 只在本检出有 prepared 运行时可用，停启记进运行，`run submit` 或 `run abandon` 时自动恢复还停着的服务。没声明 `services` 的 adapter 照旧工作。
+  - `port_step: 0` 时各检出共用同一组端口，环境在检出之间轮流用（已定决策 28）：环境由当前检出的 prepared 运行占住，没有 prepared 运行就是空闲，别的检出要用时守护进程直接换成它的；被占着时 `run prepare` 返回 `env-busy`（写明占用的检出、运行与排队情况），带 `--wait` 时在本机排队等待；`env up` 照旧直接返回 `env-busy`。不互相覆盖。
+  - 环境记录启动时的快照，快照变化后由 `run prepare` 重启；这套环境上还有别的 prepared 运行时，等它们结束（已定决策 28）。
+  - 守护进程重启时，清理记录在案、但已成为孤儿的进程组；经 `restart` 重启时，新进程重新拉起原来在运行的环境（已定决策 28）。
+- **服务与部分就绪**（已定决策 22）：`adapter.services` 声明服务的名称、业务说明和是否可停。adapter 把各服务的状态写到 `SOP_ENV_LOG_DIR/services/<名称>.state`（运行中、已停止、本机未搭建、异常退出），守护进程用同目录的 `<名称>.request` 文件请求停止、删除它请求启动。adapter 输出就绪即环境可用，不要求所有服务都在运行；`env status`、本机看板和运行目录列出各服务的状态。`env stop|start <服务>` 只在本检出有 prepared 运行、且这套环境上只有这一个 prepared 运行时可用（已定决策 28），停启记进运行，`run submit` 或 `run abandon` 时自动恢复还停着的服务。没声明 `services` 的 adapter 照旧工作。
 - **check**：只做三件事：校验配置；在当前检出拉起环境并探测就绪；核对浏览器运行时。环境就绪以 adapter 输出就绪为准，没在运行的服务和缺失的入口地址只列出，不算失败。删除五步自检中的工作树建立与清理步骤，也不再把它当作执行门槛，因为 `run prepare` 拉起环境本身就是核对。
 - **快照**：`gitops.product(checkout)` 沿用分批 git 读取，按 各仓 HEAD + `git status --porcelain` 输出缓存。快照只记录取证时的代码版本、决定环境是否重启，不参与状态判定（已定决策 18）。场景目录、`snapshot_exclude` 以及 `regression.yaml` 引用的测试文件不计入快照。
 
@@ -208,13 +242,13 @@
 
 - **运行时**：`src/sop_board/assets/runtime/` 带 `package.json`（固定 `@playwright/test` 1.64.1）和 lock 文件。`sop-board browser install` 在 `~/.sop-board/runtime/` 中 `npm ci`，再设置 `PLAYWRIGHT_BROWSERS_PATH=~/.sop-board/runtime/browsers`，执行 `playwright install --no-shell chromium ffmpeg`。可执行文件路径取自 `playwright-core` 的 `chromium.executablePath()`，与 CfT 版本一起写入 `runtime.json`。此后不再读 `~/.sop-board/node_modules` 和共享的 `~/Library/Caches/ms-playwright`。
 - **启动**：只有守护进程能启动浏览器，执行者不自己启动。守护进程可以在 agent 会话中运行；浏览器缺省无头，启动即崩溃时按下面的崩溃规则记受阻并写明信号与日志。
-  - 每个 检出×身份 一个浏览器：`--user-data-dir=<数据目录>/browsers/<检出>/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`。
+  - 每个身份一个浏览器，各检出共用（已定决策 28）：`--user-data-dir=<数据目录>/browsers/<身份>/profile --remote-debugging-port=<端口> --no-first-run --no-default-browser-check --use-mock-keychain`。交给与上一次不同的检出之前清空 HTTP 缓存，cookie、本地存储与登录保留。
   - 不加 `--enable-automation`。默认无头运行（`--headless=new`）；`browser open --headed` 和真人登录使用同一份 profile。
-  - 缺省端口 = `9400 + slot×20 + 身份序号`；被别的进程占用时顺延到下一个空闲端口，实际端口记在浏览器实例里并经 `run.env` 交给执行者（已定决策 24）。
+  - 缺省端口 = `9400 + 身份序号`（已定决策 28 起不含槽位）；被别的进程占用时顺延到下一个空闲端口，实际端口记在浏览器实例里并经 `run.env` 交给执行者（已定决策 24）。
   - `/json/version` 15 秒内有应答才算就绪。
-- **租约**：`run prepare` 为本轮 Web 场景用到的身份取得租约，确保对应浏览器已启动，并写出 `runs/<编号>/run.env`，其中有 `PW_CDP_ENDPOINT`、`PW_IDENTITIES`（每个身份带 endpoint）、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT`。身份被真人登录占用时，直接返回 `browser-busy`。删除 `WAIT_BROWSER`，也删除身份的 `cdp` 字段。
+- **租约**：`run prepare` 为本轮 Web 场景用到的身份取得租约（带 `--identity` 时只取这些身份；身份租约整机独占，已定决策 28），确保对应浏览器已启动，并写出 `runs/<编号>/run.env`，其中有 `PW_CDP_ENDPOINT`、`PW_IDENTITIES`（每个身份带 endpoint）、`PLAYWRIGHT_BROWSERS_PATH`、`PW_NODE_ROOT`。身份被真人登录占用时，直接返回 `browser-busy`。删除 `WAIT_BROWSER`，也删除身份的 `cdp` 字段。
 - **真人登录与交还**：`browser open --identity X --headed` 在有界面的 CfT 窗口打开入口地址，并持有 human 租约（窗口已开着时只取得租约，不重启）。用户自己输入密码、完成人机验证或 2FA，profile 保留登录态；之后用 `browser release` 交还：只解除 human 租约，窗口和页面保持打开，下一次取得租约的运行直接沿用这个进程（仍是有界面窗口），人在窗口里通过的验证、权限与证书例外都还在。没有 `--headed` 的 `browser open` 遇到运行中的有界面窗口时直接沿用，不取得租约，不重启成无头。`browser close` 结束浏览器并释放租约，只在要关掉它时使用。出现 `browser may not be secure` 时停止，该身份的场景记为受阻并写明原文。不回退到用户日常 Chrome，也不改 UA 或参数绕过。（已定决策 16）
-- **看板停止与重启**（已定决策 26）：守护进程正常停止时关闭无头浏览器，保留有界面的窗口；启动时按 profile 目录认回仍在运行、调试端口有应答的浏览器，遗留的无头浏览器照旧清理，核对不通过的有界面窗口不结束、登记为未认回。认回的浏览器用查看进程是否还在的办法监视。
+- **看板停止与重启**（已定决策 26）：守护进程正常停止时关闭无头浏览器，保留有界面的窗口；启动时按 profile 目录认回仍在运行、调试端口有应答的浏览器，遗留的无头浏览器照旧清理，核对不通过的有界面窗口不结束、登记为未认回。认回的浏览器用查看进程是否还在的办法监视。经 `restart` 重启时无头浏览器和租约也保留，由新进程认回（已定决策 28）。
 - **崩溃**：监视线程 `wait()` 浏览器进程。异常退出时，记录信号、`chrome.log` 末尾，以及启动之后写出的 `DiagnosticReports/Google Chrome for Testing*.ips`。持有租约的运行在提交时，相关场景记为受阻，finding 写成“浏览器进程 <时间> 因 <信号> 退出，日志 <路径>”，同时加一条待人处理。租约持有期间不自动重启，下一次取得租约时再启动。30 分钟内异常退出两次，状态记为 crashed，须由人运行 `browser open --reset-crash`。模板里补上 `page.on('crash')` 和 `/Target crashed/`，渲染进程崩溃也按受阻处理。
 - **playwright-acceptance 技能改动**：
   - `templates/connection.mjs` 只读 `PW_CDP_ENDPOINT`，删掉 7-19 行（DevToolsActivePort、`PW_CHROME_USER_DATA`）和 39-114 行（`targetTransport`、`PW_CDP_MODE`），保留 `connectOverCDP :128`。
@@ -365,7 +399,7 @@
 - **业务记录**：配了 `shared_database` 时在共享的 PostgreSQL，否则在本机 `board.sqlite3`，两种库同一套表与 SQL。每条记录带产品；结果、标注、守护运行、修复关闭共用一串递增序号。
   `products`（ID、名称、创建人）· `machines`（机器标识、显示名、看板内网地址）· `work` 的业务部分（kind 为 run/fix/distill/merge/author/draft/atlas，机器标识 + 本机编号唯一，检出名与分支、会话、操作者、范围、快照、实现者、未执行清单及原因、服务停启记录）· `results`（运行 + 文件 + 场景唯一；kind 区分 agent 与 manual，带独立性字段、产出机器、检出名与分支）· `evidence` + `result_evidence`（证据索引，带产出机器）· `guard_runs`（带产出机器与检出名）· 沉淀登记 · `guard_misses` · `fixes` 的业务部分（问题场景、会话、操作者、状态、关闭时间、产出机器与检出名）· `inbox` · `questions` · `annotations` · 草稿场景的同意 · `attention`（带产出机器）。
 - **本机状态**：始终在本机 `board.sqlite3`，格式一变就拒绝读取。
-  `meta` · `checkouts`（name、slot 唯一，paths_json，kind main/worktree）· 运行与修复的本机部分（目录、prepared/submitted/abandoned 状态、修复的文件基线与复验摘要；同一检出的 run 和 distill 各只能有一个 prepared）· `launches`（同一检出只能有一个 running）· `leases`（端口、浏览器、human 租约）· `environments`（含各服务的状态）· `browser_instances`（检出、身份、端口、pid、profile、退出信号、日志、状态）· `identity_events` · `fixture_runs`。
+  `meta` · `checkouts`（name、slot 唯一，paths_json，kind main/worktree）· 运行与修复的本机部分（目录、prepared/submitted/abandoned 状态、修复的文件基线与复验摘要；同一检出的 distill 只能有一个 prepared，run 可以有多个、按身份分开，已定决策 28）· `launches`（同一检出只能有一个 running）· `leases`（端口、浏览器、human 租约）· `environments`（含各服务的状态）· `browser_instances`（身份、端口、pid、profile、最近一次交给的检出、退出信号、日志、状态）· `identity_events` · `fixture_runs`。
 
 证据文件不在数据库里：按 sha256 存放在数据根目录的 `evidence/`。
 
@@ -373,10 +407,10 @@
 
 | 类别 | 命令 |
 | --- | --- |
-| 搭建 | `init`（登记项目；对已登记的项目列出共享库里的产品，`--join <ID>` 或 `--new [--product 名称]` 绑定）、`guide`、`check`、`operator [show\|set]`、`skills install`、`serve [--lan] [--port]`、`status [--json]` |
+| 搭建 | `init`（登记项目；对已登记的项目列出共享库里的产品，`--join <ID>` 或 `--new [--product 名称]` 绑定）、`guide`、`check`、`operator [show\|set]`、`skills install`、`serve [--lan] [--port]`、`stop`、`restart`、`status [--json]` |
 | 检出 | `checkout list\|show\|create <名称> [--from ref]\|remove <名称>` |
 | 守护进程 | `env status\|up\|down\|restart\|stop <服务>\|start <服务>`；`browser install\|status\|open --identity I [--headed]\|release\|close` |
-| 执行 | `run prepare [--scope pending\|all\|F#ID…] [--fix N] [--session S]`、`run submit --run N [--implementer X \| --implemented-by 操作者]`、`run abandon`、`run launch [--scope …]`、`run wait`；`retest [--dry-run]`；`mark F#ID pass\|fail\|blocked\|changed [--defect URL] [--note 说明] [--as 姓名]` |
+| 执行 | `run prepare [--scope pending\|all\|F#ID…] [--fix N] [--session S] [--identity I…] [--wait 秒]`、`run submit --run N [--implementer X \| --implemented-by 操作者]`、`run abandon`、`run launch [--scope …]`、`run wait`；`retest [--dry-run]`；`mark F#ID pass\|fail\|blocked\|changed [--defect URL] [--note 说明] [--as 姓名]` |
 | 修复 | `fix prepare [F#ID…]`、`fix submit`、`fix close`、`fix abandon` |
 | 沉淀 | `distill prepare [F#ID…]`、`distill submit --report r.json` |
 | 编写 | `inbox add <文件> [--kind cases\|sop]\|list\|show\|done\|reject`、`merge prepare/submit`、`ask --about F#ID\|inbox:ID --text`、`answers`、`sop prepare/submit`、`draft annotations\|resolve\|confirm <文件>` |
@@ -408,7 +442,7 @@
 - **每阶段实现者自检**（只用于交付准备，不冒充验收）：`uv run sop-board …` 对 `examples/demo-shop` 生成的临时项目走通本阶段新增的命令；HTML/JSON 自检与浏览器操作分开留证，留证放在仓库外 `~/sop-board-runs/v10/`。
 - **端到端冒烟**（阶段 4、5 完成后）：
   1. 运行 `sop-board serve demo --lan`，从另一台设备通过实际的非回环地址打开工作台。
-  2. `checkout create wt1`，验证 main 与 wt1 的环境：`port_step` 不为 0 时能同时运行；为 0 时返回 `env-busy` 并写明占用者。
+  2. `checkout create wt1`，验证 main 与 wt1 的环境：`port_step` 不为 0 时能同时运行；为 0 时返回 `env-busy` 并写明占用者与排队情况，带 `--wait` 的准备在 main 的运行都提交后自动换到 wt1（已定决策 28）。
   3. `browser install`，确认安装的是 CfT 1248；`browser open --headed` 弹出有界面的 CfT 窗口，在其中登录；`browser release` 后的运行沿用同一窗口，登录态仍在。
   4. 用 `run launch` 启动真实的 Codex 和 Claude 执行会话，结果在工作台出现，并显示独立性。
   5. 在内网标注一条不通过，填写缺陷链接，期间不被要求填姓名以外的身份。
@@ -419,6 +453,7 @@
   10. 环境按产品来（已定决策 22）：只搭商城、不搭库存服务时 `check` 与 `run prepare` 照常可用，依赖库存的场景记未执行；执行会话用 `env stop` 停掉库存服务验证降级提示，提交后服务自动恢复；执行中 kill 库存服务，场景记受阻并附日志。
   11. 多人共享（已定决策 21）：两个数据根目录各绑定同一个 docker PostgreSQL 里的同一个产品，一边的结果在另一边的看板上可见，证据经产出机器的看板读取；断开 PostgreSQL 时返回 `database-unreachable`，恢复后 `run submit` 重新提交只登记一次；内网设备从实际的非回环地址完成同样的查看。
   12. 设置页（已定决策 27）：只登记了仓库的新项目启动看板后，在设置页把配置补到合格；在设置页接入、换产品、断开共享库；内网访问不到设置页；共享库密码不出现在页面、接口、命令输出与日志里。
+  13. 一套环境多人用（已定决策 28）：`port_step: 0` 时 main 上两个会话用 `--identity` 分开身份同时执行，`--scope pending` 不重复取场景；wt1 带 `--wait` 排队，main 的运行都提交后环境自动换给 wt1；wt1 的运行沿用在 main 时登录过的身份窗口，不用重新登录；执行中运行 `sop-board restart`，浏览器窗口、租约与 prepared 运行都在，环境重新就绪后继续执行，运行摘要记下中断；wt1 的分支提交后验收、合并回 main，main 上这些场景显示“来自 <wt1 的分支>（已并入）”。
 - **独立验收**：见阶段 8。没有真实入口证据或独立执行的部分，如实报告为未完成；回归测试建设与实际运行情况单独报告。
 
 ## 风险与说明
@@ -432,4 +467,5 @@
 - **共享库密码在本机 config.yaml 里是明文**（已定决策 27）：靠文件权限 600 和各处输出不外露来保护。能读本机数据目录的会话读得到它，随包技能要求会话不读取、不输出这一项。不愿意把密码放在配置里的，照旧不写 `password`、用 `~/.pgpass`。
 - **各看板显示的是本检出的场景内容**：检出落后时，别人按新内容登记的结果对不上本机的指纹，显示为未执行；拉取后即一致。
 - **Codex 沙箱提示只认 `CODEX_SANDBOX`**：这个变量可能只在 macOS 的 Codex 沙箱里设置，Linux 上 serve 的提示与技能里的判断可能都不触发。未核实，先记下不处理（使用者 2026-11-13）。
+- **一台机器一套环境**（已定决策 28）：并行的上限是这套环境里的身份数；检出之间切换要重新拉起环境（cw2 在热缓存下 8～42 秒），各检出交替排队时会反复切换。要更多并行就加机器。升级到这一版时，按检出存放的旧 profile 不迁移，真实账号要在新窗口里重新登录一次。
 - **守护拿不到本机才有的值**：retest 只给守护注入入口地址变量，守护需要本机路径（例如演示库的 SQLite 文件）时没有可移植的来源，只能写进命令或测试。以后处理（使用者 2026-11-13）。
