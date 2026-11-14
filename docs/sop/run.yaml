@@ -16,10 +16,13 @@
 #   版本 7 按 docs/design.md 已定决策 28（使用者 2026-11-13 决定）修订，由起草该决策的会话在实现前写成：取消“同一检出同时只能有一个 prepared 的运行”，
 #   改为按身份分开的多个运行（新增 RUN-01-P02，RUN-01-N01 改为 scenario-in-run 与 pending 跳过别的运行里的场景）。merchant2 见 browser.yaml 文件头。
 #   版本 8 按决策 28 统一验收（2026-11-13）的结果、经使用者当日确认修订：RUN-01-N01 原起点让 R1 租下全部身份，wt1 再要身份必然 browser-busy，#   与“身份租约整机独占”矛盾；改为 R1 带 --identity merchant、wt1 带 --identity merchant2，预期不变。
+#   版本 9 按 docs/design.md 已定决策 29（使用者 2026-11-14 决定）修订，由起草该决策的会话在实现前写成：新增 RUN-01-P03（同一会话重复准备返回同一个运行）、
+#   RUN-01-N02（范围超出自己的运行）、RUN-04-N05（会话异常退出后接续）、RUN-04-N06（接续也异常退出后收尾）、RUN-05-N03（入口整体不可用时中止本轮）
+#   与 RUN-08（修复中途不开始新的一轮）；RUN-01-N01 的报错写明准备运行的会话；RUN-04-N04 由“看板不替它放弃”改为看板自动放弃并登记待人处理，仍不自动提交。
 
 metadata:
-  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景"
-  version: 8
+  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景；同一会话重复准备返回同一个运行；执行会话异常退出时由看板接续一次，最终失败或留下未提交的运行时看板放弃运行并登记待人处理，不自动提交；另一会话的修复已改动代码而未提交时不开始新的一轮；入口整体不可用连续挡住两条场景时执行会话中止本轮"
+  version: 9
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -44,7 +47,10 @@ metadata:
     - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用（同一环境里按身份并行多个运行）"
       version: "2026-11-13"
       confirmed_by: "blur.yin"
-  tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault", "parallel"]
+    - ref: "docs/design.md 已定决策 29：无人值守加固（重复准备、启动接续与收尾、修复中途不开始新的一轮、入口不可用时中止本轮）"
+      version: "2026-11-14"
+      confirmed_by: "blur.yin"
+  tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault", "parallel", "unattended"]
 
 sops:
   - id: RUN-01
@@ -55,6 +61,7 @@ sops:
       - "结果绑定场景指纹与运行开始时的产品快照，记录产出机器、检出与分支；通过与失败按分支归属，受阻与跳过只影响产出它的检出"
       - "同一检出可以有多个 prepared 的运行，按身份分开：--identity 只为指定的身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占"
       - "--scope pending 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 scenario-in-run，写明是哪个运行"
+      - "同一会话对同一检出再次准备、范围是它已准备的运行的子集时，返回那个运行（resumed: true），不新建运行、不重新取身份、不重启环境；范围超出时返回 scenario-in-run，写明是本会话自己的运行与两条出路"
     scenarios:
       - id: RUN-01-P01
         polarity: positive
@@ -104,6 +111,28 @@ sops:
           - "R3 的 run.env 列出 merchant"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#浏览器代理（问题 5、6）", "docs/reference.md#5. 运行"]
         evidence_hints: ["三份运行目录的 pending.json、run.env（凭据脱敏）与 identities.json", "第 3 步的输出", "ps 输出", "两边的 status --json"]
+      - id: RUN-01-P03
+        polarity: positive
+        title: 同一会话重复 run prepare 返回同一个运行，不新建运行、不重新取身份
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 的环境在运行，没有 prepared 的运行；shop#A、shop#W 未执行"
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#A shop#W --identity merchant --session S1 --json，得到运行 R1；记录输出、运行目录的文件清单与修改时间、本机运行记录的行数、sop-board env status 的启动时间"
+          - "原样再运行一次同一条命令"
+          - "运行 sop-board run prepare --scope shop#A --session S1 --json，再运行 sop-board run prepare --scope pending --session S1 --json"
+          - "查询本机运行记录的行数，运行 sop-board browser status 与 sop-board env status，查看 R1 的运行目录"
+          - "执行者执行 shop#A、shop#W 并运行 sop-board run submit --run R1"
+        expected:
+          - "第 2、3 步的三次准备都成功：返回的 run 是 R1，directory、prompt、scope、identities 与第 1 步相同，并带 resumed: true"
+          - "本机运行记录没有新增行；R1 的运行目录没有被重建，文件的修改时间不变"
+          - "merchant 的持有者始终是 R1；环境的启动时间不变"
+          - "提交成功，shop#A、shop#W 各登记一条结果"
+        forbidden_effects: ["返回 scenario-in-run 或 nothing-to-run", "新建第二个运行或第二个运行目录", "重启环境或重新取得身份租约"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
+        evidence_hints: ["四次准备的输出", "本机运行记录只读查询", "运行目录清单与修改时间", "browser status 与 env status 输出", "submit 输出"]
       - id: RUN-01-N01
         polarity: negative
         negative_type: concurrency
@@ -117,12 +146,28 @@ sops:
           - "在 main 运行 sop-board run prepare --scope pending --session S2 --json"
           - "在 wt1 运行 sop-board run prepare --scope all --identity merchant2 --session S3 --json"
         expected:
-          - "第 1 条以业务失败退出（退出码 1），error_code 为 scenario-in-run，写明 shop#A 在运行 R1 里"
+          - "第 1 条以业务失败退出（退出码 1），error_code 为 scenario-in-run，写明 shop#A 在运行 R1 里，以及 R1 由会话 S1 准备"
           - "第 2 条以业务失败退出，error_code 为 nothing-to-run：pending 跳过 R1 里的场景后范围为空"
           - "R1 仍为 prepared，范围与快照不变；main 没有新建运行"
           - "wt1 的 run prepare 成功"
         forbidden_effects: ["覆盖或作废 R1", "同一个场景同时出现在 main 的两个运行里", "wt1 被 main 的运行阻挡"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#数据库（格式 7）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+      - id: RUN-01-N02
+        polarity: negative
+        negative_type: concurrency
+        title: 同一会话指定的范围超出它已准备的运行时返回 scenario-in-run，写明是自己的运行与两条出路
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["main 已运行 sop-board run prepare --scope shop#A --session S1，得到运行 R1；shop#B 未执行"]
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#A shop#B --session S1 --json"
+          - "查询本机运行记录"
+        expected:
+          - "以业务失败退出（退出码 1），error_code 为 scenario-in-run：写明 shop#A 在本会话自己准备的运行 R1 里，并给出两条出路（继续执行并 run submit，或 run abandon --run R1 后重新准备）"
+          - "R1 仍为 prepared，范围不变；没有新建运行"
+        forbidden_effects: ["把 R1 的范围扩大到 shop#B", "为 shop#B 另建一个运行", "作废或放弃 R1"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
 
   - id: RUN-02
     title: 代码改动不改变场景状态
@@ -305,6 +350,8 @@ sops:
       - "会话编号由启动器取得，启动记录就是独立性的证据"
       - "同一检出同时只运行一个启动"
       - "启动前按 run prepare 的同一套规则核对范围，不合格直接拒绝、不启动会话；会话退出时没有产生运行或留下未提交的运行，launch status 标出、run wait 以失败返回"
+      - "run 类型的启动，会话进程以非零退出码结束且没有被 launch stop 停止时，看板 60 秒后在同一次启动下再起一个会话接续，最多一次；接续会话拿到同一个运行，已写的结果行保留；会话正常退出不接续"
+      - "启动最终失败，或会话正常退出却留下 prepared 的运行时，看板放弃这些运行（释放身份租约、恢复停着的服务，运行目录保留）并登记一条待人处理；不自动提交结果"
     scenarios:
       - id: RUN-04-P01
         polarity: positive
@@ -387,23 +434,79 @@ sops:
       - id: RUN-04-N04
         polarity: negative
         negative_type: interrupted
-        title: 启动的会话准备了运行却没有提交就退出时，run wait 返回失败并写明未提交的运行
+        title: 启动的会话准备了运行却没有提交就正常退出时，run wait 返回失败，看板放弃该运行并登记待人处理
         actor: 协调会话
         priority: P1
         verify: cli
         initial_state:
-          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A 有待执行内容"
+          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A 有待执行内容；没有未解决的待人处理"
           - "替代做法（代表“会话准备后没提交就结束”）：config.yaml 的 agents 为 claude，args 设为 [\"--permission-mode\", \"acceptEdits\", \"--allowedTools\", \"Read\", \"Bash(sop-board run prepare:*)\", \"Bash(sop-board status:*)\"]，启动的会话能准备运行，不能执行与提交；会话没能准备运行时本次作废，换用其他办法让会话在准备后结束并注明"
         steps:
           - "在 main 运行 sop-board run launch --scope shop#A，记下启动编号 L"
           - "运行 sop-board run wait，记录退出码与输出"
-          - "运行 sop-board launch status --json，查询本机运行记录，在工作台查看 shop#A"
+          - "运行 sop-board launch status --json 与 sop-board attention list，查询本机运行记录，查看该运行的目录，在工作台查看 shop#A"
         expected:
-          - "run wait 以业务失败退出（退出码 1），error_code 为 launch-unsubmitted，写明仍未提交的运行编号"
-          - "launch status 中 L 写明该运行未提交，附启动日志末尾"
-          - "该运行仍为 prepared，看板没有替它放弃或提交；shop#A 没有新增结果"
-        forbidden_effects: ["run wait 以成功返回", "看板自动放弃或提交该运行"]
+          - "run wait 以业务失败退出（退出码 1），error_code 为 launch-unsubmitted，写明未提交的运行编号，以及它已由看板放弃"
+          - "launch status 中 L 只有一次尝试（正常退出不接续），写明该运行未提交，附启动日志末尾"
+          - "该运行为 abandoned，运行目录仍在；待人处理新增一条环境问题，写明启动 L、该运行与 shop#A"
+          - "shop#A 没有新增结果，状态不变"
+        forbidden_effects: ["run wait 以成功返回", "看板自动提交该运行的结果", "该运行停在 prepared", "正常退出的会话被接续"]
         refs: ["docs/design.md#独立性（取代交接仪式）"]
+      - id: RUN-04-N05
+        polarity: negative
+        negative_type: interrupted
+        title: 执行会话中途异常退出，看板 60 秒后接续一次，同一个运行完成并提交
+        actor: 协调会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A、shop#B、shop#W 未执行；config.yaml 的 agents 为 claude"
+          - "替代做法（代表“会话异常退出”）：用 kill -9 结束 launch status 给出的会话进程"
+        steps:
+          - "在 main 运行 sop-board run launch --scope shop#A shop#B shop#W，记下启动编号 L；另开终端运行 sop-board run wait --launch L --timeout 0"
+          - "等这次启动的运行 R 的 results.jsonl 出现第一行后，用 kill -9 结束 launch status 中 L 的会话进程，记下已写入的行"
+          - "此后 60 秒内运行 sop-board launch status --json 与 sop-board browser status"
+          - "等 run wait 返回，记录退出码与输出"
+          - "查看 launch status --json、启动目录（attempts.json、两份日志与提示词）、本机运行记录与 R 的 results.jsonl，只读查询 results 表，在工作台查看三条场景的历史"
+        expected:
+          - "会话被结束后 L 仍为 running，R 仍为 prepared 并持有 merchant；约 60 秒后 L 下出现第二次尝试：会话编号与第一次不同，日志另存一份"
+          - "第二次尝试的提示词含接续段：上一个会话的结束时间与退出码、运行 R 的编号与目录"
+          - "接续会话没有新建运行，本机只有 R 一个运行；被结束前已写入的结果行原样保留"
+          - "run wait 以成功返回；输出与 launch status 的 attempts 列出两次尝试，第一次的退出码非零"
+          - "三条场景各登记一条结果；结果的执行者是接续会话，提交输出列出先后两个会话；独立性与没有中断时相同"
+        forbidden_effects:
+          - "第一次异常退出后 L 直接记为 failed，run wait 提前以失败返回"
+          - "接续会话新建第二个运行，或重做已写入结果行的场景"
+          - "同一条场景登记两条结果"
+          - "出现第三次尝试"
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#launch / wait"]
+        evidence_hints: ["run wait 输出", "launch status --json 的 attempts", "启动目录清单、attempts.json 与两份提示词", "results.jsonl 在结束会话前后的内容", "results 表只读查询", "工作台历史截图"]
+      - id: RUN-04-N06
+        polarity: negative
+        negative_type: interrupted
+        title: 接续的会话也异常退出时，启动记为失败，看板放弃运行、释放身份并登记待人处理
+        actor: 协调会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A、shop#W 未执行；没有未解决的待人处理；config.yaml 的 agents 为 claude"
+          - "替代做法（代表“会话异常退出”）：用 kill -9 结束 launch status 给出的会话进程"
+        steps:
+          - "在 main 运行 sop-board run launch --scope shop#A shop#W，记下启动编号 L；另开终端运行 sop-board run wait --launch L --timeout 0"
+          - "运行 R 准备好之后，用 kill -9 结束第一次尝试的会话进程；第二次尝试的会话启动后同样结束它"
+          - "等 run wait 返回，记录退出码与输出；再过 2 分钟运行 sop-board launch status --json"
+          - "运行 sop-board attention list、sop-board browser status 与 sop-board status --json，查询本机运行记录，查看 R 的运行目录"
+          - "在 main 运行 sop-board run launch --scope shop#W，再运行 sop-board run wait"
+        expected:
+          - "run wait 以业务失败退出（退出码 1），error_code 为 launch-failed，写明运行 R 已由看板放弃，attempts 列出两次尝试"
+          - "L 为 failed，没有第三次尝试"
+          - "R 为 abandoned，merchant 不再被任何运行持有；R 的运行目录、已写的结果行与证据都还在"
+          - "待人处理新增一条环境问题：写明启动 L 接续一次后仍异常退出、运行 R 已由看板放弃、shop#A 与 shop#W，以及日志末尾一行；文字里没有本机路径"
+          - "shop#A、shop#W 没有新增结果，状态不变，仍在 pending 范围"
+          - "第 5 步的启动直接成功，不返回 browser-busy 或 scenario-in-run"
+        forbidden_effects: ["R 停在 prepared、继续占着 merchant", "看板把 R 里已写的结果行登记为结果", "删除 R 的运行目录", "出现第三次尝试"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#launch / wait"]
+        evidence_hints: ["run wait 输出", "launch status --json", "attention list 输出", "browser status 输出", "本机运行记录只读查询", "R 的运行目录清单"]
 
   - id: RUN-05
     title: 未执行与受阻按性质划分，故障场景用 env stop 模拟
@@ -414,6 +517,7 @@ sops:
       - "未执行不登记结果，不改变场景状态；场景详情显示最近一次未执行的情况：谁、什么时候、缺什么"
       - "受阻是意外故障或全队都不具备的能力：服务或浏览器异常退出（不论发生在开始前还是执行中，附日志末尾并登记待人处理）；前置数据准备失败、证据丢失、运行作废；入口或观察能力还没建设；需要停外部共享中间件的故障场景"
       - "场景起点要求某个依赖故障时，执行会话用 sop-board env stop|start <服务> 停启，不直接结束进程或改动环境；结果详情显示“执行时 <服务> 已停止”；run submit 时还停着的服务自动恢复并记录"
+      - "同一个入口对任何操作都失败、连续挡住 2 条场景时，执行会话中止这个入口的其余场景：前 2 条记受阻，其余写未执行并写明本轮中止，登记一条环境问题，照常提交"
     scenarios:
       - id: RUN-05-P01
         polarity: positive
@@ -538,6 +642,27 @@ sops:
           - "run prepare 因 stock 异常退出而失败"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
         evidence_hints: ["run prepare 输出与服务清单", "库存服务日志", "results.jsonl 与 submit 输出", "工作台截图"]
+      - id: RUN-05-N03
+        polarity: negative
+        negative_type: interrupted
+        title: 入口整体不可用连续挡住两条场景时，执行会话中止本轮，其余场景记未执行
+        actor: 执行会话
+        priority: P1
+        verify: agent
+        initial_state:
+          - "演示项目的环境在运行；shop#X、shop#A、shop#B 都是 API 场景，都未执行；没有未解决的待人处理；config.yaml 的 agents 设为 claude"
+          - "替代做法（代表“入口在、对任何操作都失败”）：环境就绪后让演示商城的接口对任何请求都返回 500（例如把它的数据文件改名），做法写进取证记录"
+        steps:
+          - "在 main 运行 sop-board run launch --scope shop#X shop#A shop#B，再运行 sop-board run wait"
+          - "查看 wait 输出、运行目录的 results.jsonl 与启动日志，运行 sop-board attention list 与 sop-board status --json，在工作台打开三条场景"
+        expected:
+          - "results.jsonl 中先执行的两条为 blocked，finding 写明接口返回 500 的现象并附日志末尾；第三条为 not-executed，finding 写明入口 api 不可用、本轮中止"
+          - "启动日志里没有针对第三条场景的入口请求"
+          - "提交成功：两条登记为受阻；未执行清单列出第三条及原因，它的状态仍为未执行、仍在 pending 范围"
+          - "待人处理有一条环境问题，写明入口 api 不可用"
+        forbidden_effects: ["三条都记为受阻", "任何一条记为失败或通过", "会话自行修改演示商城或重启环境", "会话不提交就退出"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        evidence_hints: ["启动日志", "results.jsonl 与 wait 输出", "attention list 输出", "status --json 输出", "工作台截图"]
 
   - id: RUN-06
     title: 共享库中断后重新提交，结果只登记一次
@@ -670,3 +795,77 @@ sops:
           - "会话把第一步时的那条通过当作统一验收的结果"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/standard.md#分步实现时的验收时机", "docs/standard.md#业务变化与回归"]
         evidence_hints: ["会话记录导出", "launch status 与运行目录的 pending.json", "工作台 shop#A 历史截图", "results 表只读查询"]
+
+  - id: RUN-08
+    title: 修复中途不开始新的一轮
+    actor: 协调会话
+    entry: "sop-board run prepare、run launch [--allow-open-fix]、fix prepare、fix submit、env status"
+    must:
+      - "轮次已经在执行时修复会话改代码不受影响：这一轮照常提交，变化的路径记进 product_changed"
+      - "本机本检出有另一会话的 open 修复、它登记以来已改动产品文件，而这次准备要启动或重启环境时，run prepare 与 run launch 返回 fix-in-progress，不建运行、不启动会话、不动环境；报错写明修复编号、修复会话与已改动的文件数；--wait 不为这个条件排队"
+      - "修复提交后照常准备；修复还没有改动文件时不拦；修复会话自己准备的运行不受限；--allow-open-fix 越过并在运行记录里记下修复编号"
+    scenarios:
+      - id: RUN-08-P01
+        polarity: positive
+        title: 执行中修复会话改了代码，这一轮照常提交；修复提交后下一轮照常准备，环境按修复后的代码重启
+        actor: 协调会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 上 shop#X 为失败（独立执行），shop#A、shop#B 未执行；app 与 lib 没有未提交改动；环境在运行；没有进行中的修复，没有 prepared 的运行"
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#A --session S1，得到运行 R1"
+          - "以会话 F 运行 sop-board fix prepare shop#X --session F，得到修复 N；在 lib 改掉预埋缺陷（不提交）"
+          - "执行者执行 shop#A，运行 sop-board run submit --run R1 --json"
+          - "以会话 F 写 fix.json 并运行 sop-board fix submit --fix N"
+          - "运行 sop-board run prepare --scope shop#B --session S2 --json，得到运行 R2；运行 sop-board env status"
+        expected:
+          - "R1 提交成功，shop#A 登记为通过；提交输出的 product_changed 列出 lib 中被改动的文件"
+          - "第 5 步准备成功，不返回 fix-in-progress；环境按含修复改动的代码重启"
+        forbidden_effects: ["R1 因修复会话改代码而作废或被拒绝提交", "修复已提交后仍拒绝准备"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行", "docs/standard.md#首次执行与人工复核"]
+        evidence_hints: ["两次准备与提交的输出", "fix submit 输出", "env status 输出", "results 表只读查询"]
+      - id: RUN-08-N01
+        polarity: negative
+        negative_type: concurrency
+        title: 另一会话的修复改了代码还没提交时，run prepare 与 run launch 都返回 fix-in-progress，环境保持原样
+        actor: 协调会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 上 shop#X 为失败，shop#A 未执行；环境在运行，记下 env status 的启动时间；没有 prepared 的运行，没有运行中的启动"
+          - "会话 F 已运行 sop-board fix prepare shop#X --session F 得到修复 N，并在 lib 改了一个产品文件（不提交）；修复 N 为 open"
+          - "记录 launches 表与本机运行记录的行数，以及当前的 claude、codex 进程"
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#A --session S1 --json"
+          - "运行 sop-board run prepare --scope shop#A --session S1 --wait 30 --json，记录用时"
+          - "运行 sop-board run launch --scope shop#A --json"
+          - "运行 sop-board env status 与 sop-board launch status，查询 launches 表与本机运行记录的行数，用 ps 查看 claude、codex 进程"
+        expected:
+          - "三条命令都以业务失败退出（退出码 1），error_code 为 fix-in-progress：写明修复 N、会话 F、已改动 1 个产品文件，并给出出路（等它 fix submit 后再准备）"
+          - "带 --wait 的那次立即返回，不排队等待"
+          - "没有新建运行，没有新的启动记录，没有新的 claude 或 codex 进程；环境的启动时间不变"
+        forbidden_effects: ["环境按改到一半的代码重启", "先启动无头会话、到会话里才被拒绝", "修复 N 被放弃或改动"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
+        evidence_hints: ["三条命令的输出与用时", "env status 输出", "launch status 输出", "launches 表与本机运行记录只读查询", "ps 输出"]
+      - id: RUN-08-P02
+        polarity: positive
+        title: 修复还没改代码时不拦，修复会话自己准备不受限，--allow-open-fix 越过并留下记录
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state:
+          - "main 上 shop#X 为失败，shop#A、shop#B 未执行；环境在运行；没有 prepared 的运行"
+          - "会话 F 已运行 sop-board fix prepare shop#X --session F 得到修复 N，还没有改任何文件"
+        steps:
+          - "在 main 运行 sop-board run prepare --scope shop#A --session S1 --json，随后 sop-board run abandon --run <编号>"
+          - "会话 F 在 lib 改一个产品文件（不提交）；以会话 F 运行 sop-board run prepare --scope shop#X --session F --json，随后 sop-board run abandon --run <编号>"
+          - "会话 F 在 lib 再改一行（不提交）后，运行 sop-board run prepare --scope shop#B --session S2 --allow-open-fix --json，得到运行 R；执行者执行 shop#B 并运行 sop-board run submit --run R"
+          - "在工作台查看 shop#B 的历史，查询本机运行记录中 R 的记录"
+        expected:
+          - "第 1 步准备成功：修复 N 还没有改动产品文件"
+          - "第 2 步准备成功：准备的会话就是修复会话"
+          - "第 3 步准备成功，环境按当前代码重启；R 的记录写有越过的修复编号 N，shop#B 的历史显示“准备时修复 #N 进行中”"
+        forbidden_effects: ["修复没有改动文件时返回 fix-in-progress", "修复会话自己的准备被拒绝", "--allow-open-fix 的运行不留下越过记录"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
+        evidence_hints: ["三次准备的输出", "本机运行记录只读查询", "工作台 shop#B 历史截图"]

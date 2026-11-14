@@ -212,14 +212,14 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
 | | `browser release [--identity]` | 真人完成后交还：只释放真人租约，窗口保持打开，之后的运行沿用；见 §6 |
 | | `browser close [--identity]` | 结束浏览器并释放真人租约 |
-| 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S] [--identity I…] [--wait 秒]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
+| 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S] [--identity I…] [--wait 秒] [--allow-open-fix]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
 | | `run submit --run N [--implementer X \| --implemented-by 操作者]` | 见 §5 |
-| | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`） |
-| | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者]` | 由守护进程启动无头执行会话；启动前与 `run prepare` 共用范围核对，`pending` 由守护进程展开为具体场景；`--fix` 启动修复的独立复验 |
+| | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`）；运行目录与已写的结果行保留 |
+| | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者] [--allow-open-fix]` | 由守护进程启动无头执行会话；启动前与 `run prepare` 共用范围核对，`pending` 由守护进程展开为具体场景；`--fix` 启动修复的独立复验；异常退出时接续一次（§5） |
 | | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
 | | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
 | | `mark <键> pass\|fail\|blocked\|changed [--defect 链接] [--note 说明] [--as 姓名]` | 人工复测：通过、不通过、阻塞、需求变更；缺陷链接与说明可选；草稿拒绝 |
-| | `launch status` / `launch stop --launch N` | 最近 20 次启动；停止发 SIGTERM 给进程组 |
+| | `launch status` / `launch stop --launch N` | 最近 20 次启动，各带 `attempts`；停止发 SIGTERM 给进程组，被停止的启动不接续、不收尾 |
 | 修复 | `fix prepare [键…] [--session]`、`fix submit\|close\|abandon [--fix N]` | 见 §8；省略 `--fix` 时取本机本检出最近一个状态相符的修复；别的机器产出的修复返回 `fix-not-local` |
 | 沉淀 | `distill prepare [键…] [--session]`、`distill submit [--report guard.json] [--work N]` | 见 §7 |
 | 编写 | `inbox add <文件> [--kind cases\|sop] [--as]`、`inbox list [--all]`、`inbox show\|done\|reject <编号> [--note]` | 见 §9 |
@@ -250,6 +250,10 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 同一检出可以有多个 prepared 的运行，按身份分开（已定决策 28）：`--identity`（可重复）只为这些身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占。`--scope pending` 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 `scenario-in-run`，写明是哪个运行。
 
+**重复准备**（已定决策 29）：同一会话对同一检出再次 `run prepare`，范围是它已准备的某个运行的子集时（`pending`、`all` 视为相同；有多个时取包含全部指定场景的那个，`pending`、`all` 取最近准备的那个），返回那个运行：输出取自运行目录的 `prepare.json`，与首次相同并带 `resumed: true`。不新建运行，不重新取身份，不重启环境，`--identity`、`--wait` 与 `--allow-open-fix` 不再生效；`--fix` 须与该运行一致。“同一会话”指执行者会话编号相同，或 `SOP_BOARD_LAUNCH` 相同；按后者返回时，运行的执行者改记为这次调用的会话，提交输出的 `sessions` 列出先后执行过的会话。范围超出自己已准备的运行时返回 `scenario-in-run`：每条 problem 写明运行编号、准备它的会话与时间；是本会话自己的运行时写“本会话自己准备的运行”，并给出两条出路（继续执行并 `run submit`，或 `run abandon --run N` 后重新准备）。
+
+**修复中途**（已定决策 29）：下面两个条件同时成立时，`run prepare`（含 `--fix`）与 `run launch` 返回 `fix-in-progress`，不建运行、不启动会话、不动环境：本机本检出有另一会话的 `open` 修复，且当前产品文件与它登记时的清单不同；这次准备要启动或重启环境（环境没在运行，或快照与环境启动时不同）。problem 写明修复编号、修复会话、登记时间、已改动的文件数，以及出路（等它 `fix submit` 后再准备）。`--allow-open-fix` 越过这项检查，运行记录的 `result.allowed_open_fix` 记下修复编号，历史显示“准备时修复 #N 进行中”；`run launch` 把它带进启动会话的准备命令。修复会话自己准备的运行不受限。`--wait` 不为这个条件排队。
+
 准备时经守护进程拉起本检出环境：快照与环境启动时不同则重启，这套环境上还有别的 prepared 运行时等它们结束。`port_step: 0` 时环境由当前检出的 prepared 运行占住；没有 prepared 运行就是空闲，守护进程停掉它、为本检出拉起，输出 `switched_from`；被别的检出占着时返回 `env-busy`。有别的检出在等环境时，占用环境的检出不能开始新的运行，同样返回 `env-busy`。身份被别的运行或真人占着时返回 `browser-busy`；这套环境上有服务被别的运行停着时返回 `env-busy`。
 
 **排队**：带 `--wait <秒>` 时，上面这些情况在本机排队，最多等这么久，轮到了照常准备，超时返回原来的错误码；不带时立即返回。两种情况的错误输出都带 `holder`（占用的检出、运行与身份）与 `queue`（排第几，前面每个等待者的检出、运行、会话与已等秒数）。队列只在守护进程内存里，按到达先后；等待者按会话编号识别，请求结束后 60 秒内同一会话再来，保留原来的位置；看板重启后清空。
@@ -259,6 +263,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | 文件 | 内容 |
 | --- | --- |
 | `prompt.md` | 执行提示词（随包 `run.md`，修复复验附“逐条实际执行问题场景”） |
+| `prepare.json` | 首次准备的输出原文，重复准备时原样返回（另加 `resumed: true`） |
 | `brief.md` | 速查卡：范围计数、入口证据与录制开关、缺失的入口地址、各服务的状态与业务说明及按服务判定未执行与受阻的规则、浏览器问题、前置数据规则、时间上限与等人处理的写法 |
 | `services.json` | 准备时的环境状态、各服务（名称、业务说明、可停、状态，异常退出附日志与末尾）、`not_running`、`missing_address_env` |
 | `scenarios.yaml`、`pending.json` | 本轮场景（带 key、reason）与范围 |
@@ -287,7 +292,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 `not-executed` 行写 finding、不附证据，不登记结果，场景状态不变，留在待执行。独立复验（`--fix`）不接受 `not-executed`。表外字段不合格。
 
-未执行与受阻按性质划分，不看发生在开始前还是执行中（提示词 run.md 与标准第 1 节）：用到的服务本机未搭建或被人停着、缺少入口声明的凭据变量、等人处理的事（真实或未声明账号登录、人机验证、只发到本人设备的验证码、身份使用次数到上限）写 `not-executed`；服务或浏览器异常退出、前置数据准备失败、证据丢失、`browser may not be secure`、入口或观察能力还没建设、需要停外部共享中间件的故障场景写 `blocked`。
+未执行与受阻按性质划分，不看发生在开始前还是执行中（提示词 run.md 与标准第 1 节）：用到的服务本机未搭建或被人停着、缺少入口声明的凭据变量、等人处理的事（真实或未声明账号登录、人机验证、只发到本人设备的验证码、身份使用次数到上限）写 `not-executed`；服务或浏览器异常退出、前置数据准备失败、证据丢失、`browser may not be secure`、入口或观察能力还没建设、需要停外部共享中间件的故障场景写 `blocked`。同一个入口对任何操作都失败、连续挡住 2 条场景时，执行会话中止这个入口的其余场景：这 2 条写 `blocked`，其余写 `not-executed`（finding 写“入口 <名称> 不可用，本轮中止”），并登记一条环境问题（已定决策 29）。
 
 ### 提交规则
 
@@ -317,10 +322,13 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>/output.prompt.md`（目录被占用时顺延后缀）（随包 `launch.md`：先运行 `sop-board run prepare --scope …` 或 `distill prepare …`，按 prompt.md 执行并提交，需要人时 `attention add` 后结束），日志为同目录 `output.jsonl`（实际位置取启动记录的 `log`）。
 - 注入 `SOP_BOARD_LAUNCH`、`SOP_BOARD_CHECKOUT`、`SOP_BOARD_IMPLEMENTER?`。Claude：启动器生成 UUID 作为 `--session-id` 并注入 `SOP_BOARD_SESSION`，缺省参数 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。Codex：`codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check -C <目录>`，会话编号取日志中的 `thread.started`。两者都 `--add-dir` 项目数据目录与数据根目录下的 `evidence` 目录，路径先解析为真实路径；浏览器运行时只读使用。
 - 状态 `running` → `exited`（退出码 0）/`failed`/`stopped`。启动记录与其会话编号就是独立执行的证据；运行通过 `SOP_BOARD_LAUNCH` 关联启动。
+- **接续**（已定决策 29，只对 `run` 类型）：会话进程以非零退出码结束、且启动没有被 `launch stop` 停止时，60 秒后在同一次启动下再起一个会话，最多一次。启动编号、`SOP_BOARD_LAUNCH`、检出与实现者参数不变；会话编号是新的；提示词写入同目录 `output.2.prompt.md`（原提示词加接续段），日志写入 `output.2.jsonl`，启动记录的 `log`、`session`、`pid` 指向最近一次尝试。等待与接续期间状态保持 `running`。每次尝试记在同目录 `attempts.json`：`[{attempt, session, pid, log, started_at, ended_at, exit_code}]`，第一次失败后另记 `retry_at`；`launch status` 与 `run wait` 的输出带 `attempts`。等待期间看板 `restart` 或被强杀后重启，新进程按 `retry_at` 照样发起接续（时间已过就立即发起）。退出码 0 不接续；看板重启后认回的会话取不到退出码，也不接续。间隔取看板进程环境变量 `SOP_BOARD_RETRY_DELAY`（秒，缺省 60），只供验收缩短等待。会话异常退出时，看板结束它所在进程组里还活着的进程，保证接续时只有一个执行会话。
+- **接续段**写明：上一个会话的结束时间与退出码、日志位置；它准备的运行编号与目录（没有就写没有）；再次运行第 1 步的命令会得到同一个运行（`resumed: true`）；`results.jsonl` 里完整的行保留、不重做，最后一行不完整就删掉重做那条场景；先按项目验证技能核对并还原上一个会话执行到一半的场景留下的测试数据，再执行其余场景。
+- **收尾**（已定决策 29，只对 `run` 类型）：启动以 `failed` 结束（接续后仍以非零退出，或接续没能发起），或以 `exited` 结束却有关联的 prepared 运行时，看板放弃这些运行，效果与 `run abandon` 相同（释放身份租约、恢复本轮停着的服务；运行目录、已写的结果行与证据保留；`local_work.result` 记 `abandoned_by: "sop-board"` 与 `launch`）。随后登记一条待人处理：类别“环境问题”，登记人 `sop-board`，`work` 为运行编号（有多个时取第一个，文字里列出全部），`scenarios` 为启动范围，文字含启动编号、结束的原因（接续一次后仍异常退出及两次的退出码 / 正常退出但没有提交运行 / 接续没能发起）、运行编号与日志末尾一行；不写本机日志路径，完整日志在产出机器上用 `launch status` 查看。启动失败而没有准备过运行时同样登记一条，写明没有准备运行。收尾开始前运行已经提交或已由别人放弃的，不归这次收尾处理。先写退出信息与放弃，再登记待人处理；登记失败（例如共享库连不上）不影响放弃，原因写进看板日志与启动的 problem。收尾进行中 `launch status` 带 `finishing: true`，`run wait` 等收尾结束再返回；收尾出错时原因写进 problem、`run wait` 照常返回，看板下次启动时接着收尾。不自动提交结果。被 `launch stop` 停止的启动不收尾，运行保持 prepared。
 - 会话输出由随会话存活的转写进程遮蔽后写进日志，不经守护进程；遮蔽范围不变（已保存的共享库密码）。看板 `restart` 时会话继续运行，新守护进程按进程号与命令行认回，用零信号检查存活；取不到退出码时，产出了运行或沉淀记 `exited`，否则按 `no-work` 处理（已定决策 28）。`stop` 与 SIGTERM 照旧结束会话。
 - 会话准备运行时按提示词带 `--wait`，环境或身份被占着时排队（§5）。
 - `run launch` 在启动前与 `run prepare` 共用范围检查；范围不合格不产生启动记录。指定文件不合格时返回 `scenario-file-invalid`，附文件、字段及行号。`pending`/`all` 只从合格文件选场景，不因其他文件不合格拒绝；prepare 输出及 launch 输出的 `launch` 对象附 `invalid_files`（文件、字段、行号），brief.md 的“未纳入的不合格文件”要求执行会话转述。选出范围为空仍返回 `nothing-to-run`，problems 同时列出不合格文件。交给客户端的目录解析为真实路径；浏览器运行时只读，不授予写权限。
-- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。会话正常退出（`exited`）却没有产生运行或沉淀时，启动公开状态为 `no-work`（未产生运行），本机输出附 `log_tail`；wait 返回 `launch-no-work`、退出码 1。失败的启动保持 `failed`，本机同样附 `log_tail`，wait 返回 `launch-failed`、退出码 1。`exited` 关联工作中存在 `prepared` 或 `abandoned` 时，输出 `unsubmitted` 列出工作编号、类型、状态，problem 写明未提交或已放弃，本机附日志末尾；wait 返回 `launch-unsubmitted`、退出码 1。`failed` 有这些工作时同样列明，错误码仍为 `launch-failed`。不自动提交或放弃工作；其余已结束情况返回成功。
+- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。会话正常退出（`exited`）却没有产生运行或沉淀时，启动公开状态为 `no-work`（未产生运行），本机输出附 `log_tail`；wait 返回 `launch-no-work`、退出码 1。失败的启动保持 `failed`，本机同样附 `log_tail`，wait 返回 `launch-failed`、退出码 1。`exited` 关联工作中存在 `prepared` 或 `abandoned` 时，输出 `unsubmitted` 列出工作编号、类型、状态，problem 写明未提交或已放弃，本机附日志末尾；wait 返回 `launch-unsubmitted`、退出码 1。`failed` 有这些工作时同样列明，错误码仍为 `launch-failed`。`run` 类型的启动按上面的“收尾”自动放弃 prepared 的运行，`unsubmitted` 中这些运行的状态为 `abandoned`，problem 写明“已由看板放弃”和待人处理编号；不自动提交。沉淀启动照旧不自动放弃或提交。其余已结束情况返回成功。
 
 ## 6. 浏览器代理
 
@@ -569,7 +577,8 @@ fixtures:
 | `service-unavailable` | 环境没有运行，或服务当前不是可停启的状态（本机未搭建、异常退出、未上报，或要启动的服务不是由 `env stop` 停下的） |
 | `run-not-prepared` / `run-not-found` | 运行不是 prepared / 不存在 |
 | `nothing-to-run` | 范围为空（`pending` 跳过别的 prepared 运行里的场景后为空也是） |
-| `scenario-in-run` | 指定的场景已在本检出另一个 prepared 运行里；输出写明是哪个运行 |
+| `scenario-in-run` | 指定的场景已在本检出另一个 prepared 运行里；输出写明运行编号、准备它的会话与时间，是本会话自己的运行时给出继续提交或放弃两条出路。同一会话重复准备同一范围不报这个错，返回原运行（`resumed: true`） |
+| `fix-in-progress` | 另一会话的 `open` 修复已改动产品文件，而这次准备要启动或重启环境；输出写明修复编号、会话与已改动文件数。等它 `fix submit`，或确认代码可运行时加 `--allow-open-fix`（HTTP 409） |
 | `scenario-not-found` | 场景键或编号不存在或不唯一 |
 | `draft-not-runnable` | 草稿场景不能执行或复测 |
 | `scope-invalid` | `--fix` 与 `--scope` 同用 |
@@ -587,8 +596,8 @@ fixtures:
 | `fix-validation-required` | 关闭前须独立复验通过 |
 | `fix-commit-required` | 修复改动文件未提交 |
 | `fix-content-changed` | 提交内容与复验时不一致，须重新复验 |
-| `launch-unsubmitted` | 启动正常退出但有关联工作未提交或已放弃，列出工作及本机日志末尾；run wait 退出码 1 |
-| `launch-failed` | 启动失败；本机附日志末尾，run wait 退出码 1 |
+| `launch-unsubmitted` | 启动正常退出但有关联工作未提交或已放弃，列出工作及本机日志末尾；`run` 类型的 prepared 运行已由看板放弃并登记待人处理；run wait 退出码 1 |
+| `launch-failed` | 启动失败（`run` 类型已接续过一次）；本机附日志末尾与 `attempts`，关联的 prepared 运行已由看板放弃并登记待人处理；run wait 退出码 1 |
 | `launch-no-work` | 启动的会话退出但没有产生运行或沉淀；附启动日志末尾 |
 | `scenario-file-invalid` | 场景文件不合格（带行号） |
 | `cases-invalid` / `sop-invalid` / `upload-invalid` / `upload-too-large` | 上传或提交内容不合格 |
