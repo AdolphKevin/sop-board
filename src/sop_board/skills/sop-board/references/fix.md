@@ -5,9 +5,10 @@
 ## 修复（修复会话）
 
 1. `sop-board fix prepare [<场景键> …]`：缺省为当前检出全部失败或受阻的场景。同一检出同时只有一个进行中的修复，返回 `fix-open` 时报告它的编号与会话。
-2. 读输出的 prompt.md 并按其执行：在当前检出改产品代码，写 fix.json。
+2. 读输出的 prompt.md 并按其执行：在当前检出改产品代码，写 fix.json。正在执行的轮次不受你的改动影响；新的一轮要等你 `fix submit` 才能开始，改到可以提交就提交。
 3. `sop-board fix submit --fix <编号>`。非产品问题登记到待人处理，转告使用者。
 4. 产品问题进入待复验：运行 `sop-board run launch --fix <编号>`，由守护进程启动一个未参与修复的新会话复验，再 `sop-board run wait`。修复会话自己复验只记为实现者自检，修复因此不能关闭。
+   - 返回 `launch-running` 时，本检出正在跑别的启动（通常是协调会话的一轮场景）：`sop-board run wait --launch <那个编号>` 等它结束再发起。`sop-board launch status` 里那个启动的 `scope` 正是本修复的问题场景时，它就是协调会话发起的复验：转述它的结果，不再重复发起。
 
 ## 复验（另一会话）
 

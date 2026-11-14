@@ -134,7 +134,24 @@ class Gate:
         return APIError(409, code, [dict(field='environment' if code == 'env-busy' else 'identity', problem=problem)],
                         holder=holder, queue=queue, position=position)
 
-    def acquire(self, checkout, run, identities, *, session, pid, wait, digest, url=None):
+    def check_open_fix(self, checkout, session, *, allow_open_fix=False):
+        """准备前与分配前共用；拒绝时不排队，不改变环境。返回越过的修复编号。"""
+        from . import fixes
+        from .cli import Context
+        context = Context(self.app.project, self.app.store, checkout)
+        fix = fixes.changed_open(context, session)
+        if fix is None:
+            return None
+        environment = self.app.envs.environment(checkout)
+        if environment.alive() and environment.digest == fix['product_digest']:
+            return None
+        if allow_open_fix:
+            return fix['id']
+        raise APIError(409, 'fix-in-progress', [dict(field='fix', problem=
+            f"修复 #{fix['id']}（会话 {fix['session']}，登记于 {fix['created_at']}）已改动 {fix['changed_files']} 个产品文件，"
+            '本次准备需要启动或重启环境；等它 fix submit 后再准备；确认当前代码可以运行时加 --allow-open-fix')])
+
+    def acquire(self, checkout, run, identities, *, session, pid, wait, digest, url=None, allow_open_fix=False):
         """为运行 run 取得环境与身份；返回 dict(environment, browsers, switched_from)。"""
         from .daemon import alive
         deadline = time.monotonic() + max(0, wait)
@@ -142,6 +159,13 @@ class Gate:
             self.expire()
             waiter = next((w for w in self.queue if w.session == session), None)
             while True:
+                try:
+                    allowed = self.check_open_fix(checkout, session, allow_open_fix=allow_open_fix)
+                except APIError:
+                    if waiter in self.queue:
+                        self.queue.remove(waiter)
+                    self.cond.notify_all()
+                    raise
                 verdict = self.check(checkout, run, identities, digest, waiter)
                 if verdict is None:
                     if waiter in self.queue:
@@ -173,7 +197,7 @@ class Gate:
                 self.granted.pop(run, None)
                 self.cond.notify_all()
             raise
-        return dict(environment=environment, browsers=browsers, switched_from=switched)
+        return dict(environment=environment, browsers=browsers, switched_from=switched, allowed_open_fix=allowed)
 
     def switch_to(self, checkout):
         """port_step 为 0 时：别的检出的环境没有运行在用，就停掉它，把环境换给 checkout。返回原来的检出名。"""
@@ -238,6 +262,13 @@ def attach(app):
 def _register():
     from .server import json_response, route
 
+    @route('POST', '/local/run/check', 'token')
+    def check(app, request):
+        checkout = app.checkout(request.json_field('checkout'))
+        allowed = app.gate.check_open_fix(checkout, request.json_field('session'),
+                                         allow_open_fix=bool(request.json_field('allow_open_fix')))
+        return json_response(dict(ok=True, allowed_open_fix=allowed))
+
     @route('POST', '/local/run/acquire', 'token')
     def acquire(app, request):
         checkout = app.checkout(request.json_field('checkout'))
@@ -247,7 +278,8 @@ def _register():
         identities = request.json_field('identities') or []
         result = app.gate.acquire(checkout, run, identities, session=request.json_field('session') or f'run:{run}',
                                   pid=request.json_field('pid'), wait=int(request.json_field('wait') or 0),
-                                  digest=request.json_field('digest'), url=request.json_field('url'))
+                                  digest=request.json_field('digest'), url=request.json_field('url'),
+                                  allow_open_fix=bool(request.json_field('allow_open_fix')))
         return json_response(dict(ok=True, **result))
 
 

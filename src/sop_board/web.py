@@ -120,7 +120,7 @@ def history_entry(db, store, book, row, *, local, stopped=None, project=None, av
         item.update(label=label, independence=INDEPENDENCE.get(row['independence'], '独立性未声明'), run=work.get('local_id'),
                     snapshot=row['product_digest'][:12] if row['product_digest'] else None,
                     product_changed=json.loads(row['product_changed']), submitted_by=work.get('submitted_by'),
-                    implemented_by=row['implemented_by'])
+                    implemented_by=row['implemented_by'], allowed_open_fix=work.get('allowed_open_fix'))
         names_ = ((stopped or {}).get(row['work']) or {}).get(scenarios.key(row['file'], row['scenario']), [])
         if names_ and project is not None:
             from .envs import stopped_labels
@@ -286,11 +286,10 @@ def launch_api(app, request):
 
 @route('GET', '/api/runs', 'lan')
 def runs_api(app, request):
-    from .launcher import public
+    from .launcher import state
     context = context_for(app, request.query.get('checkout'))
     with app.store.local() as db:
-        launches = [public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM local_work WHERE launch=?', (row['id'],))],
-                           local=request.local)
+        launches = [state(db, row, local=request.local)[0]
                     for row in db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 50', (context.checkout.id,))]
         works = []
         for row in db.execute("SELECT * FROM local_work WHERE checkout=? AND kind IN ('run','distill') ORDER BY id DESC LIMIT 50",

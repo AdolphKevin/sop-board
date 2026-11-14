@@ -919,6 +919,7 @@
       entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
       stoppedServices(entry),
       entry.note ? el('p', {class: 'note'}, '说明：' + entry.note) : null,
+      entry.allowed_open_fix ? el('p', {class: 'muted'}, `准备时修复 #${entry.allowed_open_fix} 进行中`) : null,
       entry.defect ? el('p', {}, '缺陷：', /^https?:/.test(entry.defect) ? el('a', {href: entry.defect, target: '_blank', rel: 'noopener'}, entry.defect) : entry.defect) : null,
       entry.product_changed?.length ? el('p', {class: 'muted'}, '执行期间产品变化（只作版本记录）：' + entry.product_changed.slice(0, 5).join('、')) : null,
       entry.evidence?.length ? el('details', {class: 'event-evidence'}, el('summary', {}, `证据 ${entry.evidence.length} 份`), gallery(entry.evidence)) : null);

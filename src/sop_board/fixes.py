@@ -145,6 +145,28 @@ def changed(base, now_files):
     return gitops.changed_between(base, now_files)
 
 
+def changed_open(context, executor):
+    """本机本检出另一会话的 open 修复；只比较登记基线以来的产品文件。"""
+    store, checkout = context.store, context.checkout
+    with store.records() as db:
+        rows = db.all("SELECT id, session, created_at FROM fixes WHERE product=? AND machine=? AND checkout=? AND status='open'",
+                      (store.product, store.machine['id'], checkout.name))
+    snapshot = None
+    with store.local() as db:
+        for row in rows:
+            if executor and row['session'] == executor:
+                continue
+            local = db.execute('SELECT base_files FROM local_fixes WHERE fix=? AND product=? AND checkout=?',
+                               (row['id'], store.product, checkout.id)).fetchone()
+            if local is not None:
+                if snapshot is None:
+                    snapshot = gitops.snapshot(checkout.paths, context.project.exclusions(guards.test_exclusions(context)), files=True)
+                paths = changed(loads(local['base_files']), snapshot['files'])
+                if paths:
+                    return dict(row, changed_files=len(paths), product_digest=snapshot['product_digest'])
+    return None
+
+
 def submit(context, fix_id):
     fix = load(context, fix_id)
     checkout = require_local(context, fix)

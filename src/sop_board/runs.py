@@ -138,7 +138,7 @@ def invalid_files(found):
     return [dict(p, file=str(info['path'])) for info in found['files'].values() for p in info['problems']]
 
 
-def validate_scope(context, requested, fix=None):
+def validate_scope(context, requested, fix=None, *, session=None, launch=None):
     """准备与启动共用的只读前置检查。"""
     from .cli import scene_board
     found, snapshot, derived = scene_board(context)
@@ -151,7 +151,7 @@ def validate_scope(context, requested, fix=None):
     if not scope:
         raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')] + invalid_files(found))
     with context.store.local() as db:
-        scope = without_taken(scope, taken_scenarios(db, context.checkout), requested, fix)
+        scope = without_taken(scope, taken_scenarios(db, context.checkout), requested, fix, session=session, launch=launch)
     if not scope:
         raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')]
                        + invalid_files(found))
@@ -159,42 +159,94 @@ def validate_scope(context, requested, fix=None):
 
 
 def taken_scenarios(db, checkout, exclude=None):
-    """本检出别的 prepared 运行里的场景 → 运行编号（已定决策 28：同一检出可以有多个运行，按身份分开）。"""
+    """本检出别的 prepared 运行里的场景 → 运行记录。"""
     taken = {}
-    for row in db.execute("SELECT id, scope FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'", (checkout.id,)):
+    for row in db.execute("SELECT * FROM local_work WHERE checkout=? AND kind='run' AND status='prepared' ORDER BY id", (checkout.id,)):
         if row['id'] != exclude:
             for item in json.loads(row['scope'] or '[]'):
-                taken.setdefault(item['scenario'], row['id'])
+                taken.setdefault(item['scenario'], dict(row))
     return taken
 
 
-def without_taken(scope, taken, requested, fix=None):
+def same_session(work, session, launch):
+    return bool((session and work['session'] == session) or (launch and work['launch'] and work['launch'] == launch))
+
+
+def without_taken(scope, taken, requested, fix=None, *, session=None, launch=None):
     """pending 与 all 跳过别的运行里的场景；明确指定的场景（含修复的问题场景）在别的运行里时返回 scenario-in-run。"""
     if fix is None and requested in (['pending'], ['all']):
         return [item for item in scope if item['scenario'] not in taken]
     clashes = [item['scenario'] for item in scope if item['scenario'] in taken]
     if clashes:
-        raise APIError(409, 'scenario-in-run', [dict(field='scope', problem=f"{key} 已在本检出的运行 #{taken[key]} 里；"
-                                                     f"等它提交或放弃，或换别的场景") for key in clashes])
+        problems = []
+        for key in clashes:
+            work = taken[key]
+            sessions = json.loads(work['result'] or '{}').get('sessions') or [work['session']]
+            own = same_session(work, session, launch)
+            owner = '本会话自己准备的运行' if own else '本检出的运行'
+            way = (f"继续执行并 run submit，或 run abandon --run {work['id']} 后重新准备" if own
+                   else '等它提交或放弃，或换别的场景')
+            problems.append(dict(field='scope', problem=f"{key} 已在{owner} #{work['id']} 里（由会话 {sessions[0]} "
+                                 f"于 {work['created_at']} 准备）；{way}"))
+        raise APIError(409, 'scenario-in-run', problems)
     return scope
 
 
-def prepare(context, requested, *, session=None, fix_id=None, launch=None, identities=None, wait=0):
+def resume_prepared(context, requested, executor, launch, fix_id):
+    """只返回有首次准备输出、属于调用会话且覆盖本次范围的运行；不重写运行目录。"""
+    with context.store.local_tx() as db:
+        candidates = [dict(row) for row in db.execute(
+            "SELECT * FROM local_work WHERE checkout=? AND kind='run' AND status='prepared' ORDER BY created_at DESC, id DESC",
+            (context.checkout.id,)) if same_session(row, executor, launch) and row['fix'] == fix_id and row['dir']]
+        keys = None
+        for work in candidates:
+            path = Path(work['dir']) / 'prepare.json'
+            if not path.is_file():
+                continue
+            if fix_id is None and requested not in (['pending'], ['all']):
+                if keys is None:
+                    if all('#' in value for value in requested):
+                        keys = set(requested)
+                    else:
+                        found = scenarios.scan(context.checkout.scenarios_dir(context.project), set(context.project.entries))
+                        try:
+                            keys = set(scenarios.resolve(requested, found['scenarios']))
+                        except ValueError:
+                            return None  # 由通常的范围检查给出具体错误。
+                if not keys <= {item['scenario'] for item in json.loads(work['scope'])}:
+                    continue
+            output = json.loads(path.read_text(encoding='utf-8'))
+            if work['session'] != executor:
+                result = json.loads(work['result'] or '{}')
+                sessions = result.setdefault('sessions', [work['session']])
+                if executor not in sessions:
+                    sessions.append(executor)
+                db.execute('UPDATE local_work SET session=?, result=? WHERE id=?', (executor, dumps(result), work['id']))
+            return dict(output, session=executor, resumed=True)
+    return None
+
+
+def prepare(context, requested, *, session=None, fix_id=None, launch=None, identities=None, wait=0, allow_open_fix=False):
     project, checkout, store = context.project, context.checkout, context.store
     launch = launch or (int(os.environ['SOP_BOARD_LAUNCH']) if os.environ.get('SOP_BOARD_LAUNCH', '').isdigit() else None)
     executor = session_id(session)
+    resumed = resume_prepared(context, requested, executor, launch, fix_id)
+    if resumed is not None:
+        return resumed
     operator = config.require_operator()
     fix = None
     if fix_id is not None:
         from . import fixes
         fix = fixes.for_verify(context, fix_id, executor)
-    found, snapshot, derived, scope = validate_scope(context, requested, fix)
+    found, snapshot, derived, scope = validate_scope(context, requested, fix, session=executor, launch=launch)
     scenes = found['scenarios']
+    checked = daemon.call(project, 'POST', '/local/run/check', dict(
+        checkout=checkout.name, session=executor, allow_open_fix=allow_open_fix))
     snapshot = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)
     from .checkouts import branch_of
     # 登记运行与占住场景在同一个本机事务里：并行准备的两个会话不会拿到同一个场景。
     with store.local_tx() as db:
-        scope = without_taken(scope, taken_scenarios(db, checkout), requested, fix)
+        scope = without_taken(scope, taken_scenarios(db, checkout), requested, fix, session=executor, launch=launch)
         if not scope:
             raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')])
         cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,implementer,fix,launch,dir,scope,branch,"
@@ -216,12 +268,21 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
         chosen = sorted(set(identities)) if identities else declared
         acquired = daemon.call(project, 'POST', '/local/run/acquire', dict(
             checkout=checkout.name, run=work_id, identities=chosen, session=executor, pid=os.getpid(), wait=wait,
-            digest=snapshot['product_digest']), timeout=max(0, wait) + 1800)
+            digest=snapshot['product_digest'], allow_open_fix=allow_open_fix), timeout=max(0, wait) + 1800)
         environment, leased = acquired['environment'], acquired['browsers']
         browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
         browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
         directory = workdirs.create(project.data / 'runs', work_id)
         materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix, invalid_files(found))
+        # 部分就绪：adapter 输出就绪即可执行；各场景再按实际服务状态判断。
+        output = dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
+                      outputs=dict(results=str(directory / 'results.jsonl')), identities=sorted(leased),
+                      switched_from=acquired.get('switched_from'),
+                      session=executor, scope=scope, browser_problems=browser_problems, invalid_files=invalid_files(found),
+                      environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
+                      services=public_services(environment.get('services', [])), not_running=environment.get('not_running', []),
+                      missing_address_env=environment.get('missing_address_env', {}))
+        (directory / 'prepare.json').write_text(json.dumps(output, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     except BaseException:
         with store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
@@ -230,18 +291,14 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
             shutil.rmtree(directory, ignore_errors=True)
         raise
     product = {k: v for k, v in snapshot.items() if k != 'files'}
+    result = dict(sessions=[executor])
+    allowed = acquired.get('allowed_open_fix') or checked.get('allowed_open_fix')
+    if allowed is not None:
+        result['allowed_open_fix'] = allowed
     with store.local_tx() as db:
-        db.execute('UPDATE local_work SET dir=?, snapshot=?, product_digest=? WHERE id=?',
-                   (str(directory), dumps(product), snapshot['product_digest'], work_id))
-    # 部分就绪：adapter 输出就绪即可执行；没在运行的服务与缺失的入口地址只列出，由执行会话按场景判断。
-    return dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
-                outputs=dict(results=str(directory / 'results.jsonl')), identities=sorted(leased),
-                switched_from=acquired.get('switched_from'),
-                session=executor, scope=scope, browser_problems=browser_problems, invalid_files=invalid_files(found),
-                environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
-                services=public_services(environment.get('services', [])),
-                not_running=environment.get('not_running', []),
-                missing_address_env=environment.get('missing_address_env', {}))
+        db.execute('UPDATE local_work SET dir=?, snapshot=?, product_digest=?, result=? WHERE id=?',
+                   (str(directory), dumps(product), snapshot['product_digest'], dumps(result), work_id))
+    return output
 
 
 def public_services(services):
@@ -520,9 +577,11 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
             files_of[key].append((Path(name).name, sha, store.evidence_path(sha).stat().st_size))
     not_executed = [dict(scenario=key, finding=row['finding'], fingerprint=prepared[key]['fingerprint'])
                     for key, row in rows.items() if key in scope and key not in voided and row.get('status') == 'not-executed']
-    summary = dict(recorded=[], voided=voided, not_executed=not_executed, product_changed=product_changed,
+    summary = json.loads(work['result'] or '{}')
+    summary.update(recorded=[], voided=voided, not_executed=not_executed, product_changed=product_changed,
                    browser_crashes=sorted(crashed), independence=independence, submitted_by=operator,
                    implementer=implemented_by or implementer)
+    summary.setdefault('sessions', [executor])
     interrupted = interruptions(directory)
     if interrupted:
         summary['interruptions'] = interrupted
@@ -680,18 +739,27 @@ def crash_findings(context, work, prepared):
     return result
 
 
-def abandon(context, run_id):
+def abandon(context, run_id, *, by=None, launch=None):
     work = load_work(context, run_id)
-    if work['status'] != 'prepared':
+    result = json.loads(work['result'] or '{}')
+    continuing = (by is not None and work['status'] == 'abandoned' and result.get('abandoned_by') == by
+                  and result.get('launch') == launch)
+    if work['status'] != 'prepared' and not continuing:
         reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}")
+    operator = by or config.operator() or work['operator']
+    result['abandoned_by'] = operator
+    if launch is not None:
+        result['launch'] = launch
     # 放弃的运行只在本机：不写业务记录。
     with context.store.local_tx() as db:
-        db.execute("UPDATE local_work SET status='abandoned', ended_at=? WHERE id=?", (now(), run_id))
+        db.execute("UPDATE local_work SET status='abandoned', ended_at=COALESCE(ended_at, ?), result=? WHERE id=?",
+                   (now(), dumps(result), run_id))
         db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
-    services = finish_services(context, work, reason='放弃', operator=config.operator() or work['operator'])
-    if services.get('service_events'):
+    services = finish_services(context, work, reason='放弃', operator=operator)
+    if services:
+        result.update(services)
         with context.store.local_tx() as db:
-            db.execute('UPDATE local_work SET result=? WHERE id=?', (dumps(dict(abandoned_by=config.operator() or work['operator'], **services)), run_id))
+            db.execute('UPDATE local_work SET result=? WHERE id=?', (dumps(result), run_id))
     return dict(ok=True, run=run_id, status='abandoned', **services)
 
 

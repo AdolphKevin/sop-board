@@ -428,7 +428,8 @@ def cmd_run(args):
         scope = args.scope or ['pending']
         if args.fix is not None and args.scope:
             return fail('scope-invalid', [dict(field='scope', problem='--fix 复验的范围由修复决定，不能再写 --scope')], 2)
-        emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix, identities=args.identity, wait=args.wait))
+        emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix, identities=args.identity, wait=args.wait,
+                          allow_open_fix=args.allow_open_fix))
     elif args.action == 'submit':
         problem = implementer_problem(args)
         if problem:
@@ -449,7 +450,8 @@ def cmd_run(args):
             scope = [scenarios.key(p['file'], p['scenario']) for p in json.loads(fix['problems'])]
         emit(daemon.call(context.project, 'POST', '/local/launch', dict(
             checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
-            implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机')))
+            implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机',
+            allow_open_fix=args.allow_open_fix)))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
     return 0
@@ -486,9 +488,9 @@ def wait(context, *, launch=None, run=None, timeout=1800):
                 row = db.execute('SELECT * FROM launches WHERE id=?', (launch,)).fetchone()
                 if row is None:
                     return fail('launch-not-found', [dict(field='launch', problem=f'启动不存在：#{launch}')], 2)
-                runs_ = [dict(r) for r in db.execute('SELECT id, kind, status, session, result FROM local_work WHERE launch=?', (launch,))]
-                done = row['status'] != 'running'
-                value = dict(launch=launcher.public(row, runs_, local=True),
+                launched, runs_ = launcher.state(db, row, local=True)
+                done = row['status'] != 'running' and not launched.get('finishing')
+                value = dict(launch=launched,
                              results=[dict(run=r['id'], status=r['status'], result=json.loads(r['result']) if r['result'] else None) for r in runs_])
             else:
                 row = db.execute('SELECT * FROM local_work WHERE id=?', (run,)).fetchone()
@@ -526,8 +528,7 @@ def cmd_launch(args):
         return 0
     with context.store.local() as db:
         rows = db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 20', (context.checkout.id,)).fetchall()
-        items = [launcher.public(row, [dict(r) for r in db.execute('SELECT id, kind, status, session FROM local_work WHERE launch=?', (row['id'],))],
-                                 local=True) for row in rows]
+        items = [launcher.state(db, row, local=True)[0] for row in rows]
     emit(dict(ok=True, checkout=context.checkout.name, launches=items))
     return 0
 
@@ -831,6 +832,8 @@ def parser():
                    help='prepare：只为这些身份取得浏览器（可重复）；同一环境上的多个运行按身份分开。缺省取本轮 Web 入口的全部身份')
     p.add_argument('--wait', type=int, default=0, metavar='秒',
                    help='prepare：环境或身份被占着时在本机排队，最多等这么久（缺省 0：立即返回 env-busy / browser-busy）')
+    p.add_argument('--allow-open-fix', action='store_true',
+                   help='prepare / launch：确认当前代码可以运行时越过 fix-in-progress，并记录进行中的修复编号')
     p.add_argument('--run', type=int, help='submit / abandon / wait：运行编号')
     p.add_argument('--implementer', help='submit / launch：实现者会话编号；不填记为独立性未声明')
     p.add_argument('--implemented-by', dest='implemented_by', metavar='操作者',

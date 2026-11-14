@@ -31,6 +31,7 @@ $verify_note
 
 - **not-executed**（未执行：本机暂时不具备，补齐或换一台机器就能执行）：场景用到的服务本机未搭建或被人停着；缺少入口声明的凭据变量；等人处理的事，即真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码、身份使用次数到上限。写 `{"scenario", "status": "not-executed", "finding": 缺什么}`，不附证据。等人处理的事另用 `sop-board attention add` 登记（identity-limit 已自动登记）。未执行不登记结果、不改变场景状态，场景留在待执行范围。
 - **blocked**（受阻：意外故障，或全队都不具备的能力）：服务或浏览器异常退出（finding 附日志末尾，并 `sop-board attention add --kind 环境问题` 登记）；前置数据准备失败；证据丢失；出现 browser may not be secure；入口或观察能力还没建设；需要停外部共享中间件或不可停服务的故障场景。finding 写明原因。
+- **入口整体不可用**：同一个入口对任何操作都失败（登录不了，页面与接口都报错），连续挡住 2 条场景时，中止这个入口的其余场景。这 2 条写 blocked，finding 附现象与日志末尾；其余写 not-executed，finding 写“入口 <名称> 不可用，本轮中止”；用 `sop-board attention add --kind 环境问题` 登记一条。别的入口的场景照常执行，最后照常提交。修复复验不接受 not-executed：中止后不提交，在最后一条答复里写明现象。
 - 中途停止本轮时，没执行的场景写 not-executed，finding 写停止的原因。
 
 ## 依赖故障的场景

@@ -133,6 +133,7 @@ class Book:
             except ValueError:
                 row['snapshot'] = {}
             row['submitted_by'] = summary.get('submitted_by') or row['operator']
+            row['allowed_open_fix'] = summary.get('allowed_open_fix')
             self.works[row['id']] = row
             for item in summary.get('not_executed') or []:
                 file, _, scenario = str(item.get('scenario', '')).partition('#')
