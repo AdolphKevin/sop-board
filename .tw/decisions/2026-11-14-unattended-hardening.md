@@ -30,7 +30,7 @@ related: ["lessons/2026-11-14-fix-parallel-with-rounds.md", "lessons/2026-11-13-
 - 接续只救得了暂时的故障。持续几小时的网络或额度问题，接续后仍失败，要靠待人处理和协调会话稍后重发。
 - 环境起得来但产品不可用、又没有 `open` 修复的情况（例如库里缺表），仍要等执行会话试过 2 条才中止。
 - 看板 `restart` 之后认回的会话取不到退出码，异常退出时不接续，只做收尾。
-- 待人处理是共享的业务记录，文字不带本机日志路径（rules/shared-records-without-local-paths.md），只带日志末尾一行；完整日志在产出机器上用 `launch status` 查看。
+- 待人处理是共享的业务记录，文字不带本机日志路径（rules/shared-records-without-local-paths.md），只带日志末尾一行（最多 300 字，其中的本机路径遮蔽）；完整日志在产出机器上用 `launch status` 查看。
 - 收尾的进度记在 `attempts.json`：中途看板重启会接着做；收尾出错时 `run wait` 照常返回并写明原因。
 
 ## 放弃过的做法

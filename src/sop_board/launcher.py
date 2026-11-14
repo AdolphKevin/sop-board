@@ -20,10 +20,11 @@ import uuid
 from string import Template
 
 from .errors import APIError
-from .redaction import redact
+from .redaction import hide_local_paths, redact
 from .store import dumps, now
 
 KINDS = ('run', 'distill')
+LAST_LINE_LIMIT = 300   # 写进待人处理的日志末尾一行的最大字数
 
 
 def read_attempts(row):
@@ -430,7 +431,8 @@ class Launcher:
                 write_attempts(row['log'], attempts)
             return
         # 日志已遮蔽，再按当前遮蔽规则处理一次；固定末尾行，重启后登记的文字保持相同。
-        cleanup.setdefault('last_line', next(iter(reversed(log_tail(row['log']).splitlines())), '（日志为空）'))
+        last = next(iter(reversed(log_tail(row['log']).splitlines())), '（日志为空）')
+        cleanup.setdefault('last_line', last if len(last) <= LAST_LINE_LIMIT else last[:LAST_LINE_LIMIT] + '…')
         cleanup.setdefault('attentions', [])
         with self.guard:
             write_attempts(row['log'], attempts)
@@ -451,6 +453,8 @@ class Launcher:
             text = (f'启动 #{launch_id} {reason}；' + (f'运行 {names} 已由看板放弃；' if names else '没有准备运行；')
                     + f"涉及场景：{'、'.join(json.loads(row['scope']))}；日志末尾一行：{cleanup['last_line']}"
                     + f'；完整日志在产出机器上用 sop-board launch status 查看')
+            # 待人处理是共享的业务记录：日志末尾一行里的本机路径一并遮蔽。
+            text = hide_local_paths(text.encode(), [self.project.data, *checkout.paths.values()]).decode()
             item = dict(run=number)
             try:
                 with self.store.records_tx() as db:

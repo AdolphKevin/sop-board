@@ -19,10 +19,12 @@
 #   版本 9 按 docs/design.md 已定决策 29（使用者 2026-11-14 决定）修订，由起草该决策的会话在实现前写成：新增 RUN-01-P03（同一会话重复准备返回同一个运行）、
 #   RUN-01-N02（范围超出自己的运行）、RUN-04-N05（会话异常退出后接续）、RUN-04-N06（接续也异常退出后收尾）、RUN-05-N03（入口整体不可用时中止本轮）
 #   与 RUN-08（修复中途不开始新的一轮）；RUN-01-N01 的报错写明准备运行的会话；RUN-04-N04 由“看板不替它放弃”改为看板自动放弃并登记待人处理，仍不自动提交。
+#   版本 10 按决策 29 独立验收（2026-11-14）的发现修订：RUN-08-P02 的起点原来是环境在运行，第 1 步不需要启动环境，“修复没改文件时不拦”不论实现对错都会通过；
+#   改为起点环境没有运行，第 1 步必须启动环境。
 
 metadata:
   requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景；同一会话重复准备返回同一个运行；执行会话异常退出时由看板接续一次，最终失败或留下未提交的运行时看板放弃运行并登记待人处理，不自动提交；另一会话的修复已改动代码而未提交时不开始新的一轮；入口整体不可用连续挡住两条场景时执行会话中止本轮"
-  version: 9
+  version: 10
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -855,15 +857,16 @@ sops:
         priority: P1
         verify: cli
         initial_state:
-          - "main 上 shop#X 为失败，shop#A、shop#B 未执行；环境在运行；没有 prepared 的运行"
+          - "main 上 shop#X 为失败，shop#A、shop#B 未执行；没有 prepared 的运行"
           - "会话 F 已运行 sop-board fix prepare shop#X --session F 得到修复 N，还没有改任何文件"
+          - "环境没有运行（已运行 sop-board env down），所以下一次准备要启动环境"
         steps:
-          - "在 main 运行 sop-board run prepare --scope shop#A --session S1 --json，随后 sop-board run abandon --run <编号>"
+          - "在 main 运行 sop-board run prepare --scope shop#A --session S1 --json，查看 sop-board env status，随后 sop-board run abandon --run <编号>"
           - "会话 F 在 lib 改一个产品文件（不提交）；以会话 F 运行 sop-board run prepare --scope shop#X --session F --json，随后 sop-board run abandon --run <编号>"
           - "会话 F 在 lib 再改一行（不提交）后，运行 sop-board run prepare --scope shop#B --session S2 --allow-open-fix --json，得到运行 R；执行者执行 shop#B 并运行 sop-board run submit --run R"
           - "在工作台查看 shop#B 的历史，查询本机运行记录中 R 的记录"
         expected:
-          - "第 1 步准备成功：修复 N 还没有改动产品文件"
+          - "第 1 步准备成功并启动了环境：修复 N 还没有改动产品文件"
           - "第 2 步准备成功：准备的会话就是修复会话"
           - "第 3 步准备成功，环境按当前代码重启；R 的记录写有越过的修复编号 N，shop#B 的历史显示“准备时修复 #N 进行中”"
         forbidden_effects: ["修复没有改动文件时返回 fix-in-progress", "修复会话自己的准备被拒绝", "--allow-open-fix 的运行不留下越过记录"]
