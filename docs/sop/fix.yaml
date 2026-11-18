@@ -6,9 +6,11 @@
 #   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 FIX-03（修复记录共享，修复操作只在产出它的机器和检出上进行）。
 #   “双机项目”见 setup.yaml 文件头。
 
+#   版本 5 由未参与实现的审核方按 docs/design.md 已定决策 30 第二段（使用者 2026-11-18 决定）修订：核对逐条裁决可查、提交才汇总复验，以及复验继续拒绝未执行。
+
 metadata:
   requirement: "sop-board v10：失败场景由会话在当前检出修复，另一会话以 run prepare --fix 独立复验（实现者自动取修复会话），提交后 fix close 关闭；测试同学标注不通过的场景在修复关闭后回到待复测；多人协作时修复记录共享，修复操作只在产出它的机器和检出上进行"
-  version: 4
+  version: 5
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -27,6 +29,12 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（修复记录共享，修复操作只在产出机器上进行）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第二段：A 不空转、B 执行可见"
+      version: "2026-11-18"
+      confirmed_by: "blur.yin"
+    - ref: "docs/reference.md 已定决策 30 第二段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["fix", "retest", "independence"]
 
 sops:
@@ -48,12 +56,12 @@ sops:
         initial_state: ["main 上 shop#X 为失败", "没有进行中的修复"]
         steps:
           - "在 app 目录新开 Claude Code 会话 F，请求“修复 shop#X”；会话运行 fix prepare shop#X，在 main 检出改产品代码，运行 fix submit"
-          - "新开 Codex 会话 V，请求“复验修复 N”；会话运行 run prepare --fix N，经演示项目入口执行 shop#X 并 run submit"
+          - "新开 Codex 会话 V，请求“复验修复 N”；会话运行 run prepare --fix N，经演示项目入口执行 shop#X 并 run verdict；查看结果与修复状态后 run submit"
           - "开发者审核并 git commit 修复改动，运行 sop-board fix close"
           - "在工作台查看 shop#X 的状态与历史，只读查询 fixes 表"
         expected:
           - "复验运行的实现者自动为会话 F，执行者为会话 V，独立性为独立验收"
-          - "shop#X 的复验结果为通过，带本次执行的新证据"
+          - "shop#X 的复验结果在裁决后即可查看，为通过并带本次的新证据；修复仍为 submitted，运行提交后才进入 verified"
           - "提交内容与复验时一致，fix close 成功，修复记录为关闭；shop#X 为通过（待沉淀）"
         forbidden_effects: ["复验沿用此前的结果或证据代替实际执行", "复验需要手工声明实现者", "修复会话在其他检出改代码"]
         refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#独立性（取代交接仪式）", "docs/design.md#验证", "使用者 2026-11-10 对场景集待确认问题的答复 第 9 条"]
@@ -93,6 +101,24 @@ sops:
           - "修复记录仍未关闭"
         forbidden_effects: ["用未经复验的内容关闭修复"]
         refs: ["docs/design.md#核心概念（只有这些）", "使用者 2026-11-10 对场景集待确认问题的答复 第 9 条"]
+
+      - id: FIX-01-N03
+        polarity: negative
+        negative_type: interrupted
+        title: 复验中入口预检失败或实际缺前置条件时不能把未执行作为复验
+        actor: 独立执行会话
+        priority: P0
+        verify: cli
+        initial_state: ["修复 N 为 submitted，包含实际 API 场景；演示项目已启用 api 入口探测并可设置故障"]
+        steps:
+          - "使 api 在预检时不健康，执行 run prepare --fix N；恢复探测后重新准备"
+          - "复验期间通过真实入口核对到本机临时缺少服务条件；写有 cause 的未执行行，分别尝试 run verdict 与 run submit"
+          - "将该草稿留档并从结果文件移走，尝试无行提交；核对运行、结果和修复状态"
+        expected:
+          - "第一次以 entry-unhealthy 拒绝并无运行；恢复探测后可准备复验"
+          - "未执行行均被 result-invalid 拒绝，无行提交以 fix-validation-required 拒绝；修复仍为 submitted，运行仍为 prepared，未登记未执行或通过"
+        forbidden_effects: ["把仅一部分范围作为完整复验", "复验尚无结论却更新修复状态"]
+        refs: ["docs/reference.md#提交规则", "docs/reference.md#准备"]
 
   - id: FIX-02
     title: 测试同学标注不通过后修复关闭，场景回到待复测

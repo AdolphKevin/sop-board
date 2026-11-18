@@ -19,9 +19,11 @@
 #   - “只搭商城”：同一份生成结果只登记 app、lib 两个仓库（数据目录 $T，项目 demo）。services 声明相同，stock 的状态为本机未搭建。
 #   - 演示 env.py 的两个验收开关（取自启动守护进程时的环境）：DEMO_STOCK_IGNORE_STOP=1 时忽略对 stock 的停止请求；DEMO_STOCK_CRASH=1 时库存服务启动后立即异常退出。
 
+#   版本 6 由未参与实现的审核方按 docs/design.md 已定决策 30 第二段（使用者 2026-11-18 决定）修订：新增即时探测与本机活动快照验收，核对检出变量、运行留痕、超时与离线读取。
+
 metadata:
   requirement: "sop-board v10：守护进程按检出运行 adapter 环境；port_step 不为 0 时各检出端口错开、可同时验证且互不串扰；为 0 时环境在检出之间轮流使用：由 prepared 运行占住，空闲时自动换给等待的检出，被占着时返回写明占用者与排队情况的 env-busy，带 --wait 时在本机排队；adapter 声明并上报各服务的状态，环境不要求所有服务都在运行；运行中可用 env stop|start 停启声明为可停的服务，要求这套环境上只有这一个运行，提交或放弃运行时自动恢复；stop 正常停止看板，restart 换守护进程而不打断进行中的工作"
-  version: 5
+  version: 6
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -40,6 +42,12 @@ metadata:
     - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用"
       version: "2026-11-13"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第二段：A 不空转、B 执行可见"
+      version: "2026-11-18"
+      confirmed_by: "blur.yin"
+    - ref: "docs/reference.md 已定决策 30 第二段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["environment", "checkout", "ports", "lease", "services", "fault", "queue", "restart"]
 
 sops:
@@ -542,3 +550,81 @@ sops:
           - "看板进程号不变"
         forbidden_effects: ["在沙箱环境里启动新的看板", "停掉原来的看板"]
         refs: ["docs/design.md#进程与入口", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+
+  - id: ENV-08
+    title: 主动检查当前检出的入口健康
+    actor: 执行会话
+    entry: "sop-board env probe [入口…] [--run N]、env status、run prepare"
+    scenarios:
+      - id: ENV-08-P01
+        polarity: positive
+        title: 按检出的实际地址探测并在指定运行留痕，未声明的入口照常执行
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state: ["演示项目启用 api 探测，web 暂不声明；main 与 wt1 端口不同；wt1 已准备只含 shop#A 的运行 R"]
+        steps:
+          - "在 main 运行 env up，再运行 env probe；在 main 中运行 env probe api api --run R"
+          - "仅在 wt1 放置 api 探测故障标记；在运行 R 中载入 run.env 后运行 env probe api，随后去掉标记重试"
+          - "比较两个检出的探测标记、端口和 R 的 probes.jsonl；核对结果登记。准备 shop#W 并经浏览器实际执行"
+        expected:
+          - "main 的探测按入口排序，api 健康、web 为 undeclared；两次提到 api 的显式请求只执行一次，使用 R 所属 wt1 的地址、目录和端口"
+          - "故障时即时探测退出 1，返回 entry-unhealthy 与输出末尾；恢复后同一命令退出 0。R 中保留准备与后续三次即时探测，能核对各自时间和结果"
+          - "探测没有替 R 写场景结果；web 无声明仍可正常准备和执行"
+        forbidden_effects: ["使用 main 地址替 wt1 探测", "即时探测重启环境、改变身份租约或登记场景结论"]
+        refs: ["docs/design.md 已定决策 30 第二段 A", "docs/reference.md#adapter-契约"]
+      - id: ENV-08-N01
+        polarity: negative
+        negative_type: invalid-input
+        title: 环境未就绪、未知入口和探测超时都有明确反馈
+        actor: 执行会话
+        priority: P1
+        verify: cli
+        initial_state: ["隔离演示项目启用 api 探测、超时设 1 秒，web 无声明；本检出环境已停止"]
+        steps:
+          - "依次运行 env probe api、env probe web 与 env probe api unknown，记录退出码和环境状态"
+          - "启动环境，放置本检出 api 探测慢响应标记，再运行 env probe api，核对输出、探测进程与环境"
+        expected:
+          - "api 返回 env-not-ready，web 返回 undeclared 并退出 0，含 unknown 的请求返回 entry-unknown，三次均未启动环境或执行探测"
+          - "慢响应以 entry-unhealthy 退出 1，指出 api 超过 1 秒，退出码字段为 null；探测进程已结束，环境仍就绪"
+        forbidden_effects: ["未验证全部入口就先运行 api", "超时改写环境状态或结束商城进程"]
+        refs: ["docs/reference.md#adapter-契约"]
+
+  - id: ENV-09
+    title: 本机查询项目各检出的活动
+    actor: 开发者
+    entry: "sop-board activity [--json]、run、retest、distill"
+    scenarios:
+      - id: ENV-09-P01
+        polarity: positive
+        title: 在共享库断开时仍能看到各检出的运行、启动、守护和沉淀登记
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state: ["双机项目 A，有 main 和 wt1，已登录可用执行客户端；按手册准备需要明确等待窗口的演示守护命令，已取得沉淀所需独立通过"]
+        steps:
+          - "看板就绪后查看 activity 和 activity --json；在 main 开始运行，在 wt1 发起正在等待的启动，核对快照中的编号与进度"
+          - "暂时停止共享库后再次查询 activity；恢复共享库并结束上述运行和启动"
+          - "经 retest 运行手册中的守护命令，在真实命令等待时读取 activity；在另一轮 distill submit 实际运行检查期间重复。两步结束后再次读取"
+        expected:
+          - "空闲时退出 0；各检出有活动时退出 1，正确列出运行、当前场景、启动编号及刷新时刻。连接共享库失败期间仍能正确显示"
+          - "守护与沉淀实际执行时分别出现在对应检出的 retest、distill，结束即清除；最后所有数组为空，activity 再退出 0"
+          - "activity 输出与同一时段文件内容一致，无命令文本、路径或凭据"
+        forbidden_effects: ["轮询 activity 修改状态或要求数据库连接", "只因准备沉淀却没提交就报告正在登记", "活动还在时报告空闲"]
+        refs: ["docs/design.md 已定决策 30 第二段 B", "docs/reference.md#本机活动文件"]
+      - id: ENV-09-N01
+        polarity: negative
+        negative_type: interrupted
+        title: 文件缺失、过期或进程已退出时不上报空闲
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state: ["用隔离数据目录，未启动看板；另有同项目名的有效活动文件副本，复制材料按验证手册准备"]
+        steps:
+          - "文件缺失时运行 activity。分别使用当前时刻但 PID 已退出的副本、PID 仍活着但时间戳过期的副本和格式损坏的副本，重复查询"
+          - "恢复正常启动看板；只读记录新文件与 activity 输出，随后用 sop-board stop 停止并再查"
+        expected:
+          - "每种不可用快照均退出 2、state 为 unknown，原因能区分缺失、进程不在、过期及格式无效"
+          - "正常启动发表新 PID 及更新时间；正常停止移除快照，随后为 unknown"
+        forbidden_effects: ["由旧空快照报告 idle", "命令自动启动或唤醒看板", "命令回落到连接数据库"]
+        refs: ["docs/reference.md#本机活动文件"]

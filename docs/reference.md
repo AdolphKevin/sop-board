@@ -1,6 +1,6 @@
 # Flow Board 参考手册
 
-Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验收工具。场景写在产品仓库的 YAML 文件里，Agent 会话经 CLI 准备、执行、提交；看板守护进程负责网页、按检出启停产品环境、Chrome for Testing 浏览器代理和本机无头会话。本手册只描述现行行为。验收口径以 [业务验收与质量改进标准](standard.md) 为准，搭建步骤见 `sop-board guide`，Web 驱动见 [playwright-acceptance.md](playwright-acceptance.md)。
+Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验收工具。场景写在产品仓库的 YAML 文件里，Agent 会话经 CLI 准备、执行、逐条裁决并提交；看板守护进程负责网页、按检出启停产品环境、Chrome for Testing 浏览器代理和本机无头会话。本手册只描述现行行为。验收口径以 [业务验收与质量改进标准](standard.md) 为准，搭建步骤见 `sop-board guide`，Web 驱动见 [playwright-acceptance.md](playwright-acceptance.md)。
 
 ## 1. 概念
 
@@ -15,8 +15,9 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 | 场景键 | `<文件名去掉 .yaml>#<场景编号>`。场景编号在全部文件中唯一时，命令可只写编号 | 计算得出 |
 | 指纹 | `initial_state`、`steps`、`expected`、`forbidden_effects` 四要素的 sha256（换行统一为 `\n`）。改标题、优先级等不改变指纹 | 计算得出 |
 | 产品快照 | 检出各仓库当前内容（含未提交、未跟踪文件）的摘要，记录取证时的代码版本，不参与状态判定。场景目录、`snapshot_exclude`、`regression.yaml` 引用的测试文件不计入 | 计算得出 |
-| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者；提交后记下未执行清单及原因、服务停启记录。运行编号由本机分配 | 本机 `local_work.dir` 指向的目录（缺省 `runs/<编号>/`，占用时顺延后缀）；提交时写进业务记录库 `work`（机器标识 + 本机库标识 + 本机编号唯一），停启随之写进 `work.services` |
-| 未执行 | 某次运行里某场景因本机暂时不具备条件没有执行：谁、什么时候、缺什么。不是结果，不参与状态推导，场景详情与报告显示最近一次 | 运行摘要（`work.result.not_executed`） |
+| 运行 | 一次场景执行或复验，绑定检出、准备时的快照、执行者与实现者；逐条登记通过与失败，受阻、跳过和未执行暂记本机，提交时登记并汇总服务停启。运行编号由本机分配 | 本机 `local_work.dir` 指向的目录（缺省 `runs/<编号>/`，占用时顺延后缀）；首次登记时写进业务记录库 `work`（机器标识 + 本机库标识 + 本机编号唯一），停启随之写进 `work.services` |
+| 未执行 | 某次运行里某场景因本机暂时不具备条件没有执行：谁、什么时候、缺什么及原因类别。不参与状态推导，场景详情与报告显示最近一次 | 运行摘要（`work.result.not_executed`） |
+| 卡住 | 当前场景指纹有适用的未解决待人处理，自动运行暂时略过；显示状态仍按原规则推导 | 业务记录库 `attention`，见 §9 |
 | 结果 | 运行中某场景的结论与证据，绑定指纹，记录准备时的快照、产出机器、检出与分支（场景文件所在仓库的当前分支）。通过与失败是结论，受阻与跳过是非结论。证据文件按 sha256 存在产出机器上。从旧看板导入的结果 `product_digest` 为空，即代码版本未记录 | `results`（kind=agent）；证据文件在数据根目录 `evidence/`，索引在 `evidence` 表 |
 | 标注 | 人工复测结论（通过 / 不通过 / 阻塞 / 需求变更，可附缺陷链接、说明、复测人），都是结论，记下标注时看板的机器、检出与分支 | `results`（kind=manual） |
 | 处置 | 当前分支的验收安排：由 Agent 验（缺省）、由人验收（`human`）、搁置（`shelved`）。由人验收或搁置须登记原因与署名；可以撤销 | 业务记录库 `dispositions`，按产品、文件、场景编号及分支保存 |
@@ -64,12 +65,14 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 - 单条处置对象为 `{kind, reason, by, at, branch}`（`at` 为带时区的 ISO 8601 时间）。`dispositions` 与 `status --json` 的 `disposed` 共用同一结构：按场景键排序的 `[{key, status, kind, reason, by, at, branch}]`，`status` 是当前场景状态；无记录时为 `[]`。设、撤销的输出数组也按场景键排序。
 - `status --json` 的顶层 `total` 仍是当前检出全部合格场景数；`counts` 中各状态和 `queues` 只含没有本分支处置的场景。始终返回 `counts.disposed: {human, shelved}`，两项之和加各状态计数等于 `total`。文字版显示“由人验收 N；搁置 M”，另列每条处置的键、状态、原因、署名和时间。待沉淀、待人工复核及草稿审阅仍按各自规则计数。
 
+卡住独立于处置与状态。`status --json` 顶层始终返回 `held`（无记录为 `[]`），每项为 `{key, fingerprint, cause, finding, attention, suspect_defect}`，每个适用条目一项，疑似缺陷优先，其余按场景键、待人处理编号升序。文字版列出同样的类别、缘由与编号。卡住本身不影响 `total`、`counts`、`queues`、守护与徽标；同时有处置的场景仍按处置规则计数，也可出现在 `held`。
+
 ### 按场景查询
 
 两个命令按当前项目和检出读仓库场景及业务记录，无需启动看板，输出本机 JSON。筛选与查询使用原有状态推导和历史可见规则，有处置的场景仍可用其当前状态查到。
 
-- `scenario show <场景键>`（可用唯一裸编号）返回 `{ok, checkout, branch, scenario, history}`。找不到或编号不唯一返回 `scenario-not-found`；显式指向不合格文件返回 `scenario-file-invalid`。单条 `scenario` 含下文清单项的全部字段，并加 `reason`（状态原因）、`badges: {distill, review, draft_review}`（前两项为布尔，`draft_review` 为 §4 所列的审阅状态或 null）、`guard: {valid, reason}`（守护有效性及原因，有效时原因可为 null）、`other_dispositions`（其他分支的处置对象数组，按分支排序）。
-- `history` 统一列出 Agent 结果（`kind: agent`）、人工标注（`manual`）和本机本检出的守护运行（`guard`），依 `at` 表示的时间倒序，同一时间按业务记录序号倒序。结果和标注沿用本节历史的分支及指纹选取规则；守护运行可列当前与旧指纹，但仅限本机本检出。每条含 `kind, id, at, status, independence, executor, branch, machine, commits, product_digest, fingerprint, current, finding, note`。结果和标注取实际执行或标注时间，守护取运行时间；`current` 表示指纹与当前一致。Agent 的 `executor` 为会话，人工为标注人，守护为操作者；未署名为 null。`machine` 为产出机器显示名，无显示名用机器标识；`branch` 无分支为 null。独立性沿用 §5，仅适用于 Agent；人工及守护的 `independence` 为 null。守护的 `finding` 取运行原因。
+- `scenario show <场景键>`（可用唯一裸编号）返回 `{ok, checkout, branch, scenario, history}`。找不到或编号不唯一返回 `scenario-not-found`；显式指向不合格文件返回 `scenario-file-invalid`。单条 `scenario` 含下文清单项的全部字段，并加 `reason`（状态原因）、`badges: {distill, review, draft_review}`（前两项为布尔，`draft_review` 为 §4 所列的审阅状态或 null）、`guard: {valid, reason}`（守护有效性及原因，有效时原因可为 null）、`other_dispositions`（其他分支的处置对象数组，按分支排序）、`held`（该场景当前适用的待人处理，见 §1）。
+- `history` 统一列出 Agent 结果（`kind: agent`）、人工标注（`manual`）和本机本检出的守护运行（`guard`），依 `at` 表示的时间倒序，同一时间按业务记录序号倒序。结果和标注沿用本节历史的分支及指纹选取规则；守护运行可列当前与旧指纹，但仅限本机本检出。每条含 `kind, id, at, status, independence, executor, branch, machine, commits, product_digest, fingerprint, current, finding, note, cause, suspect_defect`；只有已登记的 Agent 结果可能有原因类别和疑似缺陷。结果和标注取实际执行或标注时间，守护取运行时间；`current` 表示指纹与当前一致。Agent 的 `executor` 为会话，人工为标注人，守护为操作者；未署名为 null。`machine` 为产出机器显示名，无显示名用机器标识；`branch` 无分支为 null。独立性沿用 §5，仅适用于 Agent；人工及守护的 `independence` 为 null。守护的 `finding` 取运行原因。
 - `commits` 为取证时的仓库别名 → 完整提交哈希，只有 Agent 结果有：取结果关联运行的准备快照。人工标注与守护运行只记录了产品快照摘要，`commits` 为 null，不为它们新增存储，查询时也不用当前检出或关联 Agent 运行的提交补填。每条另带 `product_digest`（取证时的产品快照摘要，没有记录时为 null），可用来比较两条记录是否出自同一份代码。
 - `scenario list [--status 状态] [--file 文件] [--since YYYY-MM-DD] [--ref 引用] [--text 文字]` 返回 `{ok, checkout, branch, scenarios}`，按场景键排序。每个选项至多指定一个值，多个条件须同时满足。缺省列当前检出的全部合格场景（含草稿）；不合格文件排除，显式指定该文件时返回 `scenario-file-invalid`；给出不存在的文件或没有匹配项时返回空数组。每条为 `{key, title, status, latest_result, disposition, refs}`。`latest_result` 为当前指纹可见的最近一条 Agent 结果（按业务序号）的 `{at, independence}`，没有时为 null；`disposition` 为当前分支处置对象或 null；`refs` 无引用时为 `[]`。
 - `--status` 取本节状态键，`--file` 取不带 `.yaml` 的文件名，`--ref` 按完整引用匹配，`--text` 按大小写不敏感的字面子串匹配标题或任一条步骤、预期；空白文字、无效状态或无效日期为参数错误（退出码 2）。`--since` 从所给日期在本机时区的零点起（含零点，与页面显示时间用同一时区），要求可见历史里至少有一条 Agent 结果或人工标注达到该时间，含旧指纹；守护运行与未执行记录不算。
@@ -111,6 +114,7 @@ sop-board check
 | `skill` | 是 | 项目验证技能目录名，位于 `<数据目录>/skills/<名称>/SKILL.md`；须有含非空 `name`、`description` 的 YAML 文件头，每个入口名须出现在某个 `## ` 二级标题中；技能目录内不能有符号链接 |
 | `entries` | 是 | 入口名 → 入口声明，至少一个（见下表） |
 | `adapter` | 是 | 见下文；至少要有 `env` |
+| `scenario_timeout` | 否 | 1～86400 的整数秒，缺省 900，见 §5“执行进度” |
 | `snapshot_exclude` | 否 | 别名 → 仓内相对路径数组，不计入产品快照 |
 | `fixtures` | 否 | 前置数据配方（见 §9） |
 | `shared_database` | 否 | 多人共享验收记录时的共享库 `{host, port（缺省 5432）, dbname, user, password（可选）}`；password 须为非空单行文字，省略时由 libpq 使用 `~/.pgpass` 或 `PGPASSFILE`。含密码的配置及上一份副本权限为 600。不写时业务记录在本机 `board.sqlite3`，见 §12 |
@@ -124,6 +128,8 @@ sop-board check
 | `observe`、`evidence` | 必填，非空文字数组 |
 | `address_env` | 入口地址的环境变量名，值来自 adapter 的 ready 行 |
 | `credential_env` | 凭据变量名数组。只写名称，取值从守护进程/会话环境读，输出与日志按取值脱敏 |
+| `probe` | 可选的非空 argv 数组，每个元素为非空字符串；相对数据目录执行，见下文 |
+| `probe_timeout` | 可选，须同时声明 `probe`；1～3600 的整数秒，缺省 10 |
 | `driver` | 辅助技能目录名。Web 入口缺省为随包 `playwright-acceptance`（`SOP_BOARD_SKILLS_DIR` 下同名技能可覆盖）；其他技能在 `<数据目录>/skills/` 或 `SOP_BOARD_SKILLS_DIR`（缺省 `~/.agents/skills`）中查找 |
 | `web_evidence` | 仅 Web，`{video: bool, trace: bool}`，缺省都开 |
 | `identities` | 仅 Web，身份数组：`id`（小写编号，不能是 `default`）、`label`（对应场景 actor）、`account_env?`、`code?`（`mailbox/backend/manual`，缺省 manual）、`limits?`（`logins_per_day`、`codes_per_hour`、`codes_per_day` 正整数）、`real?`（真实账号，只由人登录）。未声明时只有 `default` |
@@ -155,6 +161,10 @@ sop-board check
 
 另外注入 `adapter.worktree` 为该检出返回的 `env`，以及守护进程环境中的凭据变量；继承环境里其他 `SOP_*` 变量被去掉。
 
+**入口探测**：每个入口自行提供只读探测命令。启动方式同 `adapter.env`（数据目录的工作目录及可执行文件解析、不经 shell）；使用相同的检出变量、凭据与工作树变量，再注入本次环境 ready 行合法的变量，同名地址以就绪环境决定的入口地址为准。守护进程按入口名排序逐个运行，对每次探测独立计时。退出码 0 为健康；非零、信号结束、无法启动或超时为不健康，超时后结束这次探测的进程组。报告取合并输出的末尾最多 10 行、合计最多 2000 字，按凭据取值遮蔽；没有输出时给出退出码、信号、启动失败或超时原因。共享记录和内网输出另遮蔽本机路径与凭据变量名。
+
+`sop-board env probe [入口…] [--run N]` 用当前检出已就绪的环境即时执行，缺省核对全部入口，重复入口只执行一次。先核对所有入参，再运行；未知入口返回 `entry-unknown`。带 `--run` 时取该运行的检出并在返回前追加一批结果到运行目录；未给参数时取 `SOP_BOARD_RUN`，没有则不关联运行，无需先准备运行。只准关联 prepared 的运行。用显式 `--run` 可跨检出查看，当次探测的入口可超出当前运行范围。该命令不启动或切换环境、不取身份；有探测命令而环境未就绪时返回 `env-not-ready`，不执行命令。无声明的入口直接列为 `undeclared`，也不要求环境就绪。输出 `{ok, checkout, run, probes}`（无运行时 `run: null`）；每项 `{entry, status, at, duration_ms, exit_code, reason}`，`status` 为 `healthy|unhealthy|undeclared`，未执行命令的时间长度和退出码为 null，未正常退出的退出码为 null，健康或无声明的原因可为 null。任一项不健康时带 `entry-unhealthy` 和逐入口 `problems`，退出 1；其余成功退出 0。即时探测本身不登记场景结果。
+
 **服务契约**（声明了 `services` 时；没声明的 adapter 只有整体就绪与否，`services` 为空）：
 
 | 文件 | 写入方 | 内容与含义 |
@@ -183,7 +193,7 @@ sop-board check
 
 ## 3. 守护进程与访问范围
 
-`sop-board serve [项目] [--port 8787] [--lan]` 在前台运行一个项目的守护进程，可在终端或 agent 会话中启动。它负责网页、各检出的 adapter 环境、浏览器代理、守护测试运行与无头会话启动器。启动时写 `<数据目录>/daemon.json`（pid、端口、URL、内网地址）与 `daemon.token`（权限 0600），清理上次遗留的环境进程组，认回有界面的浏览器、清理遗留的无头浏览器，保留核对不通过的有界面窗口、清空各检出的服务状态目录、把遗留的运行中启动记为 failed；收到 SIGINT/SIGTERM 时停掉全部环境、无头浏览器和会话启动，输出保留的有界面浏览器后删除状态文件。同一项目已在运行时拒绝再启动。
+`sop-board serve [项目] [--port 8787] [--lan]` 在前台运行一个项目的守护进程，可在终端或 agent 会话中启动。它负责网页、各检出的 adapter 环境、浏览器代理、守护测试运行与无头会话启动器。启动时写 `<数据目录>/daemon.json`（pid、端口、URL、内网地址）与 `daemon.token`（权限 0600），清理上次遗留的环境进程组，认回有界面的浏览器、清理遗留的无头浏览器，保留核对不通过的有界面窗口、清空各检出的服务状态目录、认回或收尾遗留的启动；收到 SIGINT/SIGTERM 时停掉全部环境、无头浏览器和会话启动，输出保留的有界面浏览器后删除状态文件。同一项目已在运行时拒绝再启动。
 
 停止与重启用命令（已定决策 28）：
 
@@ -203,6 +213,20 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 写入（POST/PUT/DELETE）有 `Origin` 头时须与 Host 同源；有正文时须为 `application/json`，正文上限 64 MiB。非回环访问返回 `403 local-only`。
 
 **内网遮蔽**：对非回环连接，除 `/assets/` 外的所有响应（含 zip 证据内的文本文件与响应头）都把凭据取值替换掉、隐藏凭据变量名，并把数据目录、登记仓库与各检出路径替换为 `<本机路径>`。接口本身也不向内网返回会话编号、执行者/实现者、运行目录、启动日志与命令；报告里执行者显示为“Agent 会话”；未预期错误只返回异常类型。
+
+### 本机活动文件
+
+守护进程在本项目数据目录原子替换 `activity.json`（UTF-8、权限 0600），进入可服务状态后发布，活动状态变化时刷新，且至多每隔 2 秒写一次心跳。内容为 `{version: 1, project, pid, updated_at, checkouts}`；每个未移除的检出有一项 `{checkout, launches, runs, retest, distill}`，按检出名排序。`launches` 为仍在启动、执行、接续等待或收尾的启动编号；`runs` 为 `[{run, progress}]`（已准备运行，进度同 §5）；`retest`、`distill` 为当前经守护进程实际执行的守护与沉淀登记的活动编号数组，活动编号由该进程自 1 递增分配，仅与其 PID 合用。各数组按对应编号升序，无活动为 `[]`。`retest --dry-run` 与只准备但尚未提交的沉淀不算正在执行。文件只含上述本机信息，不含地址、命令行、凭据与证据内容。启动或重启时先认回进行中的工作，完成前不发布可判空闲的快照；正常停止移除自己的文件。
+
+`sop-board activity [--json]` 按通用规则识别项目，读该文件并核对其格式、项目名、更新时间及进程号是否存活，不读状态库或业务记录库，不请求守护进程。JSON 为 `{ok, project, state, reason, snapshot}`；格式正确时 `snapshot` 带文件原文，可供查看最近一次活动，缺失或无效时为 null。`ok` 在 idle 与 busy 时为 true，`reason` 为 null；unknown 时 `ok: false` 并给出原因。文字版写明状态、原因、快照时间与活动编号。更新时间超过 10 秒或比本机时间快 10 秒以上视为过期。退出码供脚本使用：
+
+| 退出码 | `state` | 含义 |
+| --- | --- | --- |
+| 0 | `idle` | 文件新鲜、守护进程存活，整个项目所有检出活动数组均为空 |
+| 1 | `busy` | 文件新鲜、守护进程存活，至少一项活动仍在进行 |
+| 2 | `unknown` | 无法识别项目，或文件缺失、无法读取、格式不支持、已过期或守护进程已退出；`reason` 写明原因 |
+
+文件只反映读取时可见的快照，不为调用方预留空闲时间；安排修改热更新代码前用退出码 0 核对，并协调在这段时间内别开始新运行。
 
 ## 4. 命令一览
 
@@ -229,6 +253,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `checkout create <名称> [--repo 别名]... [--from ref]` | 名称规则同检出名、不能是 main；`--repo` 只为这些仓库建 worktree；日志 `<数据目录>/checkouts/<名称>.log` |
 | | `checkout remove <名称>` | 环境须先停；main 不能移除；记录标为已移除，槽位释放 |
 | 环境 | `env up\|down\|restart\|status [--all]` | 经守护进程启停或重启当前检出环境；`status --all` 列出全部检出。输出 `state`、`address_env`、`variables`（ready 行的全部变量）、`services`（名称、业务说明、可停、状态、`stop_requested`，异常退出附 `log` 与 `log_tail`）、`not_running`、`missing_address_env` |
+| | `env probe [入口…] [--run N]` | 即时核对入口并按指定运行留痕；见 §2 |
 | | `env stop\|start <服务> [--run N]` | 运行取 `--run`，其次 `SOP_BOARD_RUN`；本检出有多个 prepared 运行又没指明时返回 `run-ambiguous`。只在本检出有 prepared 运行时可用（`run-required`），且这套环境上只有这一个 prepared 运行（`env-shared`，列出其他运行）；有服务被停着时别的运行要用这套环境就排队。只对 `stoppable` 的服务；等状态变为已停止或运行中才返回（`service-timeout`），停启记进该运行（`service_events`），提交或放弃时自动恢复。已在目标状态时返回 `changed: false`，不记录。运行之外恢复环境用 `env restart` |
 | 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
 | | `browser status [--identity]` | 各身份浏览器：`port` 为实际调试端口（运行中的，或最近一次启动所用的）、`default_port` 为缺省端口、`alive`、`endpoint`（运行中时）、持有者、最近一次交给的检出（`last_checkout`）与崩溃记录；守护进程未运行时只给运行时信息 |
@@ -236,13 +261,16 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `browser release [--identity]` | 真人完成后交还：只释放真人租约，窗口保持打开，之后的运行沿用；见 §6 |
 | | `browser close [--identity]` | 结束浏览器并释放真人租约 |
 | 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S] [--identity I…] [--wait 秒] [--allow-open-fix]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
+| | `run begin <键> [--run N]` / `run verdict <键> [--run N] [--implementer X \| --implemented-by 操作者]` | 开始计时 / 逐条裁决；见 §5 |
 | | `run submit --run N [--implementer X \| --implemented-by 操作者]` | 见 §5 |
-| | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`）；运行目录与已写的结果行保留 |
+| | `run abandon --run N` | 放弃并释放浏览器租约，自动恢复本轮停着的服务（输出 `restored`、`service_events`）；已登记的结论保留；暂记裁决、结果行与证据留在运行目录，见 §5 |
 | | `run launch [--scope …] [--fix N] [--implementer X \| --implemented-by 操作者] [--allow-open-fix] [--runner codex\|claude [--model 模型] [--effort 强度]]` | 由守护进程启动无头执行会话；启动前共用范围核对；代理参数只影响此次启动及其接续（§5） |
 | | `run wait [--launch N \| --run N] [--timeout 1800]` | 等启动结束或运行离开 prepared；缺省为本检出最近一次启动；`0` 不限时 |
 | | `retest [--scenario 键…] [--dry-run]` | 见 §7 |
 | | `mark <键> pass\|fail\|blocked\|changed [--defect 链接] [--note 说明] [--as 姓名]` | 人工复测：通过、不通过、阻塞、需求变更；缺陷链接与说明可选；草稿拒绝 |
-| | `launch status` / `launch stop --launch N` | 最近 20 次启动，各带 `attempts`；停止发 SIGTERM 给进程组，被停止的启动不接续、不收尾 |
+| | `launch status` / `launch stop --launch N` | 最近 20 次启动，各带 `attempts` 与关联运行进度；停止发 SIGTERM 给进程组，被停止的启动不接续、不收尾 |
+| | `launch stats [--launch N]… [--since YYYY-MM-DD]` | 本机启动与逐场景耗时及结果统计；见 §5 |
+| | `activity [--json]` | 只读本项目活动文件，供查看看板是否空闲；见 §3 |
 | 场景 | `scenario show <键>` / `scenario list [--status] [--file] [--since] [--ref] [--text]` | 查询当前状态、处置和历史，见 §1 |
 | | `disposition set <键…> --kind human\|shelved --reason 原因` / `disposition clear <键…>` / `disposition list` | 设置、撤销、查询当前分支处置，见 §1 |
 | 修复 | `fix prepare [键…] [--session]`、`fix submit\|close\|abandon [--fix N]` | 见 §8；省略 `--fix` 时取本机本检出最近一个状态相符的修复；别的机器产出的修复返回 `fix-not-local` |
@@ -268,16 +296,16 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 | `--scope` | 包含 | 原因 |
 | --- | --- | --- |
-| `pending`（缺省） | 未执行、待复测、失败、受阻、跳过且本分支无处置的非草稿场景 | 未执行 `new`；守护未通过导致的待复测 `guard-failed`，修复关闭导致的为 `rerun`；失败/受阻/跳过 `failed` |
-| `all` | 本分支无处置的全部非草稿场景 | `rerun` |
+| `pending`（缺省） | 未执行、待复测、失败、受阻、跳过且本分支无处置、当前未卡住的非草稿场景 | 未执行 `new`；守护未通过导致的待复测 `guard-failed`，修复关闭导致的为 `rerun`；失败/受阻/跳过 `failed` |
+| `all` | 本分支无处置、当前未卡住的全部非草稿场景 | `rerun` |
 | 键或编号 | 指定场景；含草稿则 `draft-not-runnable` | 同 pending 的映射，其余 `rerun` |
 | `--fix N` | 修复的问题场景 | `rerun` |
 
-点名场景、`--fix N` 和工作台「AI 重跑此场景」视为明确指定，照常执行，仍须满足原有资格与占用检查。新准备的输出与 `run launch` 的 `launch` 对象都含 `dispositions`，结构同 §1 的处置列表，只列本次已选中且本分支有处置的场景（自动范围因此为 `[]`）；`brief.md` 按条写明种类与原因。自动范围过滤后为空返回 `nothing-to-run`。范围在启动展开或准备成功时确定；后续处置变动不取消已选的场景，重复准备仍返回原输出。
+点名场景、`--fix N` 和工作台「AI 重跑此场景」视为明确指定，照常执行，仍须满足原有资格与占用检查。新准备的输出与 `run launch` 的 `launch` 对象都含 `dispositions`，结构同 §1 的处置列表，只列本次已选中且本分支有处置的场景（自动范围因此为 `[]`）；`brief.md` 按条写明种类与原因。准备与启动的范围输出另带 `held`（同 §1，只列这次点名命中的条目），`brief.md` 提示原因、待处理编号及疑似缺陷。自动过滤后为空返回 `nothing-to-run`，带 `held` 列出被剔除的卡住项。启动展开时冻结候选场景，准备成功时冻结可执行范围；后续处置与待人处理变动不取消已选的场景，重复准备仍返回原输出。
 
 同一检出可以有多个 prepared 的运行，按身份分开（已定决策 28）：`--identity`（可重复）只为这些身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占。`--scope pending` 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 `scenario-in-run`，写明是哪个运行。
 
-**重复准备**（已定决策 29）：同一会话对同一检出再次 `run prepare`，范围是它已准备的某个运行的子集时（`pending`、`all` 视为相同；有多个时取包含全部指定场景的那个，`pending`、`all` 取最近准备的那个），返回那个运行：输出取自运行目录的 `prepare.json`，与首次相同并带 `resumed: true`。不新建运行，不重新取身份，不重启环境，`--identity`、`--wait` 与 `--allow-open-fix` 不再生效；`--fix` 须与该运行一致。“同一会话”指执行者会话编号相同，或 `SOP_BOARD_LAUNCH` 相同；按后者返回时，运行的执行者改记为这次调用的会话，提交输出的 `sessions` 列出先后执行过的会话。范围超出自己已准备的运行时返回 `scenario-in-run`：每条 problem 写明运行编号、准备它的会话与时间；是本会话自己的运行时写“本会话自己准备的运行”，并给出两条出路（继续执行并 `run submit`，或 `run abandon --run N` 后重新准备）。
+**重复准备**（已定决策 29）：同一会话对同一检出再次 `run prepare`，范围是它已准备的某个运行的候选范围（可执行范围加上探测排除项）的子集时（`pending`、`all` 视为相同；有多个时取包含全部指定场景的那个，`pending`、`all` 取最近准备的那个），返回那个运行：输出取自运行目录的 `prepare.json`，与首次相同并带 `resumed: true`。不新建运行，不重新取身份，不重启环境，`--identity`、`--wait` 与 `--allow-open-fix` 不再生效；`--fix` 须与该运行一致。“同一会话”指执行者会话编号相同，或 `SOP_BOARD_LAUNCH` 相同；按后者返回时，运行的执行者改记为这次调用的会话，提交输出的 `sessions` 列出先后执行过的会话。范围超出自己已准备的运行时返回 `scenario-in-run`：每条 problem 写明运行编号、准备它的会话与时间；是本会话自己的运行时写“本会话自己准备的运行”，并给出两条出路（继续执行并 `run submit`，或 `run abandon --run N` 后重新准备）。
 
 **修复中途**（已定决策 29）：下面两个条件同时成立时，`run prepare`（含 `--fix`）与 `run launch` 返回 `fix-in-progress`，不建运行、不启动会话、不动环境：本机本检出有另一会话的 `open` 修复，且当前产品文件与它登记时的清单不同；这次准备要启动或重启环境（环境没在运行，或快照与环境启动时不同）。problem 写明修复编号、修复会话、登记时间、已改动的文件数，以及出路（等它 `fix submit` 后再准备）。`--allow-open-fix` 越过这项检查，运行记录的 `result.allowed_open_fix` 记下修复编号，历史显示“准备时修复 #N 进行中”；`run launch` 把它带进启动会话的准备命令。修复会话自己准备的运行不受限。`--wait` 不为这个条件排队。
 
@@ -285,13 +313,17 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 **排队**：带 `--wait <秒>` 时，上面这些情况在本机排队，最多等这么久，轮到了照常准备，超时返回原来的错误码；不带时立即返回。两种情况的错误输出都带 `holder`（占用的检出、运行与身份）与 `queue`（排第几，前面每个等待者的检出、运行、会话与已等秒数）。队列只在守护进程内存里，按到达先后；等待者按会话编号识别，请求结束后 60 秒内同一会话再来，保留原来的位置；看板重启后清空。
 
+**准备时入口探测**：取本轮候选场景的入口，在本检出环境就绪后、分配身份前探测。已准备的同一运行直接复用首次探测结果。按环境排队及切换的规则保留这套环境，保证直到完成准备前入口地址不会换给别的检出；准备失败清掉本次临时占用。未声明探测等同可进入范围。单个入口不健康时，先去掉它的候选场景，再按剩余 Web 入口确定租约；显式身份若原先只属于被去掉的入口，则一并去掉。`scope`、`pending.json`、`scenarios.yaml` 和 Web scope 只含其余场景。prepare 成功输出首次 `progress`（见本节“执行进度”）、`probes` 与 `probe_skipped`；后者是 `[{scenario, fingerprint, cause: "environment", finding}]`。在返回成功前，将每条排除项登记为当轮未执行（来源 `probe`，操作者取准备人，时间取探测时刻），照常计入卡住规则。如果所有候选场景的入口都不健康，或任何一个修复复验场景会被排除，返回 `entry-unhealthy`，包含 `probes` 与 `probe_skipped`，无运行目录、业务登记或身份租约，环境保持正常就绪。适用的环境与修复准入规则仍先于探测执行。
+
 然后为本运行的身份取得浏览器租约，再创建运行目录，缺省 `<数据目录>/runs/<编号>/`；已存在时使用 `<编号>-2`、`<编号>-3` 等未占用目录，原目录和文件原样保留。实际目录写入 `local_work.dir`，以 prepare 返回的 `directory` 为准，提交、放弃及报告通过记录定位，不按编号推算。准备失败时只清理本次确实新建的目录。修复、沉淀、合并、SOP 编写、草稿、交互地图、启动记录和 retest 输出也使用未占用目录。环境只要 adapter 输出就绪就可以准备，不要求每个服务都在运行；输出另有 `services`、`not_running` 与 `missing_address_env`。
 
 | 文件 | 内容 |
 | --- | --- |
 | `prompt.md` | 执行提示词（随包 `run.md`，修复复验附“逐条实际执行问题场景”） |
+| `probes.jsonl` | 守护进程按次追加的探测记录，每行 `{source: "prepare"|"manual", at, probes}`；`probes` 同 §2。没有探测命令也可记 `undeclared` |
+| `progress.json` | 计时记录与本机裁决摘要，见本节“执行进度” |
 | `prepare.json` | 首次准备的输出原文，重复准备时原样返回（另加 `resumed: true`） |
-| `brief.md` | 速查卡：范围计数、入口证据与录制开关、缺失的入口地址、各服务的状态与业务说明及按服务判定未执行与受阻的规则、浏览器问题、前置数据规则、时间上限与等人处理的写法 |
+| `brief.md` | 速查卡：范围计数、入口证据与录制开关、缺失的入口地址、各服务的状态与业务说明及按服务判定未执行与受阻的规则、浏览器问题、前置数据规则、时间上限、排除的入口、点名命中的卡住项及相关的已解决说明 |
 | `services.json` | 准备时的环境状态、各服务（名称、业务说明、可停、状态，异常退出附日志与末尾）、`not_running`、`missing_address_env` |
 | `scenarios.yaml`、`pending.json` | 本轮场景（带 key、reason）与范围 |
 | `entries.json`、`repos.json` | 用到的入口与地址；检出仓库路径 |
@@ -301,47 +333,80 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | `evidence/` | 证据放这里 |
 | `fixtures/` | `fixtures run/exec --run N` 的留痕 |
 
-会话写出 `results.jsonl` 后提交。
+会话在操作一条场景前运行 `run begin`，得到结果时写入 `results.jsonl` 并立即运行 `run verdict`，最后用 `run submit` 结束本轮。
 
 ### results.jsonl
 
-每个范围内场景恰好一行（字段不能重复，不接受 NaN/Infinity），`scenario` 写场景键，或在本轮唯一的编号。
+每个可执行场景至多一行，`scenario` 写完整场景键或本轮唯一的编号。UTF-8 JSON Lines，空行忽略，字段不能重复，不接受 NaN/Infinity 或表外字段。重做暂记的场景时，更新该场景的一行，保留其他行，再运行 `run verdict`。已登记通过或失败的场景保留原行。
 
 | 字段 | 规则 |
 | --- | --- |
+| `scenario` | 必填 |
 | `status` | `pass`、`fail`、`blocked`、`skip`、`not-executed` |
-| `actual` | 非空（not-executed 除外） |
-| `executed_at` | 带时区的 ISO 8601，不能晚于现在 5 分钟 |
-| `evidence` | `evidence/` 下的相对路径数组，普通文件，单个不超过 64 MiB；实际执行的 pass/fail 至少一份 |
-| `finding` | blocked、skip、not-executed 必填 |
-| `note` | 可选说明 |
-| `executor`、`session` | `playwright convert` 写入的执行者信息，只作留痕；登记以运行准备时的执行者为准 |
+| `actual` | 非空文字，`not-executed` 可省略 |
+| `executed_at` | 带时区的 ISO 8601，不能晚于现在 5 分钟，`not-executed` 可省略，缺省为登记时间 |
+| `evidence` | `evidence/` 下的相对路径数组，普通文件，单个不超过 64 MiB；实际执行的 pass/fail 至少一份，未执行只能省略或为空 |
+| `finding` | blocked、skip、not-executed 必填，去掉首尾空白后非空 |
+| `cause` | blocked、not-executed 必填，见下表；其他状态不接受此字段 |
+| `suspect_defect` | 仅 blocked 可写，只接受 JSON 的 `true`；拿不准是前置条件还是产品缺陷时使用 |
+| `note` | 可选文字或 null |
+| `executor`、`session` | `playwright convert` 写入的执行者信息，只作留痕；登记以当前负责执行的会话为准 |
 
-`not-executed` 行写 finding、不附证据，不登记结果，场景状态不变，留在待执行。独立复验（`--fix`）不接受 `not-executed`。表外字段不合格。
+按已定决策 22 的性质区分状态，再选类别。同一类别可能对应两种状态。历史未分类记录与人工标注不要求类别。
 
-未执行与受阻按性质划分，不看发生在开始前还是执行中（提示词 run.md 与标准第 1 节）：用到的服务本机未搭建或被人停着、缺少入口声明的凭据变量、等人处理的事（真实或未声明账号登录、人机验证、只发到本人设备的验证码、身份使用次数到上限）写 `not-executed`；服务或浏览器异常退出、前置数据准备失败、证据丢失、`browser may not be secure`、入口或观察能力还没建设、需要停外部共享中间件的故障场景写 `blocked`。同一个入口对任何操作都失败、连续挡住 2 条场景时，执行会话中止这个入口的其余场景：这 2 条写 `blocked`，其余写 `not-executed`（finding 写“入口 <名称> 不可用，本轮中止”），并登记一条环境问题（已定决策 29）。
+| `cause` | 含义与选用例 |
+| --- | --- |
+| `environment` | 本机缺服务、服务被人为停着、缺凭据变量或准备时探测未通过记未执行；服务或浏览器异常退出、证据丢失、`browser may not be secure` 记受阻 |
+| `precondition` | 前置数据准备失败记受阻 |
+| `dependency` | 实际执行遇到意外的外部依赖故障记受阻；只在本机暂缺该依赖记未执行 |
+| `scenario` | 场景起点、操作或预期有疑义，因而无法裁决时记受阻 |
+| `capability` | 全队尚未具备入口、观察或模拟故障的能力（例如无权停外部共享中间件）记受阻 |
+| `human` | 真实或未声明账号登录、人机验证、本人设备验证码、身份使用次数到上限，等人处理期间记未执行 |
+
+同一个入口对任何操作都失败、连续挡住 2 条场景时，执行会话中止该入口：前 2 条裁决为 `blocked`、`cause: environment`，附现象及日志末尾；其余裁决为 `not-executed`、同类别，finding 写“入口 <名称> 不可用，本轮中止”；另登记一条入口级环境问题。其他入口照常执行。修复复验遇到该情况时回报并停下，未执行的场景留作未裁决，已裁决保留。遇到只够做一部分的时间限制，未做的留作未裁决。
+
+### 开始与裁决
+
+`run begin <键> [--run N] [--session S]` 与 `run verdict <键> [--run N] [--session S] [--implementer X | --implemented-by 操作者]` 的会话编号与准备命令同一取法（`--session` 优先，其次环境变量），准备时显式给了会话编号的执行者在这两条命令上也要给。运行编号先取显式 `--run`，其次取 `SOP_BOARD_RUN`；两者都没有返回 `run-required`。项目仍按通用参数识别，检出取运行登记的检出。运行须为 prepared；键只限本轮可执行范围，允许本轮唯一的裸编号。会话身份同准备命令的环境变量取法，未提供时以运行当前登记的会话为准；实际提供的会话须是该运行当前的执行者（接续先重复 prepare 接手）。两个命令都可在看板停止时本机执行。首次登记通过与失败需要业务记录库；受阻、跳过和未执行在本机完成。
+
+- **开始**：返回 `{ok, run, scenario, started_at, progress, duplicate, warnings}`。首次登记起点；对正在计时的同一场景重复调用保留原时刻，`duplicate: true`。下一会话接手尚未完成的同一场景时可重新计时。当前还有另一条正在计时时返回 `scenario-active`。本机已有暂记裁决的场景可以重新开始，原暂记保留至下一次成功裁决。已有通过或失败的场景返回 `scenario-concluded`。裁决未开始的场景可以成功，不使用其他场景的起点。另一场景已开始时，裁决这条不会清掉另一场景的计时。
+- **裁决**：取该场景在 `results.jsonl` 的唯一完整行。单条裁决检查目标行的格式、重复及范围；其他场景的行留待各自裁决或提交核对。已有通过或失败时，先按下文的重复裁决规则处理。其余场景若在准备后被删除或指纹改变，标记为 `voided`、结束该条计时，暂记裁决随之作废。其余结果核对字段与证据。目标行缺失且文件内有无法读取场景键的坏行时，另外给出这些行的行号。校验错误返回 `result-invalid`，`problems` 附文件、场景键、行号（缺行时为 null）、字段和问题。结果行明确为未执行而本次是修复复验时以同一错误拒绝。
+- **浏览器崩溃**：租约期间当前场景使用的身份浏览器异常退出时，已写行且状态非 pass 的场景按 `blocked`、`cause: environment` 暂记，finding 写明时间、退出信号或退出码（无法取得时说明）和日志线索，有崩溃报告时一并给出；共享与内网显示遵循 §10 的脱敏。先核对提交行与证据。已登记的结论保留，本机浏览器崩溃的运维记录照常登记。
+- **通过与失败**：证据按内容摘要入本机证据目录，运行记录、结果、证据索引与漏检（§7）在同一业务事务内登记。结论从此在本轮固定。对同一规范化结果行重试返回成功、`duplicate: true` 与原结果编号，即使后来场景指纹或原证据文件发生变化；对同一场景提交不同内容的裁决返回 `scenario-concluded`，提示用之后的运行或人工标注登记新结论。数据库连接、认证、版本或事务失败时，原有记录及当前计时保留，使用原结果与证据重试。数据库已登记但本机摘要未写完时，以数据库登记为准，补齐本机摘要。
+- **受阻、跳过和未执行**：把校验后的裁决、结果行及执行者记到 `progress.json`，进度立即可读。业务记录库、场景状态、待人处理和连续次数都等到 `run submit` 时更新。运行仍为 prepared 时可重新开始并裁决；新的非结论覆盖原暂记，新的通过或失败按上条登记。同一会话在同一次计时内重复提交同一暂记行且校验后的裁决相同时返回 `duplicate: true`。准备时因入口探测排除的场景仍按“准备”一节直接登记未执行。
+- **快照与停服记录**：业务运行按机器标识、本机库标识、本机运行编号唯一，使用准备快照。逐文件比较准备时与裁决时的快照，将改动路径记为该条的 `product_changed`。根据实际执行时间与停启区间判断执行时哪些服务已停；登记结论时把已发生的事件一并写入 `work.services`，提交时汇总全部事件。
+- **响应**：`{ok, run, scenario, adjudication, duplicate, progress, warnings}`。`adjudication` 为 `{scenario, fingerprint, status, cause, suspect_defect, finding, at, session, result, registration, note?}`。`status` 同结果行并可为 `voided`；`registration` 取 `registered`（已登记）、`local`（本机暂记）、`voided`（作废）。无结果编号、类别、原因或会话时对应字段为 null，未标疑似缺陷为 false。登记的未执行存入 `work.result.not_executed`（另含 `by, source`，来源为 `probe|verdict|submit`）；未执行无 `results` 行，场景状态不变。`voided` 计作本轮已处理，无业务结论。
 
 ### 提交规则
 
-`run submit --run N`（可在任意目录运行，检出取运行登记的检出）：
+`run submit --run N [--implementer X | --implemented-by 操作者]` 可在任意目录执行，按登记的检出定位 prepared 运行。
 
-1. 运行须为 prepared，否则 `run-not-prepared`。
-2. **作废**：准备后场景被删除或指纹变化的，只作废这些场景（`voided`），不登记。
-3. **浏览器崩溃**：租约期间该运行持有的身份浏览器异常退出时，用到该身份的 Web 场景若没有 pass 行，记为 `blocked`，finding 为“浏览器进程 <时间> 因 <信号或退出码> 退出，日志 <路径>[，崩溃报告 <路径>]”；取不到退出信号时写“浏览器进程 <时间> 已退出（取不到退出信号），日志 <路径>”。
-4. 其余场景逐行校验（缺行即失败）。
-5. **product_changed**：比较准备时与提交时的逐文件清单，执行期间变化的路径记在每条结果上，作为版本记录，不影响状态与独立性。
-6. 登记结果、证据入库；某场景最近一次守护运行通过而本次失败时记漏检（§7）；释放浏览器租约；修复复验时更新修复状态（§8）。
-7. **服务**：本轮每条停止事件记下服务停着期间执行的场景（`executed_at` 落在停止与下一次启动或恢复之间，按秒比较），结果详情据此显示“执行时 <服务>（<业务说明>）已停止”。结果登记后恢复还停着的服务（守护进程未运行时只撤回停止请求），每个记一条 `restore`；声明了服务时另列出提交时异常退出的服务，`during_run` 表示准备时它还没有异常退出。
+1. 核对文件中完整行的 JSON 结构、范围与重复项；文件缺失允许按没有结果行处理。末尾无换行且不能解析的那一行视为中断残行，列入 `ignored_partial_line`（从 1 起的行号，未发生时为 null），原文件保留。已登记的结论沿用原记录，本机暂记沿用已校验的内容和执行者；仅编辑 JSONL 不改变这些裁决。逐条重查拟登记的暂记裁决的指纹及证据（文件仍存在且内容与裁决时一致），并按裁决规则核对尚未裁决的完整行。任何校验失败，保持 prepared，现有结论和本机暂记保留，本次补登整批均不写入。
+2. 一次业务事务登记仍待提交的裁决及尚未裁决的完整行，汇总已登记的结论和本次新增项。受阻、跳过写入 `results`，未执行写入运行摘要，自动待人处理和连续次数按 §9 更新。没有裁决也无完整行的可执行场景列入 `unadjudicated`；准备后被删除或修改且尚未登记的场景列入 `voided`。两个字段都是按场景键排序的数组。已登记的结论保留原指纹。修复复验若还有未裁决或作废场景，返回 `fix-validation-required`，保持 prepared；全部裁决后沿用独立复验规则汇总修复状态。
+3. 更新本机状态、释放浏览器租约、恢复尚停着的服务并记 `restore`（守护进程未运行时只撤回停止请求）。输出与运行摘要含 `recorded, voided, not_executed, unadjudicated, product_changed, browser_crashes, independence, submitted_by, sessions, progress`。`product_changed` 汇总裁决时已记录的路径及准备到提交时检测到的变化，去重排序。原有 `restored, crashed_services, service_events, services_problem, interruptions` 按实际情况输出：服务事件含服务、操作、成否、操作者、时间、说明及事件期间执行的场景；`during_run` 表明准备时服务还未异常退出。
+4. 业务事务失败时保持 prepared，结论可查、暂记仍在本机；恢复后原样重试。若业务结束已提交、本机收尾未完成，重试只补做本机收尾（`resubmitted: true`）。
 
-输出 `recorded`、`voided`、`not_executed`（`scenario`、`finding`、`fingerprint`）、`product_changed`、`browser_crashes`、`independence`、`submitted_by`；声明了服务或本轮停过服务时另有 `restored`、`crashed_services`、`service_events`（服务、`stop|start|restore`、`ok`、操作者、时间、说明、停着期间执行的场景），恢复出错时有 `services_problem`；运行期间看板重启过时另有 `interruptions`（每条“环境随看板重启中断”的起止时间，已定决策 28）。这些也写进运行摘要（`work.result`）。校验不合格时不登记任何结果，运行保持 prepared，也不恢复服务，修正后重交。
+`recorded` 每项 `{scenario, status, result, cause, suspect_defect, finding?, note?}`：`cause` 只有受阻有值，其余为 null；`suspect_defect` 为布尔；有原因时带 `finding`；非空 note 原文随清单返回。 `run wait --run N` 的 `result.recorded` 与 `run wait --launch N` 的 `results[].result.recorded` 返回同一清单（含放弃前已登记的项）。
 
-`recorded` 的每条为 `{scenario, status, result, note?}`，`result` 是业务记录库的结果编号；结果行有非空 `note` 时原文随清单返回，省略、null 或空字符串时无该字段。任何结果状态都可带说明，说明不改变结论或独立性。重复提交补做第三步时从已登记结果取回同一说明；`run wait --run N` 的 `result.recorded` 与 `run wait --launch N` 的 `results[].result.recorded` 返回同一清单。
+`run abandon --run N` 或启动收尾放弃运行时，保留已登记的结论、准备时的探测登记、运行目录和证据。运行状态变为 abandoned，释放身份并恢复服务。本机暂记裁决留在运行目录，场景状态和自动选取资格继续按已有业务记录推导，暂记裁决不触发待人处理或计入连续次数。本机运行摘要与等待输出的 `result.unregistered` 列出这些暂记裁决（按场景键排序，各项为 `{scenario, status, cause, finding, suspect_defect}`），`result.unadjudicated` 另列尚未裁决的场景。共享库暂不可用时照常放弃本机运行；库可用时把结束标记写到已有业务运行，已有结论始终保留。
 
 ### 独立性
 
-实现者依次取：修复复验时的修复会话；`run submit --implementer <会话编号>` 或 `--implemented-by <操作者>`（二选一，同时给是参数错误）；`SOP_BOARD_IMPLEMENTER` / `SOP_BOARD_IMPLEMENTED_BY`（`run launch` 的同名参数注入）。没有实现者记 `undeclared`（独立性未声明）；执行者等于实现者会话记 `self-check`（实现者自检）；否则 `independent`（独立验收）。`--implemented-by` 用于跨机器验收（执行会话拿不到实现者的会话编号）：与本机操作者不同记 `independent`，相同则以参数错误（退出码 2）拒绝，要求改填会话编号；历史里写“实现者 <操作者>”。实现者由使用者在任务里说明，没说明的照旧记未声明。只有 `independent` 的真实入口通过能作为沉淀与守护的依据。
+实现者依次取修复会话、首次 Agent 裁决或提交时显式给出的 `--implementer <会话编号>` 或 `--implemented-by <操作者>`（互斥）、`SOP_BOARD_IMPLEMENTER` / `SOP_BOARD_IMPLEMENTED_BY`（启动时注入）。准备时由探测自动登记的未执行不锁定实现者；首次 Agent 裁决成功时锁定本轮实现者声明（可为无；历史草稿及探测记录不锁定），后续参数可省略或重复相同值；试图变更返回 `run-implementer-conflict`。没有实现者记 `undeclared`；执行者就是实现者会话记 `self-check`；否则记 `independent`。`--implemented-by` 填本机操作者时以参数错误（退出 2）拒绝。每条裁决按当次实际会话判断；运行级汇总在全部相同时给该值，不同则在摘要和命令输出中给 `mixed`，无 Agent 裁决时为 null；库的 `work.independence` 在这些没有统一值的情况下为 null。修复独立复验按逐条登记的独立性核对。只有真实入口的独立通过能作为沉淀与守护的依据。
 
-提交分三步：证据文件存进本机证据目录；一个事务把运行记录、结果、证据索引写进业务记录库（运行以“机器标识 + 本机库标识 + 本机运行编号”唯一）；更新本机运行状态、释放浏览器租约、恢复停着的服务。第二步失败（如 `database-unreachable`）时运行保持 prepared，结果与证据留在运行目录，恢复后重新 `run submit`，只登记一次；第三步失败后重新提交只补做第三步（输出 `resubmitted: true`）。
+### 执行进度
+
+运行目录 `progress.json` 为原子更新的 UTF-8 JSON 对象，`{version: 1, limit_seconds, last_activity_at, active, adjudications}`。`active` 为 `{scenario, started_at, session}` 或 null，`adjudications` 按场景键索引，值为裁决对象加 `started_at, duration_ms, timed_out, source`；未开始时耗时为 null。本机暂记项另存校验后的 `row`、各证据路径的 `evidence_sha256`、`product_changed` 和 `independence` 供提交。相同运行的开始、裁决、提交与收尾串行。暂记写入本机文件即生效；登记结论或提交时，业务事务成功后发布本机摘要。若进程在业务提交后中断，恢复时先依据业务记录更新本机摘要，再处理重试或判定是否续跑；无法核实时暂缓登记相关的操作并在启动输出标出错误。共享库故障期间仍可读取已写入的本机暂记。
+
+`launch status` 的 `launches[].runs[]`、`run wait --launch N` 的 `results[]`、`run wait --run N` 顶层均带 `progress: {total, adjudicated, registered, local, counts, current, started_at, last_activity_at}`。`counts` 含 `pass, fail, blocked, skip, not-executed, voided`（缺类为 0）。`registered` 为已写业务记录库的条数（含准备时已登记的探测排除项），`local` 为仅暂记的非结论条数；两者之和加 `counts.voided` 等于 `adjudicated`，也等于各状态数之和。上述 CLI 输出中与 `progress` 同级的 `local_verdicts` 列出本机暂记项，结构同 `result.unregistered`，无暂记时为 `[]`。提交成功后仍适用的暂记项转为已登记，放弃后 `local` 保留为诊断计数。`total` 为可执行范围加准备时排除的场景数，后者直接计入未执行。当前场景取 `active`，没有时 `current` 与 `started_at` 为 null；运行结束即清除当前计时，末次未裁决的起点仍可供本机统计。接续时保留待还原的场景和起点，接手重做它时以接续会话的首次 `begin` 重新计时。最近活动取最后一次准备、开始、裁决、带编号的环境或配方操作、结束的时间；只读轮询不更新。时间均为带时区的 ISO 8601。升级前的运行可按现有范围与提交摘要显示，无法恢复的时间为 null。
+
+`config.yaml` 顶层 `scenario_timeout` 为 1～86400 的整数秒，缺省 900，准备时固定在运行目录和 brief。当前场景从开始时刻起超过该值时，`run begin`、`run verdict`、带运行编号的 `env`（全部子命令）及 `fixtures run|exec` 输出 `warnings: [{code: "scenario-timeout", scenario, started_at, limit_seconds, elapsed_seconds}]`，没有提醒时为空数组。检查在操作返回时进行；裁决成功的响应也带该场景本次超时提醒，随后不再提醒。失败响应在能定位 prepared 运行时也附该字段。超时写进本机耗时统计，不中断会话。环境与配方命令取显式 `--run`，其次 `SOP_BOARD_RUN`，已有的服务停启缺省关联与独占规则继续适用。
+
+### 启动统计
+
+`launch stats [--launch N]… [--since YYYY-MM-DD]` 返回本项目当前检出的本机执行启动。缺省取所有执行启动，不受最近 20 条限制；重复 `--launch` 去重，显式编号可选本项目别的检出，未知编号或沉淀启动返回 `launch-not-found`。日期从本机零点算起，按启动时间筛选，与编号条件取交集。日期格式错误退出 2，没有匹配时成功返回空数组及零合计。
+
+输出 `{ok, launches, totals}`，各启动按编号升序，含 `launch, checkout, runner, model, started_at, ended_at, duration_ms, sessions, continuations, total, adjudicated, pass, fail, inconclusive, skip, voided, unadjudicated, pending_registration, unregistered, timed_out, scenarios`。代理与模型取首个尝试的实际设置（旧记录缺失时模型为 null）。启动耗时从首次尝试开始到最后一次尝试结束，含接续等待；进行中 `ended_at` 为 null，耗时算到读取时。`sessions` 数已启动的执行会话（含首个），`continuations` 为其余会话数。`pass`、`fail`、`skip` 和 `inconclusive` 只统计最终登记的裁决；`inconclusive` 按六类及 `unclassified` 统计受阻与未执行，旧记录缺类别归入 `unclassified`。prepared 运行的暂记项计入 `pending_registration`，放弃运行留下的暂记项计入 `unregistered`，两项均为场景数，与作废、未裁决各自分开。`adjudicated` 为已登记、暂记及作废条数之和。各场景项为 `{run, scenario, status, cause, registration, started_at, adjudicated_at, duration_ms, timed_out}`，`registration` 同裁决对象，无裁决时为 null，同时 `status: "unadjudicated"`、`adjudicated_at: null`。耗时从该条最终登记所对应的开始算到裁决，缺任一时间为 null；本机暂记项可单独查其耗时，所用状态与原因仅作诊断。当一次启动尚无运行时，以启动范围列未裁决项。`timed_out` 计已登记的超时裁决和仍在计时的超时场景；放弃后留在本机的超时只在对应场景条目中显示。`totals` 含启动数 `launches` 与上述数值和分类合计（`duration_ms` 为各启动耗时之和）。
 
 ### launch / wait
 
@@ -350,16 +415,18 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - 同一检出同时只有一个 running 的启动（`launch-running`）。类型 `run` 或 `distill`，须有具体场景。`run launch` 缺省范围为 `pending`。
 - `run launch` 的 `--runner` 只接受小写 `codex`、`claude`；`--model` 须是去掉首尾空白后非空的单行文字，`--effort` 取配置允许的 `low|medium|high|xhigh|max`。两项都只可与 `--runner` 同用。参数不合格以 `invalid-arguments`、退出码 2 返回，不启动会话。模型名及该客户端支持的强度由被启动的客户端核对；启动后的错误走现有启动失败路径。
 - 启动配置先整段取 `agents.run`，没有再取 `agents.default`，仍无配置则用 Codex。省略新参数时沿用该配置；显式代理相同则继承该段省略的模型、强度及原有附加参数；切换代理时只用所选代理的内置缺省及本次明确给出的值，旧代理的模型、强度和附加参数不带过去。明确给出的模型、强度优先于配置并实际传给所选客户端，包括优先于附加参数里的同一选项。`attempts.json` 的每次新尝试及本机 `launch status`、`run wait` 的 `attempts[]` 均给出 `runner, model, effort`（未传给客户端的模型和强度为 null；旧尝试可缺字段）；同一次启动接续沿用首次生效的设置，即使配置已改。只影响本次 `run launch`，不写回 `agents`。
-- 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>/output.prompt.md`（目录被占用时顺延后缀）（随包 `launch.md`：先运行 `sop-board run prepare --scope …` 或 `distill prepare …`，按 prompt.md 执行并提交，需要人时 `attention add` 后结束），日志为同目录 `output.jsonl`（实际位置取启动记录的 `log`）。
+- 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>/output.prompt.md`（目录被占用时顺延后缀）。执行提示词先运行 `run prepare`，逐条开始、裁决，再提交；所需真人操作以类别 `human` 的裁决交回。沉淀提示词使用 `distill prepare` 及其后续流程。日志为同目录 `output.jsonl`（实际位置取启动记录的 `log`）。
 - 注入 `SOP_BOARD_LAUNCH`、`SOP_BOARD_CHECKOUT`、`SOP_BOARD_IMPLEMENTER?`。Claude：启动器生成 UUID 作为 `--session-id` 并注入 `SOP_BOARD_SESSION`，缺省参数 `--permission-mode acceptEdits --allowedTools Bash Read Write Edit Glob Grep`。Codex：`codex exec --json -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check -C <目录>`，会话编号取日志中的 `thread.started`。两者都 `--add-dir` 项目数据目录与数据根目录下的 `evidence` 目录，路径先解析为真实路径；浏览器运行时只读使用。
 - 状态 `running` → `exited`（退出码 0）/`failed`/`stopped`。启动记录与其会话编号就是独立执行的证据；运行通过 `SOP_BOARD_LAUNCH` 关联启动。
-- **接续**（已定决策 29，只对 `run` 类型）：会话进程以非零退出码结束、且启动没有被 `launch stop` 停止时，60 秒后在同一次启动下再起一个会话，最多一次。启动编号、`SOP_BOARD_LAUNCH`、检出与实现者参数不变；会话编号是新的；提示词写入同目录 `output.2.prompt.md`（原提示词加接续段），日志写入 `output.2.jsonl`，启动记录的 `log`、`session`、`pid` 指向最近一次尝试。等待与接续期间状态保持 `running`。每次尝试记在同目录 `attempts.json`：`[{attempt, session, pid, log, started_at, ended_at, exit_code}]`，第一次失败后另记 `retry_at`；`launch status` 与 `run wait` 的输出带 `attempts`。等待期间看板 `restart` 或被强杀后重启，新进程按 `retry_at` 照样发起接续（时间已过就立即发起）。退出码 0 不接续；看板重启后认回的会话取不到退出码，也不接续。间隔取看板进程环境变量 `SOP_BOARD_RETRY_DELAY`（秒，缺省 60），只供验收缩短等待。会话异常退出时，看板结束它所在进程组里还活着的进程，保证接续时只有一个执行会话。
-- **接续段**写明：上一个会话的结束时间与退出码、日志位置；它准备的运行编号与目录（没有就写没有）；再次运行第 1 步的命令会得到同一个运行（`resumed: true`）；`results.jsonl` 里完整的行保留、不重做，最后一行不完整就删掉重做那条场景；先按项目验证技能核对并还原上一个会话执行到一半的场景留下的测试数据，再执行其余场景。
-- **收尾**（已定决策 29，只对 `run` 类型）：启动以 `failed` 结束（接续后仍以非零退出，或接续没能发起），或以 `exited` 结束却有关联的 prepared 运行时，看板放弃这些运行，效果与 `run abandon` 相同（释放身份租约、恢复本轮停着的服务；运行目录、已写的结果行与证据保留；`local_work.result` 记 `abandoned_by: "sop-board"` 与 `launch`）。随后登记一条待人处理：类别“环境问题”，登记人 `sop-board`，`work` 为运行编号（有多个时取第一个，文字里列出全部），`scenarios` 为启动范围，文字含启动编号、结束的原因（接续一次后仍异常退出及两次的退出码 / 正常退出但没有提交运行 / 接续没能发起）、运行编号与日志末尾一行（最多 300 字，超出截断）；整段文字里的本机路径都遮蔽成“<本机路径>”，包括日志末尾一行里带的，完整日志在产出机器上用 `launch status` 查看。启动失败而没有准备过运行时同样登记一条，写明没有准备运行。收尾开始前运行已经提交或已由别人放弃的，不归这次收尾处理。先写退出信息与放弃，再登记待人处理；登记失败（例如共享库连不上）不影响放弃，原因写进看板日志与启动的 problem。收尾进行中 `launch status` 带 `finishing: true`，`run wait` 等收尾结束再返回；收尾出错时原因写进 problem、`run wait` 照常返回，看板下次启动时接着收尾。不自动提交结果。被 `launch stop` 停止的启动不收尾，运行保持 prepared。
-- 会话输出由随会话存活的转写进程遮蔽后写进日志，不经守护进程；遮蔽范围不变（已保存的共享库密码）。看板 `restart` 时会话继续运行，新守护进程按进程号与命令行认回，用零信号检查存活；取不到退出码时，产出了运行或沉淀记 `exited`，否则按 `no-work` 处理（已定决策 28）。`stop` 与 SIGTERM 照旧结束会话。
+- **启动预检**：完成范围、启动占用与修复准入检查后，当前检出环境已经就绪时对冻结候选范围的入口探测一次，不拉起或切换环境。全部不健康（或需排除任一修复复验场景）时返回 `entry-unhealthy`，不建启动记录、不起会话；部分不健康时在启动输出的 `launch.probes`、`launch.probe_skipped` 与提示词列出预检情况，保留原候选范围交给 prepare，后者以新探测结果决定排除与登记。当前环境未就绪时跳过启动预检（两数组为空），等待 prepare 按常规拉起后探测。启动目录的 `preflight.json` 保存这两数组。
+- **续跑**（仅 `run`）：一个会话结束后，只要它在同一次启动关联的 prepared 运行中新裁决了至少一条，且仍有未裁决的可执行场景，守护进程就在同次启动下续跑。退出码为 0、非零或重启后无法取得均使用这项判定。新登记的结论和新写入的本机暂记都算进展；同一会话对同一场景至多计一次。重复提交同一裁决、只改写结果行、准备时探测自动排除及仅作废场景均不算进展。按实际进行新裁决的会话归属。另有一种情况也接续：首个会话以非零退出码结束、没有任何新裁决，且这次启动没有已提交的运行（例如模型接口被拒、会话刚起来就中断）时，接续一次；接续的会话再次运行准备命令，已有 prepared 运行时取回它，没有时准备新的运行。第二个会话起仍只按有无进展判断。
+- 一次启动最多三个成功起动的会话。续跑间隔为 60 秒，测试可在启动守护进程前用环境变量 `SOP_BOARD_RETRY_DELAY`（非负整数秒）缩短。启动编号、检出、代理有效配置及实现者参数保持，换新的会话编号；第 2、3 个会话在同目录使用 `output.<序号>.prompt.md` 与 `output.<序号>.jsonl`，启动的 `log, session, pid` 指向最近尝试。`attempts.json` 继续以数组保存每次尝试的公开字段 `{attempt, session, pid, log, started_at, ended_at, exit_code, runner, model, effort}`，首项仍留生效设置供接续，最后一项可含未完成的收尾记录，结束后加 `new_verdicts`（非负整数），计划续跑的尝试加 `retry_at`。有待续跑时启动保持 running；`restart` 或守护进程异常退出后按最后一项的 `retry_at` 恢复等待，逾时则发起一次。确认旧会话退出且它进程组的残留已结束后，才开始新会话。收到 `launch stop --launch N` 时取消等待的续跑；如已有会话则向进程组发 SIGTERM。缺少 `--launch` 时返回 `invalid-arguments`、退出码 2，问题指向该参数。
+- **续跑提示**写明上个会话结束时间、退出码（未知时注明）、日志，以及每个 prepared 运行的编号、目录、已登记的结论、本机暂记的场景与阻点、尚未裁决的场景及开始但未完成的操作。再次准备得到同一个运行（`resumed: true`）。已登记结论的场景保留原执行者与证据。接续会话按验证技能核对并还原未完成场景留下的数据，再执行尚未裁决的场景；也可以重新开始并裁决已暂记的场景。交接前将尚未裁决的完整行及末尾残行留档并从活动结果文件移走，保留已经成功裁决的行和暂记记录。不能完成还原时记录阻点并停止本会话。
+- **收尾**：没有进展、该启动的所有关联运行都已裁决完却仍有未提交、续跑用满或发起失败时，采用现行结束分类（正常退出为 `exited`，非零或发起失败为 `failed`）。有关联 prepared 运行则按放弃处理：释放身份、恢复服务，保留已登记结论和准备时的探测登记；暂记裁决及其证据保留在运行目录，见“提交规则”。本机 `local_work.result` 记 `abandoned_by: "sop-board"`、`launch`。为失败的启动或有未提交运行的正常退出按启动登记一条环境问题，署名 `sop-board`；`work` 取第一条关联运行编号，文字列出启动号、结束原因、各次退出码、全部相关运行与涉及场景、日志末尾一行（最多 300 字）；对本机暂记项逐条列场景键、裁决状态、类别（跳过时为空）与原因。没有运行时写明。遮蔽本机路径与凭据，完整日志经产出机器的 `launch status` 查看。已提交或由别人放弃的运行不参与收尾。先写退出信息与本机放弃，再登记待人处理；业务库失败不妨碍释放资源，失败原因写入看板日志与启动 problem，下次启动补做尚未完成的收尾。同一启动的收尾可重试，已成功的待人处理不重复登记。收尾进行中 `launch status` 带 `finishing: true`，`run wait` 等本次收尾尝试完成再返回。被 `launch stop` 停止的启动不自动放弃，运行仍由操作者决定如何收尾。
+- 会话输出由随会话存活的转写进程遮蔽后写进日志，不经守护进程；遮蔽范围不变（已保存的共享库密码）。看板 `restart` 时会话继续运行，新守护进程按进程号与命令行认回，用零信号检查存活；取不到退出码时仍判定有无进展；不续跑时，产出了运行或沉淀记 `exited`，否则按 `no-work` 处理。`stop` 与 SIGTERM 照旧结束会话。
 - 会话准备运行时按提示词带 `--wait`，环境或身份被占着时排队（§5）。
 - `run launch` 在启动前与 `run prepare` 共用范围检查；范围不合格不产生启动记录。指定文件不合格时返回 `scenario-file-invalid`，附文件、字段及行号。`pending`/`all` 只从合格文件选场景，不因其他文件不合格拒绝；prepare 输出及 launch 输出的 `launch` 对象附 `invalid_files`（文件、字段、行号），brief.md 的“未纳入的不合格文件”要求执行会话转述。选出范围为空仍返回 `nothing-to-run`，problems 同时列出不合格文件。交给客户端的目录解析为真实路径；浏览器运行时只读，不授予写权限。
-- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。会话正常退出（`exited`）却没有产生运行或沉淀时，启动公开状态为 `no-work`（未产生运行），本机输出附 `log_tail`；wait 返回 `launch-no-work`、退出码 1。失败的启动保持 `failed`，本机同样附 `log_tail`，wait 返回 `launch-failed`、退出码 1。`exited` 关联工作中存在 `prepared` 或 `abandoned` 时，输出 `unsubmitted` 列出工作编号、类型、状态，problem 写明未提交或已放弃，本机附日志末尾；wait 返回 `launch-unsubmitted`、退出码 1。`failed` 有这些工作时同样列明，错误码仍为 `launch-failed`。`run` 类型的启动按上面的“收尾”自动放弃 prepared 的运行，`unsubmitted` 中这些运行的状态为 `abandoned`，problem 写明“已由看板放弃”和待人处理编号；不自动提交。沉淀启动照旧不自动放弃或提交。其余已结束情况返回成功。
+- `run wait` 每 2 秒轮询，结束时输出启动状态及其运行结果。会话正常退出（`exited`）却没有产生运行或沉淀时，启动公开状态为 `no-work`（未产生运行），本机输出附 `log_tail`；wait 返回 `launch-no-work`、退出码 1。失败的启动保持 `failed`，本机同样附 `log_tail`，wait 返回 `launch-failed`、退出码 1。`exited` 关联工作中存在 `prepared` 或 `abandoned` 时，输出 `unsubmitted` 列出工作编号、类型、状态，problem 写明未提交或已放弃，本机附日志末尾；wait 返回 `launch-unsubmitted`、退出码 1。`failed` 有这些工作时同样列明，错误码仍为 `launch-failed`。`run` 类型的启动按上面的“收尾”自动放弃 prepared 的运行，`unsubmitted` 中这些运行的状态为 `abandoned`，problem 写明“已由看板放弃”和待人处理编号（登记出错则给出原因）；已登记的裁决在各运行的 `result` 内照常返回。沉淀启动照旧不自动放弃或提交。其余已结束情况返回成功。
 
 ## 6. 浏览器代理
 
@@ -520,7 +587,12 @@ fixtures:
 
 ### 待人处理
 
-`attention add --kind K --text …`，种类：人机验证、OAuth 授权、账号登录、第三方后台设置、权限放行、邮箱验证、环境问题、前置数据、浏览器崩溃、其他。看板“待人处理”页只读，解决用 `attention resolve <编号>`。浏览器崩溃、身份计数超限与非产品问题的修复会自动登记。
+`attention add --kind K --text …` 种类为人机验证、OAuth 授权、账号登录、第三方后台设置、权限放行、邮箱验证、环境问题、前置数据、浏览器崩溃、外部依赖、场景本身、入口能力、等人处理、其他。看板“待人处理”页只读，解决用 `attention resolve <编号> [--note 说明]`。普通条目以及浏览器崩溃、身份计数超限、非产品问题修复等运维条目照常登记，本身不拦场景选择。
+
+- **与场景绑定的条目**：在提交时登记 `precondition`、`scenario`、`capability` 或 `human` 的受阻或未执行，自动生成待人处理，种类分别为前置数据、场景本身、入口能力、等人处理。执行会话遇到 `human` 只裁决，同一运行已登记身份计数超限的普通条目时保留运维告警，并把其编号附在场景条目的缘由中。执行会话不再手工另提。环境和外部依赖分别用环境问题和外部依赖，至少同一内容连续第三次以同类别受阻或未执行才生成。按同一产品、产出机器、检出、场景键、指纹、类别保留至多一条未解决的自动条目。
+- **连续计数**：只看本机本检出同一键和指纹已登记的 Agent 裁决，按业务序号递增，一次运行对该场景最多计一次。准备时探测排除也算一次。其他类别、通过、失败、跳过或无类别的旧记录打断连续；暂记到本机的裁决、人工标注、作废、未裁决、纯即时探测、全部入口不健康导致的准备拒绝均不计。条目解决后该类别从解决之后的登记重新计数。已有未解决条目时更新最近缘由并保留编号及创建信息，疑似缺陷按最近一次登记显示。一次点名的通过、失败或人工标注均不会替人解决条目。
+- **生效与解决**：当前检出只按自己的机器与检出产生的条目自动排除，其他机器仍可查看记录。当前场景键与指纹都一致且未解决才算卡住；场景改动后旧条目仍可在待人处理页查看，标明已不适用于该内容。普通条目照旧可省略 `--note`；场景绑定条目解决时需要非空说明。解决时写入统一业务序号供重试计数使用。下一次及后续同指纹准备到这条场景时，`brief.md` 按类别给出最近一次由人解决的编号、说明、处理人和时间；过期指纹的条目不带入。
+- **字段与原子性**：沿用 `attention.scenarios` 的场景键数组与 `work` 的本机运行编号。新增可空 `hold` 列，UTF-8 JSON 对象 `{fingerprint, cause, suspect_defect, trigger_seq, resolved_seq}`（尚未解决时 `resolved_seq: null`），同一事务内登记裁决与自动条目；并行登记与解决须保证同一适用键的未解决条目唯一。普通条目列值为 SQL NULL。`attention list` 与待人处理页面为自动条目另带 `hold` 和是否在所看检出当前指纹生效的 `active`，普通条目为 null。
 
 ## 10. 报告与看板页面
 
@@ -572,6 +644,10 @@ fixtures:
 
 工作台给本分支有处置的场景显示「由人验收」或「已搁置」徽标及原因、署名与时间，当前场景状态继续显示。详情另列「<分支> 上由人验收 / 已搁置」及原因，其他分支的记录只供查看。「由人验收」「搁置」筛选在本机与内网均常显（含零），计数来自 `counts.disposed`；常规状态筛选排除本分支有处置的场景，「全部」、搜索和原有独立徽标筛选仍可找到它们。本机的非草稿场景详情可选种类、填原因并设置或替换处置，有本分支处置时可撤销；游离 HEAD 时不提供操作。内网不显示处置写入入口，人工复测表单照常可用。`/api/board` 的场景项带 `disposition`（当前分支处置或 null），`counts.disposed` 与 `total` 同 CLI；`/api/scenario` 顶层另带 `disposition`、`other_dispositions`。对象结构见 §1。
 
+工作台场景详情在状态与处置旁显示本检出的卡住标记、类别、缘由及待人处理编号；疑似缺陷独立标出。历史结果与最近一次未执行显示原因类别（旧记录无类别时保持原说明）。待人处理页将疑似缺陷排在最前并标明当前场景内容是否仍适用，条目链接回场景详情；场景状态点和状态筛选计数照常计算。`/api/board` 与 `/api/scenario` 以 `held` 给出 §1 的结构，详情仅含当前场景；Agent 历史条目与最近一次未执行另带 `cause`、`suspect_defect`（旧记录和人工标注分别为 null、false）。报告在受阻、未执行与卡住条目附原因类别、说明及疑似缺陷标记，保留各自原有状态；旧记录类别留空。`--file` 对这些明细使用相同的文件筛选。内网和导出继续遮蔽凭据，内网及共享业务记录里的探测输出、自动待人处理说明不含本机路径和凭据变量名。
+
+运行页显示每次启动的会话尝试及关联运行进度、当前场景、未裁决范围，以及已登记和暂记的条数。已登记的结果随场景详情可查。`/api/runs` 的运行带 §5 的 `progress`；本机才含日志、本机目录、会话编号和服务事件的详细记录。设置页「验证入口」为每个入口显示可选的探测命令（按 argv 编辑）和超时秒数，保存时按 §2 校验。清空命令与超时即删除声明；非法字段的问题指向入口对应字段。
+
 ## 11. 错误码
 
 | 错误码 | 含义 / 处理 |
@@ -590,7 +666,7 @@ fixtures:
 | `database-version` | 业务记录库的格式与本机 sop-board 不一致（或缺少可升级的版本）；退出码 1，HTTP 409。给出库版本、本机支持的版本及 `sop-board database upgrade`；库比本机新时须先更新 sop-board |
 | `fix-not-local` | 修复产出于别的机器（写明机器与检出）：`fix submit`、`run prepare --fix`、`fix close`、`fix abandon` 只在产出机器上执行 |
 | `evidence-elsewhere` | 证据在别的机器上，产出机器的看板没开、没加 `--lan` 或地址已失效 |
-| `invalid-arguments` | 参数或组合不合格（如执行代理参数组合无效、`--join` 与 `--new` 同用、`--implementer` 与 `--implemented-by` 同用、`--implemented-by` 是本机操作者），退出码 2 |
+| `invalid-arguments` | 参数或组合不合格（如 `launch stop` 缺少 `--launch`、执行代理参数组合无效、`--join` 与 `--new` 同用、`--implementer` 与 `--implemented-by` 同用、`--implemented-by` 是本机操作者），退出码 2 |
 | `database-error` | 数据库返回了未预期的错误，见 problems |
 | `daemon-not-running` | 守护进程没运行或连不上；运行输出中的 `sop-board serve …`。`restart` 期间 CLI 先等新进程就绪（最多 120 秒），超时才返回 |
 | `daemon-stop-timeout` | `stop` 或 `restart` 等了 600 秒，原来的守护进程仍未退出；查看 `serve.log` 或启动它的终端 |
@@ -604,7 +680,17 @@ fixtures:
 | `browser-crashed` | 30 分钟内两次异常退出；`browser open --reset-crash` |
 | `browser-runtime-missing` | 未安装运行时；`browser install` |
 | `session-required` | 取不到执行者会话编号；加 `--session` |
-| `run-required` | `env stop\|start` 时本检出没有 prepared 的运行；运行之外恢复环境用 `env restart` |
+| `run-required` | `run begin/verdict` 未指出运行，或 `env stop\|start` 时本检出没有 prepared 的运行 |
+| `entry-unknown` | `env probe` 的指定入口不在配置中（HTTP 422） |
+| `env-not-ready` | 即时探测需要当前检出 ready 的环境（HTTP 409） |
+| `entry-unhealthy` | 准备或启动预检无法留下可执行场景、修复复验会丢场景，或即时探测有不健康入口；附探测报告，退出 1（HTTP 409） |
+| `scenario-not-in-run` | 键在本轮可执行范围之外或裸编号在本轮不唯一（HTTP 422） |
+| `scenario-active` | 已有另一条正在计时，先裁决该条（HTTP 409） |
+| `run-session-mismatch` | 指定的执行会话与运行登记的当前执行会话不同（HTTP 409） |
+| `run-implementer-conflict` | 试图改写已锁定的实现者声明（HTTP 409） |
+| `scenario-concluded` | 场景在本轮已有通过或失败结论，拒绝再次开始或登记不同的裁决；可在后续运行或经人工标注登记新结论（HTTP 409，退出码 1） |
+| `result-invalid` | 结果文件、行或字段（含原因类别及证据）不合格，列出文件、场景、行号与字段（HTTP 422），退出 1 |
+| `attention-invalid` | 待人处理种类、内容或解决说明不合格（HTTP 422） |
 | `run-ambiguous` | 本检出有多个 prepared 运行，命令没有用 `--run` 或 `SOP_BOARD_RUN` 指明是哪个；输出列出各运行 |
 | `env-shared` | `env stop\|start` 时这套环境上还有别的 prepared 运行；输出列出它们，等它们提交或放弃后再停启 |
 | `service-not-declared` | 项目没有声明 `adapter.services`，不能停启单个服务 |
@@ -613,7 +699,7 @@ fixtures:
 | `service-timeout` | adapter 没在 `service_timeout` 秒内把状态改成目标值；停止请求已撤回 |
 | `service-unavailable` | 环境没有运行，或服务当前不是可停启的状态（本机未搭建、异常退出、未上报，或要启动的服务不是由 `env stop` 停下的） |
 | `run-not-prepared` / `run-not-found` | 运行不是 prepared / 不存在 |
-| `nothing-to-run` | 范围为空（自动范围过滤本分支有处置的场景后为空也是） |
+| `nothing-to-run` | 范围为空（自动范围过滤处置、卡住和占用后为空也是） |
 | `scenario-in-run` | 指定的场景已在本检出另一个 prepared 运行里；输出写明运行编号、准备它的会话与时间，是本会话自己的运行时给出继续提交或放弃两条出路。同一会话重复准备同一范围不报这个错，返回原运行（`resumed: true`） |
 | `fix-in-progress` | 另一会话的 `open` 修复已改动产品文件，而这次准备要启动或重启环境；输出写明修复编号、会话与已改动文件数。等它 `fix submit`，或确认代码可运行时加 `--allow-open-fix`（HTTP 409） |
 | `scenario-not-found` | 场景键或编号不存在或不唯一 |
@@ -636,7 +722,7 @@ fixtures:
 | `fix-commit-required` | 修复改动文件未提交 |
 | `fix-content-changed` | 提交内容与复验时不一致，须重新复验 |
 | `launch-unsubmitted` | 启动正常退出但有关联工作未提交或已放弃，列出工作及本机日志末尾；`run` 类型的 prepared 运行已由看板放弃并登记待人处理；run wait 退出码 1 |
-| `launch-failed` | 启动失败（`run` 类型已接续过一次）；本机附日志末尾与 `attempts`，关联的 prepared 运行已由看板放弃并登记待人处理；run wait 退出码 1 |
+| `launch-failed` | 启动失败（`run` 类型按进展与续跑上限决定是否续跑）；本机附日志末尾与 `attempts`，关联的 prepared 运行已由看板放弃并登记待人处理；run wait 退出码 1 |
 | `launch-no-work` | 启动的会话退出但没有产生运行或沉淀；附启动日志末尾 |
 | `scenario-file-invalid` | 场景文件不合格（带行号） |
 | `cases-invalid` / `sop-invalid` / `upload-invalid` / `upload-too-large` | 上传或提交内容不合格 |
@@ -654,7 +740,7 @@ fixtures:
 
 ### 数据库表
 
-两组表（已定决策 21）。业务记录在业务记录库：配了 `shared_database` 时是共享的 PostgreSQL，否则在本机 `board.sqlite3`；两种库同一套表与 SQL（`?` 占位、`RETURNING id`、`ON CONFLICT DO NOTHING`），只有自增主键的写法、连接、事务与加锁按库分开（SQLite 用本机文件锁串行，PostgreSQL 靠事务、唯一约束与序号行锁）。本机状态始终在 `board.sqlite3`，本机状态格式仍为 `PRAGMA user_version=8`，不符返回 `project-format`。业务记录格式为 8，两种库均用 `meta` 的 `key='format'` 记录，版本不符返回 `database-version`。
+两组表（已定决策 21）。业务记录在业务记录库：配了 `shared_database` 时是共享的 PostgreSQL，否则在本机 `board.sqlite3`；两种库同一套表与 SQL（`?` 占位、`RETURNING id`、`ON CONFLICT DO NOTHING`），只有自增主键的写法、连接、事务与加锁按库分开（SQLite 用本机文件锁串行，PostgreSQL 靠事务、唯一约束与序号行锁）。本机状态始终在 `board.sqlite3`，本机状态格式仍为 `PRAGMA user_version=8`，不符返回 `project-format`。业务记录格式为 9，两种库均用 `meta` 的 `key='format'` 记录，版本不符返回 `database-version`。
 
 **业务记录**（每条带产品 `product`）：
 
@@ -663,15 +749,17 @@ fixtures:
 | `meta`、`counters` | 表结构版本；统一序号（`seq`） |
 | `products` | 产品：ID、名称、创建人、创建机器 |
 | `machines` | 机器标识、显示名、带 `--lan` 的看板登记的内网地址与对等令牌（别的看板凭它读取本机证据） |
-| `work` | 运行记录的业务部分：kind run/fix/distill/merge/author/draft/atlas、机器标识 + 本机库标识 + 本机编号（唯一）、序号、检出名与分支、会话、操作者、实现者（会话或操作者）、独立性、修复、范围、快照、运行摘要（未执行清单及原因、提交人）、服务停启记录 |
-| `results` | agent 与 manual 结果：序号、运行、产出机器、检出名与分支、文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人；同一运行 + 文件 + 场景唯一 |
+| `work` | 运行记录的业务部分：kind run/fix/distill/merge/author/draft/atlas、机器标识 + 本机库标识 + 本机编号（唯一）、序号、检出名与分支、会话、操作者、实现者（会话或操作者）、独立性、修复、范围、快照、运行摘要（已登记的裁决、未执行类别与原因、未裁决、提交人）、服务停启记录。运行期间首次登记时 `ended_at` 为 null，运行结束时填写；运行是否已完成用 `result.finalized`（`submitted|abandoned`，进行中为 null）；旧有已登记运行按原摘要处理；旧版已经完成业务事务但尚未更新本机状态的，走提交收尾，无需重裁决 |
+| `results` | agent 与 manual 结果：序号、运行、产出机器、检出名与分支、文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人；格式 9 新增 `cause TEXT`（可空）、`suspect_defect INTEGER NOT NULL DEFAULT 0`（0 或 1）。同一运行 + 文件 + 场景唯一，即 `UNIQUE(work, file, scenario)` |
 | `evidence`、`result_evidence` | 证据索引（sha256、大小、名称、产出机器）与结果引用；文件在产出机器的 `<数据根目录>/evidence/<前两位>/<sha256>` |
 | `guard_runs`、`guard_misses` | 守护运行（序号、产出机器、检出名与分支、快照、测试摘要、pass/fail、原因、输出证据）与漏检（文件 + 场景 + 指纹 + 测试摘要唯一，各看板共用） |
 | `distillations` | 沉淀登记：场景、指纹、测试摘要、沉淀人、机器、检出与分支、时间 |
 | `fixes` | 修复的业务部分：问题场景（含指纹，最近 5 条结果，证据只记名称与 sha256，不带任何机器的本机路径）、修复会话与操作者、状态、fix.json、关闭序号与关闭人、产出机器与检出名；同一机器同一检出只能有一个 open |
 | `inbox`、`questions`、`annotations`、`draft_approvals` | 上传、提问与答复（带提问机器）、草稿批注、草稿场景的同意（同一人在同一指纹上只有一条未撤销的同意） |
-| `attention` | 待人处理（附产出机器与检出名） |
+| `attention` | 待人处理（附产出机器与检出名）；新增可空的 `hold TEXT`，见 §9 |
 | `dispositions` | 主键 `(product, file, scenario, branch)`，`product` 引用 `products.id`。各列均为非空文字；其余字段为 `kind`（仅 human/shelved）、`reason`、`by`、`at`（带时区的 ISO 8601 时间）。替换更新同一行，撤销删除该行 |
+
+`work.result.adjudications` 按场景键索引，只存已经登记的裁决。每项含 §5 的 `adjudication`、`source`（`probe|verdict|submit`）、登记时分配的 `seq`、原始行的 `row_sha256`（解析 JSON 后按键排序、紧凑 UTF-8 序列化取摘要，探测为 null）与 `independence`；未执行记录另带 `by`。开始时刻、耗时、进行中的场景、暂记裁决和活动时刻只留本机目录。登记时串行读取运行和卡住计数，避免丢更新。绑定或切换业务记录库的现有配置锁须覆盖仍为 prepared 的运行。
 
 **本机状态**（只在 `board.sqlite3`）：
 
@@ -710,13 +798,21 @@ docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
 
 ### 业务记录库升级
 
-`sop-board database upgrade [--dry-run]` 按通用参数选项目；不依赖看板、检出、完整的验收配置或产品绑定。配置共享库时只升级该 PostgreSQL（其中全部产品共用格式），未配置时升级本项目 `board.sqlite3` 内的业务表；本机状态格式不变。断开共享库后如果切回的本机业务库仍为格式 7，对该本机库另运行一次升级命令。
+`sop-board database upgrade [--dry-run]` 按通用参数选项目；不依赖看板、检出、完整的验收配置或产品绑定。配置共享库时只升级该 PostgreSQL（其中全部产品共用格式），未配置时升级本项目 `board.sqlite3` 内的业务表；本机状态格式不变。断开共享库后如果切回的本机业务库仍为旧格式，对该本机库另运行一次升级命令。
 
-本机 JSON 返回 `{ok, database, current_version, target_version, dry_run, steps}`，`database` 为 `postgresql` 或 `sqlite`，`steps` 为 `[{from_version, to_version, description}]`。`current_version` 为操作前读到的版本，`target_version` 为成功后达到或预演将达到的版本。格式 7 → 8 的步骤创建空 `dispositions` 表并更新 `meta.format`，已有数据与本机配置原样保留。实际升级在一个事务中依次执行全部步骤，提交前不对其他连接可见；失败回滚全部步骤。两个升级命令撞在一起时按库串行，后到者在取得锁后重读版本。预演只读版本与升级计划，不执行步骤或改写数据；已是当前版本时两种调用均退出 0，前后版本相等、`steps: []`。
+本机 JSON 返回 `{ok, database, current_version, target_version, dry_run, steps}`，`database` 为 `postgresql` 或 `sqlite`，`steps` 为 `[{from_version, to_version, description}]`。`current_version` 为操作前读到的版本，`target_version` 为成功后达到或预演将达到的版本。格式 7 → 8 创建空 `dispositions` 表并将 `meta.format` 更新为 8。格式 8 → 9 在 PostgreSQL 与 SQLite 上执行相同的三条 `ALTER TABLE … ADD COLUMN`，再将 `meta.format` 更新为 9：
+
+```sql
+ALTER TABLE results ADD COLUMN cause TEXT;
+ALTER TABLE results ADD COLUMN suspect_defect INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE attention ADD COLUMN hold TEXT;
+```
+
+旧记录的 `cause`、`hold` 为 NULL，`suspect_defect` 为 0。原有表、唯一约束、索引、外键及业务记录保持原样。本机状态与本机配置原样保留。实际升级在一个事务中依次执行全部步骤，提交前不对其他连接可见；失败回滚全部步骤。两个升级命令撞在一起时按库串行，后到者在取得锁后重读版本。预演只读版本与升级计划，不执行步骤或改写数据；已是当前版本时两种调用均退出 0，前后版本相等、`steps: []`。
 
 库比本机新、空库、版本记录缺失或没有完整升级路径时，以 `database-version` 拒绝（退出码 1），空共享库用 `init --new` 建表。凭据不符返回 `database-authentication`，连不上返回 `database-unreachable`，共享库配置不合格返回 `shared-database-invalid`，升级 SQL 出错返回 `database-error`，均退出 1。未成功升级时没有任何已完成的步骤。旧本机状态格式仍按 §2 拒绝。所有输出沿用共享库连接信息与凭据的遮蔽规则。
 
-共享库由维护者统一核对各机器正在运行的看板和未提交运行，等运行提交或明确安排后，使用新版命令升级一次，其余机器换上同一版本的 sop-board。升级事务提交前，格式 8 的看板读取到格式 7 时显示 `database-version`；提交后，新版看板下次业务请求可用，仍运行旧版的看板下一次核对库版本时显示 `database-version`，须换新版重启进程。页面没有半升级的数据；业务请求失败不产生离线记录，已准备但无法提交的运行保留本机材料。升级命令本身不停止看板、不放弃运行。
+共享库由维护者统一核对各机器正在运行的看板和未提交运行，等运行提交或明确安排后，使用新版命令升级一次，其余机器换上同一版本的 sop-board。升级事务提交前，格式 9 的看板读取到格式 7 或 8 时显示 `database-version`；提交后，新版看板下次业务请求可用，仍运行旧版的看板下一次核对库版本时显示 `database-version`，须换新版重启进程。页面没有半升级的数据；业务请求失败不产生离线记录，已准备但无法裁决或提交的运行保留本机材料。升级命令本身不停止看板、不放弃运行。
 
 **证据在别的机器上**：证据文件只在产出它的机器上。带 `--lan` 启动的看板把机器标识、显示名、内网地址与对等令牌登记到 `machines`（不带 `--lan` 或退出时撤下本端口的登记）。别的看板的证据地址仍是本看板的 `/evidence/<sha256>/<名称>`：本机没有文件时，看板凭登记的令牌从产出机器看板的 `/peer/evidence/<sha256>` 读取，核对 sha256 后转给页面，不在本机保存；读不到时场景详情写“证据在 <机器显示名> 的机器上”。`report --zip` 同样取回并核对；取不到的逐条写“证据在 <机器显示名> 的机器上，未包含”，输出 `missing_evidence` 为缺少的条数。
 
@@ -725,7 +821,7 @@ docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
 ## 13. 设置接口（已定决策 27）
 
 全部路径仅允许实际回环连接，内网返回 403 `local-only`。写入使用 JSON，沿用同源校验（403 `cross-origin`）。不返回密码及凭据取值。
-每节 content 使用 config.yaml 原字段名：repositories 为 repos、scenarios、snapshot_exclude（identities 由服务登记）；verification 为 entries、skill；environment 为 adapter；fixtures 为 fixtures；agents 为 agents。省略字段表示删除该字段。
+每节 content 使用 config.yaml 原字段名：repositories 为 repos、scenarios、snapshot_exclude（identities 由服务登记）；verification 为 entries、skill；environment 为 adapter、可选 scenario_timeout；fixtures 为 fixtures；agents 为 agents。验证入口节的 entries 对象原样含 probe 与 probe_timeout，字段问题沿用 entries 路径。环境适配节可设单场景超时秒数，清空即回到缺省。省略字段表示删除该字段。
 
 | 方法与路径 | 请求 | 成功响应 |
 | --- | --- | --- |

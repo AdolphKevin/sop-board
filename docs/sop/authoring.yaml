@@ -40,7 +40,7 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
       version: "2026-11-18"
-      confirmed_by: "使用者"
+      confirmed_by: "blur.yin"
     - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
       version: "2026-11-18"
       confirmed_by: "审核方"

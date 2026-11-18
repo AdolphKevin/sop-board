@@ -25,9 +25,11 @@
 #   两边的看板与命令都把 PGPASSFILE 指向一个空文件（连接只能用 config.yaml 里的密码）；两边的看板以 --lan 启动。
 #   版本 7 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：SET-01 区分本机状态和业务记录版本，SET-07 核对连接失败和版本拒绝，新增 SET-10（共享库与本机库升级）。
 
+#   版本 8 由未参与实现的审核方按 docs/design.md 已定决策 30 第二段（使用者 2026-11-18 决定）修订：核对入口探测在验证入口表单中的读写，以及业务记录格式 9 的显式升级；格式 8 到 9 只增加三个字段与更新版本，核对两种业务库。
+
 metadata:
   requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对；多人协作时各机器直连同一个共享库，由 Agent 问使用者后新建或加入产品，一边的验收记录在另一边可见"
-  version: 7
+  version: 8
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -48,8 +50,14 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
       version: "2026-11-18"
-      confirmed_by: "使用者"
+      confirmed_by: "blur.yin"
     - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
+    - ref: "docs/design.md 已定决策 30 第二段：A 不空转、B 执行可见"
+      version: "2026-11-18"
+      confirmed_by: "blur.yin"
+    - ref: "docs/reference.md 已定决策 30 第二段的命令与文件契约"
       version: "2026-11-18"
       confirmed_by: "审核方"
   tags: ["setup", "operator", "checkout", "check", "shared-database", "product", "settings"]
@@ -60,7 +68,7 @@ sops:
     actor: 开发者
     entry: "安装后的 sop-board 命令：skills install、init、status"
     must:
-      - "init 生成项目目录：config.yaml、board.sqlite3（本机状态格式 8、业务记录格式 8）与项目标记 sop-board-project-6"
+      - "init 生成项目目录：config.yaml、board.sqlite3（本机状态格式 8、业务记录格式 9）与项目标记 sop-board-project-6"
       - "旧版数据目录直接拒读，不迁移，也不改动"
     scenarios:
       - id: SET-01-P01
@@ -75,7 +83,7 @@ sops:
           - "按 sop-board guide 的指引运行 sop-board init demo --data $D，登记 app、lib 两个仓库，并按 guide 补全 config.yaml（scenarios、skill、entries 与 adapter）"
           - "运行 sop-board status demo --data $D 与 sop-board status demo --data $D --json"
         expected:
-          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；SQLite user_version 为 8，meta 的 format 值为 8"
+          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；SQLite user_version 为 8，meta 的 format 值为 9"
           - "config.yaml 中两个仓库的身份是规范化后的 origin 地址"
           - "status 列出 shop 文件中的全部场景，状态都是未执行；并显示守护进程未运行及启动命令"
           - "除 status 的文字输出外，各命令输出 JSON 且退出码为 0"
@@ -498,7 +506,7 @@ sops:
         steps:
           - "本机浏览器打开工作台，查看提示，点去设置页的链接，查看各节的问题数"
           - "在“仓库与场景目录”按演示配置填场景目录（app、docs/sop）与快照排除，保存"
-          - "在“验证入口”选验证技能 demo-verification，按演示配置逐项填 api 与 web 两个入口（含身份 merchant、凭据变量、录制开关、spec 库与交互地图），保存；查看凭据变量的显示"
+          - "在“验证入口”选验证技能 demo-verification，按演示配置逐项填 api 与 web 两个入口（含身份 merchant、凭据变量、录制开关、spec 库、交互地图、探测命令与超时），保存；查看凭据变量的显示"
           - "在“环境适配”按演示配置填启动命令、端口、端口步长、worktree 与清理命令、就绪时限，保存"
           - "在“前置数据”按演示配置填环境说明、范围、凭据变量与配方 seed-order，保存；在“无头会话”把缺省代理设为 claude，保存"
           - "回到工作台；运行 sop-board status --json 与 sop-board check --json；查看 $D/demo/config.yaml 与 config.yaml.prev"
@@ -508,7 +516,7 @@ sops:
           - "凭据变量处列出 DEMO_MERCHANT_PASSWORD 与 DEMO_SEED_TOKEN，都显示已设置；页面与 /api/settings 的响应里没有它们的取值"
           - "全部保存后 status 的 configured 为 true、problems 为空；工作台列出 shop 的全部场景，状态都是未执行"
           - "check 的配置与环境两项通过"
-          - "config.yaml 的内容与演示配置逐项相同（按解析后的值比较），repos 与 identities 保持 init 写入的值；config.yaml.prev 是最后一次保存之前的内容"
+          - "config.yaml 的内容与演示配置逐项相同（按解析后的值比较），重新打开设置页可见探测参数，env probe 在已就绪环境可执行该命令，repos 与 identities 保持 init 写入的值；config.yaml.prev 是最后一次保存之前的内容"
           - "整个过程没有重启看板"
         forbidden_effects: ["保存一节时改动别的节的内容", "页面、接口响应或看板输出里出现凭据取值", "要求使用者手工编辑 config.yaml 才能完成"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
@@ -566,12 +574,14 @@ sops:
         verify: web
         initial_state: ["演示项目（配置合格），看板已启动，环境没有运行，没有 prepared 的运行", "记录 config.yaml 的 sha256"]
         steps:
+          - "在「验证入口」清空 api 的探测命令却保留探测超时，尝试保存；再从本机设置接口提交字符串而非数组的 probe"
           - "在设置页“环境适配”把端口填成两个相同的端口，保存"
           - "在“验证入口”清空 api 入口的操作说明，保存"
           - "在“仓库与场景目录”删除仓库 app，保存"
           - "在“验证入口”删除入口 api，保存；再把入口 web 改名为 web2，保存"
           - "计算 config.yaml 的 sha256，运行 sop-board status --json"
         expected:
+          - "探测字段的问题分别指向 entries.api.probe_timeout 与 entries.api.probe，保存被拒绝，config.yaml 未改写"
           - "前两次保存被拒绝，error_code 为 settings-invalid，页面在对应字段旁写明问题（端口不能重复；操作说明须为非空文字）"
           - "删除 app 被拒绝，写明哪些配置项引用了它（至少包括 scenarios.repo）"
           - "删除 api、改名 web 都被拒绝，写明引用该入口的场景数并列出其中几条"
@@ -787,7 +797,7 @@ sops:
         evidence_hints: ["保存时的页面截图与响应", "config.yaml 的 sha256", "status 输出"]
 
   - id: SET-10
-    title: 有验收记录的业务库显式升级到格式 8
+    title: 有验收记录的业务库显式升级到格式 9
     actor: 共享库维护者
     entry: "sop-board database upgrade [--dry-run]；status --json、工作台和 disposition list"
     negative_exempt: "升级遇到断连与新于本机的库见 SET-07-N01 与 SET-07-N02"
@@ -799,20 +809,20 @@ sops:
         priority: P0
         verify: cli
         initial_state:
-          - "用格式 7 程序搭建的双机项目（见 docs/verification.md）；共享库已有 A 经演示产品真实入口提交的 shop#A 独立通过、证据索引，以及签名为 林甲 的 shop#A 人工通过标注"
-          - "A 仍运行格式 7 看板，B 已换格式 8 程序并启动看板；维护者核对两个看板和未提交运行，两个看板都没有未提交运行"
+          - "用格式 7 程序搭建的双机项目（见 docs/verification.md）；共享库已有 A 经演示产品真实入口提交的 shop#A 独立通过、证据索引，签名为 林甲 的 shop#A 人工通过标注、一次环境受阻的 shop#B"
+          - "A 仍运行格式 7 看板，B 已换格式 9 程序并启动看板；维护者核对两个看板和未提交运行，两个看板都没有未提交运行"
           - "记录共享库业务记录及证据索引、A 与 B 的产品绑定，并记录未被选作升级目标的 B 本机业务库格式"
         steps:
           - "在 B 用新版运行 status --json、打开工作台，再运行 database upgrade --dry-run，查询共享库版本和表"
-          - "在 B 执行 database upgrade；用 B 工作台及 scenario show 检查 shop#A 原结果、标注与证据，在 A 的旧看板请求工作台数据直到完成下一次版本核对"
-          - "在 B 再运行一次 database upgrade；A 重启为新版，B 为 shop#B 设置 human，由 A 运行 disposition list 核对"
+          - "在 B 执行 database upgrade；只读核对新增列及其缺省值，用 B 工作台及 scenario show 检查 shop#A 原结果、标注与证据，在 A 的旧看板请求工作台数据直到完成下一次版本核对"
+          - "在 B 再运行一次 database upgrade；A 重启为新版，先用 pending 核对 shop#B 旧受阻仍可选，再由 B 用真实入口裁决一次新受阻、提交后核对原因字段；B 为 shop#B 设置 human，由 A 运行 disposition list 核对"
         expected:
-          - "升级前 B 的 status 和工作台业务数据返回 database-version，显示 7 与 8；预演输出 database 为 postgresql、current_version 为 7、target_version 为 8、dry_run 为 true，列出 7→8 步骤；共享库仍为 7，未新增处置表"
-          - "实际升级退出 0，前后版本为 7、8，dry_run 为 false；共享库有空的 dispositions 表，原结果、标注及证据索引仍可查，产品绑定和 B 的本机业务库格式未被改动"
-          - "旧版 A 重新核对时返回 database-version；其余机器无需再升级库；重复升级退出 0、前后版本均为 8、steps 为空"
-          - "A 换新版后读到原记录与 B 刚登记的本分支处置"
+          - "升级前 B 的 status 和工作台业务数据返回 database-version，显示 7 与 9；预演输出 database 为 postgresql、current_version 为 7、target_version 为 9、dry_run 为 true，依次列 7→8、8→9；共享库仍为 7，未新增处置表"
+          - "实际升级退出 0，前后版本为 7、9，dry_run 为 false；共享库有空的 dispositions 表；8→9 仅新增 results.cause、results.suspect_defect 和 attention.hold，再更新版本，旧记录的缺省值依次为 NULL、0、NULL。原结果、标注及证据仍可查，产品绑定和 B 的本机业务库格式未被改动"
+          - "旧版 A 重新核对时返回 database-version；其余机器无需再升级库；重复升级退出 0、前后版本均为 9、steps 为空"
+          - "A 换新版后读到原记录与 B 刚登记的本分支处置；旧受阻仍可由 pending 选中且不会自动卡住，新受阻分类可在产出检出查看"
         forbidden_effects: ["打开数据库或预演时自动改表", "丢失已有记录、证据索引或产品绑定", "新版页面展示半升级状态或旧版看板在核对以后仍读写新版业务库"]
-        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级", "docs/verification.md#格式-7-的升级材料"]
+        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级", "docs/verification.md#业务记录库升级材料"]
         evidence_hints: ["两版程序来源、两边看板进程和版本核对响应", "升级及预演输出", "共享库表与原记录的只读前后对照", "产品绑定与本机库版本", "处置查询输出"]
       - id: SET-10-P02
         polarity: positive
@@ -821,16 +831,16 @@ sops:
         priority: P1
         verify: cli
         initial_state:
-          - "用格式 7 程序单独登记的演示项目，未配共享库；shop#A 已经人工标注通过，存在已登记的检出 wt1；看板已停止"
-          - "只读记录 SQLite user_version、meta 的 format 与 instance、人工结果行及 wt1 的登记"
+          - "用格式 8 程序登记的本机演示项目，未配共享库；shop#A 已真入口通过并人工复测，证据与标注都引用原结果；为 shop#B 已设置本分支处置；有检出 wt1，看板已停止"
+          - "只读记录 SQLite user_version、meta 的 format 与 instance、Agent、人工结果、证据引用、处置及 wt1 的登记"
         steps:
           - "用新版执行 status --json 与 database upgrade --dry-run，查询 SQLite 版本和表"
-          - "用新版执行 database upgrade、status --json、scenario show shop#A、checkout list，查看保存的标注及本机状态"
-          - "用 disposition set 为 shop#A 登记 shelved，再用 disposition list 查看"
+          - "用新版执行 database upgrade、status --json、scenario show shop#A、checkout list，查看三个新增列、保存的标注与本机状态"
+          - "查看旧处置及结果证据链接，再用 disposition set 为 shop#A 登记 shelved 并核对"
         expected:
-          - "第一次 status 返回 database-version、退出码 1；预演输出 sqlite、7→8，数据库仍为业务格式 7、无处置表"
-          - "升级退出 0，业务格式变为 8 且有空的处置表；user_version 仍为 8，instance、wt1 登记和原有人工通过记录不变，status 恢复正常"
+          - "第一次 status 返回 database-version、退出码 1；预演输出 sqlite、8→9，数据库仍为业务格式 8，未加字段"
+          - "升级退出 0，业务格式变为 9；results 只加 cause 和 suspect_defect，旧记录分别为空和 0；attention 只加可空的 hold。原处置、结果和标注仍可查，user_version 仍为 8，instance 和 wt1 登记不变，status 恢复正常"
           - "新处置可从当前分支读取，场景当前状态仍为通过"
         forbidden_effects: ["把未配共享库当成错误", "移走重建 board.sqlite3，或丢失本机状态和已登记标注"]
-        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级", "docs/verification.md#格式-7-的升级材料"]
+        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级", "docs/verification.md#业务记录库升级材料"]
         evidence_hints: ["两版程序来源、命令输出与退出码", "SQLite 只读查询前后对照"]

@@ -23,9 +23,11 @@
 #   改为起点环境没有运行，第 1 步必须启动环境。
 #   版本 11 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：RUN-01-P04 覆盖自动范围排除处置与点名执行；RUN-04 核对单次代理选择；RUN-06-P01 核对提交和等待的保留意见。
 
+#   版本 12 由未参与实现的审核方按 docs/design.md 已定决策 30 第二段（使用者 2026-11-18 决定）修订：核对入口预检、原因类别与卡住范围、逐条登记、续跑与收尾、执行进度与本机统计；通过与失败登记后固定，暂记裁决提交才登记并可推动续跑；补验放弃与启动停止参数。RUN-04-N08（首个会话在首次裁决前异常退出时接续一次）由协调方补写，对应的续跑判断也由协调方修改，这一条的验收须由未参与的执行者完成。
+
 metadata:
-  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景；同一会话重复准备返回同一个运行；执行会话异常退出时由看板接续一次，最终失败或留下未提交的运行时看板放弃运行并登记待人处理，不自动提交；另一会话的修复已改动代码而未提交时不开始新的一轮；入口整体不可用连续挡住两条场景时执行会话中止本轮"
-  version: 11
+  requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景；同一会话重复准备返回同一个运行；准备时探测入口；受阻与未执行分类并按条件转待人处理；通过与失败立即登记，受阻、跳过与未执行暂记至提交；会话有进展且有余项时续跑，一次启动最多三个会话；自动收尾保留已登记结论，列出本机暂记的场景及原因；进度、超时与用时可查；另一会话的修复已改动代码而未提交时不开始新的一轮；入口整体不可用连续挡住两条场景时执行会话中止本轮"
+  version: 12
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -55,8 +57,14 @@ metadata:
       confirmed_by: "blur.yin"
     - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
       version: "2026-11-18"
-      confirmed_by: "使用者"
+      confirmed_by: "blur.yin"
     - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
+    - ref: "docs/design.md 已定决策 30 第二段：A 不空转、B 执行可见"
+      version: "2026-11-18"
+      confirmed_by: "blur.yin"
+    - ref: "docs/reference.md 已定决策 30 第二段的命令与文件契约"
       version: "2026-11-18"
       confirmed_by: "审核方"
   tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault", "parallel", "unattended"]
@@ -78,16 +86,20 @@ sops:
         actor: 执行会话
         priority: P0
         verify: cli
-        initial_state: ["main 上 shop 的场景都是未执行", "draft-a（metadata.status: draft）在仓库中"]
+        initial_state: ["main 上 shop 的场景都是未执行", "draft-a（metadata.status: draft）在仓库中", "隔离配置 scenario_timeout 为 2 秒"]
         steps:
           - "在 main 运行 sop-board run prepare --scope pending --session S1，查看 runs/<编号>/ 目录"
-          - "执行者经演示项目入口执行范围内的场景，按实际结果写出结果与证据"
+          - "载入 run.env；run begin shop#A，重复一次。等待超过 2 秒，运行 env status 和 fixtures run seed-order --param order_id=<本轮唯一订单号> --param paid=99 --param days=3，在 run wait --run <编号> --timeout 1 查看进度"
+          - "经真实入口做 shop#A 并写证据；用 run verdict shop#A --implementer I1 登记。查看工作台、run wait --run <编号> --timeout 1 与 env status"
+          - "执行其余场景。每条从真实入口留证，写完整行；其他逐条裁决，最后执行 shop#B 并留给 run submit 补登"
           - "运行 sop-board run submit --run <编号> --implementer I1"
-          - "运行 sop-board status --json，在工作台查看 shop#X 与 shop#A，在 main 运行 git status"
+          - "运行 sop-board status --json，在工作台查看 shop#X 与 shop#A，在 main 运行 git status；另用未设上限的隔离项目准备一次运行，查看 brief 的缺省止损"
         expected:
           - "run 目录中的范围包含 shop 的全部场景，不含 draft-a 的场景，并记录产品快照"
           - "提交后 shop#X 为失败、shop#A 与 shop#B 为通过，结果带指纹与快照，证据可在工作台打开"
-          - "运行状态变为 submitted"
+          - "重复 begin 保留 shop#A 的开始时间；在裁决前 run wait 退出 3，进度 total=4、adjudicated=0、current=shop#A，开始、最近活动时刻可见。env 和 fixtures 的输出均有该场景的超时提醒，会话仍在执行"
+          - "裁决 shop#A 时仍提醒超时；提交前工作台已显示通过及证据，运行保持 prepared，进度为已裁决 1、pass=1，当前场景与开始时刻为空；随后 env status 不再提醒 shop#A。未配置时 brief 的上限为 900 秒"
+          - "运行状态变为 submitted，进度为已裁决 4；shop#B 补登一次"
           - "git status 无任何由看板产生的改动"
         forbidden_effects: ["看板改写场景文件", "登记范围以外的场景结果", "草稿场景进入执行"]
         refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#保留能力的简化形态"]
@@ -263,12 +275,12 @@ sops:
         verify: cli
         initial_state: ["main 已 run prepare，范围为 shop#A 与 shop#B"]
         steps:
-          - "执行期间把 shop 文件中 shop#A 的一条 expected 改写并保存"
-          - "执行者写出 shop#A 与 shop#B 的通过结果并 run submit"
-          - "运行 sop-board status --json"
+          - "执行者经演示入口执行 shop#A 与 shop#B，分别保留实测证据，先裁决 shop#B"
+          - "把场景文件中 shop#A 的一条 expected 改写并保存，写入 shop#A 原指纹的实测结果，运行 run verdict shop#A，再 run submit"
+          - "运行 sop-board status --json 并查看证据历史"
         expected:
-          - "shop#B 的结果登记成功"
-          - "shop#A 的结果没有登记，提交输出列出它因指纹变化被作废"
+          - "shop#B 在提交前已经登记，提交后保持原结果编号和证据"
+          - "shop#A 的 run verdict 将其列为 voided，未登记结果；提交输出仍列出它因指纹变化被作废"
           - "shop#A 按新指纹显示为未执行"
         forbidden_effects: ["shop#A 的结果被登记到新指纹上", "整轮运行被作废"]
         refs: ["docs/design.md#实施阶段（同一分支，每个阶段结束时包都能导入，CLI 可用）", "docs/design.md#核心概念（只有这些）"]
@@ -373,14 +385,14 @@ sops:
   - id: RUN-04
     title: run launch 启动独立执行会话
     actor: 协调会话
-    entry: "sop-board run launch --scope …、run wait、launch status|stop"
+    entry: "sop-board run launch --scope …、run wait、launch status|stop|stats"
     must:
       - "守护进程按 agents 配置或本次指定的代理参数启动无头 claude -p 或 codex exec，会话只拿到 prompt 文件；本次参数及其接续用值留在尝试记录"
       - "会话编号由启动器取得，启动记录就是独立性的证据"
       - "同一检出同时只运行一个启动"
       - "启动前按 run prepare 的同一套规则核对范围，不合格直接拒绝、不启动会话；会话退出时没有产生运行或留下未提交的运行，launch status 标出、run wait 以失败返回"
-      - "run 类型的启动，会话进程以非零退出码结束且没有被 launch stop 停止时，看板 60 秒后在同一次启动下再起一个会话接续，最多一次；接续会话拿到同一个运行，已写的结果行保留；会话正常退出不接续"
-      - "启动最终失败，或会话正常退出却留下 prepared 的运行时，看板放弃这些运行（释放身份租约、恢复停着的服务，运行目录保留）并登记一条待人处理；不自动提交结果"
+      - "run 类型的启动，会话结束时仍有未裁决场景且本会话至少新裁决一条（含本机暂记），守护进程在同一次启动下续跑；最多三个会话，不限退出码；暂记场景可重做，已有结论的场景保持原登记"
+      - "续跑条件不满足而留有 prepared 运行时，看板放弃运行、释放身份、恢复服务并登记一条待人处理说明暂记场景的类别与原因，保留已登记结论及本机材料；launch stop 由使用者决定如何收尾"
     scenarios:
       - id: RUN-04-P01
         polarity: positive
@@ -393,13 +405,14 @@ sops:
           - "在 app 目录新开 Claude Code 会话作为协调会话；请求“用 Codex（模型 M、强度 high）启动独立会话验收本分支待执行场景”"
           - "协调会话运行 sop-board run launch --scope pending --runner codex --model M --effort high，再运行 run wait；启动期间记录客户端进程的代理、模型和强度参数"
           - "请求再启动一个会话点名验收 shop#X 和 shop#A，这次不指定代理参数，并运行 run wait"
-          - "查看 launch status、两次 attempts.json、真实会话记录和运行提示词，核对 config.yaml 摘要与工作台历史"
+          - "查看 launch status、两次 attempts.json、真实会话记录和运行提示词。用 launch stats 按两次启动编号、按今天及明天各查询一次，核对 config.yaml 摘要与工作台历史"
         expected:
           - "Claude 启动记录有进程号、日志、退出码，会话编号与 --session-id 一致；Codex 启动记录的会话编号来自 thread.started"
           - "新会话的输入只有 prompt 文件，结果的执行者为启动器取得的会话编号，与协调会话不同"
           - "两条场景的历史显示该运行与启动记录，以及独立性"
           - "第一次自动展开的启动范围与执行范围恰为 shop#X、shop#A；尝试参数为 codex/M/high，真实启动参数与记录一致"
           - "第二次仍用配置的 claude 与 medium，两个命令的 attempts 和对应文件一致，配置摘要与启动前相同"
+          - "两次统计分别显示 codex/M 与 claude（未显式传模型时 null），各有 1 个会话、0 次续跑、范围 2、通过 1、失败 1，各场景耗时等于记录的裁决时刻减开始时刻；合计通过 2、失败 2，按明天筛选为零"
         forbidden_effects: ["协调会话自己写结果或修改执行会话的结果", "生成 handoff 交接文件", "执行会话沿用协调会话的会话编号", "把 shop#B 或 shop#W 纳入自动启动，或把一次指定的代理配置写回项目"]
         refs: ["docs/design.md#独立性（取代交接仪式）", "docs/design.md#进程与入口", "docs/design.md#验证"]
         evidence_hints: ["协调会话记录", "启动日志", "launches 表只读查询", "工作台历史截图"]
@@ -473,82 +486,108 @@ sops:
         verify: cli
         initial_state:
           - "main 没有运行中的启动，也没有 prepared 的运行；shop#A 有待执行内容；没有未解决的待人处理"
-          - "替代做法（代表“会话准备后没提交就结束”）：config.yaml 的 agents 为 claude，args 设为 [\"--permission-mode\", \"acceptEdits\", \"--allowedTools\", \"Read\", \"Bash(sop-board run prepare:*)\", \"Bash(sop-board status:*)\"]，启动的会话能准备运行，不能执行与提交；会话没能准备运行时本次作废，换用其他办法让会话在准备后结束并注明"
+          - "按 docs/verification.md 控制真实会话在写完 shop#A 的结果行与证据后、首次裁决前正常结束；替身演示只算自检"
         steps:
           - "在 main 运行 sop-board run launch --scope shop#A，记下启动编号 L"
           - "运行 sop-board run wait，记录退出码与输出"
           - "运行 sop-board launch status --json 与 sop-board attention list，查询本机运行记录，查看该运行的目录，在工作台查看 shop#A"
         expected:
           - "run wait 以业务失败退出（退出码 1），error_code 为 launch-unsubmitted，写明未提交的运行编号，以及它已由看板放弃"
-          - "launch status 中 L 只有一次尝试（正常退出不接续），写明该运行未提交，附启动日志末尾"
-          - "该运行为 abandoned，运行目录仍在；待人处理新增一条环境问题，写明启动 L、该运行与 shop#A"
+          - "launch status 中 L 只有一次尝试（没有首次裁决），写明该运行未提交，附启动日志末尾"
+          - "该运行为 abandoned，运行目录和 shop#A 完整结果行、证据仍在；待人处理新增一条环境问题，写明启动 L、该运行与 shop#A"
           - "shop#A 没有新增结果，状态不变"
-        forbidden_effects: ["run wait 以成功返回", "看板自动提交该运行的结果", "该运行停在 prepared", "正常退出的会话被接续"]
+        forbidden_effects: ["run wait 以成功返回", "看板自动提交该运行的结果", "该运行停在 prepared", "仅凭完整结果行续跑或登记"]
         refs: ["docs/design.md#独立性（取代交接仪式）"]
       - id: RUN-04-N05
         polarity: negative
         negative_type: interrupted
-        title: 执行会话中途异常退出，看板 60 秒后接续一次，同一个运行完成并提交
+        title: 会话取得进展后退出，三个会话接力完成同一个运行
         actor: 协调会话
         priority: P0
-        verify: cli
+        verify: agent
         initial_state:
-          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A、shop#B、shop#W 未执行；config.yaml 的 agents 为 claude"
-          - "替代做法（代表“会话异常退出”）：用 kill -9 结束 launch status 给出的会话进程"
+          - "main 无正在运行的启动、prepared 运行或待人处理；shop#A、shop#B、shop#W 均待执行，隔离数据可还原"
+          - "按 docs/verification.md 安排真实客户端在指定裁决后退出，记录进程结束时刻及退出码；每条超时上限设为 2 秒"
         steps:
-          - "在 main 运行 sop-board run launch --scope shop#A shop#B shop#W，记下启动编号 L；另开终端运行 sop-board run wait --launch L --timeout 0"
-          - "等这次启动的运行 R 的 results.jsonl 出现第一行后，用 kill -9 结束 launch status 中 L 的会话进程，记下已写入的行"
-          - "此后 60 秒内运行 sop-board launch status --json 与 sop-board browser status"
-          - "等 run wait 返回，记录退出码与输出"
-          - "查看 launch status --json、启动目录（attempts.json、两份日志与提示词）、本机运行记录与 R 的 results.jsonl，只读查询 results 表，在工作台查看三条场景的历史"
+          - "运行 sop-board run launch --scope shop#A shop#B shop#W，记录启动 L。首个会话准备 R，经真实入口裁决 shop#A；开始 shop#B 并留下本轮专用测试订单但未裁决，然后正常退出"
+          - "在第一次续跑等待期间读取 launch status、run wait --launch L --timeout 1 与 browser status，再读取第二个会话的提示词，核对其先还原 shop#B，再因数据配方实际失败暂记该条为 blocked/precondition，然后让会话以非零退出"
+          - "核对第二个会话离开时的进度及工作台。第三个会话取回 R，恢复配方，重新开始并裁决 shop#B（重做用时超过 2 秒），再执行并裁决 shop#W，然后提交。运行 run wait --launch L、launch status 和 launch stats --launch L；逐条核对证据及执行者"
         expected:
-          - "会话被结束后 L 仍为 running，R 仍为 prepared 并持有 merchant；约 60 秒后 L 下出现第二次尝试：会话编号与第一次不同，日志另存一份"
-          - "第二次尝试的提示词含接续段：上一个会话的结束时间与退出码、运行 R 的编号与目录"
-          - "接续会话没有新建运行，本机只有 R 一个运行；被结束前已写入的结果行原样保留"
-          - "run wait 以成功返回；输出与 launch status 的 attempts 列出两次尝试，第一次的退出码非零"
-          - "三条场景各登记一条结果；结果的执行者是接续会话，提交输出列出先后两个会话；独立性与没有中断时相同"
-        forbidden_effects:
-          - "第一次异常退出后 L 直接记为 failed，run wait 提前以失败返回"
-          - "接续会话新建第二个运行，或重做已写入结果行的场景"
-          - "同一条场景登记两条结果"
-          - "出现第三次尝试"
-        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#launch / wait"]
-        evidence_hints: ["run wait 输出", "launch status --json 的 attempts", "启动目录清单、attempts.json 与两份提示词", "results.jsonl 在结束会话前后的内容", "results 表只读查询", "工作台历史截图"]
+          - "同一启动 L 有三个不同会话，前两个退出码依次为 0 和非零，每次间隔按守护进程设置；首次用到的代理、模型和强度在后两次一致"
+          - "等待期间 L 保持 running、仍持有 merchant 租约，run wait 未提前返回业务失败；续跑提示给出同一运行 R 的编号与目录、已登记与剩余清单，第二次标明上次开始的 shop#B，第三次标明 shop#B 的暂记类别和阻点；重复准备返回 resumed: true，记录表只有同一个 R"
+          - "shop#A 的结论在首次退出前已可查，后来保持原执行者及证据；shop#B 的半成品订单已按验证规则处理。第二个会话只有 shop#B 的本机暂记，进度 registered=1、local=1，工作台没有该受阻结果，attempts 中第二次的 new_verdicts 为 1"
+          - "运行提交后恰有三条通过，shop#A 属于第一次会话，shop#B 与 shop#W 属于第三次会话。wait 列全登记清单，进度 total=3、adjudicated=3，统计 sessions=3、continuations=2；单条耗时按各自有效开始与裁决计算；shop#B 的最终条目 timed_out 为 true，并计入超时合计"
+        forbidden_effects: ["多起一个运行", "重做已有结论的场景或提前登记 shop#B 的受阻", "覆盖前一个会话的执行者", "在未核对或还原时继续修改测试数据"]
+        refs: ["docs/design.md 已定决策 30 第二段 B", "docs/reference.md#launch--wait"]
+        evidence_hints: ["尝试记录和提示词", "三次真实会话记录", "数据还原的查询", "进度与统计和结果证据"]
       - id: RUN-04-N06
         polarity: negative
         negative_type: interrupted
-        title: 接续的会话也异常退出时，启动记为失败，看板放弃运行、释放身份并登记待人处理
+        title: 三个会话仍有未裁决场景时结束启动，放弃运行并保留已登记结论
         actor: 协调会话
         priority: P0
+        verify: agent
+        initial_state:
+          - "main 没有运行中的启动、prepared 运行或待人处理；库存演示项目的 shop#A、shop#B、shop#X、shop#W、stock#K 未执行；执行客户端缺少 Web 凭据，按手册准备可控的真实会话退出"
+        steps:
+          - "启动以上五条场景；前三次会话各经真实入口执行并裁决一条，依次为 shop#A、shop#B、shop#X，每次裁决后让会话以非零结束"
+          - "第三次退出前，按实际缺凭据的阻点暂记 shop#W 为 not-executed/environment，再开始 stock#K 并保留不完整的一行，确认 merchant 在该运行租约下；第三次退出后运行 run wait --launch L"
+          - "过一个续跑间隔后查看 launch status、attention list、browser status、launch stats --launch L 和工作台；恢复下次执行所需的 Web 凭据，再点名启动 shop#W"
+        expected:
+          - "wait 退出 1、返回 launch-failed；只有三次尝试，运行 R 已放弃，末次进度总数 5、已登记 3、本机暂记 1；shop#W 在 result.unregistered，stock#K 在 result.unadjudicated"
+          - "shop#A、shop#B 仍为通过，shop#X 仍为失败；各有对应证据；shop#W 的暂记和 stock#K 的行草稿保留在运行目录；两条的业务记录和场景状态均无变化，仍在待执行范围"
+          - "merchant 租约获释放，下一次启动能直接执行 shop#W；待人处理恰有一条写明启动号、续跑上限、运行号、涉及的场景与日志末尾，并逐条列出暂记项 shop#W 的 environment 与缺凭据原因，正文不含本机路径"
+          - "统计显示 3 个会话、2 次续跑、通过 2、失败 1、未登记 1、未裁决 1，inconclusive 的 environment 为 0"
+        forbidden_effects: ["第四次尝试", "撤销已登记结果", "把暂记或残行登记为业务结果", "继续占用身份"]
+        refs: ["docs/design.md 已定决策 30 第二段 B", "docs/reference.md#launch--wait"]
+        evidence_hints: ["三次尝试日志", "wait 与 stats 输出", "租约查询", "待人处理与工作台历史"]
+      - id: RUN-04-N07
+        polarity: negative
+        negative_type: interrupted
+        title: 叫停有进展的启动后不再续跑，由操作者收尾
+        actor: 协调会话
+        priority: P1
+        verify: cli
+        initial_state: ["真实启动 L 有运行 R，shop#A 已经真实执行并裁决通过，shop#W 因欠缺 Web 凭据而暂记未执行；首个会话仍在运行"]
+        steps:
+          - "运行不带 --launch 的 launch stop，查看退出码和 launch status"
+          - "运行 launch stop --launch L，然后运行 run wait --launch L；超过一次配置的续跑间隔后查看 launch status、browser status 与 attention list"
+          - "操作者运行 run abandon --run R，在工作台核对 shop#A 并查看 R 的记录"
+        expected:
+          - "缺少编号时退出 2，返回 invalid-arguments 并指出 --launch；L 仍在运行"
+          - "启动为 stopped，只有一次尝试；R 保持 prepared，租约仍在，无启动收尾条目"
+          - "明确放弃后才释放身份；已登记的 shop#A 通过及证据仍可查，shop#W 的暂记留在 R 的目录和 result.unregistered，业务未执行记录及场景状态无变化"
+        forbidden_effects: ["守护进程擅自续跑或放弃运行", "清掉已登记结论或将暂记裁决登记到业务库"]
+        refs: ["docs/reference.md#launch--wait"]
+      - id: RUN-04-N08
+        polarity: negative
+        negative_type: interrupted
+        title: 首个会话在首次裁决前异常退出时接续一次，第二个会话仍无裁决则结束启动
+        actor: 协调会话
+        priority: P1
         verify: cli
         initial_state:
-          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A、shop#W 未执行；没有未解决的待人处理；config.yaml 的 agents 为 claude"
-          - "替代做法（代表“会话异常退出”）：用 kill -9 结束 launch status 给出的会话进程"
+          - "main 没有运行中的启动，也没有 prepared 的运行；shop#A、shop#B 有待执行内容；没有未解决的待人处理"
+          - "按 docs/verification.md 控制真实会话的退出；替身演示只算自检"
         steps:
-          - "在 main 运行 sop-board run launch --scope shop#A shop#W，记下启动编号 L；另开终端运行 sop-board run wait --launch L --timeout 0"
-          - "运行 R 准备好之后，用 kill -9 结束第一次尝试的会话进程；第二次尝试的会话启动后同样结束它"
-          - "等 run wait 返回，记录退出码与输出；再过 2 分钟运行 sop-board launch status --json"
-          - "运行 sop-board attention list、sop-board browser status 与 sop-board status --json，查询本机运行记录，查看 R 的运行目录"
-          - "在 main 运行 sop-board run launch --scope shop#W，再运行 sop-board run wait"
+          - "运行 sop-board run launch --scope shop#A shop#B，记下启动 L；让首个会话在准备运行之后、首次裁决之前以非零退出码结束，在续跑等待期间运行 launch status 与 run wait --launch L --timeout 1"
+          - "第二个会话取回同一个运行，经真实入口执行并裁决 shop#A、shop#B 后提交；运行 run wait --launch L 与 launch status"
+          - "点名 shop#A、shop#B 再发起启动 L2；让首个会话在首次裁决前以非零退出码结束，第二个会话也在首次裁决前正常退出；运行 run wait --launch L2、launch status 与 attention list"
         expected:
-          - "run wait 以业务失败退出（退出码 1），error_code 为 launch-failed，写明运行 R 已由看板放弃，attempts 列出两次尝试"
-          - "L 为 failed，没有第三次尝试"
-          - "R 为 abandoned，merchant 不再被任何运行持有；R 的运行目录、已写的结果行与证据都还在"
-          - "待人处理新增一条环境问题：写明启动 L 接续一次后仍异常退出、运行 R 已由看板放弃、shop#A 与 shop#W，以及日志末尾一行；文字里没有本机路径"
-          - "shop#A、shop#W 没有新增结果，状态不变，仍在 pending 范围"
-          - "第 5 步的启动直接成功，不返回 browser-busy 或 scenario-in-run"
-        forbidden_effects: ["R 停在 prepared、继续占着 merchant", "看板把 R 里已写的结果行登记为结果", "删除 R 的运行目录", "出现第三次尝试"]
-        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#launch / wait"]
-        evidence_hints: ["run wait 输出", "launch status --json", "attention list 输出", "browser status 输出", "本机运行记录只读查询", "R 的运行目录清单"]
+          - "L 的首个会话没有新裁决、退出码非零，L 保持 running 并在续跑间隔后起第二个会话；续跑提示写明上一个会话的结束时间、退出码和它准备的运行，第二个会话的准备返回同一个运行与 resumed: true"
+          - "L 最终为 exited，共两次尝试；两条场景的结果由第二个会话登记，运行为 submitted"
+          - "L2 只有两次尝试：第二个会话没有新裁决就结束后不再接续，run wait 以业务失败返回，运行被放弃，待人处理新增一条写明启动 L2 与该运行"
+        forbidden_effects: ["首个会话异常退出后直接结束启动", "没有进展的第二个会话之后再起第三个会话", "接续的会话另建运行而原运行仍占着身份"]
+        refs: ["docs/reference.md#launch--wait"]
 
   - id: RUN-05
     title: 未执行与受阻按性质划分，故障场景用 env stop 模拟
     actor: 执行会话
     entry: "sop-board run prepare/submit、env stop|start <服务>、env status、attention add；运行目录的提示词与服务清单；工作台场景详情"
     must:
-      - "未执行是本机暂时不具备、补齐或换一台机器就能执行的情况：场景需要的服务本机未搭建或被人为停着；缺少入口声明的凭据变量；等人处理的事（真实账号登录、人机验证、只发到本人设备的验证码、身份使用次数到上限，照旧登记待人处理）"
-      - "未执行不登记结果，不改变场景状态；场景详情显示最近一次未执行的情况：谁、什么时候、缺什么"
-      - "受阻是意外故障或全队都不具备的能力：服务或浏览器异常退出（不论发生在开始前还是执行中，附日志末尾并登记待人处理）；前置数据准备失败、证据丢失、运行作废；入口或观察能力还没建设；需要停外部共享中间件的故障场景"
+      - "未执行是本机暂时不具备、补齐或换一台机器就能执行的情况：场景需要的服务本机未搭建或被人为停着；缺少入口声明的凭据变量；等人处理的事（真实账号登录、人机验证、只发到本人设备的验证码、身份使用次数到上限，类别为 human，提交时自动登记待人处理）"
+      - "未执行不登记结果，不改变场景状态；场景详情显示最近一次未执行的情况：谁、什么时候、缺什么与类别。受阻也要填写类别"
+      - "受阻是意外故障或全队都不具备的能力：服务或浏览器异常退出（不论发生在开始前还是执行中，附日志末尾）；前置数据准备失败、证据丢失；入口或观察能力还没建设；需要停外部共享中间件的故障场景"
       - "场景起点要求某个依赖故障时，执行会话用 sop-board env stop|start <服务> 停启，不直接结束进程或改动环境；结果详情显示“执行时 <服务> 已停止”；run submit 时还停着的服务自动恢复并记录"
       - "同一个入口对任何操作都失败、连续挡住 2 条场景时，执行会话中止这个入口的其余场景：前 2 条记受阻，其余写未执行并写明本轮中止，登记一条环境问题，照常提交"
     scenarios:
@@ -567,9 +606,9 @@ sops:
           - "查看 submit 输出与运行目录的 results.jsonl，运行 sop-board status --json，在工作台打开 stock#K 与 shop#A；只读查询 results 表"
           - "在另一份同样状态的项目中对 Codex 会话重复一次"
         expected:
-          - "results.jsonl 中 stock#K 一行为 not-executed，finding 写明库存服务本机未搭建；shop#A 一行为 pass 并带证据"
+          - "results.jsonl 中 stock#K 一行为 not-executed，cause 为 environment，finding 写明库存服务本机未搭建；shop#A 一行为 pass 并带证据"
           - "submit 成功：shop#A 登记为通过；未执行清单列出 stock#K 及原因；results 表中没有 stock#K 的结果行"
-          - "stock#K 的状态仍为未执行，仍在 pending 范围；场景详情显示最近一次未执行：操作者、时间与原因"
+          - "stock#K 的状态仍为未执行，仍可由 pending 选中；场景详情显示最近一次未执行：操作者、时间、环境类别与原因"
           - "会话记录中没有启动库存服务、登记仓库或修改配置的操作"
         forbidden_effects:
           - "stock#K 记为受阻、失败或通过"
@@ -588,11 +627,11 @@ sops:
           - "执行者的环境中没有 web 入口声明的凭据变量 DEMO_MERCHANT_PASSWORD；merchant 的 profile 没有登录态"
         steps:
           - "运行 sop-board run prepare --scope shop#W --session S1，阅读运行目录的提示词"
-          - "执行者按提示词在 results.jsonl 写一行 {\"scenario\": \"shop#W\", \"status\": \"not-executed\", \"finding\": \"缺少凭据变量 DEMO_MERCHANT_PASSWORD\"}，运行 sop-board run submit --run <编号> --json"
+          - "执行者按提示词在 results.jsonl 写一行 {\"scenario\": \"shop#W\", \"status\": \"not-executed\", \"cause\": \"environment\", \"finding\": \"缺少凭据变量 DEMO_MERCHANT_PASSWORD\"}，运行 sop-board run submit --run <编号> --json"
           - "运行 sop-board status --json；本机与内网设备分别打开工作台的 shop#W；只读查询 results 表"
         expected:
-          - "提示词写明：缺少入口声明的凭据变量时写 not-executed，finding 只写变量名"
-          - "submit 成功，未执行清单列出 shop#W 及原因；results 表没有新增 shop#W 的结果行"
+          - "提示词写明：缺少入口声明的凭据变量时写 not-executed、cause: environment，finding 只写变量名"
+          - "submit 成功，未执行清单列出 shop#W、environment 及原因；results 表没有新增 shop#W 的结果行"
           - "shop#W 仍为通过，仍带“待人工复核”与“待沉淀”；status --json 的 counts 与提交前相同"
           - "本机的 shop#W 详情显示最近一次未执行：操作者、时间与“缺少凭据变量 DEMO_MERCHANT_PASSWORD”"
           - "内网的 shop#W 详情同样显示这次未执行的人与时间，但不出现变量名 DEMO_MERCHANT_PASSWORD"
@@ -641,13 +680,13 @@ sops:
         steps:
           - "运行 sop-board run prepare --scope stock#K --session S1，阅读运行目录的提示词"
           - "执行者开始执行 stock#K；在下单之前，测试者用 kill -9 结束库存服务进程（不经 sop-board）"
-          - "执行者下单失败后运行 sop-board env status --json，按提示词写出结果，运行 sop-board attention add 登记，再运行 sop-board run submit --run <编号> --json"
+          - "执行者下单失败后运行 sop-board env status --json，按提示词写出结果并 run verdict，再运行 sop-board run submit --run <编号> --json"
           - "在工作台打开 stock#K，运行 sop-board attention list 与 sop-board status --json"
         expected:
-          - "提示词写明：服务异常退出记 blocked，finding 附日志末尾，并登记待人处理"
+          - "提示词写明：服务异常退出记 blocked，cause 为 environment，finding 附日志末尾"
           - "env status 中 stock 为异常退出并给出日志路径"
           - "stock#K 的结果为受阻，finding 写明库存服务异常退出并附日志末尾；submit 输出列出运行期间异常退出的服务 stock"
-          - "工作台 stock#K 显示受阻及原因；attention list 有对应的一条待人处理"
+          - "工作台 stock#K 显示受阻及原因；一次环境受阻后 stock#K 仍可由 pending 选中，attention list 尚无将它卡住的条目"
         forbidden_effects:
           - "stock#K 记为未执行、失败或通过"
           - "异常退出被当作人为停止：结果详情显示“执行时 stock 已停止”"
@@ -669,7 +708,7 @@ sops:
           - "在工作台打开 stock#K"
         expected:
           - "run prepare 成功；输出与服务清单都写明 stock 异常退出及日志路径"
-          - "stock#K 的结果为受阻，finding 附库存服务的日志末尾；工作台 stock#K 显示受阻及原因"
+          - "stock#K 的结果为受阻、cause 为 environment，finding 附库存服务的日志末尾；工作台 stock#K 显示受阻及原因"
         forbidden_effects:
           - "因为异常退出发生在执行开始之前而把 stock#K 记为未执行"
           - "run prepare 因 stock 异常退出而失败"
@@ -684,12 +723,12 @@ sops:
         verify: agent
         initial_state:
           - "演示项目的环境在运行；shop#X、shop#A、shop#B 都是 API 场景，都未执行；没有未解决的待人处理；config.yaml 的 agents 设为 claude"
-          - "替代做法（代表“入口在、对任何操作都失败”）：环境就绪后让演示商城的接口对任何请求都返回 500（例如把它的数据文件改名），做法写进取证记录"
+          - "用启用故障开关的隔离演示环境，让演示商城的接口在 run prepare 完成后开始返回 500，启动预检时还保持健康；做法写进取证记录"
         steps:
-          - "在 main 运行 sop-board run launch --scope shop#X shop#A shop#B，再运行 sop-board run wait"
+          - "在 main 运行 run launch --scope shop#X shop#A shop#B；观察 prepare 成功后触发故障，再运行 run wait"
           - "查看 wait 输出、运行目录的 results.jsonl 与启动日志，运行 sop-board attention list 与 sop-board status --json，在工作台打开三条场景"
         expected:
-          - "results.jsonl 中先执行的两条为 blocked，finding 写明接口返回 500 的现象并附日志末尾；第三条为 not-executed，finding 写明入口 api 不可用、本轮中止"
+          - "results.jsonl 中先执行的两条为 blocked，finding 写明接口返回 500 的现象并附日志末尾；第三条为 not-executed，finding 写明入口 api 不可用、本轮中止；三条的 cause 都为 environment"
           - "启动日志里没有针对第三条场景的入口请求"
           - "提交成功：两条登记为受阻；未执行清单列出第三条及原因，它的状态仍为未执行、仍在 pending 范围"
           - "待人处理有一条环境问题，写明入口 api 不可用"
@@ -697,18 +736,54 @@ sops:
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
         evidence_hints: ["启动日志", "results.jsonl 与 wait 输出", "attention list 输出", "status --json 输出", "工作台截图"]
 
+      - id: RUN-05-N04
+        polarity: negative
+        negative_type: invalid-input
+        title: 受阻与未执行的类别或疑似缺陷字段不合格时拒绝登记，修正后可以裁决
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["隔离演示项目的 shop#W 到实际登录步骤需要本人设备上的验证码；记录该场景无新结果或待人处理"]
+        steps:
+          - "准备 shop#W，尝试到验证码步骤后停止。将真实阻点写成未执行，先不写 cause，运行 run verdict；再将 cause 改为不存在的类别，用 run submit 尝试补登"
+          - "改成 cause: human，同时错误加上 suspect_defect: true，重试 run verdict；最后删除该字段，裁决，核对本机进度及 attention list，再提交"
+          - "查看三份错误输出、最后的登记清单和工作台、attention list；核对执行会话记录"
+        expected:
+          - "三次非法输入均返回 result-invalid，指出 results.jsonl 的具体行号与 cause 或 suspect_defect 字段；运行仍为 prepared，无新增登记或待人处理"
+          - "修正后本机暂记一次未执行，类别 human；提交前无相关业务未执行记录或待人处理。提交后仅登记一次未执行并自动生成一条当前指纹的待人处理，场景状态照旧，无需手工 attention add"
+        forbidden_effects: ["非法字段默认成 environment", "绕过本人验证", "状态因未执行改变", "重复登记待人处理"]
+        refs: ["docs/design.md 已定决策 30 第二段 A", "docs/reference.md#resultsjsonl"]
+      - id: RUN-05-P04
+        polarity: positive
+        title: 反复遇到同类环境或外部依赖问题时暂停自动选择，解决后恢复
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "stock#K 与 shop#A 的场景内容固定，两条无处置或待人处理；使用库存演示项目；商城入口探测只核对商城"
+        steps:
+          - "在“只搭商城”的项目中连续三轮点名 stock#K、shop#A；经真实入口完成 shop#A，stock#K 如实裁决为未执行、类别 environment。每轮提交后检查 status --json、pending 与 all 准备范围，每次查完立即放弃探查用的运行"
+          - "在另一个隔离的完整库存演示项目，使外部库存依赖在探测通过后意外无响应，第一次经入口裁决 dependency 后复原库存并实际下单通过；随后再次制造依赖故障，连续三轮真实执行 stock#K 并裁决 dependency，每轮提交后查 held"
+          - "记录卡住时的状态、计数与待人处理编号；在第一份项目点名仍卡住的 stock#K 再次裁决同类别并提交，核对条目编号；先尝试不写说明的 resolve，再带说明解决，查看下次 pending 的 brief.md，按同一条件再裁决一轮后查 held"
+        expected:
+          - "环境与依赖各自在连续的前两轮未卡住；依赖中间实际通过打断此前计数。连续第三轮各产生一条对应场景和指纹的待人处理；stock#K 在各自项目不再进入 pending 或 all，但仍按未执行或受阻状态计数"
+          - "点名仍会命中并显示卡住的原因，同类别再裁决沿用未解决条目编号；没有说明的 resolve 拒绝，有说明后 pending 恢复命中，brief 写出该条处理说明"
+          - "解决后首轮同类受阻或未执行从第 1 次重计"
+        forbidden_effects: ["探查用准备或同一运行重试裁决多算一次", "首次环境或依赖问题即卡住", "把暂不可执行记成通过或失败"]
+        refs: ["docs/design.md 已定决策 30 第二段 A", "docs/reference.md#待人处理"]
+
   - id: RUN-06
     title: 共享库中断后重新提交，结果只登记一次
     actor: 执行会话
     entry: "sop-board run submit --run N；共享库容器的停启"
     must:
-      - "run submit 依次做三步：证据文件存入本机证据目录；一个事务把结果、证据索引和运行记录写入业务记录库；更新本机运行状态、释放租约、恢复服务"
-      - "写入业务记录库失败时运行保持 prepared，结果留在运行目录，恢复后重新 run submit"
-      - "每次运行在共享库里以“机器标识 + 本机运行编号”唯一，重复提交不重复登记"
+      - "通过或失败写入业务记录库后即可从另一台机器查看；提交登记暂记裁决及没有裁决的完整行，并结束本机运行"
+      - "写入业务记录库失败时运行保持 prepared，原登记不变、结果行与证据留在运行目录，恢复后原样重试"
+      - "每次运行在共享库里以“机器标识 + 本机库标识 + 本机运行编号”唯一，重试不重复登记"
     scenarios:
       - id: RUN-06-P01
         polarity: positive
-        title: 共享库正常时一次提交即登记，另一台机器随即看到，证据留在本机
+        title: 裁决通过后另一台机器即能查看，证据留在产出机器
         actor: 执行会话
         priority: P1
         verify: cli
@@ -716,13 +791,14 @@ sops:
           - "双机项目：shop#B 在共享库中没有结果；B 没有 prepared 运行"
         steps:
           - "在 B 运行 sop-board run prepare --scope shop#B --session TB，执行者经演示项目入口执行 shop#B 并写出通过结果与一份证据，note 填“已核对本订单；批量退款不在本次范围”"
+          - "在 B 运行 run verdict shop#B --run <编号>；提交前从 A 打开结果与证据，记录结果编号；B 检查该运行仍为 prepared"
           - "在 B 运行 sop-board run submit --run <编号> --json"
           - "在 B 运行 sop-board run wait --run <同一编号> --json"
           - "在 A 运行 sop-board status --json；只读查询共享库中这次运行的记录；列出 A、B 两个数据根目录的 evidence 目录"
         expected:
           - "submit 成功，运行状态为 submitted"
           - "submit 的 recorded 与 wait 的 result.recorded 是同一条通过，场景键和结果编号相同，note 均为原文"
-          - "A 的 status 中 shop#B 为通过"
+          - "A 的 status 在提交前已显示 shop#B 通过，且工作台经产出机器可取回证据；提交后仍是同一结果编号"
           - "共享库中这次运行的记录带 B 的机器标识与 B 的本机运行编号，证据索引写明产出机器为 B 的机器"
           - "证据文件在 B 的 evidence 目录里，A 的 evidence 目录里没有"
         forbidden_effects: ["证据文件写进共享库或 A 的机器", "运行记录缺少机器标识"]
@@ -738,14 +814,14 @@ sops:
         initial_state:
           - "双机项目：B 有 prepared 运行 R（范围 shop#B），results.jsonl 已写好 shop#B 的通过结果并附一份证据；shop#B 在共享库中没有结果"
         steps:
-          - "停掉共享库容器，在 B 运行 sop-board run submit --run R --json"
+          - "停掉共享库容器，在 B 先运行 run verdict shop#B --run R，再运行 run submit --run R"
           - "查看运行 R 的状态与运行目录"
-          - "启动共享库容器，在 B 再次运行 sop-board run submit --run R --json"
+          - "启动共享库容器，在 B 连续两次运行 run verdict shop#B --run R，然后运行 run submit --run R"
           - "在 A 运行 sop-board status --json；只读查询共享库中这次运行的记录与 shop#B 的结果行数"
         expected:
-          - "第一次提交以业务失败退出（退出码 1），error_code 为 database-unreachable，输出写明共享库的主机"
+          - "断线时的裁决与提交均以业务失败退出（退出码 1），error_code 为 database-unreachable，输出写明共享库的主机"
           - "运行 R 仍为 prepared，results.jsonl 与证据文件仍在运行目录"
-          - "第二次提交成功，shop#B 登记为通过"
+          - "恢复后首次裁决登记为通过，第二次返回 duplicate: true 并给出同一结果编号；提交成功"
           - "共享库中这次运行只有一条运行记录和一条 shop#B 的结果；A 的 status 中 shop#B 为通过"
         forbidden_effects:
           - "第一次失败后运行被标为 submitted 或 abandoned"
@@ -851,11 +927,11 @@ sops:
         steps:
           - "在 main 运行 sop-board run prepare --scope shop#A --session S1，得到运行 R1"
           - "以会话 F 运行 sop-board fix prepare shop#X --session F，得到修复 N；在 lib 改掉预埋缺陷（不提交）"
-          - "执行者执行 shop#A，运行 sop-board run submit --run R1 --json"
+          - "执行者经入口执行 shop#A 后运行 run verdict shop#A --run R1；提交前查 shop#A 的结果与改动路径，再运行 run submit --run R1"
           - "以会话 F 写 fix.json 并运行 sop-board fix submit --fix N"
           - "运行 sop-board run prepare --scope shop#B --session S2 --json，得到运行 R2；运行 sop-board env status"
         expected:
-          - "R1 提交成功，shop#A 登记为通过；提交输出的 product_changed 列出 lib 中被改动的文件"
+          - "R1 提交前 shop#A 已登记为通过，裁决记录的 product_changed 列出 lib 中被改动的文件；R1 照常提交"
           - "第 5 步准备成功，不返回 fix-in-progress；环境按含修复改动的代码重启"
         forbidden_effects: ["R1 因修复会话改代码而作废或被拒绝提交", "修复已提交后仍拒绝准备"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行", "docs/standard.md#首次执行与人工复核"]
@@ -870,7 +946,7 @@ sops:
         initial_state:
           - "main 上 shop#X 为失败，shop#A 未执行；环境在运行，记下 env status 的启动时间；没有 prepared 的运行，没有运行中的启动"
           - "会话 F 已运行 sop-board fix prepare shop#X --session F 得到修复 N，并在 lib 改了一个产品文件（不提交）；修复 N 为 open"
-          - "记录 launches 表与本机运行记录的行数，以及当前的 claude、codex 进程"
+          - "给 api 声明演示探测并设为不健康，记录探测调用日志、launches 表和本机运行记录行数及会话进程"
         steps:
           - "在 main 运行 sop-board run prepare --scope shop#A --session S1 --json"
           - "运行 sop-board run prepare --scope shop#A --session S1 --wait 30 --json，记录用时"
@@ -879,7 +955,7 @@ sops:
         expected:
           - "三条命令都以业务失败退出（退出码 1），error_code 为 fix-in-progress：写明修复 N、会话 F、已改动 1 个产品文件，并给出出路（等它 fix submit 后再准备）"
           - "带 --wait 的那次立即返回，不排队等待"
-          - "没有新建运行，没有新的启动记录，没有新的 claude 或 codex 进程；环境的启动时间不变"
+          - "没有新建运行，没有新的启动记录，没有新的 claude 或 codex 进程；环境的启动时间不变，探测命令未被调用"
         forbidden_effects: ["环境按改到一半的代码重启", "先启动无头会话、到会话里才被拒绝", "修复 N 被放弃或改动"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
         evidence_hints: ["三条命令的输出与用时", "env status 输出", "launch status 输出", "launches 表与本机运行记录只读查询", "ps 输出"]
@@ -905,3 +981,63 @@ sops:
         forbidden_effects: ["修复没有改动文件时返回 fix-in-progress", "修复会话自己的准备被拒绝", "--allow-open-fix 的运行不留下越过记录"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
         evidence_hints: ["三次准备的输出", "本机运行记录只读查询", "工作台 shop#B 历史截图"]
+
+  - id: RUN-09
+    title: 准备时排除不健康入口，裁决与提交保持同一运行
+    actor: 执行者
+    entry: "sop-board run prepare|launch|begin|verdict|submit，工作台与 status"
+    must:
+      - "准备以就绪后的探测结果决定可执行范围，只有探测排除项会当轮自动登记未执行"
+      - "通过和失败当场登记且本轮结论固定；暂记场景可重做；提交登记剩余暂记和完整行，并列明未裁决场景"
+    scenarios:
+      - id: RUN-09-P01
+        polarity: positive
+        title: 部分入口不健康时只执行可用入口，准备便登记排除项
+        actor: 协调会话
+        priority: P0
+        verify: cli
+        initial_state: ["演示项目按验证手册启用探测，环境已就绪，web 当前不健康、api 健康；shop#A 与 shop#W 未执行"]
+        steps:
+          - "运行 run launch --scope shop#A shop#W，读启动预检输出；在会话准备时保持 web 不健康，查看 prepare 输出、运行目录、浏览器租约及工作台"
+          - "执行会话经真实接口完成 shop#A，裁决并提交后运行 launch stats。清除故障标记恢复 web 探测，然后点名准备 shop#W 并经浏览器实际验收"
+        expected:
+          - "启动预检列出 web 不健康，实际准备后 R 只含 shop#A；无 Web 场景材料或 Web 身份租约"
+          - "prepare 返回前，shop#W 已以 environment 未执行登记，原因取探测输出，状态不变；进度总数 2、已裁决 1、not-executed=1"
+          - "第一轮 shop#A 通过，提交未裁决为空，launch stats 计通过 1、environment=1；shop#W 没有开始时刻，耗时为 null"
+          - "恢复探测后 shop#W 正常入选，产生新证据，可得到结论"
+        forbidden_effects: ["租下 web 的身份但从未执行 web 场景", "不健康入口让健康入口也无法执行", "把探测排除记成失败或受阻"]
+        refs: ["docs/design.md 已定决策 30 第二段 A", "docs/reference.md#准备"]
+      - id: RUN-09-N01
+        polarity: negative
+        negative_type: other
+        title: 候选入口全部不健康时拒绝准备与启动
+        actor: 协调会话
+        priority: P0
+        verify: cli
+        initial_state: ["演示项目按验证手册启用探测，当前检出环境尚未运行，api 与 web 均设置故障开关；无运行、启动、身份租约"]
+        steps:
+          - "点名 shop#A 与 shop#W 运行 run prepare --session S，先等环境就绪；核对 env status、browser status 和已有运行记录"
+          - "环境已就绪时，以同样范围运行 run launch，查看 launch status、启动目录及业务记录"
+        expected:
+          - "两条命令均返回 entry-unhealthy、退出 1，指出两个入口及各自探测原因；环境可保持 ready"
+          - "没有新运行、结果、启动会话或身份租约，也没有自动待人处理"
+        forbidden_effects: ["先启动会话或身份浏览器再拒绝", "为全部不健康的探测留下空运行"]
+        refs: ["docs/reference.md#准备", "docs/reference.md#launch--wait"]
+      - id: RUN-09-P02
+        polarity: positive
+        title: 暂记受阻后重做并登记通过，结论固定；提交区分暂记、待补登和未裁决
+        actor: 执行者
+        priority: P0
+        verify: cli
+        initial_state: ["演示项目的 shop#A、shop#B、shop#X、shop#W 均无结果，有预埋缺陷；已知实现者会话 I，执行终端缺少 Web 凭据，测试商家尚未登录"]
+        steps:
+          - "准备四条并开始 shop#A；缺少演示配方凭据的终端执行配方实际失败后，按观察裁决为 blocked、precondition、suspect_defect: true，使用 --implementer I。核对进度、业务记录、工作台及待人处理"
+          - "恢复配方，重新 run begin shop#A，经真实入口执行并留新证据。更新 shop#A 的一行，裁决通过并记录结果编号。原行重试一次，再仅修改 note 后重试，并尝试重新 run begin shop#A；取证后恢复原结论行"
+          - "执行 shop#B 并写完整通过行。shop#W 因本机缺 Web 凭据裁决为 not-executed/environment；shop#X 保持无行、未裁决。用不同实现者提交一次，再按原声明提交并核对进度、业务库和待人处理"
+        expected:
+          - "第一次裁决只有本机暂记，registered=0、local=1、counts.blocked=1，业务库没有 shop#A 的受阻，且无自动待人处理。通过当场登记后 registered=1、local=0、counts.pass=1、adjudicated 仍为 1；业务库始终没有 shop#A 的受阻或相应待人处理"
+          - "原结论行重试成功并返回 duplicate: true 和同一结果编号；修改后再次裁决及再次开始均返回 scenario-concluded，原证据和结果编号不变"
+          - "实现者声明冲突返回 run-implementer-conflict，shop#B 尚无结果，R 继续 prepared"
+          - "提交前 shop#W 仅暂记；正常提交后 recorded 恰为 shop#A 与 shop#B，not_executed 只含 shop#W（environment），unadjudicated 只含 shop#X，进度 registered=3、local=0。shop#X 无新增结果或未执行记录"
+        forbidden_effects: ["登记 shop#A 的暂记受阻或生成其待人处理", "把未裁决混为未执行", "修改已登记的实现者或给任一场景补写虚构结果"]
+        refs: ["docs/reference.md#开始与裁决", "docs/reference.md#提交规则"]

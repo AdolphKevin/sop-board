@@ -25,9 +25,11 @@
 #   另需（版本 9 起）：演示项目 web 入口另声明合成测试账号 merchant2（第二个商家账号，凭据只经环境变量，也能执行 shop#W）；
 #   演示商城首页引用的静态脚本响应带长缓存头（max-age 不少于一天），供 BRW-02-P02 核对换检出时清空 HTTP 缓存。
 
+#   版本 10 由未参与实现的审核方按 docs/design.md 已定决策 30 第二段（使用者 2026-11-18 决定）修订：核对浏览器崩溃在逐条裁决时以环境类别立即登记；浏览器崩溃改判的受阻先暂记，提交时登记为业务结果。
+
 metadata:
   requirement: "sop-board v10：守护进程用自带运行时安装并启动 Chrome for Testing，每个身份一份持久 profile、各检出共用，身份租约整机独占，换检出时只清 HTTP 缓存；真人在有界面的 CfT 窗口完成登录或验证后用 browser release 交还，之后的运行沿用同一浏览器进程与窗口，browser close 才结束浏览器；声明的测试账号由执行会话直接登录，只把真人才能完成的步骤交给人，等人处理的场景记未执行并登记待人处理；浏览器崩溃或启动即中止记为受阻；serve 可在会话中启动；不碰用户日常 Chrome"
-  version: 9
+  version: 10
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -52,6 +54,12 @@ metadata:
     - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用（身份浏览器各检出共用）"
       version: "2026-11-13"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第二段：A 不空转、B 执行可见"
+      version: "2026-11-18"
+      confirmed_by: "blur.yin"
+    - ref: "docs/reference.md 已定决策 30 第二段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["browser", "chrome-for-testing", "identity", "crash", "release", "declared-account"]
 
 sops:
@@ -370,14 +378,14 @@ sops:
           - "当前上下文会使 CfT 启动即中止（例如无法打开窗口）；无法自然复现时，由测试者在 CfT 进程出现后、/json/version 应答前对其 kill -ABRT，并在记录中注明"
         steps:
           - "会话运行 sop-board run prepare --scope shop#W --session S1，记录命令耗时"
-          - "会话按实际情况写出结果并 run submit"
+          - "会话按实际情况写出结果，运行 run verdict shop#W，对照运行进度与工作台，再 run submit"
           - "运行 sop-board browser status 与 attention list，在工作台打开 shop#W"
         expected:
           - "run prepare 在 15 秒就绪时限内返回，没有挂起"
           - "run prepare 的输出与运行目录说明中的浏览器问题写明 CfT 的退出时间、退出信号与日志路径，没有空值"
-          - "该运行中 shop#W 记为受阻，finding 写明 CfT 的退出信号与日志路径"
+          - "该运行仍为 prepared 时，本机进度显示 shop#W 暂记受阻、cause 为 environment，finding 写明 CfT 的退出信号与日志路径；工作台场景详情尚无本轮受阻结果"
           - "browser status 记录该次退出信号；attention list 有对应的待人处理"
-          - "工作台 shop#W 显示受阻及原因"
+          - "提交后工作台 shop#W 显示受阻、环境类别及原因"
         forbidden_effects: ["命令一直挂起或静默结束而没有任何记录", "shop#W 记为通过或失败", "回退到用户日常 Chrome"]
         refs: ["docs/design.md#浏览器代理（问题 5、6）", "使用者 2026-11-10 对场景集待确认问题的答复 第 3 条"]
         evidence_hints: ["会话记录与命令耗时", "chrome.log 末尾", "提交结果", "工作台截图"]
