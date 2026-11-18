@@ -74,7 +74,7 @@ def install_templates(data, with_stock=False, *, ports=None, shared=None, regist
         body += '\n' + shared_block(shared)
     if not registered_only:
         (data / 'config.yaml').write_text(registered.rstrip('\n') + '\n' + body + '\n', encoding='utf-8')
-    for name in ('env.py', 'worktree.py', 'seed.py'):
+    for name in ('env.py', 'worktree.py', 'seed.py', 'probe.py'):
         shutil.copy2(source / name, data / name)
     shutil.copytree(source / 'skills', data / 'skills', dirs_exist_ok=True)
     if with_stock:

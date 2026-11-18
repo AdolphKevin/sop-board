@@ -218,14 +218,15 @@ def for_verify(context, fix_id, executor):
     return dict(id=fix['id'], session=fix['session'], problems=loads(fix['problems']))
 
 
-def after_verify(db, store, work, recorded):
+def after_verify(db, store, work, recorded, *, adjudications):
     """复验提交后（业务记录库的同一事务）：全部问题场景独立通过时，修复记为已复验。"""
     fix = db.one('SELECT * FROM fixes WHERE id=?', (work['fix'],))
     if fix is None or fix['status'] not in ('submitted', 'verified'):
         return
     problems = {scenarios.key(p['file'], p['scenario']) for p in loads(fix['problems'])}
-    passed = {item['scenario'] for item in recorded if item['status'] == 'pass'}
-    if problems <= passed and work['session'] != fix['session']:
+    passed = {item['scenario'] for item in recorded if item['status'] == 'pass'
+              and adjudications[item['scenario']]['independence'] == 'independent'}
+    if problems <= passed:
         db.execute("UPDATE fixes SET status='verified' WHERE id=?", (fix['id'],))
 
 

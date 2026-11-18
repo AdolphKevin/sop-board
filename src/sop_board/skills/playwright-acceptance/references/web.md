@@ -8,14 +8,14 @@
 - `PW_IDENTITIES`：`identities.json`，列出每个入口的身份及各自的 `endpoint`；`identity.mjs` 的 `as(身份)` 据此连接。
 - `PW_TAB`（可选）：目标标签页 URL 的子串；匹配到一个则复用，零个则新开一页，多个则报错。`PW_FRAME`（可选）是 surface-map 已确认的唯一 iframe 选择器。`PW_CONNECT_TIMEOUT_MS` 缺省 30000。
 
-浏览器状态用 `sop-board browser status` 查看。brief.md 的"浏览器问题"一节列出启动失败的身份，用该身份的 Web 场景直接记 blocked，finding 照抄。
+浏览器状态用 `sop-board browser status` 查看。brief.md 的"浏览器问题"一节列出启动失败的身份，用该身份的 Web 场景直接记 blocked、cause: environment，finding 照抄。
 
 `global-setup.mjs` 在开跑前检查 Playwright 版本、scope、调试端口与（仅本轮需要录屏时）ffmpeg，不另开 CDP 会话；唯一目标页与 `PW_FRAME` 在 worker 首次连接时核对。任何一项失败，整轮不执行业务步骤。
 
 ### 账号登录与人做的验证
 
 - **声明的测试账号**（项目手册或技能列出、凭据在 `credential_env` 变量中，含为验收注册的第三方账号与测试邮箱）：声明即授权。未登录时用凭据变量直接在页面登录，需要验证码时申请并从声明的测试邮箱读取；每次先按[使用次数](#多身份与使用次数)登记。登录放在录制之外：`playwright test` 之前在运行目录用一次性脚本经同一身份的 endpoint 登录，登录态留在 profile，场景里只核对已登录。trace 会记下填写的值与登录请求正文，录屏会拍到输入框，所以不在场景用例里填密码；登录本身就是被验收的步骤时，提交前逐个检查 trace 与录屏，里面不能出现取值。
-- **人做的部分**：真实账号与未声明账号的登录、人机验证、只发到使用者本人设备（手机、身份验证器）的验证码。开始前或运行中遇到时记 not-executed：`throw notExecuted('<身份> 需要真人<做什么>（<哪一页>）')`，并 `sop-board attention add` 登记，写明哪个身份、在哪一页、需要人做什么。未执行不改变场景状态。人在看板窗口完成后交还，窗口保持打开，下一轮直接沿用：
+- **人做的部分**：真实账号与未声明账号的登录、人机验证、只发到使用者本人设备（手机、身份验证器）的验证码。开始前或运行中遇到时记 not-executed：`throw notExecuted('<身份> 需要真人<做什么>（<哪一页>）')`，转换后填 cause: human，写明哪个身份、在哪一页、需要人做什么。未执行不改变场景状态。人在看板窗口完成后交还，窗口保持打开，解决自动生成的待人处理后，下一轮直接沿用：
 
   ```bash
   sop-board browser open --identity <身份> --headed   # 打开入口，环境没在运行时先拉起；窗口已开着时只取得真人租约，不重启
@@ -24,13 +24,13 @@
 
   人持有租约期间 `run prepare` 返回 `browser-busy`。`browser close` 会结束浏览器，人在窗口里做过的验证随之作废，只在要关掉浏览器时用。
 - **测试环境的浏览器提示**：测试环境自身地址触发的本地网络访问请求、localhost 自签名证书警告等，由执行者处理（页面上的“继续”、该浏览器的站点设置）；处理不了再按人做的部分登记。
-- 遇到 "browser may not be secure" 立即停止并记 blocked。
+- 遇到 "browser may not be secure" 立即停止并记 blocked、cause: environment。
 
 看板停止与重启时有界面窗口的保留与认回（`browser-unrecovered`）由发起运行的会话处理，见 sop-board 技能的 [run.md](../../sop-board/references/run.md)「账号与真人操作」；执行者始终只连 run.env 与 identities.json 给出的地址。
 
 ### 崩溃
 
-- 浏览器进程在运行中退出：`run submit` 把该身份相关且未通过的 Web 场景记为 blocked（已写出的 pass 保留），finding 含信号与 chrome.log 路径，并登记待人处理。
+- 浏览器进程在运行中退出：`run verdict` 将该身份相关、已写行且未通过的场景暂记为 blocked、cause: environment，finding 含信号与 chrome.log 路径。已登记结论保留，浏览器崩溃仍有单独的运维记录。
 - 渲染进程崩溃（`page.on('crash')`、错误含 `Target crashed`）：夹具按 blocked 处理并停止本轮。
 - 30 分钟内异常退出两次，该身份进入 `browser-crashed`，须人检查后用 `sop-board browser open --identity <身份> --reset-crash` 重置，再用最小范围另开一次运行确认。
 - 租约持有期间看板不自动重启浏览器；执行者也不在用例中重连，不自行启动浏览器。
@@ -43,7 +43,7 @@
 sop-board identity record --identity <身份> --kind login|code --run <N>
 ```
 
-超限时被拒绝并已自动登记待人处理；停下，把该身份的场景记 not-executed。
+超限时被拒绝并已自动登记待人处理；停下，把该身份的场景记 not-executed、cause: human。
 
 ### 连接共用
 
@@ -61,7 +61,7 @@ sop-board identity record --identity <身份> --kind login|code --run <N>
 | 新标签页 | 点击前 `context.waitForEvent('page')` | 单独操作；启用录屏时夹具为新标签页录制 |
 | 浏览器原生对话框 | `page.on('dialog')` | 事先注册处理 |
 | 已知且与业务无关的遮挡（引导、Cookie 提示） | 项目在界面地图中声明 | `page.addLocatorHandler(定位器, 关闭动作)`，由 Playwright 在需要时触发 |
-| 人机验证、真实账号登录过期 | 页面文字 | `throw notExecuted(…)`，登记待人处理 |
+| 人机验证、真实账号登录过期 | 页面文字 | `throw notExecuted(…)`，结果行补 cause: human |
 | 未知遮挡 | 页面文字 | `throw blocked(…)`，保留截图与页面结构 |
 
 连接后，跨域 iframe 要过一两秒才出现在 frame 树里；配置里的 `expect.timeout` 已放宽到 15 秒，不要再写轮询。

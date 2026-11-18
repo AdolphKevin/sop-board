@@ -5,7 +5,7 @@ from .store import dumps, now
 
 
 def publish(db, store, row, *, checkout, branch, result=None, services=None, implementer=None, implemented_by=None,
-            independence=None, ended_at=None, sequence=True):
+            independence=None, ended_at=None, sequence=True, prepared=False):
     """把本机运行写进业务记录库；已经登记过（重新提交）时返回原有编号。返回 (业务编号, 是否新登记)。"""
     machine = store.machine['id']
     created = db.insert(
@@ -15,7 +15,7 @@ def publish(db, store, row, *, checkout, branch, result=None, services=None, imp
         (store.product, machine, store.origin, row['id'], db.next_seq() if sequence else None, row['kind'], checkout, branch,
          row['session'], row['operator'], implementer, implemented_by, independence, row['fix'], row['launch'], row['scope'],
          row['snapshot'] or '{}', row['product_digest'], dumps(result) if result is not None else None, dumps(services or []),
-         row['created_at'], ended_at or now()))
+         row['created_at'], None if prepared else ended_at or now()))
     if created is not None:
         return created, True
     return existing(db, store, row['id']), False

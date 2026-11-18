@@ -11,7 +11,7 @@ disable-model-invocation: true
 ## 边界
 
 - 浏览器：只连接 run.env 的 `PW_CDP_ENDPOINT`，即看板守护进程为本轮身份启动的 Chrome for Testing（每个身份一个、各检出共用，默认无头，持久 profile）。执行者不启动浏览器、不运行 `playwright install`、不接触用户日常 Chrome。
-- 账号：只在测试环境操作。项目声明的测试账号（含测试邮箱）由你用声明的凭据变量直接登录、读取验证码，不另向使用者要授权。真实账号登录、人机验证、只发到使用者本人设备的验证码由人在看板窗口完成后交还，你沿用那个窗口；运行中遇到它们记 not-executed（`throw notExecuted(…)`）并 `sop-board attention add` 登记。出现 "browser may not be secure" 即停止并记 blocked。测试环境在浏览器里触发的提示（本地网络访问、localhost 证书警告）由你处理。
+- 账号：只在测试环境操作。项目声明的测试账号（含测试邮箱）由你用声明的凭据变量直接登录、读取验证码，不另向使用者要授权。真实账号登录、人机验证、只发到使用者本人设备的验证码由人在看板窗口完成后交还，你沿用那个窗口；运行中遇到它们记 not-executed（`throw notExecuted(…)`），结果行补 cause: human，提交自动登记。出现 "browser may not be secure" 即停止并记 blocked、cause: environment。测试环境在浏览器里触发的提示（本地网络访问、localhost 证书警告）由你处理。
 - 独立性：执行者不能是实现者，实现者跑脚本只算自检。
 - 证据：按场景 `verify` 所引用入口的 `evidence` 逐项留证，截图与只读查询用 `testInfo.attach` 附到报告。录屏与 trace 开关已按场景固定在 `scope.json`，不自行覆盖。
 
@@ -23,19 +23,20 @@ disable-model-invocation: true
 4. **准备前置。** 按 `initial_state` 逐项核对。无关前置数据按 brief.md 的前置数据一节准备；被验收流程应产生的对象经真实入口产生。前置数据准备失败时 `throw blocked('<缺什么>')`；缺入口声明的凭据变量、用到的服务本机未搭建或被人停着（brief.md“服务”一节）时 `throw notExecuted('<缺什么>')`。真实登录或请求验证码前先登记使用次数（见[Web 参考](references/web.md#多身份与使用次数)）。
 5. **执行。** `npx --no-install playwright test`，保留 `workers: 1`、`retries: 0`、`maxFailures: 1`。保存、发送、支付等动作只提交一次，等完成信号后再核对。
 6. **核对结果。** 只断言用户看得见的结果，逐项核对 `forbidden_effects`。
-7. **转换与提交。** 在运行目录：
+7. **转换、裁决与提交。** 在运行目录：
 
    ```bash
    sop-board playwright convert --report playwright/report.json --out . --executor <会话> \
      --scope scope.json --scenario-file scenarios.yaml [--finding <key>=<原因>] [--allow-partial]
+   sop-board run verdict <key> --run <N>  # 每条实际已取得结果的场景分别裁决
    sop-board run submit --run <N>
    ```
 
-   证据复制到 `evidence/<key，# 换成 __>/`。其他入口的结果行合并进同一 results.jsonl。命令细节见[命令](references/commands.md)。
+   证据复制到 `evidence/<key，# 换成 __>/`。其他入口的结果行合并进同一 results.jsonl。裁决前补齐受阻与未执行的类别。已经登记的通过或失败保留原行，时间用完的场景保持未裁决。命令细节见[命令](references/commands.md)。
 
 ## 结果判定
 
-按性质判定，不看发生在开始前还是执行中：业务断言不符记 fail，留截图与页面结构，本轮继续。本机暂时不具备、补齐就能执行的记 not-executed：等人处理的事（真实或未声明账号登录、登录过期、人机验证、只发到本人设备的验证码、身份使用次数到上限）、缺凭据变量、用到的服务本机没在运行。意外故障记 blocked：连接、前置数据准备失败、未知遮挡、目标页关闭、浏览器或渲染进程崩溃、服务异常退出、browser may not be secure。两者都停止本轮，剩余场景记 not-executed。判定表、崩溃处理与止损规则见[执行细则](references/workflow.md)。
+按性质判定，不看发生在开始前还是执行中：业务断言不符记 fail，留截图与页面结构，本轮继续。本机暂时不具备、补齐就能执行的记 not-executed：等人处理的事（真实或未声明账号登录、登录过期、人机验证、只发到本人设备的验证码、身份使用次数到上限）、缺凭据变量、用到的服务本机没在运行。意外故障记 blocked：连接、前置数据准备失败、未知遮挡、目标页关闭、浏览器或渲染进程崩溃、服务异常退出、browser may not be secure。意外阻点会停止当次 Playwright 命令。按运行目录 prompt.md 判断哪些场景可以继续，并给受阻和未执行的结果行补 cause。判定表、崩溃处理与止损规则见[执行细则](references/workflow.md)。
 
 ## 参考
 

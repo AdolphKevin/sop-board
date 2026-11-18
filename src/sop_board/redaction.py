@@ -228,6 +228,14 @@ def response_bytes(raw, content_type, credential_names, *, local, local_roots=()
     return clean(raw, is_text(content_type or '') or looks_like_text(raw, content_type))
 
 
+def business_text(project, checkout, text):
+    credential_names = set(names(project.entries))
+    if project.fixtures:
+        credential_names.update(project.fixtures.get('credential_env', []))
+    roots = (project.data.parent, *project.repos.values(), *(checkout.paths.values() if checkout else ()))
+    return response_bytes(text.encode(), 'text/plain', credential_names, local=False, local_roots=roots).decode()
+
+
 def clean_task_output(directory, secrets):
     """只处理任务目录的文本材料，不进入工作树或符号链接。"""
     extensions = {'.json', '.jsonl', '.txt', '.log', '.md', '.yaml', '.yml', '.html', '.xml', '.csv', '.py', '.js', '.mjs', '.sh'}

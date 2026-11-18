@@ -8,12 +8,18 @@ import stat
 import yaml
 
 
-FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env', 'web_evidence', 'atlas', 'identities', 'spec_library'}
+FIELDS = {'surface', 'operate', 'observe', 'evidence', 'isolation', 'address_env', 'driver', 'credential_env',
+          'web_evidence', 'atlas', 'identities', 'spec_library', 'probe', 'probe_timeout'}
+PROBE_TIMEOUT = 10
 
 
 def web_evidence(entry):
     """未声明的 Web 录制项沿用原有行为。"""
     return dict(video=True, trace=True) | entry.get('web_evidence', {})
+
+
+def argv_ok(value):
+    return isinstance(value, list) and bool(value) and all(isinstance(x, str) and x.strip() and '\0' not in x for x in value)
 
 
 def public_problems(problems, *, local):
@@ -59,6 +65,12 @@ def validate_entries(entries, repos=None):
                 problems.append(dict(field=field + '.' + key, problem='应为非空文字数组'))
         if 'address_env' in entry and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', str(entry['address_env'])):
             problems.append(dict(field=field + '.address_env', problem='应为环境变量名'))
+        if 'probe' in entry and not argv_ok(entry['probe']):
+            problems.append(dict(field=field + '.probe', problem='应为非空命令数组，每项为非空文字'))
+        if 'probe_timeout' in entry:
+            timeout = entry['probe_timeout']
+            if 'probe' not in entry or type(timeout) is not int or not 1 <= timeout <= 3600:
+                problems.append(dict(field=field + '.probe_timeout', problem='须同时声明 probe，并填写 1～3600 的整数秒'))
         if 'credential_env' in entry:
             values = entry['credential_env']
             if (not isinstance(values, list) or not all(isinstance(v, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', v) for v in values)

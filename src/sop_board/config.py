@@ -13,12 +13,12 @@ from urllib.parse import urlsplit
 import yaml
 
 from . import gitops
-from .entries import validate_entries, verification_skills, skill_files
+from .entries import argv_ok, validate_entries, verification_skills, skill_files
 
 FORMAT = 'sop-board-project-6'
 HOME = Path(os.environ.get('SOP_BOARD_HOME', str(Path.home() / '.sop-board'))).expanduser()
 TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents',
-              'shared_database'}
+              'shared_database', 'scenario_timeout'}
 SHARED_FIELDS = {'host', 'port', 'dbname', 'user', 'password'}
 ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout', 'services', 'service_timeout'}
 SERVICE_NAME = re.compile(r'[a-z][a-z0-9_-]{0,63}\Z')
@@ -115,10 +115,6 @@ def relative_paths(value, field, repos, problem):
                 selected.append(Path(item))
         result[alias] = selected
     return result
-
-
-def argv_ok(value):
-    return isinstance(value, list) and bool(value) and all(isinstance(x, str) and x.strip() and '\0' not in x for x in value)
 
 
 def validate_agents(value, problem):
@@ -447,13 +443,14 @@ class Project:
         shared, shared_invalid = None, False
         saved_password_value = None
         scenario_repo, scenario_path = None, None
+        scenario_timeout = 900
         problems = []
 
         def values(skill=None, driver_paths=None):
             return dict(repos=repos, identities=identities, entries=entries, adapter=adapter, snapshot_exclude=snapshot_exclude,
                         fixtures=fixtures, agents=agents, shared=shared, shared_invalid=shared_invalid, _saved_password=saved_password_value,
                         scenario_repo=scenario_repo, scenario_path=scenario_path, skill=skill, driver_paths=driver_paths or {},
-                        problems=problems)
+                        scenario_timeout=scenario_timeout, problems=problems)
 
         def problem(field, message):
             problems.append(dict(field=field, problem=message))
@@ -537,6 +534,11 @@ class Project:
         if 'fixtures' in config:
             from .ledger import validate_fixtures
             fixtures = validate_fixtures(config['fixtures'], problem)
+        limit = config.get('scenario_timeout', scenario_timeout)
+        if type(limit) is not int or not 1 <= limit <= 86400:
+            problem('scenario_timeout', '须为 1～86400 的整数秒')
+        else:
+            scenario_timeout = limit
         adapter = validate_adapter(config.get('adapter', {}), problem) if 'adapter' in config else {}
         if 'adapter' not in config:
             problem('adapter', '须声明 adapter.env：看板守护进程用它按检出启动环境')

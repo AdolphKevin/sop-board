@@ -66,7 +66,7 @@ def board(app, request):
                   branch=derived['book'].viewer.branch, machine=store.machine['name'],
                   product=dict(name=store.product_name(), shared=bool(store.shared)),
                   checkouts=[dict(name=c.name, kind=c.kind) for c in app.checkouts()],
-                  labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items,
+                  labels=status.LABELS, counts=counts, total=derived['total'], files=files, items=items, held=derived['held'],
                   stats=dict(agent_confirm_rate=stats['agent_confirm_rate'], agent_review_coverage=stats['agent_review_coverage']),
                   product_snapshot=dict(dirty=snapshot['dirty'], digest=snapshot['product_digest'][:12]),
                   configured=app.project.configured, problems=public_problems(app.project.problems, local=request.local))
@@ -108,6 +108,8 @@ def history_entry(db, store, book, row, *, local, stopped=None, project=None, av
     viewer = book.viewer
     item = dict(id=row['id'], kind=row['kind'], status=row['status'], executed_at=local_time(row['executed_at']),
                 actual=row['actual'], finding=row['finding'], note=row['note'], defect=row['defect'],
+                cause=row['cause'] if row['kind'] == 'agent' else None,
+                suspect_defect=row['kind'] == 'agent' and bool(row['suspect_defect']),
                 machine=book.machine_name(row['machine']), branch=status.branch_label(row['branch']), checkout=row['checkout'],
                 here=row['machine'] == viewer.machine, other_branch=bool(viewer.branch != row['branch'] and status.conclusion(row)),
                 merged=bool(row.get('merged') and viewer.branch != row['branch']))
@@ -171,6 +173,7 @@ def detail(app, request):
     fields = {name: scene.get(name, []) for name in (*scenarios.CONTENT_FIELDS, 'refs', 'evidence_hints')}
     result = dict(ok=True, key=key, local=request.local, checkout=context.checkout.name, branch=book.viewer.branch,
                   disposition=info['disposition'], other_dispositions=book.other_dispositions(key),
+                  held=[item for item in derived['held'] if item['key'] == key],
                   scene=dict(id=scene['id'], file=scene['file'], node=scene['node'], node_title=scene['node_title'],
                              title=scene['title'], actor=scene['actor'], priority=scene['priority'], verify=scene['verify'],
                              polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
@@ -301,10 +304,11 @@ def disposition_clear_api(app, request):
 
 @route('GET', '/api/runs', 'lan')
 def runs_api(app, request):
+    from . import progress
     from .launcher import state
     context = context_for(app, request.query.get('checkout'))
     with app.store.local() as db:
-        launches = [state(db, row, local=request.local)[0]
+        launches = [state(db, row, local=request.local, store=app.store)[0]
                     for row in db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 50', (context.checkout.id,))]
         works = []
         for row in db.execute("SELECT * FROM local_work WHERE checkout=? AND kind IN ('run','distill') ORDER BY id DESC LIMIT 50",
@@ -313,6 +317,11 @@ def runs_api(app, request):
                         created_at=local_time(row['created_at']), ended_at=local_time(row['ended_at']) if row['ended_at'] else None,
                         scope=[s['scenario'] for s in json.loads(row['scope'])])
             summary = json.loads(row['result']) if row['result'] else {}
+            if row['kind'] == 'run':
+                work = dict(row)
+                data = progress.observe(app.store, work)
+                item.update(progress.view(work, local=request.local, data=data),
+                            unadjudicated=progress.unadjudicated(work, data))
             item['recorded'] = len(summary.get('recorded', []))
             item['voided'] = summary.get('voided', [])
             item['not_executed'] = [n['scenario'] for n in summary.get('not_executed', [])]
@@ -364,8 +373,10 @@ def attention_page(app, request):
     from . import ledger
     from .pages import attention as page
     context = context_for(app, request.query.get('checkout'))
+    scenes = scenarios.scan(context.checkout.scenarios_dir(app.project), set(app.project.entries))['scenarios'] \
+        if app.project.configured else {}
     with app.store.records() as db:
-        items = ledger.open_attention(db, app.store, local=request.local)
+        items = ledger.open_attention(db, app.store, local=request.local, checkout=context.checkout.name, scenes=scenes)
     return html_response(page(app.project.name, context.checkout.name, items, local=request.local, operator=operator_for(request)))
 
 

@@ -70,11 +70,14 @@ def validate_fixtures(value, problem):
 
 
 ATTENTION_KINDS = ('人机验证', 'OAuth 授权', '账号登录', '第三方后台设置', '权限放行', '邮箱验证',
-                   '环境问题', '前置数据', '浏览器崩溃', '其他')
+                   '环境问题', '前置数据', '浏览器崩溃', '外部依赖', '场景本身', '入口能力', '等人处理', '其他')
+CAUSE_KINDS = dict(environment='环境问题', precondition='前置数据', dependency='外部依赖',
+                   scenario='场景本身', capability='入口能力', human='等人处理')
 
 
-def open_attention(db, store, *, local):
-    """产品内未解决的待人处理（业务记录库），每条附产出机器与检出。"""
+def open_attention(db, store, *, local, checkout=None, scenes=None):
+    """产品内未解决的待人处理，附产出检出与场景适用性。"""
+    from .store import loads
     names = machine_names(db)
     rows = db.execute('SELECT * FROM attention WHERE product=? AND resolved_at IS NULL ORDER BY id', (store.product,))
     result = []
@@ -82,11 +85,15 @@ def open_attention(db, store, *, local):
         item = dict(id=row['id'], kind=row['kind'], text=row['text'], scenarios=json.loads(row['scenarios']),
                     created_by=row['created_by'], created_at=row['created_at'],
                     machine=names.get(row['machine'], row['machine']), checkout=row['checkout'],
-                    here=row['machine'] == store.machine['id'])
+                    here=row['machine'] == store.machine['id'], hold=loads(row['hold']), active=None)
+        if item['hold']:
+            scene = (scenes or {}).get(item['scenarios'][0])
+            item['active'] = bool(item['here'] and checkout == row['checkout'] and scene
+                                  and scene['fingerprint'] == item['hold']['fingerprint'])
         if local:
             item['work'] = row['work']
         result.append(item)
-    return result
+    return sorted(result, key=lambda item: (not (item['hold'] or {}).get('suspect_defect'), item['id']))
 
 
 def machine_names(db):
@@ -94,11 +101,79 @@ def machine_names(db):
     return {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
 
 
-def insert_attention(db, store, checkout_name, kind, text, *, by, scenarios=(), work=None):
+def insert_attention(db, store, checkout_name, kind, text, *, by, scenarios=(), work=None, hold=None):
     from .store import dumps, now
-    return db.insert('INSERT INTO attention(product,machine,checkout,kind,text,scenarios,work,created_by,created_at) '
-                     'VALUES (?,?,?,?,?,?,?,?,?)',
-                     (store.product, store.machine['id'], checkout_name, kind, text, dumps(list(scenarios)), work, by, now()))
+    return db.insert('INSERT INTO attention(product,machine,checkout,kind,text,scenarios,work,created_by,created_at,hold) '
+                     'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                     (store.product, store.machine['id'], checkout_name, kind, text, dumps(list(scenarios)), work, by, now(),
+                      dumps(hold) if hold else None))
+
+
+def holds(db, product, machine, checkout, *, key=None):
+    from .store import dumps, loads
+    sql = ('SELECT id, text, scenarios, hold, note, resolved_at, resolved_by FROM attention '
+           'WHERE product=? AND machine=? AND checkout=? AND hold IS NOT NULL')
+    params = (product, machine, checkout)
+    if key is not None:
+        sql += ' AND scenarios=?'
+        params += (dumps([key]),)
+    return [dict(row, hold=loads(row['hold']), key=loads(row['scenarios'])[0]) for row in db.execute(
+        sql, params)]
+
+
+def consecutive(db, location, key, fingerprint, cause, *, after_seq, before_seq):
+    """两条最近的历史 Agent 结果与未执行合并，按业务序号判断是否接续。"""
+    from .store import loads
+    file, _, scenario = key.partition('#')
+    history = [(r['seq'], r['work'], r['cause']) for r in db.execute(
+        "SELECT seq, work, cause FROM results WHERE product=? AND machine=? AND checkout=? "
+        "AND file=? AND scenario=? AND fingerprint=? AND kind='agent' AND seq<? "
+        "ORDER BY seq DESC LIMIT 2", (*location, file, scenario, fingerprint, before_seq))]
+    for work in db.execute("SELECT id, seq, result FROM work WHERE product=? AND machine=? AND checkout=? "
+                           "AND kind='run' AND result IS NOT NULL AND seq<?", (*location, before_seq)):
+        for item in loads(work['result'], {}).get('not_executed', []):
+            if item['scenario'] == key and item.get('fingerprint') == fingerprint:
+                history.append((item.get('seq', work['seq']), work['id'], item.get('cause')))
+    seen = set()
+    for number, work_id, category in sorted(history, key=lambda item: item[0], reverse=True):
+        if number >= before_seq:
+            continue
+        if number <= after_seq or category != cause:
+            break
+        seen.add(work_id if work_id is not None else ('result', number))
+        if len(seen) == 2:
+            return True
+    return False
+
+
+def register_hold(db, store, checkout, work, item, seq, *, by):
+    """与结果或未执行清单在同一事务内调用，调用方已取得序号锁。"""
+    from .redaction import business_text
+    from .store import dumps
+    location = (store.product, store.machine['id'], checkout.name)
+    key, fingerprint, cause = (item[k] for k in ('scenario', 'fingerprint', 'cause'))
+    existing = [row for row in holds(db, *location, key=key)
+                if row['hold']['fingerprint'] == fingerprint and row['hold']['cause'] == cause]
+    active = next((row for row in existing if row['resolved_at'] is None), None)
+    if active is None and cause in ('environment', 'dependency'):
+        last = max((row['hold']['resolved_seq'] for row in existing), default=0)
+        if not consecutive(db, location, key, fingerprint, cause, after_seq=last, before_seq=seq):
+            return
+    suspect = bool(item.get('suspect_defect'))
+    text = business_text(store.project, checkout, item['finding'].strip())
+    if cause == 'human':
+        warnings = [f"#{r['id']}" for r in db.execute(
+            "SELECT id, text FROM attention WHERE product=? AND machine=? AND checkout=? AND work=? AND hold IS NULL "
+            "AND kind IN ('账号登录','邮箱验证') ORDER BY id", (*location, work))
+                    if r['text'].startswith('身份 ') and '次数已达上限' in r['text']]
+        if warnings:
+            text += '（身份使用次数告警 ' + '、'.join(warnings) + '）'
+    if active:
+        db.execute('UPDATE attention SET text=?, hold=? WHERE id=?',
+                   (text, dumps(dict(active['hold'], suspect_defect=suspect)), active['id']))
+    else:
+        hold = dict(fingerprint=fingerprint, cause=cause, suspect_defect=suspect, trigger_seq=seq, resolved_seq=None)
+        insert_attention(db, store, checkout.name, CAUSE_KINDS[cause], text, by=by, scenarios=[key], work=work, hold=hold)
 
 
 # ---- 待人处理 ----
@@ -114,17 +189,25 @@ def attention_add(store, checkout_name, kind, text, *, by, scenarios=(), work=No
     return dict(ok=True, attention=number)
 
 
-def attention_resolve(store, item_id, *, by, note=None):
+def attention_resolve(store, item_id, *, by, note=None, checkout=None):
     from .errors import reject
-    from .store import now
+    from .redaction import business_text
+    from .store import dumps, loads, now
     with store.records_tx() as db:
+        db.lock_sequence()
         row = db.one('SELECT * FROM attention WHERE id=? AND product=?', (item_id, store.product))
         if row is None:
             reject(404, 'attention-not-found', 'attention', f'待人处理不存在：#{item_id}')
-        # 条件更新：别的机器同时处理同一条时只有一次生效。
-        if db.execute('UPDATE attention SET resolved_by=?, resolved_at=?, note=? WHERE id=? AND resolved_at IS NULL',
-                      (by, now(), note, item_id)).rowcount == 0:
+        hold = loads(row['hold'])
+        if hold and not _text(note):
+            reject(422, 'attention-invalid', 'note', '解决场景绑定的待人处理须填写非空说明（--note）')
+        if row['resolved_at'] is not None:
             return dict(ok=True, attention=item_id, duplicate=True)
+        if hold:
+            hold['resolved_seq'] = db.next_seq()
+            note = business_text(store.project, checkout, note.strip())
+        db.execute('UPDATE attention SET resolved_by=?, resolved_at=?, note=?, hold=? WHERE id=?',
+                   (by, now(), note, dumps(hold) if hold else None, item_id))
     return dict(ok=True, attention=item_id, resolved_by=by)
 
 

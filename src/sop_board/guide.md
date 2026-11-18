@@ -11,7 +11,7 @@ sop-board browser install         # 固定版本的 Playwright 与 Chrome for Te
 sop-board init <项目> <仓库目录>... [--data <根目录>]
 ```
 
-询问开发者项目名称和全部 Git 仓库目录（可分散在任何位置）。init 逐个核对工作树根目录与 origin，全部合格才建立 `<根目录>/<项目>/`（缺省根目录 `~/.sop-board`），其中有 `project.json`、`config.yaml`、`board.sqlite3`。旧版数据目录直接拒绝，不迁移。本机状态格式为 8、业务记录仍为格式 7 时，按第 7 节原地升级业务记录库。本机操作者缺省取 `git config user.name`，需要时用 `sop-board operator set <姓名>` 设置一次，之后所有登记自动以它署名。
+询问开发者项目名称和全部 Git 仓库目录（可分散在任何位置）。init 逐个核对工作树根目录与 origin，全部合格才建立 `<根目录>/<项目>/`（缺省根目录 `~/.sop-board`），其中有 `project.json`、`config.yaml`、`board.sqlite3`。旧版数据目录直接拒绝，不迁移。本机状态格式为 8、业务记录仍为格式 7 或 8 时，按第 7 节原地升级业务记录库。本机操作者缺省取 `git config user.name`，需要时用 `sop-board operator set <姓名>` 设置一次，之后所有登记自动以它署名。
 
 当前会话不能写数据目录时，Codex 用 `--add-dir <数据目录>`，Claude Code 用 `/add-dir <数据目录>`。
 
@@ -36,6 +36,8 @@ entries:
   api:
     surface: http
     address_env: APP_URL
+    probe: [python3, probe.py, api]          # 可选：使用 APP_URL 做只读入口健康检查
+    probe_timeout: 10                       # 可选：1～3600 秒，缺省 10
     operate: "按 app 仓库 docs/operations/verification.md 第 2 节 api 入口操作"
     observe: ["按同手册第 3 节核对响应、数据和禁止副作用"]
     evidence: ["按同手册第 3 节保存请求响应与数据查询"]
@@ -52,6 +54,7 @@ entries:
     spec_library: app:acceptance            # 可选：浏览器层守护 spec 与交互地图的仓内目录
     atlas: {repos: [app], languages: [zh]}  # 可选：交互地图
     web_evidence: {video: true, trace: true}
+scenario_timeout: 900                     # 可选：单场景计时提醒，1～86400 秒
 adapter:
   env: [python3, env.py]                    # 必填：按检出启动环境（相对数据目录的脚本）
   ports: [8000, 3000]                       # 环境监听的基础端口
@@ -87,6 +90,8 @@ fixtures:                                   # 可选：前置数据配方
 | `SOP_ENV_LOG_DIR` | 本检出的日志目录 |
 
 服务就绪后输出一行 `sop-board: ready`，可在同一行附 JSON 给出本检出的入口地址：`sop-board: ready {"APP_URL": "http://127.0.0.1:8100"}`。输出就绪即环境可用，不要求每个服务都在运行：本机暂时没搭的服务照常跳过，用不到它的场景照常执行。项目的服务无法换端口时保持 `port_step: 0`，看板会让检出轮流使用同一组端口，冲突时直接报告占用者。
+
+**入口探测**：给需要检查的入口声明 `probe`。把只读命令写成 argv 数组，一个元素一个参数，从项目数据目录执行，不经过 shell。命令使用上表的检出变量及环境就绪行给出的实际地址。选一个使用者实际会用的最小请求，健康退出 0，失败退出非零，输出简短的响应或错误线索。检查入口本身所需的依赖即可，保持数据、登录态和服务启停原样。用 `sop-board env up` 后的 `sop-board env probe <入口>` 核对每套检出的地址和响应。
 
 声明了 `adapter.services` 时，适配还要按服务契约工作（没声明时只看整体就绪与否）：
 

@@ -22,7 +22,7 @@ import uuid
 
 from .errors import APIError
 
-VERSION = 8          # 业务记录表（共享库与本机库里的业务记录）的格式
+VERSION = 9          # 业务记录表（共享库与本机库里的业务记录）的格式
 LOCAL_VERSION = 8    # 本机状态库（board.sqlite3 的 user_version）的格式；已定决策 28 起与业务记录分开
 LOCAL_PRODUCT = 'local'
 RECORDS_LOCK = 7210021
@@ -40,7 +40,14 @@ CREATE TABLE dispositions(
   PRIMARY KEY (product, file, scenario, branch))
 """
 
-UPGRADES = {7: ('创建处置表并更新业务记录格式', DISPOSITIONS_DDL)}
+UPGRADES = {
+    7: ('创建处置表并更新业务记录格式', (DISPOSITIONS_DDL,)),
+    8: ('增加原因类别、疑似缺陷与待人处理字段', (
+        'ALTER TABLE results ADD COLUMN cause TEXT',
+        'ALTER TABLE results ADD COLUMN suspect_defect INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE attention ADD COLUMN hold TEXT',
+    )),
+}
 
 LOCAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -246,6 +253,8 @@ CREATE TABLE IF NOT EXISTS results(
   independence TEXT CHECK(independence IN ('independent','self-check','undeclared')),
   marked_by TEXT,
   executed_at TEXT NOT NULL,
+  cause TEXT,
+  suspect_defect INTEGER NOT NULL DEFAULT 0,
   UNIQUE(work, file, scenario));
 CREATE INDEX IF NOT EXISTS results_lookup ON results(product, file, scenario, fingerprint);
 
@@ -391,7 +400,8 @@ CREATE TABLE IF NOT EXISTS attention(
   created_at TEXT NOT NULL,
   resolved_by TEXT,
   resolved_at TEXT,
-  note TEXT)
+  note TEXT,
+  hold TEXT)
 """ + ';' + DISPOSITIONS_DDL
 
 # 业务记录库中按产品区分的表（导入、核对与行数统计用）。
@@ -531,6 +541,11 @@ class DB:
         """业务记录库的统一递增序号：结果、标注、守护运行、修复关闭与运行记录共用。行锁使序号顺序与提交顺序一致。"""
         return self.value("UPDATE counters SET value=value+1 WHERE name='seq' RETURNING value")
 
+    def lock_sequence(self):
+        """在读取要更新的业务记录前串行化事务，沿用分配序号时的同一把锁。"""
+        if self.dialect == 'postgres':
+            self.one("SELECT value FROM counters WHERE name='seq' FOR UPDATE")
+
 
 class Lock:
     """看板线程与本机命令共用的可重入跨进程锁。"""
@@ -639,7 +654,8 @@ def upgrade_records(project, *, dry_run=False):
             target += 1
         if not dry_run:
             for version, ddl in statements:
-                db.execute(ddl)
+                for statement in ddl:
+                    db.execute(statement)
                 db.execute("UPDATE meta SET value=? WHERE key='format'", (str(version),))
         return dict(ok=True, database='postgresql' if shared else 'sqlite', current_version=current,
                     target_version=target, dry_run=dry_run, steps=steps)

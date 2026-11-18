@@ -111,9 +111,13 @@ class Book:
     """一次读出产品的业务记录，供看板、命令与报告按同一套规则推导。db 是业务记录库。"""
 
     def __init__(self, db, view):
+        from . import ledger
         self.viewer = view
         self.current = None
         self.dispositions = dispositions.load(db, view.product)
+        self.holds = {}
+        for item in ledger.holds(db, view.product, view.machine, view.checkout):
+            self.holds.setdefault((item['key'], item['hold']['fingerprint']), []).append(item)
         self.names = {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
         self.groups = {}
         for row in db.execute('SELECT * FROM results WHERE product=? ORDER BY seq DESC', (view.product,)):
@@ -141,8 +145,10 @@ class Book:
             for item in summary.get('not_executed') or []:
                 file, _, scenario = str(item.get('scenario', '')).partition('#')
                 self.skipped.setdefault((file, scenario, item.get('fingerprint')), []).append(dict(
-                    run=row['local_id'], record=row['id'], machine=row['machine'], checkout=row['checkout'], seq=row['seq'] or 0,
-                    by=row['submitted_by'], at=row['ended_at'], finding=item.get('finding')))
+                    run=row['local_id'], record=row['id'], machine=row['machine'], checkout=row['checkout'],
+                    seq=item.get('seq', row['seq'] or 0), by=item.get('by', row['submitted_by']),
+                    at=item.get('at', row['ended_at']), finding=item.get('finding'), cause=item.get('cause'),
+                    suspect_defect=bool(item.get('suspect_defect')), source=item.get('source')))
 
     # ---- 选择 ----
 
@@ -215,6 +221,18 @@ class Book:
     def other_dispositions(self, key):
         return [item for branch, item in sorted(self.dispositions.get(key, {}).items()) if branch != self.viewer.branch]
 
+    def hold_items(self, key, fingerprint):
+        return [dict(key=key, fingerprint=fingerprint, cause=item['hold']['cause'], finding=item['text'],
+                     attention=item['id'], suspect_defect=item['hold']['suspect_defect'])
+                for item in self.holds.get((key, fingerprint), []) if item['resolved_at'] is None]
+
+    def resolved_holds(self, key, fingerprint):
+        latest = {}
+        items = (item for item in self.holds.get((key, fingerprint), []) if item['resolved_at'] is not None)
+        for item in sorted(items, key=lambda item: item['hold']['resolved_seq']):
+            latest[item['hold']['cause']] = item
+        return latest
+
     def not_executed(self, scene):
         """本检出在当前指纹上最近一次未执行；没有记指纹的早先条目作为后备。"""
         for key in ((scene['file'], scene['id'], scene['fingerprint']), (scene['file'], scene['id'], None)):
@@ -255,7 +273,8 @@ class Book:
             if result and result['kind'] == 'agent' and result['status'] in ('blocked', 'skip'):
                 work = self.works.get(result['work']) or {}
                 items.append(dict(common, kind=result['status'], label=ELSEWHERE[result['status']], by=work.get('submitted_by'),
-                                  at=result['executed_at'], reason=result['finding'], branch=result['branch'], seq=result['seq']))
+                                  at=result['executed_at'], reason=result['finding'], branch=result['branch'], seq=result['seq'],
+                                  cause=result['cause'], suspect_defect=bool(result['suspect_defect'])))
             guard = slot.get('guard')
             if guard and guard['status'] == 'fail' and guard['seq'] > base:
                 items.append(dict(common, kind='guard-failed', label=ELSEWHERE['guard-failed'], by=guard['operator'],
@@ -263,7 +282,8 @@ class Book:
             skipped = slot.get('skipped')
             if skipped and skipped['seq'] > base:
                 items.append(dict(common, kind='not-executed', label=ELSEWHERE['not-executed'], by=skipped['by'],
-                                  at=skipped['at'], reason=skipped['finding'], branch=None, seq=skipped['seq']))
+                                  at=skipped['at'], reason=skipped['finding'], branch=None, seq=skipped['seq'],
+                                  cause=skipped['cause'], suspect_defect=skipped['suspect_defect']))
         return sorted(items, key=lambda item: item['seq'], reverse=True)
 
     def involved(self, key, current):
@@ -390,7 +410,9 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
         distill += info['distill']
         review += info['review']
         items[scene_key] = info
-    return dict(items=items, counts=counts, distill=distill, review=review, total=len(scenes), draft_review=draft_counts,
+    held = [item for key, scene in scenes.items() for item in book.hold_items(key, scene['fingerprint'])]
+    held.sort(key=lambda item: (not item['suspect_defect'], item['key'], item['attention']))
+    return dict(items=items, counts=counts, distill=distill, review=review, total=len(scenes), draft_review=draft_counts, held=held,
                 book=book)
 
 

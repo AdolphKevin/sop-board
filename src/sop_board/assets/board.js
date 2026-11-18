@@ -86,6 +86,7 @@
     observe: linesField('观察位置', {required: true}), evidence: linesField('证据要求', {required: true}),
     isolation: textField('数据隔离说明', {multiline: true, required: true}),
     address_env: textField('入口地址的环境变量名'), driver: textField('辅助验证技能目录名'),
+    probe: {...commandField('探测命令'), omitEmpty: true}, probe_timeout: numberField('探测超时（秒，缺省 10）'),
     credential_env: linesField('凭据环境变量名'),
     identities: listField('浏览器身份', identityField),
     web_evidence: objectField('网页录制开关', {video: boolField('录屏'), trace: boolField('操作追踪（trace）')}, {optional: true}),
@@ -95,7 +96,7 @@
   const settingsSchemas = {
     verification: objectField('验证入口', {entries: {...mapField('入口列表', entryField, '入口名称'), required: true},
       skill: {label: '项目验证技能', type: 'skill', required: true}}),
-    environment: objectField('环境适配', {adapter: objectField('环境适配配置', {
+    environment: objectField('环境适配', {scenario_timeout: numberField('单场景超时提醒（秒，缺省 900）'), adapter: objectField('环境适配配置', {
       env: {...commandField('环境启动命令'), required: true}, worktree: commandField('建立工作树命令'), cleanup: commandField('清理工作树命令'),
       ports: linesField('基础端口', {numbers: true}), port_step: numberField('检出端口步长'), ready_timeout: numberField('就绪时限（秒）'),
       service_timeout: numberField('服务停启时限（秒）'), services: mapField('服务列表', objectField('服务', {
@@ -189,7 +190,8 @@
         read = () => {
           if (!input.value && value === undefined && !schema.required) return undefined;
           if (schema.type !== 'lines') return input.value;
-          return input.value.split('\n').filter(v => v.trim() !== '').map(v => schema.numbers ? Number(v) : v);
+          const lines = input.value.split('\n').filter(v => v.trim() !== '');
+          return schema.omitEmpty && !lines.length ? undefined : lines.map(v => schema.numbers ? Number(v) : v);
         };
       } else {
         input = el('input', {type: schema.type === 'number' ? 'number' : 'text', value: value ?? ''});
@@ -892,7 +894,7 @@
       el('ul', {class: 'timeline'}, items.map(item => el('li', {class: 'event'},
         el('div', {class: 'event-head'}, pill(item.kind === 'guard-failed' ? 'retest' : item.kind === 'not-executed' ? 'not-run' : item.kind, item.label),
           el('span', {class: 'muted'}, item.at || ''), el('span', {class: 'muted'}, `${item.by || '未署名'} · ${item.machine} · 检出 ${item.checkout}`)),
-        item.reason ? el('p', {class: 'finding'}, item.reason) : null))),
+        item.reason ? el('p', {class: 'finding'}, causeNote(item), item.reason) : null))),
       el('p', {class: 'muted'}, '这些情况只影响产出它的机器和检出，不改变这里的状态。'));
   }
 
@@ -903,10 +905,24 @@
       '：' + items.map(f => `#${f.id}（${label[f.status] || f.status}，${f.machine} 的 ${f.checkout} 检出）`).join('；'));
   }
 
+  function causeNote(item) {
+    if (!item.cause) return null;
+    return el('span', {}, `原因类别 ${item.cause} · `,
+      item.suspect_defect ? el('strong', {}, '疑似缺陷 · ') : null);
+  }
+
   function notExecutedNote(item) {
     if (!item) return null;
     return el('p', {class: 'not-executed'}, el('strong', {}, '最近一次未执行'),
-      `：${item.by || '未署名'}，${item.at}，运行 #${item.run}${item.finding ? '，' + item.finding : ''}（未执行不改变状态）`);
+      `：${item.by || '未署名'}，${item.at}，运行 #${item.run} · `, causeNote(item),
+      `${item.finding || ''}（未执行不改变状态）`);
+  }
+
+  function heldNote(data) {
+    if (!data.held?.length) return null;
+    const path = `/p/${encodeURIComponent(config.project)}/attention?checkout=${encodeURIComponent(data.checkout)}`;
+    return el('ul', {class: 'not-executed'}, data.held.map(item => el('li', {}, el('strong', {}, '卡住 · '),
+      causeNote(item), item.finding, ' · ', el('a', {href: `${path}#attention-${item.attention}`}, `待人处理 #${item.attention}`))));
   }
 
   // 产出机器与分支：每条记录都写明；结论来自其他分支时另标“来源分支”。
@@ -923,7 +939,7 @@
         entry.merged ? el('span', {class: 'tag branch', title: '这条结论来自已并入本分支的提交'}, `来自 ${entry.branch}（已并入）`)
           : entry.other_branch ? el('span', {class: 'tag branch', title: '这条结论来自其他分支'}, '来源分支 ' + entry.branch) : null),
       el('p', {class: 'origin muted'}, '产出：' + origin(entry)),
-      entry.finding ? el('p', {class: 'finding'}, entry.finding) : null,
+      entry.finding ? el('p', {class: 'finding'}, causeNote(entry), entry.finding) : null,
       stoppedServices(entry),
       entry.note ? el('p', {class: 'note'}, '说明：' + entry.note) : null,
       entry.allowed_open_fix ? el('p', {class: 'muted'}, `准备时修复 #${entry.allowed_open_fix} 进行中`) : null,
@@ -1295,6 +1311,7 @@
         data.disposition ? pill(data.disposition.kind, DISPOSITIONS[data.disposition.kind]) : null,
         data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null,
         (data.state.state === 'pass' && data.state.guard?.unsynced) || data.state.guard?.unrunnable ? el('span', {class: 'tag guard'}, data.state.guard.reason) : null),
+      heldNote(data),
       notExecutedNote(data.not_executed),
       dispositionCard(data),
       fixesNote(data.fixes),
@@ -1305,7 +1322,8 @@
           latest.merged ? el('span', {class: 'tag branch'}, `来自 ${latest.branch}（已并入）`)
             : latest.other_branch ? el('span', {class: 'tag branch'}, '来源分支 ' + latest.branch) : null),
         el('p', {class: 'origin muted'}, '产出：' + origin(latest)),
-        latest.actual ? el('p', {}, latest.actual) : null, latest.finding ? el('p', {class: 'finding'}, latest.finding) : null,
+        latest.actual ? el('p', {}, latest.actual) : null,
+        latest.finding ? el('p', {class: 'finding'}, causeNote(latest), latest.finding) : null,
         stoppedServices(latest),
         gallery(latest.evidence)) : el('p', {class: 'muted'}, '当前内容还没有执行结果')),
       markCard(data),
@@ -1597,6 +1615,15 @@
     el('thead', {}, el('tr', {}, headers.filter(Boolean).map(t => el('th', {}, t)))),
     el('tbody', {}, rows.length ? rows : [el('tr', {}, el('td', {colspan: headers.length, class: 'muted center'}, empty))])));
 
+  function runProgress(item) {
+    const p = item.progress;
+    if (!p) return null;
+    return el('div', {},
+      el('div', {}, `已裁决 ${p.adjudicated}/${p.total} · 已登记 ${p.registered} · 本机暂记 ${p.local}`),
+      p.current ? el('div', {}, `正在执行 ${p.current} · ${p.started_at}`) : null,
+      item.unadjudicated?.length ? el('div', {}, '尚未裁决：' + item.unadjudicated.join('、')) : null);
+  }
+
   async function startRuns() {
     const data = await api('/api/runs?' + query());
     const boardData = await api('/api/board?' + query());
@@ -1607,8 +1634,12 @@
         const [cls, label] = item.status === 'exited' && item.unsubmitted?.length
           ? ['fail', '有工作未提交'] : launchState[item.status] || ['skip', item.status];
         return el('tr', {}, el('td', {class: 'mono'}, '#' + item.id), el('td', {}, item.kind === 'run' ? '场景执行' : '回归沉淀'), el('td', {}, item.agent),
-          el('td', {class: 'mono'}, item.scope.join('、')),
-          el('td', {}, item.problem ? el('div', {}, item.problem) : null, item.log_tail ? el('pre', {class: 'muted'}, item.log_tail) : null, pill(cls, label + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : ''))),
+          el('td', {class: 'mono'}, item.scope.join('、'),
+            item.runs.map(run => el('div', {}, `运行 #${run.id}`, runProgress(run)))),
+          el('td', {}, item.attempts?.map(a => el('div', {}, `第 ${a.attempt} 次会话 · ${a.started_at}` +
+            (typeof a.new_verdicts === 'number' ? ` · 新裁决 ${a.new_verdicts}` : '') +
+            (a.retry_at && item.status === 'running' && item.attempts.at(-1) === a ? ` · 计划续跑 ${a.retry_at}` : ''))),
+            item.problem ? el('div', {}, item.problem) : null, item.log_tail ? el('pre', {class: 'muted'}, item.log_tail) : null, pill(cls, label + (item.exit_code !== null && item.exit_code !== undefined ? `（退出码 ${item.exit_code}）` : ''))),
           el('td', {}, item.started_at || ''), el('td', {}, item.requested_by),
           config.local ? el('td', {}, el('a', {href: `/api/launches/${item.id}/log`, target: '_blank'}, '日志'), item.session ? el('span', {class: 'muted mono'}, ' ' + item.session) : null) : null);
       }), '没有启动记录'));
@@ -1618,7 +1649,7 @@
         const [cls, label] = runState[item.status] || ['skip', item.status];
         return el('tr', {}, el('td', {class: 'mono'}, '#' + item.id), el('td', {}, item.kind === 'run' ? (item.fix ? `修复 #${item.fix} 的复验` : '执行') : '沉淀'),
           el('td', {}, pill(cls, label)), el('td', {class: 'mono'}, item.scope.join('、')),
-          el('td', {}, `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : ''),
+          el('td', {}, runProgress(item), `登记 ${item.recorded}` + (item.voided.length ? `，内容变化未登记 ${item.voided.length}` : '') + (item.not_executed.length ? `，未执行 ${item.not_executed.length}` : ''),
             item.service_events?.length ? el('ul', {class: 'service-events'}, item.service_events.map(e => el('li', {class: 'muted'},
               `${e.at} ${e.operator} ${SERVICE_ACTIONS[e.action] || e.action} ${e.service}` + (e.ok ? '' : '（未完成）')
               + (e.scenarios?.length ? `；停着期间执行 ${e.scenarios.join('、')}` : '') + (e.note ? `；${e.note}` : '')))) : null),

@@ -6,6 +6,8 @@ entries:
   api:
     surface: http
     address_env: APP_URL
+    probe: [python3, probe.py, api]
+    probe_timeout: 10
     operate: "按 app 仓库 docs/operations/verification.md 第 2 节 api 入口，用 curl 调用 APP_URL 下的接口"
     observe: ["按同手册第 3 节核对响应与演示 SQLite 中的退款记录"]
     evidence: ["请求与完整响应原文", "只读 SQLite 查询与输出"]
@@ -13,6 +15,8 @@ entries:
   web:
     surface: web
     address_env: WEB_URL
+    probe: [python3, probe.py, web]
+    probe_timeout: 10
     operate: "按同手册第 2 节 web 入口，经看板浏览器（身份 merchant 或 merchant2）打开 WEB_URL"
     observe: ["按同手册第 3 节核对页面显示与 SQLite 数据"]
     evidence: ["截图", "页面文本"]

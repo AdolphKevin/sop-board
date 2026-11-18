@@ -92,7 +92,9 @@ class App:
         self.addresses, self.registered = [], False
         # 对等令牌：带 --lan 时登记到业务记录库，别的看板凭它读取本机证据。
         self.peer_token = __import__('secrets').token_urlsafe(24) if lan else None
+        from .activity import Activity
         self.envs = envs.Manager(project, store)
+        self.activity = Activity(project, store)
         self.token = None
         self.config_stamp = None
         self.started_at = datetime.now(timezone.utc).isoformat()
@@ -445,6 +447,41 @@ def env_status(app, request):
     return json_response(dict(ok=True, environments=[app.envs.status(c) for c in app.checkouts()]))
 
 
+@route('POST', '/local/env/probe', 'token')
+def env_probe(app, request):
+    from . import probes, runs
+    from .cli import Context
+    entries = request.json_field('entries')
+    if entries is None:
+        entries = []
+    if not isinstance(entries, list) or any(not isinstance(name, str) for name in entries):
+        reject(422, 'invalid-arguments', 'entry', '入口须为名称数组')
+    checkout = _checkout_of(app, request)
+    run = request.json_field('run')
+    context = Context(app.project, app.store, checkout)
+
+    def prepared():
+        work = runs.load_work(context, run)
+        if work['status'] != 'prepared' or not work['dir']:
+            reject(409, 'run-not-prepared', 'run', f'运行 #{run} 尚未准备或已经结束')
+        return work
+
+    if run is not None:
+        if type(run) is not int:
+            reject(422, 'invalid-arguments', 'run', '须给出运行编号')
+        prepared()
+    app.project.require()
+    reports = probes.batch(app.envs, context.checkout, entries)
+    if run is not None:
+        with app.store.lock:
+            probes.append(prepared()['dir'], 'manual', reports)
+    details = dict(checkout=context.checkout.name, run=run)
+    error = probes.unhealthy(reports, **details)
+    if error:
+        raise error
+    return json_response(dict(ok=True, probes=reports, **details))
+
+
 def serve(project, *, port=8787, lan=False, after_pid=None):
     """在前台运行守护进程，直到收到 SIGINT/SIGTERM。
 
@@ -478,6 +515,8 @@ def serve(project, *, port=8787, lan=False, after_pid=None):
     from . import peers
     peers.ensure_registered(app)
     app.token = daemon.write_state(project, os.getpid(), actual, addresses, app.started_at)
+    app.checkouts()
+    app.activity.start()
     if app.handed_over:
         # 状态文件写好之后再删交接记录：等待重启的 CLI 看到的总是旧进程、正在重启或新进程之一。
         daemon.clear_handover(project)
@@ -504,6 +543,7 @@ def serve(project, *, port=8787, lan=False, after_pid=None):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         for close in extensions.CLOSE:
             close(app)
+        app.activity.close()
         app.envs.close()
         from . import peers
         peers.withdraw(app)

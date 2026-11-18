@@ -3,25 +3,30 @@
 一次运行绑定一个检出、准备时的产品快照与执行者。结果按 检出 + 场景指纹 登记，并记下准备时的快照；
 运行中途内容变化的场景只作废这些场景；执行期间产品文件变化的路径记在结果上，只作版本记录。
 """
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from importlib.resources import files
+import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import re
 from string import Template
 import shutil
 
 import yaml
 
-from . import config, daemon, dispositions, gitops, guards, scenarios, status, workdirs
+from . import config, daemon, dispositions, gitops, guards, ledger, probes, progress, scenarios, status, works
 from .defect_links import normalize as normalize_defect
 from .entries import identities as entry_identities, web_evidence
 from .errors import APIError, reject
-from .store import dumps, now
+from .store import dumps, loads, now
 
 REASONS = {'new': '未执行', 'guard-failed': '守护未通过', 'failed': '上次不通过', 'rerun': '须实际执行'}
 PENDING_STATES = {'not-run': 'new', 'retest': 'guard-failed', 'fail': 'failed', 'blocked': 'failed', 'skip': 'failed'}
-RESULT_FIELDS = {'scenario', 'status', 'actual', 'executed_at', 'evidence', 'finding', 'note', 'executor', 'session'}
+RESULT_FIELDS = {'scenario', 'status', 'actual', 'executed_at', 'evidence', 'finding', 'note', 'executor', 'session',
+                 'cause', 'suspect_defect'}
 
 
 def session_id(explicit):
@@ -37,6 +42,15 @@ def web_entry(entry):
     return isinstance(entry, dict) and entry.get('surface') == 'web' and entry.get('driver') in (None, 'playwright-acceptance')
 
 
+def web_identities(entries):
+    return {identity for entry in entries if web_entry(entry) for identity in entry_identities(entry)}
+
+
+def probe_candidates(scope, scenes):
+    return [dict(scenario=item['scenario'], fingerprint=scenes[item['scenario']]['fingerprint'],
+                 entry=scenes[item['scenario']]['verify']) for item in scope]
+
+
 def scope_for(context, scenes, derived, requested, fix=None):
     """返回 [{scenario, reason}]。requested：'pending'、'all' 或场景列表。"""
     items = derived['items']
@@ -48,9 +62,10 @@ def scope_for(context, scenes, derived, requested, fix=None):
         return [dict(scenario=k, reason='rerun') for k in keys]
     if requested in (['pending'], ['all']):
         result = []
+        held = {item['key'] for item in derived['held']}
         for key in sorted(scenes):
             info = items[key]
-            if info['state'] == 'draft' or info['disposition']:
+            if info['state'] == 'draft' or info['disposition'] or key in held:
                 continue
             if requested == ['all']:
                 result.append(dict(scenario=key, reason='rerun'))
@@ -74,15 +89,17 @@ def pending_reason(info):
     return PENDING_STATES.get(info['state'], 'rerun')
 
 
-def recorded_item(key, state, result_id, note):
-    item = dict(scenario=key, status=state, result=result_id)
+def recorded_item(key, state, result_id, note, cause, suspect_defect, finding):
+    item = dict(scenario=key, status=state, result=result_id, cause=cause, suspect_defect=bool(suspect_defect))
+    if finding:
+        item['finding'] = finding
     if note:
         item['note'] = note
     return item
 
 
 def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared, environment=None,
-                invalid_files=(), selected_dispositions=()):
+                invalid_files=(), selected_dispositions=(), selected_holds=(), resolved=(), skipped=(), limit_seconds=progress.LIMIT):
     environment = environment or {}
     counts = {}
     for item in scope:
@@ -102,10 +119,21 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
         lines += ['', '## 点名执行的处置场景', '']
         lines += [f"- {item['key']}（{dispositions.LABELS[item['kind']]}）：{item['reason']}"
                   for item in selected_dispositions]
+    if selected_holds:
+        lines += ['', '## 点名执行的卡住场景', '']
+        lines += [f"- {item['key']}（{item['cause']}，待人处理 #{item['attention']}"
+                  f"{'，疑似缺陷' if item['suspect_defect'] else ''}）：{item['finding']}" for item in selected_holds]
+    if resolved:
+        lines += ['', '## 已解决的待人处理', '']
+        lines += [f"- {key}（{cause}，#{item['id']}，{item['resolved_by']}，{item['resolved_at']}）：{item['note']}"
+                  for key, cause, item in resolved]
+    if skipped:
+        lines += ['', '## 入口探测排除的场景', '']
+        lines += [f"- {item['scenario']}：{item['finding']}。已登记为未执行。" for item in skipped]
     missing = {name: var for name, var in (environment.get('missing_address_env') or {}).items() if name in entries}
     if missing:
         lines += ['', '## 入口地址缺失', '']
-        lines += [f'- 入口 {name}：环境没有给出 {var}。用这个入口的场景写 not-executed，finding 写“入口 {name} 的地址 {var} 本机环境没有给出”。'
+        lines += [f'- 入口 {name}：环境没有给出 {var}。用这个入口的场景写 not-executed、cause: environment，finding 写“入口 {name} 的地址 {var} 本机环境没有给出”。'
                   for name, var in sorted(missing.items())]
     services = environment.get('services') or []
     if services:
@@ -120,29 +148,31 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
         lines += ['',
                   '按场景起点与步骤用到的业务能力，对照括号里的业务说明找到对应的服务：',
                   '',
-                  '- 用到的服务本机未搭建、已停止或未上报：写 not-executed，finding 写“<服务>（<业务说明>）本机未搭建”等实际状态。不启动服务、不登记仓库、不改配置。',
-                  '- 用到的服务异常退出（准备前或执行中）：写 blocked，finding 附 `env status` 给出的日志末尾，并 `sop-board attention add --kind 环境问题` 登记。',
+                  '- 用到的服务本机未搭建、已停止或未上报：写 not-executed、cause: environment，finding 写“<服务>（<业务说明>）本机未搭建”等实际状态。不启动服务、不登记仓库、不改配置。',
+                  '- 用到的服务异常退出（准备前或执行中）：写 blocked、cause: environment，finding 附 `env status` 给出的日志末尾。',
                   '- 场景起点要求某个依赖不可用：先 `sop-board env stop <服务>` 停掉对应的可停服务，再执行；结果写好后 `sop-board env start <服务>`，或交给提交时自动恢复。'
-                  'executed_at 写服务停着期间的实际执行时刻。对应的服务本机未搭建时写 not-executed；不可停，或依赖是外部共享的中间件时写 blocked 并写明原因。',
+                  'executed_at 写服务停着期间的实际执行时刻。对应的服务本机未搭建时写 not-executed、cause: environment；不可停，或依赖是外部共享的中间件时写 blocked、cause: capability 并写明原因。',
                   '- 不用到这些服务的场景照常执行。']
     if browser_problems:
         lines += ['', '## 浏览器问题', '']
-        lines += [f'- 身份 {identity}：{problem}。用这个身份的 Web 场景直接写 blocked，finding 照抄这句。'
+        lines += [f'- 身份 {identity}：{problem}。用这个身份的 Web 场景直接写 blocked、cause: environment，finding 照抄这句。'
                   for identity, problem in sorted(browser_problems.items())]
     lines += ['', '## 前置数据', '']
     if fixtures_declared:
         lines += [f'- 无关前置数据用 sop-board fixtures run <配方> --run {work_id} --scenario <场景>；没有合适配方且 adhoc 为 true 时才用 fixtures exec。',
-                  '- real_only 对象与被验收流程应产生的对象不得写库代替；准备不了就记受阻，finding 写缺什么。']
+                  '- real_only 对象与被验收流程应产生的对象不得写库代替；准备不了就记 blocked、cause: precondition，finding 写缺什么。']
     else:
-        lines.append('- 项目没有声明前置数据配方：前置不满足时记受阻，finding 写明缺什么，不自行写库。')
+        lines.append('- 项目没有声明前置数据配方：前置不满足时记 blocked、cause: precondition，finding 写明缺什么，不自行写库。')
     lines += ['', '## 时间上限与停止', '',
+              f'- 本轮单场景裁决提醒上限为 {limit_seconds} 秒。',
               '- 单场景 4 分钟、定位或操作 15 秒、导航 30 秒（模板缺省）。单个场景累计 15 分钟或 4 次仍无结论时记下证据转下一个。',
               '- 业务断言失败只记该场景失败并继续。',
               '- 等人处理的事（真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码、身份使用次数到上限），不论出现在开始前还是执行中：'
-              '该场景写 not-executed，finding 写需要人做什么，并 `sop-board attention add` 登记（identity record 返回 identity-limit 时已自动登记）；'
+              '该场景写 not-executed、cause: human，finding 写需要人做什么，提交时自动生成待人处理；'
               '不用这件事的场景照常执行。'
               '声明的测试账号未登录时直接用凭据变量登录，不算等人处理。',
-              '- 连接异常、状态不明时停止本轮，剩余场景写 not-executed 行（带 finding）。']
+              '- 入口看起来整体不可用时先运行 `sop-board env probe <入口>`，再按 prompt.md 判断是否中止该入口。',
+              '- 连接异常、状态不明时停止本轮，剩余场景写 not-executed 行（带 cause 与 finding）。']
     (directory / 'brief.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
@@ -157,13 +187,26 @@ def validate_scope(context, requested, fix=None, *, session=None, launch=None):
     scenarios.require_files(found, {value.split('#', 1)[0] for value in requested if '#' in value})
     scope = scope_for(context, found['scenarios'], derived, requested, fix)
     if not scope:
-        raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')] + invalid_files(found))
+        raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')] + invalid_files(found),
+                       held=excluded_holds(derived, requested))
     with context.store.local() as db:
         scope = without_taken(scope, taken_scenarios(db, context.checkout), requested, fix, session=session, launch=launch)
     if not scope:
         raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')]
-                       + invalid_files(found))
+                       + invalid_files(found), held=excluded_holds(derived, requested))
     return found, snapshot, derived, scope
+
+
+def excluded_holds(derived, requested):
+    if requested not in (['pending'], ['all']):
+        return []
+    return [item for item in derived['held'] if not derived['items'][item['key']]['disposition']
+            and derived['items'][item['key']]['state'] != 'draft'
+            and (requested == ['all'] or derived['items'][item['key']]['state'] in PENDING_STATES)]
+
+
+def selected_holds(derived, keys):
+    return [item for item in derived['held'] if item['key'] in keys]
 
 
 def taken_scenarios(db, checkout, exclude=None):
@@ -202,35 +245,44 @@ def without_taken(scope, taken, requested, fix=None, *, session=None, launch=Non
 
 def resume_prepared(context, requested, executor, launch, fix_id):
     """只返回有首次准备输出、属于调用会话且覆盖本次范围的运行；不重写运行目录。"""
-    with context.store.local_tx() as db:
+    with context.store.local() as db:
         candidates = [dict(row) for row in db.execute(
             "SELECT * FROM local_work WHERE checkout=? AND kind='run' AND status='prepared' ORDER BY created_at DESC, id DESC",
             (context.checkout.id,)) if same_session(row, executor, launch) and row['fix'] == fix_id and row['dir']]
-        keys = None
-        for work in candidates:
-            path = Path(work['dir']) / 'prepare.json'
-            if not path.is_file():
+    keys = None
+    for work in candidates:
+        path = Path(work['dir']) / 'prepare.json'
+        if not path.is_file():
+            continue
+        output = json.loads(path.read_text(encoding='utf-8'))
+        if fix_id is None and requested not in (['pending'], ['all']):
+            if keys is None:
+                if all('#' in value for value in requested):
+                    keys = set(requested)
+                else:
+                    found = scenarios.scan(context.checkout.scenarios_dir(context.project), set(context.project.entries))
+                    try:
+                        keys = set(scenarios.resolve(requested, found['scenarios']))
+                    except ValueError:
+                        return None  # 由通常的范围检查给出具体错误。
+            original = {item['scenario'] for item in output['scope'] + output.get('probe_skipped', [])}
+            if not keys <= original:
                 continue
-            if fix_id is None and requested not in (['pending'], ['all']):
-                if keys is None:
-                    if all('#' in value for value in requested):
-                        keys = set(requested)
-                    else:
-                        found = scenarios.scan(context.checkout.scenarios_dir(context.project), set(context.project.entries))
-                        try:
-                            keys = set(scenarios.resolve(requested, found['scenarios']))
-                        except ValueError:
-                            return None  # 由通常的范围检查给出具体错误。
-                if not keys <= {item['scenario'] for item in json.loads(work['scope'])}:
-                    continue
-            output = json.loads(path.read_text(encoding='utf-8'))
+        with progress.lock(work):
+            work = load_work(context, work['id'])
+            if work['status'] != 'prepared':
+                continue
+            data = progress.recover(context.store, work)
             if work['session'] != executor:
-                result = json.loads(work['result'] or '{}')
+                if not launch or work['launch'] != launch:
+                    continue
+                result = loads(work['result'], {})
                 sessions = result.setdefault('sessions', [work['session']])
                 if executor not in sessions:
                     sessions.append(executor)
-                db.execute('UPDATE local_work SET session=?, result=? WHERE id=?', (executor, dumps(result), work['id']))
-            return dict(output, session=executor, resumed=True)
+                with context.store.local_tx() as db:
+                    db.execute('UPDATE local_work SET session=?, result=? WHERE id=?', (executor, dumps(result), work['id']))
+            return dict(output, session=executor, resumed=True, progress=progress.summary(work, data))
     return None
 
 
@@ -256,19 +308,19 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
     with store.local_tx() as db:
         scope = without_taken(scope, taken_scenarios(db, checkout), requested, fix, session=executor, launch=launch)
         if not scope:
-            raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')])
+            raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景：其余场景都在本检出别的 prepared 运行里')],
+                           held=excluded_holds(derived, requested))
         cursor = db.execute("INSERT INTO local_work(kind,checkout,status,session,operator,implementer,fix,launch,dir,scope,branch,"
                             "created_at) VALUES ('run',?,'prepared',?,?,?,?,?,'',?,?,?)",
                             (checkout.id, executor, operator, fix['session'] if fix else None, fix_id, launch,
                              dumps(scope), branch_of(project, checkout), now()))
         work_id = cursor.lastrowid
-    selected = [scenes[item['scenario']] for item in scope]
-    selected_dispositions = dispositions.listed(derived['items'], {item['scenario'] for item in scope})
-    entries = {name: project.entries[name] for name in sorted({scene['verify'] for scene in selected})}
+    candidates = probe_candidates(scope, scenes)
+    entries = {name: project.entries[name] for name in sorted({item['entry'] for item in candidates})}
     directory = None
     holder = f'run:{work_id}'
     try:
-        declared = sorted({identity for name, entry in entries.items() if web_entry(entry) for identity in entry_identities(entry)})
+        declared = sorted(web_identities(entries.values()))
         if identities:
             unknown = sorted(set(identities) - set(declared))
             if unknown:
@@ -277,23 +329,57 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
         chosen = sorted(set(identities)) if identities else declared
         acquired = daemon.call(project, 'POST', '/local/run/acquire', dict(
             checkout=checkout.name, run=work_id, identities=chosen, session=executor, pid=os.getpid(), wait=wait,
-            digest=snapshot['product_digest'], allow_open_fix=allow_open_fix), timeout=max(0, wait) + 1800)
+            candidates=candidates, fixing=fix is not None, digest=snapshot['product_digest'], allow_open_fix=allow_open_fix),
+            timeout=max(0, wait) + 1800 + probes.timeout(entries.values()))
+        directory = Path(acquired['directory'])
         environment, leased = acquired['environment'], acquired['browsers']
+        reports, skipped = acquired['probes'], acquired['probe_skipped']
+        excluded = {item['scenario'] for item in skipped}
+        scope = [item for item in scope if item['scenario'] not in excluded]
+        keys = {item['scenario'] for item in scope}
+        entries = {name: entries[name] for name in sorted({scenes[key]['verify'] for key in keys})}
+        selected_dispositions = dispositions.listed(derived['items'], keys)
+        held = selected_holds(derived, keys)
+        resolved = [(key, cause, item) for key in sorted(keys)
+                    for cause, item in derived['book'].resolved_holds(key, scenes[key]['fingerprint']).items()]
         browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
         browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
-        directory = workdirs.create(project.data / 'runs', work_id)
         materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems,
-                    fix, invalid_files(found), selected_dispositions=selected_dispositions)
+                    fix, invalid_files(found), selected_dispositions=selected_dispositions, held=held, resolved=resolved,
+                    skipped=skipped)
+        prepared_at = now()
+        by_entry = {report['entry']: report['at'] for report in reports}
+        data = progress.initial(project.scenario_timeout, prepared_at, [
+            probe_adjudication(row, by_entry[scenes[row['scenario']]['verify']]) for row in skipped])
+        progress.save(directory, data)
         # 部分就绪：adapter 输出就绪即可执行；各场景再按实际服务状态判断。
         output = dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
                       outputs=dict(results=str(directory / 'results.jsonl')), identities=sorted(leased),
                       switched_from=acquired.get('switched_from'),
                       session=executor, scope=scope, browser_problems=browser_problems, invalid_files=invalid_files(found),
-                      dispositions=selected_dispositions,
+                      dispositions=selected_dispositions, held=held, probes=reports, probe_skipped=skipped,
+                      progress=progress.summary(dict(scope=dumps(scope), status='prepared'), data),
                       environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
                       services=public_services(environment.get('services', [])), not_running=environment.get('not_running', []),
                       missing_address_env=environment.get('missing_address_env', {}))
         (directory / 'prepare.json').write_text(json.dumps(output, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        product = {k: v for k, v in snapshot.items() if k != 'files'}
+        result = dict(sessions=[executor])
+        allowed = acquired.get('allowed_open_fix') or checked.get('allowed_open_fix')
+        if allowed is not None:
+            result['allowed_open_fix'] = allowed
+        with store.lock:
+            if skipped:
+                with store.local() as db:
+                    work = dict(db.execute('SELECT * FROM local_work WHERE id=?', (work_id,)).fetchone())
+                work.update(scope=dumps(scope), snapshot=dumps(product), product_digest=snapshot['product_digest'])
+                # 共享库提交前先核对本机更新可写。单机库用同一个事务更新运行与业务记录。
+                with (store.local_tx() if store.shared else nullcontext()) as local, store.records_tx() as db:
+                    record, result = publish_probe_skips(db, context, work, result, skipped, scenes, reports)
+                    finish_prepare(db if local is None else local, work_id, directory, scope, product, result, record)
+            else:
+                with store.local_tx() as db:
+                    finish_prepare(db, work_id, directory, scope, product, result, None)
     except BaseException:
         with store.local_tx() as db:
             db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (holder,))
@@ -301,15 +387,40 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
         if directory is not None:
             shutil.rmtree(directory, ignore_errors=True)
         raise
-    product = {k: v for k, v in snapshot.items() if k != 'files'}
-    result = dict(sessions=[executor])
-    allowed = acquired.get('allowed_open_fix') or checked.get('allowed_open_fix')
-    if allowed is not None:
-        result['allowed_open_fix'] = allowed
-    with store.local_tx() as db:
-        db.execute('UPDATE local_work SET dir=?, snapshot=?, product_digest=?, result=? WHERE id=?',
-                   (str(directory), dumps(product), snapshot['product_digest'], dumps(result), work_id))
     return output
+
+
+def finish_prepare(db, work_id, directory, scope, snapshot, result, record):
+    db.execute('UPDATE local_work SET dir=?, scope=?, snapshot=?, product_digest=?, result=?, record=? WHERE id=?',
+               (str(directory), dumps(scope), dumps(snapshot), snapshot['product_digest'], dumps(result), record, work_id))
+
+
+def probe_adjudication(row, at):
+    return progress.item(row['scenario'], row['fingerprint'], 'not-executed', at, registration='registered',
+                         cause=row['cause'], finding=row['finding'], source='probe')
+
+
+def publish_probe_skips(db, context, work, result, skipped, scenes, reports):
+    from .redaction import business_text
+    store, checkout = context.store, context.checkout
+    times = {report['entry']: report['at'] for report in reports}
+    operator = work['operator']
+    db.lock_sequence()
+    record, fresh = works.publish(db, store, work, checkout=checkout.name, branch=work['branch'], prepared=True)
+    if not fresh:
+        return record, loads(db.value('SELECT result FROM work WHERE id=?', (record,)), {})
+    items = []
+    for row in skipped:
+        item = dict(row, by=operator, at=times[scenes[row['scenario']]['verify']], source='probe',
+                    seq=db.next_seq(), suspect_defect=False,
+                    finding=business_text(context.project, checkout, row['finding']))
+        ledger.register_hold(db, store, checkout, work['id'], item, item['seq'], by=operator)
+        items.append(item)
+    result = dict(result, not_executed=items, adjudications={
+        item['scenario']: dict(probe_adjudication(item, item['at']), seq=item['seq'], by=operator,
+                               independence=None, row_sha256=None) for item in items})
+    db.execute('UPDATE work SET result=? WHERE id=?', (dumps(result), record))
+    return record, result
 
 
 def public_services(services):
@@ -317,7 +428,7 @@ def public_services(services):
 
 
 def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix,
-                invalid_files=(), *, selected_dispositions=()):
+                invalid_files=(), *, selected_dispositions=(), held=(), resolved=(), skipped=()):
     project, checkout = context.project, context.checkout
     reasons = {item['scenario']: item['reason'] for item in scope}
     selected = [dict(scenes[key], key=key, reason=reasons[key]) for key in reasons]
@@ -367,7 +478,7 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     env_lines.update(SOP_BOARD_RUN=str(work_id), SOP_BOARD_CHECKOUT=checkout.name)
     (directory / 'run.env').write_text(''.join(f"{name}={value}\n" for name, value in sorted(env_lines.items())), encoding='utf-8')
     write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None, environment, invalid_files,
-                selected_dispositions)
+                selected_dispositions, held, resolved, skipped, project.scenario_timeout)
     if (directory / 'atlas.json').exists():
         with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
             brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'
@@ -422,71 +533,144 @@ def _strict_json(raw):
                 raise ValueError('重复字段：' + name)
             result[name] = value
         return result
-    return json.loads(raw, object_pairs_hook=pairs, parse_constant=lambda v: (_ for _ in ()).throw(ValueError('非有限数字')))
+    def finite(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError('非有限数字')
+        return result
+    return json.loads(raw, object_pairs_hook=pairs, parse_float=finite, parse_constant=finite)
 
 
-def read_results(directory, scope, scenes, *, partial):
+def invalid_result(field, problem, *, key=None, line=None):
+    return APIError(422, 'result-invalid', [dict(file='results.jsonl', scenario=key, line=line, field=field, problem=problem)])
+
+
+def resolve_key(scope, value):
+    if isinstance(value, str):
+        if value in scope:
+            return value
+        matches = [key for key in scope if key.partition('#')[2] == value]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def read_results(directory, scope, *, target=None):
     path = directory / 'results.jsonl'
-    if not path.is_file() or path.is_symlink():
-        raise ValueError('results.jsonl 不存在')
-    by_id = {}
-    for key in scope:
-        by_id.setdefault(key.split('#', 1)[1], []).append(key)
-    rows = {}
-    for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+    if path.is_symlink() or path.exists() and not path.is_file():
+        raise invalid_result('results.jsonl', '结果文件须为普通文件')
+    try:
+        contents = path.read_bytes()
+    except FileNotFoundError:
+        contents = b''
+    rows, lines, malformed = {}, {}, []
+    partial = None
+    raw_lines = contents.split(b'\n')
+    for number, raw in enumerate(raw_lines, 1):
+        try:
+            line = raw.decode('utf-8')
+        except UnicodeDecodeError as error:
+            if target is None and number == len(raw_lines) and error.reason == 'unexpected end of data':
+                partial = number
+                continue
+            problem = invalid_result('results.jsonl', '结果行须为 UTF-8', line=number)
+            if target is None:
+                raise problem from error
+            malformed.extend(problem.problems)
+            continue
         if not line.strip():
             continue
         try:
             row = _strict_json(line)
         except ValueError as error:
-            raise ValueError(f'results.jsonl 第 {number} 行不是合格的 JSON：{error}') from error
-        if not isinstance(row, dict):
-            raise ValueError(f'results.jsonl 第 {number} 行应为对象')
-        value = row.get('scenario')
-        key = value if value in scope else (by_id.get(value, [None])[0] if len(by_id.get(value, [])) == 1 else None)
+            if target is None and number == len(raw_lines) and isinstance(error, json.JSONDecodeError):
+                partial = number
+                continue
+            problem = invalid_result('results.jsonl', f'不是合格的 JSON：{error}', line=number)
+            if target is None:
+                raise problem from error
+            match = re.search(r'"scenario"\s*:\s*("(?:[^"\\]|\\.)*")', line)
+            try:
+                key = resolve_key(scope, json.loads(match[1])) if match else None
+            except ValueError:
+                key = None
+            if key == target:
+                problem.problems[0]['scenario'] = target
+                raise problem from error
+            if key is None:
+                malformed.extend(problem.problems)
+            continue
+        value = row.get('scenario') if isinstance(row, dict) else None
+        key = resolve_key(scope, value)
+        if target is not None and key != target:
+            if key is None and value is None:
+                malformed.extend(invalid_result('scenario', '结果行没有可读取的场景键', line=number).problems)
+            continue
         if key is None:
-            raise ValueError(f'结果不在本轮范围内：{value}')
+            raise invalid_result('scenario', f'结果不在本轮范围内：{value}', line=number, key=value)
         if key in rows:
-            raise ValueError(f'结果重复：{key}')
-        rows[key] = row
-    return rows
+            raise invalid_result('scenario', f'结果重复：{key}', line=number, key=key)
+        rows[key], lines[key] = row, number
+    if target is not None and target not in rows:
+        error = invalid_result('scenario', f'{target} 缺少完整结果行', key=target)
+        error.problems.extend(malformed)
+        raise error
+    return rows, lines, partial
 
 
-def validate_row(directory, key, row):
+def validate_row(directory, key, row, *, line=None, fixing=False):
+    def invalid(field, problem):
+        raise invalid_result(field, f'{key}：{problem}', key=key, line=line)
+
     extra = sorted(set(row) - RESULT_FIELDS)
     if extra:
-        raise ValueError(f'{key} 的结果行有表外字段：' + '、'.join(extra) + '；每条场景都须实际执行，不能保留旧通过')
-    status_ = row.get('status')
-    if status_ == 'not-executed':
-        if not isinstance(row.get('finding'), str) or not row['finding'].strip() or row.get('evidence'):
-            raise ValueError(f'{key} 的未执行标记须写 finding，且不附证据')
-        return
-    if status_ not in ('pass', 'fail', 'blocked', 'skip'):
-        raise ValueError(f'{key} 的 status 应为 pass、fail、blocked、skip 或 not-executed')
-    if not isinstance(row.get('actual'), str) or not row['actual'].strip():
-        raise ValueError(f'{key} 缺少 actual')
-    try:
-        stamp = datetime.fromisoformat(str(row.get('executed_at', '')).replace('Z', '+00:00'))
-        if stamp.utcoffset() is None or stamp > datetime.now(timezone.utc) + timedelta(minutes=5):
-            raise ValueError()
-    except ValueError:
-        raise ValueError(f'{key} 的 executed_at 须为带时区的实际执行时间') from None
-    if status_ in ('blocked', 'skip') and not (isinstance(row.get('finding'), str) and row['finding'].strip()):
-        raise ValueError(f'{key} 为 {status_} 时须写 finding')
+        invalid(extra[0], '结果行有表外字段：' + '、'.join(extra) + '。每条场景都须实际执行，不能保留旧通过')
+    state = row.get('status')
+    if state not in ('pass', 'fail', 'blocked', 'skip', 'not-executed'):
+        invalid('status', 'status 应为 pass、fail、blocked、skip 或 not-executed')
+    if state in ('blocked', 'not-executed'):
+        cause = row.get('cause')
+        if not isinstance(cause, str) or cause not in ledger.CAUSE_KINDS:
+            invalid('cause', 'cause 须为 ' + '、'.join(ledger.CAUSE_KINDS))
+    elif 'cause' in row:
+        invalid('cause', 'cause 只用于 blocked 或 not-executed')
+    if 'suspect_defect' in row and (state != 'blocked' or row['suspect_defect'] is not True):
+        invalid('suspect_defect', 'suspect_defect 只用于 blocked，值须为 JSON true')
+    if state == 'not-executed' and fixing:
+        invalid('status', '独立复验须完整执行，不接受未执行标记')
+    if (state != 'not-executed' or 'actual' in row) and not (isinstance(row.get('actual'), str) and row['actual'].strip()):
+        invalid('actual', 'actual 须为非空文字')
+    if state != 'not-executed' or 'executed_at' in row:
+        try:
+            stamp = datetime.fromisoformat(str(row.get('executed_at', '')).replace('Z', '+00:00'))
+            if stamp.utcoffset() is None or stamp > datetime.now(timezone.utc) + timedelta(minutes=5):
+                raise ValueError()
+        except ValueError:
+            invalid('executed_at', 'executed_at 须为带时区的实际执行时间')
+    if state in ('blocked', 'skip', 'not-executed') and not (isinstance(row.get('finding'), str) and row['finding'].strip()):
+        invalid('finding', f'{state} 须写非空 finding')
+    if row.get('finding') is not None and not isinstance(row['finding'], str):
+        invalid('finding', 'finding 须为文字或 null')
+    if row.get('note') is not None and not isinstance(row['note'], str):
+        invalid('note', 'note 须为文字或 null')
     evidence = row.get('evidence', [])
     if not isinstance(evidence, list):
-        raise ValueError(f'{key} 的 evidence 应为路径数组')
+        invalid('evidence', 'evidence 应为路径数组')
+    if state == 'not-executed':
+        if evidence:
+            invalid('evidence', '未执行不附证据')
+        return
     base = (directory / 'evidence').resolve()
     for name in evidence:
         if not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts or not name.startswith('evidence/'):
-            raise ValueError(f'{key} 的证据须为 evidence/ 下的相对路径')
+            invalid('evidence', '证据须为 evidence/ 下的相对路径')
         path = directory / name
         if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(base):
-            raise ValueError(f'{key} 的证据文件不存在或越界：{name}')
+            invalid('evidence', f'证据文件不存在或越界：{name}')
         if path.stat().st_size > 64 * 1024 * 1024:
-            raise ValueError(f'{key} 的证据超过 64 MiB：{name}')
-    if status_ in ('pass', 'fail') and not evidence:
-        raise ValueError(f'{key} 实际执行的 pass、fail 至少要有一份真实证据')
+            invalid('evidence', f'证据超过 64 MiB：{name}')
+    if state in ('pass', 'fail') and not evidence:
+        invalid('evidence', '实际执行的 pass、fail 至少要有一份真实证据')
 
 
 INTERRUPTIONS = 'interruptions.json'
@@ -517,142 +701,469 @@ def interruptions(directory):
     return items if isinstance(items, list) else []
 
 
-def submit(context, run_id, *, implementer=None, implemented_by=None):
-    """提交运行，依次三步（已定决策 21）：
-    1. 证据文件存进本机证据目录（按内容寻址，幂等）；
-    2. 一个事务把运行记录、结果与证据索引写进业务记录库；运行以“机器标识 + 本机库标识 + 本机运行编号”唯一，
-       已登记过（第三步失败后重新提交）就跳过这一步；这一步失败时运行保持 prepared，结果留在运行目录；
-    3. 更新本机运行状态、释放租约、恢复停着的服务。"""
-    from . import checkouts, works
+def active_session(work, explicit=None):
+    # 与准备命令同一取法：--session 优先。准备时显式给了会话编号的执行者，裁决时也用它。
+    supplied = (explicit or os.environ.get('SOP_BOARD_SESSION') or os.environ.get('CODEX_THREAD_ID')
+                or os.environ.get('CLAUDE_CODE_SESSION_ID'))
+    if supplied and supplied.strip() != work['session']:
+        reject(409, 'run-session-mismatch', 'session', f"运行 #{work['id']} 当前由会话 {work['session']} 执行，接续前先重新准备")
+    return work['session']
+
+
+@contextmanager
+def locked_run(context, run_id, *, allow_ended=False):
+    if run_id is None:
+        reject(422, 'run-required', 'run', '请指定 --run 或载入运行目录的 run.env')
     work = load_work(context, run_id)
-    if work['status'] != 'prepared':
-        reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}，不能提交")
-    project, store = context.project, context.store
-    with store.local() as db:
-        checkout = checkouts.by_id(db, work['checkout'])
-    context.checkout = checkout
-    directory = Path(work['dir'])
-    scope = {item['scenario']: item['reason'] for item in json.loads(work['scope'])}
-    prepared = {item['key']: item for item in yaml.safe_load((directory / 'scenarios.yaml').read_text(encoding='utf-8'))}
-    fixing = work['fix'] is not None
-    rows = read_results(directory, scope, prepared, partial=not fixing)
-    current = scenarios.scan(checkout.scenarios_dir(project), set(project.entries))['scenarios']
-    voided = sorted(key for key in scope if key not in current or current[key]['fingerprint'] != prepared[key]['fingerprint'])
-    crashed = crash_findings(context, work, prepared)
-    for key in scope:
-        if key in voided:
-            continue
-        row = rows.get(key)
-        note = row.get('note') if row else None
-        if note is not None and not isinstance(note, str):
-            raise ValueError(f'{key} 的 note 须为文字或 null')
-        if key in crashed and (row is None or row.get('status') != 'pass'):
-            rows[key] = row = dict(scenario=key, status='blocked', actual=crashed[key], finding=crashed[key],
-                                   note=note, executed_at=now(), evidence=[e for e in (row or {}).get('evidence', [])
-                                                                if isinstance(e, str)])
-            continue
-        if row is None:
-            raise ValueError(f'{key} 缺少结果行')
-        if row.get('status') == 'not-executed' and fixing:
-            raise ValueError(f'{key}：独立复验须完整执行，不接受未执行标记')
-        validate_row(directory, key, row)
-    before = json.loads((directory / 'product-files.json').read_text(encoding='utf-8'))
-    after = gitops.snapshot(checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)['files']
-    product_changed = gitops.changed_between(before, after)
-    executor = work['session']
-    if work['implementer']:
-        # 修复复验：实现者自动取修复会话。
-        implementer, implemented_by = work['implementer'], None
+    if not work['dir']:
+        reject(409, 'run-not-prepared', 'run', f'运行 #{run_id} 尚未准备完成')
+    with progress.lock(work):
+        work = load_work(context, run_id)
+        if not allow_ended and work['status'] != 'prepared':
+            reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}")
+        try:
+            yield work, Path(work['dir'])
+        except APIError as error:
+            if work['status'] == 'prepared':
+                data = progress.read(work)
+                error.details.setdefault('warnings', progress.warning(data, data['active'], now()))
+            raise
+
+
+def run_key(work, value):
+    key = resolve_key(progress.scope(work), value)
+    if key is None:
+        reject(422, 'scenario-not-in-run', 'scenario', f'场景 {value} 不在本轮可执行范围内或编号不唯一')
+    return key
+
+
+def concluded(key):
+    reject(409, 'scenario-concluded', 'scenario', f'{key} 本轮已有结论，请用之后的运行或人工标注登记新结论')
+
+
+def is_concluded(entry):
+    return entry and entry['registration'] == 'registered' and entry['status'] in ('pass', 'fail')
+
+
+def begin(context, run_id, scenario, *, session=None):
+    with locked_run(context, run_id) as (work, directory):
+        key, executor = run_key(work, scenario), active_session(work, session)
+        data = progress.recover(context.store, work)
+        if data.get('ended_at'):
+            reject(409, 'run-not-prepared', 'run', f'运行 #{run_id} 已完成业务提交')
+        if is_concluded(data['adjudications'].get(key)):
+            concluded(key)
+        active, at = data['active'], now()
+        if active and active['scenario'] != key:
+            reject(409, 'scenario-active', 'scenario', f"{active['scenario']} 正在计时，先裁决该场景")
+        duplicate = bool(active and active['session'] == executor)
+        if not duplicate:
+            data.update(active=dict(scenario=key, started_at=at, session=executor), last_activity_at=at)
+            progress.save(directory, data)
+        return dict(ok=True, run=run_id, scenario=key, started_at=data['active']['started_at'],
+                    duplicate=duplicate, progress=progress.summary(work, data),
+                    warnings=progress.warning(data, data['active'], at))
+
+
+def declaration(work, data, implementer, implemented_by):
+    locked = data.get('implementation')
+    explicit = implementer is not None or implemented_by is not None
+    if locked is not None and not explicit:
+        return locked
+    if work['fix'] is not None:
+        selected = dict(implementer=work['implementer'], implemented_by=None)
     else:
-        implementer = implementer or (None if implemented_by else os.environ.get('SOP_BOARD_IMPLEMENTER')) or None
-        implemented_by = implemented_by or (None if implementer else os.environ.get('SOP_BOARD_IMPLEMENTED_BY')) or None
-    # 跨机器验收：实现者是别的操作者，记独立验收（与本机操作者相同的已在命令行以参数错误拒绝）。
-    independence = 'independent' if implemented_by else status.independence(executor, implementer)
-    operator = config.operator() or work['operator']
-    branch = work['branch']
-    with store.local() as db:
-        events = [dict(r) for r in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (run_id,))]
-    executed = {key: row for key, row in rows.items()
-                if key in scope and key not in voided and row.get('status') != 'not-executed' and row.get('executed_at')}
-    while_stopped = scenarios_while_stopped(events, executed)
-    if while_stopped:
-        with store.local_tx() as db:
-            for event_id, keys in while_stopped.items():
-                db.execute('UPDATE service_events SET scenarios=? WHERE id=?', (dumps(keys), event_id))
-        for event in events:
-            event['scenarios'] = dumps(while_stopped.get(event['id'], json.loads(event['scenarios'])))
-    # 第一步：证据文件进本机证据目录。
-    files_of = {}
-    for key, row in rows.items():
-        if key in voided or key not in scope or row.get('status') == 'not-executed':
-            continue
-        files_of[key] = []
-        for name in row.get('evidence', []):
+        if not explicit:
+            implementer = os.environ.get('SOP_BOARD_IMPLEMENTER')
+            implemented_by = None if implementer else os.environ.get('SOP_BOARD_IMPLEMENTED_BY')
+        if implementer and implemented_by:
+            reject(422, 'invalid-arguments', 'implementer', '实现者会话和操作者参数互斥')
+        implemented_by = implemented_by.strip() if implemented_by is not None else None
+        if implemented_by is not None and (not implemented_by or implemented_by == (config.operator() or work['operator'])):
+            reject(422, 'invalid-arguments', 'implemented-by', '该参数须为另一位操作者姓名')
+        selected = dict(implementer=implementer or None, implemented_by=implemented_by)
+    if locked is not None and explicit:
+        given = dict(implementer=implementer, implemented_by=implemented_by.strip() if implemented_by is not None else None)
+        if given != locked:
+            reject(409, 'run-implementer-conflict', 'implementer', '本轮首次裁决已锁定实现者声明')
+    return selected
+
+
+def source_scenes(context, directory):
+    prepared = {row['key']: row for row in yaml.safe_load((directory / 'scenarios.yaml').read_text(encoding='utf-8'))}
+    current = scenarios.scan(context.checkout.scenarios_dir(context.project), set(context.project.entries))['scenarios']
+    return prepared, current
+
+
+def changed_paths(context, directory):
+    before = loads((directory / 'product-files.json').read_text(encoding='utf-8'))
+    project = context.project
+    after = gitops.snapshot(context.checkout.paths, project.exclusions(guards.test_exclusions(context)), files=True)['files']
+    return gitops.changed_between(before, after)
+
+
+def row_hash(row):
+    raw = json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def evidence_of(directory, row, key, *, expected=None, save_to=None):
+    result = []
+    for name in row.get('evidence', []):
+        try:
             raw = (directory / name).read_bytes()
-            sha = store.put_evidence(raw, name)
-            files_of[key].append((Path(name).name, sha, store.evidence_path(sha).stat().st_size))
-    not_executed = [dict(scenario=key, finding=row['finding'], fingerprint=prepared[key]['fingerprint'])
-                    for key, row in rows.items() if key in scope and key not in voided and row.get('status') == 'not-executed']
-    summary = json.loads(work['result'] or '{}')
-    summary.update(recorded=[], voided=voided, not_executed=not_executed, product_changed=product_changed,
-                   browser_crashes=sorted(crashed), independence=independence, submitted_by=operator,
-                   implementer=implemented_by or implementer)
-    summary.setdefault('sessions', [executor])
-    interrupted = interruptions(directory)
-    if interrupted:
-        summary['interruptions'] = interrupted
-    # 第二步：一个事务登记运行记录、结果与证据索引。
-    with store.records_tx() as db:
-        record, fresh = works.publish(db, store, work, checkout=checkout.name, branch=branch, result=summary,
-                                      services=[service_event(e) for e in events], implementer=implementer,
-                                      implemented_by=implemented_by, independence=independence)
-        if fresh:
-            for key, row in rows.items():
-                if key in voided or key not in scope or row.get('status') == 'not-executed':
-                    continue
-                scene = prepared[key]
-                result_id = db.insert(
-                    'INSERT INTO results(product,seq,work,machine,checkout,branch,file,scenario,fingerprint,product_digest,'
-                    'product_changed,kind,status,actual,finding,note,executor,implementer,implemented_by,independence,executed_at) '
-                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                    (store.product, db.next_seq(), record, store.machine['id'], checkout.name, branch, scene['file'], scene['id'],
-                     scene['fingerprint'], work['product_digest'], dumps(product_changed), 'agent', row['status'], row['actual'],
-                     row.get('finding'), row.get('note'), executor, implementer, implemented_by, independence, row['executed_at']))
-                for ordinal, (name, sha, size) in enumerate(files_of.get(key, [])):
-                    store.index_evidence(db, sha, size, name)
-                    db.execute('INSERT INTO result_evidence(result, ordinal, name, sha256) VALUES (?,?,?,?)', (result_id, ordinal, name, sha))
-                summary['recorded'].append(recorded_item(key, row['status'], result_id, row.get('note')))
-                guards.after_result(db, store, checkout.name, scene, row['status'], result_id)
-            db.execute('UPDATE work SET result=? WHERE id=?', (dumps(summary), record))
-            if fixing:
-                from . import fixes
-                fixes.after_verify(db, store, work, summary['recorded'])
+        except OSError as error:
+            raise invalid_result('evidence', f'证据无法读取：{name}', key=key) from error
+        digest = hashlib.sha256(raw).hexdigest()
+        if expected is not None and expected.get(name) != digest:
+            raise invalid_result('evidence', f'证据自裁决后发生变化：{name}', key=key)
+        if save_to is not None:
+            save_to.put_evidence(raw, Path(name).name)
+        result.append((name, digest, len(raw)))
+    return result
+
+
+def create_adjudication(directory, scene, row, line, state, executor, implementation, changed, *, source, crash=None, save_evidence_to=None):
+    key = scene['key']
+    original = row_hash(row)
+    active = state['active']
+    started = active['started_at'] if active and active['scenario'] == key and active['session'] == executor else None
+    validate_row(directory, key, row, line=line, fixing=False)
+    if crash and row['status'] != 'pass':
+        row = dict(row, status='blocked', cause='environment', actual=crash, finding=crash, executed_at=now())
+        row.pop('suspect_defect', None)
+    row = dict(row)
+    if row.get('finding'):
+        row['finding'] = row['finding'].strip()
+    try:
+        evidence = evidence_of(directory, row, key, save_to=save_evidence_to if source == 'submit'
+                               or row['status'] in ('pass', 'fail') else None)
+    except APIError as error:
+        error.problems[0]['line'] = line
+        raise
+    at = now()
+    duration = progress.elapsed(started, at)
+    metadata = dict(source=source, started_at=started, duration_ms=duration,
+                    timed_out=duration is not None and duration > state['limit_seconds'] * 1000, row_sha256=original)
+    independence = 'independent' if implementation['implemented_by'] else status.independence(executor, implementation['implementer'])
+    entry = progress.item(key, scene['fingerprint'], row['status'], at, session=executor, cause=row.get('cause'),
+                          suspect_defect=bool(row.get('suspect_defect')), finding=row.get('finding'),
+                          row=row, evidence_sha256={path: sha for path, sha, _ in evidence},
+                          product_changed=changed, independence=independence, **metadata)
+    if row.get('note'):
+        entry['note'] = row['note']
+    return entry, evidence
+
+
+def void_entry(scene, *, source, executor, data):
+    at = now()
+    active = data['active']
+    started = active['started_at'] if active and active['scenario'] == scene['key'] else None
+    return progress.item(scene['key'], scene['fingerprint'], 'voided', at, session=executor, registration='voided',
+                         source=source, started_at=started, duration_ms=progress.elapsed(started, at), timed_out=False)
+
+
+def set_adjudication(data, entry):
+    key = entry['scenario']
+    data['adjudications'][key] = entry
+    if data['active'] and data['active']['scenario'] == key:
+        data['active'] = None
+    data['last_activity_at'] = entry['at']
+    if entry['source'] == 'verdict' and entry['status'] != 'voided':
+        keys = data.setdefault('sessions', {}).setdefault(entry['session'], [])
+        if key not in keys:
+            keys.append(key)
+
+
+def register_adjudication(db, context, work, record, scene, entry, evidence, implementation, operator):
+    """登记这一条并返回可进入共享运行摘要的对象。"""
+    from .redaction import names, response_bytes
+    project, store, checkout = context.project, context.store, context.checkout
+    row = entry['row']
+    seq = db.next_seq()
+    finding = entry['finding']
+    if finding:
+        finding = response_bytes(finding.encode(), 'text/plain', names(project.entries), local=True).decode()
+    result_id = None
+    if entry['status'] != 'not-executed':
+        result_id = db.insert(
+            'INSERT INTO results(product,seq,work,machine,checkout,branch,file,scenario,fingerprint,product_digest,'
+            'product_changed,kind,status,actual,finding,note,executor,implementer,implemented_by,independence,executed_at,'
+            'cause,suspect_defect) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (store.product, seq, record, store.machine['id'], checkout.name, work['branch'], scene['file'], scene['id'],
+             scene['fingerprint'], work['product_digest'], dumps(entry['product_changed']), 'agent', entry['status'], row['actual'],
+             finding, row.get('note'), entry['session'], implementation['implementer'], implementation['implemented_by'],
+             entry['independence'], row['executed_at'], entry['cause'], int(entry['suspect_defect'])))
+        for ordinal, (path, sha, size) in enumerate(evidence):
+            name = Path(path).name
+            store.index_evidence(db, sha, size, name)
+            db.execute('INSERT INTO result_evidence(result, ordinal, name, sha256) VALUES (?,?,?,?)', (result_id, ordinal, name, sha))
+        guards.after_result(db, store, checkout.name, scene, entry['status'], result_id)
+    entry.update(registration='registered', result=result_id, finding=finding, seq=seq)
+    published = dict(progress.public_item(entry), seq=seq, source=entry['source'], row_sha256=entry['row_sha256'],
+                     independence=entry['independence'])
+    if entry['status'] == 'not-executed':
+        published.update(by=operator, at=row.get('executed_at', entry['at']))
+    if entry['cause']:
+        ledger.register_hold(db, store, checkout, work['id'], published, seq, by=operator)
+    return published
+
+
+def registered_summary(summary, adjudications):
+    summary['adjudications'] = adjudications
+    records = sorted(adjudications.values(), key=lambda item: item['seq'])
+    summary['recorded'] = [recorded_item(r['scenario'], r['status'], r['result'], r.get('note'), r['cause'],
+                                         r['suspect_defect'], r['finding']) for r in records if r['result'] is not None]
+    # 由探测在 A 中登记过、但还没有 adjudications 的运行也保留原来的未执行。
+    summary['not_executed'] = [row for row in summary.get('not_executed', []) if row['scenario'] not in adjudications]
+    summary['not_executed'] += [row for row in records if row['status'] == 'not-executed']
+
+
+def independence_summary(data):
+    values = {r['independence'] for r in data['adjudications'].values()
+              if 'independence' in r and r['registration'] == 'registered'}
+    return next(iter(values)) if len(values) == 1 else 'mixed' if values else None
+
+
+def work_events(context, work, data):
+    with context.store.local() as db:
+        events = [dict(r) for r in db.execute('SELECT * FROM service_events WHERE work=? ORDER BY id', (work['id'],))]
+    rows = {key: r['row'] for key, r in data['adjudications'].items()
+            if r['registration'] == 'registered' and r.get('row', {}).get('executed_at')
+            and r['status'] != 'not-executed'}
+    for event in events:
+        if event['action'] == 'stop':
+            event['scenarios'] = dumps(sorted(set(loads(event['scenarios'], []))))
+    by_event = scenarios_while_stopped(events, rows)
+    for event in events:
+        stopped = by_event.get(event['id'], [])
+        event['scenarios'] = dumps(sorted(set(loads(event['scenarios'], [])) | set(stopped)))
+    return events
+
+
+def business_run(db, context, work, *, existing=None):
+    if existing:
+        return existing['id'], loads(existing['result'], {})
+    record, _ = works.publish(db, context.store, work, checkout=context.checkout.name, branch=work['branch'], prepared=True)
+    return record, {}
+
+
+def update_business(db, record, summary, events, work, implementation, independence, *, ended_at=None):
+    db.execute('UPDATE work SET result=?, services=?, session=?, implementer=?, implemented_by=?, independence=?, '
+               'ended_at=? WHERE id=?',
+               (dumps(summary), dumps([service_event(e) for e in events]), work['session'], implementation['implementer'],
+                implementation['implemented_by'], None if independence == 'mixed' else independence, ended_at, record))
+
+
+def verdict(context, run_id, scenario, *, implementer=None, implemented_by=None, session=None):
+    with locked_run(context, run_id) as (work, directory):
+        executor, key = active_session(work, session), run_key(work, scenario)
+        store = context.store
+        data = progress.recover(store, work)
+        if data.get('ended_at'):
+            reject(409, 'run-not-prepared', 'run', f'运行 #{run_id} 已完成业务提交')
+        previous = data['adjudications'].get(key)
+        active, at = data['active'], now()
+        if is_concluded(previous):
+            try:
+                rows, _, _ = read_results(directory, progress.scope(work), target=key)
+            except APIError:
+                concluded(key)
+            if row_hash(rows[key]) != previous.get('row_sha256'):
+                concluded(key)
+            declaration(work, data, implementer, implemented_by)
+            entry, duplicate = previous, True
         else:
-            summary['recorded'] = [recorded_item(scenarios.key(r['file'], r['scenario']), r['status'], r['id'], r['note'])
-                                   for r in db.all('SELECT id, file, scenario, status, note FROM results WHERE work=? ORDER BY id', (record,))]
-            summary['resubmitted'] = True
-    # 第三步：本机运行状态、租约与停着的服务。
-    with store.local_tx() as db:
-        db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, implementer=?, record=? WHERE id=?",
-                   (now(), dumps(summary), implementer or implemented_by, record, run_id))
-        db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
-    if fixing:
+            implementation = declaration(work, data, implementer, implemented_by)
+            prepared, current = source_scenes(context, directory)
+            scene = prepared[key]
+            if current.get(key, {}).get('fingerprint') != scene['fingerprint'] or previous and previous['status'] == 'voided':
+                entry = previous if previous and previous['status'] == 'voided' else void_entry(
+                    scene, source='verdict', executor=executor, data=data)
+                duplicate = entry is previous
+                if not duplicate:
+                    set_adjudication(data, entry)
+                    data['implementation'] = implementation
+                    progress.save(directory, data)
+                elif active and active['scenario'] == key:
+                    data.update(active=None, last_activity_at=at)
+                    progress.save(directory, data)
+            else:
+                rows, lines, _ = read_results(directory, progress.scope(work), target=key)
+                row = rows[key]
+                if work['fix'] is not None and row.get('status') == 'not-executed':
+                    validate_row(directory, key, row, line=lines[key], fixing=True)
+                crash = crash_findings(context, work, {key: scene}).get(key)
+                entry, evidence = create_adjudication(directory, scene, row, lines[key], data, executor, implementation,
+                                                       changed_paths(context, directory), source='verdict', crash=crash, save_evidence_to=store)
+                duplicate = bool(previous and previous['registration'] == 'local' and
+                                 all(entry[field] == previous[field] for field in
+                                     ('row_sha256', 'started_at', 'session', 'status', 'finding', 'evidence_sha256')))
+                # 重试没有开始时刻的暂记，先前的裁决可能已经清除了计时。
+                if previous and not active and previous['registration'] == 'local':
+                    duplicate = all(entry[field] == previous[field] for field in
+                                    ('row_sha256', 'session', 'status', 'finding', 'evidence_sha256'))
+                if duplicate:
+                    entry = previous
+                elif entry['status'] in ('pass', 'fail'):
+                    with store.records_tx() as db:
+                        db.lock_sequence()
+                        existing = progress.business(db, store, run_id)
+                        record, summary = business_run(db, context, work, existing=existing)
+                        adjudications = summary.get('adjudications', {})
+                        published = register_adjudication(db, context, work, record, scene, entry, evidence, implementation,
+                                                          config.operator() or work['operator'])
+                        adjudications[key] = published
+                        registered_summary(summary, adjudications)
+                        set_adjudication(data, entry)
+                        data['implementation'] = implementation
+                        independence = independence_summary(data)
+                        update_business(db, record, summary, work_events(context, work, data), work, implementation, independence)
+                        progress.stage(directory, data, {key: published['seq']})
+                    progress.publish(directory, data)
+                    with store.local_tx() as db:
+                        db.execute('UPDATE local_work SET record=? WHERE id=?', (record, run_id))
+                else:
+                    data['implementation'] = implementation
+                    set_adjudication(data, entry)
+                    progress.save(directory, data)
+        return dict(ok=True, run=run_id, scenario=key, adjudication=progress.public_item(entry), duplicate=duplicate,
+                    progress=progress.summary(work, data), warnings=progress.warning(data, active, now()))
+
+
+def submit(context, run_id, *, implementer=None, implemented_by=None):
+    store = context.store
+    with locked_run(context, run_id) as (work, directory):
+        data = progress.recover(store, work)
+        operator = config.operator() or work['operator']
+        with store.records_tx() as db:
+            db.lock_sequence()
+            existing = progress.business(db, store, run_id)
+            if existing is not None and existing['ended_at'] is not None:
+                declaration(work, data, implementer, implemented_by)
+                record, summary = existing['id'], loads(existing['result'], {})
+                summary['resubmitted'] = True
+                ended = existing['ended_at']
+                events = work_events(context, work, data)
+            else:
+                implementation = declaration(work, data, implementer, implemented_by)
+                prepared, current = source_scenes(context, directory)
+                scope = progress.scope(work)
+                rows, lines, partial = read_results(directory, scope)
+                changed = set(changed_paths(context, directory))
+                crashes = crash_findings(context, work, prepared)
+                candidates = {}
+                for key in sorted(scope):
+                    entry = data['adjudications'].get(key)
+                    if is_concluded(entry):
+                        continue
+                    scene = prepared[key]
+                    if entry and entry['status'] == 'voided':
+                        continue
+                    if current.get(key, {}).get('fingerprint') != scene['fingerprint']:
+                        set_adjudication(data, void_entry(scene, source='submit', executor=work['session'], data=data))
+                        continue
+                    if entry:  # 用户编辑活动结果文件不会改变已校验的暂记。
+                        validate_row(directory, key, entry['row'], line=lines.get(key), fixing=work['fix'] is not None)
+                        try:
+                            evidence = evidence_of(directory, entry['row'], key, expected=entry['evidence_sha256'], save_to=store)
+                        except APIError as error:
+                            error.problems[0]['line'] = lines.get(key)
+                            raise
+                    elif key in rows:
+                        if work['fix'] is not None and rows[key].get('status') == 'not-executed':
+                            validate_row(directory, key, rows[key], line=lines[key], fixing=True)
+                        entry, evidence = create_adjudication(directory, scene, rows[key], lines[key], data, work['session'],
+                                                               implementation, sorted(changed), source='submit',
+                                                               crash=crashes.get(key), save_evidence_to=store)
+                    else:
+                        continue
+                    candidates[key] = (entry, evidence)
+                voided = sorted(key for key, item in data['adjudications'].items() if item['status'] == 'voided')
+                todo = sorted(scope - data['adjudications'].keys() - candidates.keys())
+                if work['fix'] is not None and (todo or voided):
+                    reject(409, 'fix-validation-required', 'results.jsonl', '提交复验须为仍有效的每条场景提供实际执行结果')
+                record, summary = business_run(db, context, work, existing=existing)
+                summary = loads(work['result'], {}) | summary
+                adjudications = summary.get('adjudications', {})
+                staged = {}
+                for key, (entry, evidence) in candidates.items():
+                    published = register_adjudication(db, context, work, record, prepared[key], entry, evidence,
+                                                      implementation, operator)
+                    adjudications[key] = published
+                    staged[key] = published['seq']
+                    set_adjudication(data, entry)
+                registered_summary(summary, adjudications)
+                if candidates:
+                    data['implementation'] = implementation
+                ended = now()
+                end_progress(data, ended)
+                independence = independence_summary(data)
+                events = work_events(context, work, data)
+                for entry in data['adjudications'].values():
+                    changed.update(entry.get('product_changed', []))
+                summary.update(voided=voided, unadjudicated=todo, ignored_partial_line=partial, product_changed=sorted(changed),
+                               browser_crashes=sorted(crashes), independence=independence, submitted_by=operator,
+                               implementer=implementation['implemented_by'] or implementation['implementer'])
+                summary['sessions'] = loads(work['result'], {}).get('sessions', [work['session']])
+                interrupted = interruptions(directory)
+                if interrupted:
+                    summary['interruptions'] = interrupted
+                update_business(db, record, summary, events, work, implementation, independence, ended_at=ended)
+                if work['fix'] is not None:
+                    from . import fixes
+                    fixes.after_verify(db, store, work, summary['recorded'], adjudications=adjudications)
+                progress.stage(directory, data, staged, ended_at=ended)
+        progress.publish(directory, data)
+        return finish_submission(context, work, data, record, summary, events, ended, operator)
+
+
+def end_progress(data, ended):
+    if data['active']:
+        data['last_active'] = dict(data['active'], timed_out=bool(progress.warning(data, data['active'], ended)))
+    data.update(active=None, last_activity_at=ended, ended_at=ended)
+
+
+def finish_submission(context, work, data, record, summary, events, ended, operator):
+    store, run_id = context.store, work['id']
+    if work['fix'] is not None:
         from . import fixes
         fixes.after_verify_local(context, work, summary['recorded'])
-    # 结果登记之后再恢复停着的服务：等待服务恢复期间不占用数据库。
+    # 先保存停服影响并恢复环境，再把运行标为结束；重试只补齐本机收尾。
+    with store.local_tx() as db:
+        for event in events:
+            db.execute('UPDATE service_events SET scenarios=? WHERE id=?', (event['scenarios'], event['id']))
+        db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
     services = finish_services(context, work, reason='提交', operator=operator, crashes=True)
     if services:
         summary.update(services)
-        with store.local_tx() as db:
-            db.execute('UPDATE local_work SET result=? WHERE id=?', (dumps(summary), run_id))
-        # 自动恢复的记录补进业务记录里的服务停启记录；连不上共享库时只留在本机，不影响已登记的结果。
         try:
             with store.records_tx() as db:
                 db.execute('UPDATE work SET services=? WHERE id=?',
                            (dumps([service_event(e) for e in services.get('service_events', [])]), record))
         except APIError as error:
             summary['services_problem'] = '；'.join(p.get('problem', '') for p in error.problems)
-    return dict(ok=True, run=run_id, checkout=checkout.name, **summary)
+    summary['progress'] = progress.summary(dict(work, status='submitted'), data)
+    with store.local_tx() as db:
+        db.execute("UPDATE local_work SET status='submitted', ended_at=?, result=?, implementer=?, record=? WHERE id=?",
+                   (ended, dumps(summary), summary.get('implementer'), record, run_id))
+    return dict(ok=True, run=run_id, checkout=context.checkout.name, **summary)
+
+
+def touch(context, run_id):
+    if run_id is None:
+        return []
+    try:
+        with locked_run(context, run_id) as (work, directory):
+            data = progress.read(work)
+            if data.get('ended_at') or (directory / progress.PENDING).exists():
+                return progress.warning(data, data['active'], now())
+            at = now()
+            data['last_activity_at'] = at
+            progress.save(directory, data)
+            return progress.warning(data, data['active'], at)
+    except APIError:
+        return []
 
 
 def service_event(event):
@@ -756,27 +1267,62 @@ def crash_findings(context, work, prepared):
 
 
 def abandon(context, run_id, *, by=None, launch=None):
-    work = load_work(context, run_id)
-    result = json.loads(work['result'] or '{}')
-    continuing = (by is not None and work['status'] == 'abandoned' and result.get('abandoned_by') == by
-                  and result.get('launch') == launch)
-    if work['status'] != 'prepared' and not continuing:
-        reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}")
-    operator = by or config.operator() or work['operator']
-    result['abandoned_by'] = operator
-    if launch is not None:
-        result['launch'] = launch
-    # 放弃的运行只在本机：不写业务记录。
-    with context.store.local_tx() as db:
-        db.execute("UPDATE local_work SET status='abandoned', ended_at=COALESCE(ended_at, ?), result=? WHERE id=?",
-                   (now(), dumps(result), run_id))
-        db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
-    services = finish_services(context, work, reason='放弃', operator=operator)
-    if services:
-        result.update(services)
-        with context.store.local_tx() as db:
+    store = context.store
+    with locked_run(context, run_id, allow_ended=True) as (work, directory):
+        result = loads(work['result'], {})
+        continuing = (by is not None and work['status'] == 'abandoned' and result.get('abandoned_by') == by
+                      and result.get('launch') == launch)
+        if work['status'] != 'prepared' and not continuing:
+            reject(409, 'run-not-prepared', 'run', f"运行 #{run_id} 的状态是 {work['status']}")
+        operator = by or config.operator() or work['operator']
+        data = progress.read(work)
+        business_error = None
+        record = None
+        try:
+            data = progress.recover(store, work)
+            with store.records() as db:
+                record = progress.business(db, store, run_id)
+        except APIError as error:
+            business_error = '；'.join(p['problem'] for p in error.problems)
+        if record and record['ended_at'] and work['status'] == 'prepared':
+            finish_submission(context, work, data, record['id'], loads(record['result'], {}),
+                              work_events(context, work, data), record['ended_at'], operator)
+            reject(409, 'run-not-prepared', 'run', f'运行 #{run_id} 已完成业务提交')
+        ended = work['ended_at'] or now()
+        result['abandoned_by'] = operator
+        if launch is not None:
+            result['launch'] = launch
+        if record:
+            registered = loads(record['result'], {})
+            for field in ('recorded', 'not_executed'):
+                if field in registered:
+                    result[field] = registered[field]
+        else:
+            result['recorded'] = [recorded_item(item['scenario'], item['status'], item['result'], item.get('note'),
+                                                item['cause'], item['suspect_defect'], item['finding'])
+                                  for item in data['adjudications'].values() if item['result'] is not None]
+        end_progress(data, ended)
+        progress.save(directory, data)
+        result.update(unregistered=progress.local_verdicts(data), unadjudicated=progress.unadjudicated(work, data),
+                      progress=progress.summary(dict(work, status='abandoned'), data))
+        with store.local_tx() as db:
+            db.execute("UPDATE local_work SET status='abandoned', ended_at=?, result=? WHERE id=?",
+                       (ended, dumps(result), run_id))
+            db.execute('UPDATE browser_instances SET holder=NULL WHERE holder=?', (f'run:{run_id}',))
+        result.update(finish_services(context, work, reason='放弃', operator=operator))
+        if record and record['ended_at'] is None:
+            try:
+                with store.records_tx() as db:
+                    db.execute('UPDATE work SET ended_at=? WHERE id=? AND ended_at IS NULL', (ended, record['id']))
+            except APIError as error:
+                business_error = '；'.join(p['problem'] for p in error.problems)
+        if business_error:
+            result['records_problem'] = business_error
+        else:
+            result.pop('records_problem', None)
+        with store.local_tx() as db:
             db.execute('UPDATE local_work SET result=? WHERE id=?', (dumps(result), run_id))
-    return dict(ok=True, run=run_id, status='abandoned', **services)
+        return dict(ok=True, run=run_id, status='abandoned', **result)
 
 
 # ---- 人工复测 ----

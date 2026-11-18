@@ -116,16 +116,28 @@ def report(project, checkout, markdown, evidence, *, local, operator=None):
 
 
 def attention(project, checkout, items, *, local, operator=None):
-    rows = ''.join(f'<tr><td class="mono">#{item["id"]}</td><td><span class="chip">{escape(item["kind"])}</span></td>'
-                   f'<td>{escape(item["text"])}</td><td class="mono">{escape("、".join(item["scenarios"]))}</td>'
-                   f'<td>{escape(item["created_by"])}</td><td>{escape(item.get("machine") or "")}'
-                   f'{escape(" · 检出 " + item["checkout"]) if item.get("checkout") else ""}</td></tr>' for item in items)
-    hint = '处理后运行 sop-board attention resolve &lt;编号&gt;。' if local else '需要开发者处理的事项。'
+    board = f'/p/{quote(project)}?checkout={quote(checkout)}'
+    rows = []
+    for item in items:
+        hold = item['hold']
+        scenes = '、'.join(escape(key) for key in item['scenarios'])
+        details = ''
+        if hold:
+            key = item['scenarios'][0]
+            scenes = f'<a href="{escape(board)}#{quote(key, safe="")}">{escape(key)}</a>'
+            applicable = '当前场景卡住' if item['active'] else '不适用于当前检出或场景内容'
+            suspect = '<span class="chip">疑似缺陷</span>' if hold['suspect_defect'] else ''
+            details = f'<div>{escape(hold["cause"])} · {applicable} {suspect}</div>'
+        rows.append(f'<tr id="attention-{item["id"]}"><td class="mono">#{item["id"]}</td><td><span class="chip">{escape(item["kind"])}</span></td>'
+                    f'<td>{escape(item["text"])}{details}</td><td class="mono">{scenes}</td>'
+                    f'<td>{escape(item["created_by"])}</td><td>{escape(item.get("machine") or "")}'
+                    f'{escape(" · 检出 " + item["checkout"]) if item.get("checkout") else ""}</td></tr>')
+    hint = '处理后运行 sop-board attention resolve &lt;编号&gt;，场景绑定项须加 --note &lt;说明&gt;。' if local else '需要开发者处理的事项。'
     body = f'''
 <section class="page">
   {page_head('待人处理', f'本产品各台机器登记的待人处理，每条写明产出机器。{hint}')}
   <div class="card flush"><table><thead><tr><th>编号</th><th>种类</th><th>内容</th><th>场景</th><th>登记人</th><th>产出机器</th></tr></thead>
-  <tbody>{rows or '<tr><td colspan=6 class="muted center">没有待处理事项</td></tr>'}</tbody></table></div>
+  <tbody>{''.join(rows) or '<tr><td colspan=6 class="muted center">没有待处理事项</td></tr>'}</tbody></table></div>
 </section>'''
     return layout(project, '待人处理', body, local=local, active='/attention', page='attention', operator=operator)
 

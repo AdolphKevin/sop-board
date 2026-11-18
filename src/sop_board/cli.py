@@ -33,7 +33,7 @@ GROUPS = {
              'restart': '换一个看板守护进程，浏览器、会话与进行中的运行不受影响',
              'status': '查看场景状态与待处理事项', 'database': '升级业务记录库'},
     '检出': {'checkout': '列出、查看、建立或移除 main 与 worktree 检出'},
-    '执行': {'env': '按检出启停产品环境，查看各服务状态，运行中停启单个服务', 'browser': '安装与管理 Chrome for Testing',
+    '执行': {'activity': '查看本机项目是否有活动', 'env': '按检出启停产品环境，查看各服务状态，运行中停启单个服务', 'browser': '安装与管理 Chrome for Testing',
              'run': '准备、提交、启动执行会话', 'retest': '运行守护测试发现代码回归', 'mark': '登记人工复测结论',
              'launch': '查看或停止本机无头会话', 'disposition': '设置、撤销或查看本分支的场景处置',
              'scenario': '按场景查询当前状态与取证历史'},
@@ -189,7 +189,7 @@ def cmd_status(args):
     project = context.project
     result = dict(ok=True, project=project.name, operator=config.operator(), checkout=context.checkout.public(local=True),
                   configured=project.configured, problems=project.problems, notices=project.recovery_notices(),
-                  daemon=dict(daemon.describe(project), command=project.serve_command()))
+                  daemon=dict(daemon.describe(project), command=project.serve_command()), held=[])
     try:
         with context.store.records():
             pass
@@ -206,7 +206,7 @@ def cmd_status(args):
                       snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
                                     changed=snapshot['changed'][:50]),
                       counts=derived['counts'], distill=derived['distill'], review=derived['review'], total=derived['total'],
-                      disposed=dispositions.listed(derived['items']),
+                      disposed=dispositions.listed(derived['items']), held=derived['held'],
                       draft_review=derived['draft_review'],
                       queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state and not v['disposition'])
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
@@ -219,7 +219,8 @@ def cmd_status(args):
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
         from . import fixes, ledger
         with context.store.records() as db:
-            result['attention'] = ledger.open_attention(db, context.store, local=True)
+            result['attention'] = ledger.open_attention(db, context.store, local=True, checkout=context.checkout.name,
+                                                        scenes=found['scenarios'])
             result['fixes'] = fixes.active(db, context.store)
     if args.json:
         emit(result)
@@ -245,6 +246,9 @@ def cmd_status(args):
         for item in result['disposed']:
             print(f"  {item['key']}（{dispositions.LABELS[item['kind']]}，{status.LABELS[item['status']]}）"
                   f"：{item['reason']}，{item['by']}，{local_time(item['at'])}")
+    for item in result['held']:
+        suspect = '，疑似缺陷' if item['suspect_defect'] else ''
+        print(f"  {item['key']} 卡住（{item['cause']}{suspect}，待人处理 #{item['attention']}）：{item['finding']}")
     if counts['draft']:
         print('草稿审阅：' + '；'.join(f"{status.DRAFT_REVIEW[s]} {n}" for s, n in result['draft_review'].items()))
     if result['from_other_branch']:
@@ -389,26 +393,72 @@ def daemon_call(context, path, body=None, timeout=900):
     return daemon.call(context.project, 'POST', path, dict(body or {}, checkout=context.checkout.name), timeout=timeout)
 
 
+def run_operation(context, run, operation, *, infer_service=False):
+    from . import runs
+    if run is None and infer_service:
+        with context.store.local() as db:
+            active = db.execute("SELECT id FROM local_work WHERE checkout=? AND kind='run' AND status='prepared'",
+                                (context.checkout.id,)).fetchall()
+        if len(active) == 1:
+            run = active[0]['id']
+    try:
+        result = operation()
+    except daemon_module().DaemonUnavailable as error:
+        raise APIError(503, 'daemon-not-running', [dict(field='daemon', problem=str(error))],
+                       warnings=runs.touch(context, run)) from error
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        if run is None:
+            raise
+        raise APIError(422, 'invalid', [dict(field='command', problem=str(error))],
+                       warnings=runs.touch(context, run)) from error
+    except APIError as error:
+        if run is not None:
+            error.details['warnings'] = runs.touch(context, run)
+        raise
+    if run is not None:
+        result['warnings'] = runs.touch(context, run)
+    return result
+
+
 def cmd_env(args):
+    from . import daemon, probes, progress, runs
     context = load(args)
-    if args.action in ('stop', 'start'):
-        if not args.service:
-            return fail('service-required', [dict(field='service', problem=f'请写出服务名：sop-board env {args.action} <服务>')], 2)
-        import os
-        run = args.run or (int(os.environ['SOP_BOARD_RUN']) if os.environ.get('SOP_BOARD_RUN', '').isdigit() else None)
-        result = daemon_call(context, '/local/env/service', dict(
-            service=args.service, action=args.action, operator=config.operator() or '本机', run=run))
-        emit(result)
-        return 0 if result.get('ok') else 1
-    if args.service:
-        return fail('invalid', [dict(field='service', problem=f'env {args.action} 不接受服务名；停启单个服务用 env stop|start <服务>')], 2)
-    if args.action == 'status' and args.all:
-        from . import daemon
-        emit(daemon.call(context.project, 'POST', '/local/env/status', {}))
-        return 0
-    result = daemon_call(context, '/local/env/' + args.action)
+    run = progress.run_number(args.run)
+    if args.action == 'probe':
+        entries = [context.project.entries[name] for name in set(args.entries or context.project.entries)
+                   if name in context.project.entries]
+        operation = lambda: daemon_call(context, '/local/env/probe', dict(entries=args.entries, run=run),
+                                        timeout=900 + probes.timeout(entries))
+    elif args.action in ('stop', 'start'):
+        if len(args.entries) != 1:
+            return fail('service-required', [dict(field='service', problem=f'请写出一个服务名：sop-board env {args.action} <服务>')], 2,
+                        warnings=runs.touch(context, run))
+        operation = lambda: daemon_call(context, '/local/env/service', dict(
+            service=args.entries[0], action=args.action, operator=config.operator() or '本机', run=run))
+    elif args.entries:
+        return fail('invalid', [dict(field='service', problem=f'env {args.action} 不接受服务名；停启单个服务用 env stop|start <服务>')], 2,
+                    warnings=runs.touch(context, run))
+    elif args.action == 'status' and args.all:
+        operation = lambda: daemon.call(context.project, 'POST', '/local/env/status', {})
+    else:
+        operation = lambda: daemon_call(context, '/local/env/' + args.action)
+    result = run_operation(context, run, operation, infer_service=args.action in ('stop', 'start'))
     emit(result)
     return 0 if result.get('ok') else 1
+
+
+def cmd_activity(args):
+    from . import activity
+    try:
+        data = config.resolve_data(args.project, args.data)
+        code, result = activity.read(data)
+    except (ValueError, OSError) as error:
+        code, result = activity.unknown(args.project, str(error))
+    if args.json:
+        emit(result)
+    else:
+        activity.text(result)
+    return code
 
 
 def cmd_check(args):
@@ -486,11 +536,13 @@ CHECKS = [check_browser]
 
 
 def cmd_run(args):
-    from . import runs
+    from . import progress, runs
     from .launcher import runner_problem
     problem = runner_problem(args.runner, args.model, args.effort, kind=args.action)
     if problem:
         return fail('invalid-arguments', [problem], 2)
+    if (args.action in ('begin', 'verdict')) != bool(args.scenario):
+        return fail('invalid-arguments', [dict(field='scenario', problem='begin 与 verdict 各需一个场景键')], 2)
     context = load(args)
     if args.action == 'prepare':
         scope = args.scope or ['pending']
@@ -498,6 +550,16 @@ def cmd_run(args):
             return fail('scope-invalid', [dict(field='scope', problem='--fix 复验的范围由修复决定，不能再写 --scope')], 2)
         emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix, identities=args.identity, wait=args.wait,
                           allow_open_fix=args.allow_open_fix))
+    elif args.action in ('begin', 'verdict'):
+        run = progress.run_number(args.run)
+        if args.action == 'begin':
+            emit(runs.begin(context, run, args.scenario, session=args.session))
+        else:
+            problem = implementer_problem(args)
+            if problem:
+                return fail('invalid-arguments', [problem], 2)
+            emit(runs.verdict(context, run, args.scenario, implementer=args.implementer, implemented_by=args.implemented_by,
+                              session=args.session))
     elif args.action == 'submit':
         problem = implementer_problem(args)
         if problem:
@@ -506,7 +568,7 @@ def cmd_run(args):
     elif args.action == 'abandon':
         emit(runs.abandon(context, args.run))
     elif args.action == 'launch':
-        from . import daemon
+        from . import daemon, probes
         problem = implementer_problem(args)
         if problem:
             return fail('invalid-arguments', [problem], 2)
@@ -520,7 +582,8 @@ def cmd_run(args):
             checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
             implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机',
             allow_open_fix=args.allow_open_fix, runner=args.runner,
-            model=args.model.strip() if args.model is not None else None, effort=args.effort)))
+            model=args.model.strip() if args.model is not None else None, effort=args.effort),
+            timeout=900 + probes.timeout(context.project.entries.values())))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
     return 0
@@ -541,6 +604,14 @@ def implementer_problem(args):
     return None
 
 
+def run_wait_item(context, work):
+    from . import progress
+    item = dict(run=work['id'], status=work['status'], result=json.loads(work['result']) if work['result'] else None)
+    if work['kind'] == 'run':
+        item.update(progress.view(work, data=progress.observe(context.store, work)))
+    return item
+
+
 def wait(context, *, launch=None, run=None, timeout=1800):
     """等待启动结束或运行提交；0 表示已结束（看输出中的状态），3 表示超时。"""
     import time
@@ -557,16 +628,15 @@ def wait(context, *, launch=None, run=None, timeout=1800):
                 row = db.execute('SELECT * FROM launches WHERE id=?', (launch,)).fetchone()
                 if row is None:
                     return fail('launch-not-found', [dict(field='launch', problem=f'启动不存在：#{launch}')], 2)
-                launched, runs_ = launcher.state(db, row, local=True)
+                launched, runs_ = launcher.state(db, row, local=True, store=context.store)
                 done = row['status'] != 'running' and not launched.get('finishing')
-                value = dict(launch=launched,
-                             results=[dict(run=r['id'], status=r['status'], result=json.loads(r['result']) if r['result'] else None) for r in runs_])
+                value = dict(launch=launched, results=[run_wait_item(context, r) for r in runs_])
             else:
                 row = db.execute('SELECT * FROM local_work WHERE id=?', (run,)).fetchone()
                 if row is None:
                     return fail('run-not-found', [dict(field='run', problem=f'运行不存在：#{run}')], 2)
                 done = row['status'] != 'prepared'
-                value = dict(run=row['id'], status=row['status'], result=json.loads(row['result']) if row['result'] else None)
+                value = run_wait_item(context, dict(row))
         if done:
             code = None
             if launch is not None:
@@ -586,18 +656,28 @@ def wait(context, *, launch=None, run=None, timeout=1800):
         if deadline and time.monotonic() > deadline:
             emit(dict(ok=True, timeout=True, **value))
             return 3
-        time.sleep(2)
+        time.sleep(max(0, min(2, deadline - time.monotonic())) if deadline else 2)
 
 
 def cmd_launch(args):
     from . import daemon, launcher
+    if args.action == 'stop' and len(args.launch or []) != 1:
+        return fail('invalid-arguments', [dict(field='launch', problem='launch stop 须指定一个 --launch <编号>')], 2)
+    if args.action == 'stats':
+        from .launch_stats import date_filter, stats
+        try:
+            since = date_filter(args.since)
+        except ValueError as error:
+            return fail('invalid-arguments', [dict(field='since', problem=str(error))], 2)
+        emit(stats(load(args, require=False), args.launch, since))
+        return 0
     context = load(args)
     if args.action == 'stop':
-        emit(daemon.call(context.project, 'POST', '/local/launch/stop', dict(launch=args.launch)))
+        emit(daemon.call(context.project, 'POST', '/local/launch/stop', dict(launch=args.launch[0])))
         return 0
     with context.store.local() as db:
         rows = db.execute('SELECT * FROM launches WHERE checkout=? ORDER BY id DESC LIMIT 20', (context.checkout.id,)).fetchall()
-        items = [launcher.state(db, row, local=True)[0] for row in rows]
+        items = [launcher.state(db, row, local=True, store=context.store)[0] for row in rows]
     emit(dict(ok=True, checkout=context.checkout.name, launches=items))
     return 0
 
@@ -792,16 +872,19 @@ def cmd_atlas(args):
 
 
 def cmd_fixtures(args):
-    from . import ledger
+    from . import ledger, progress, runs
     context = load(args)
-    if args.action == 'run':
-        if len(args.rest) != 1:
-            return fail('recipe-required', [dict(field='recipe', problem='请给出一个配方名')], 2)
-        emit(ledger.fixture_run(context.project, context.store, context.checkout, recipe=args.rest[0], params=args.param or [],
-                                run=args.run, scenario=args.scenario, by=signer(args)))
-    else:
-        emit(ledger.fixture_run(context.project, context.store, context.checkout, argv=args.rest, reason=args.reason,
-                                run=args.run, scenario=args.scenario, by=signer(args)))
+    run = progress.run_number(args.run)
+    if args.action == 'run' and len(args.rest) != 1:
+        return fail('recipe-required', [dict(field='recipe', problem='请给出一个配方名')], 2, warnings=runs.touch(context, run))
+    def operation():
+        options = dict(run=run, scenario=args.scenario, by=signer(args))
+        if args.action == 'run':
+            options.update(recipe=args.rest[0], params=args.param or [])
+        else:
+            options.update(argv=args.rest, reason=args.reason)
+        return ledger.fixture_run(context.project, context.store, context.checkout, **options)
+    emit(run_operation(context, run, operation))
     return 0
 
 
@@ -820,13 +903,16 @@ def cmd_attention(args):
     from . import ledger
     context = load(args, require=False)
     if args.action == 'list':
+        scenes = scenarios.scan(context.checkout.scenarios_dir(context.project), set(context.project.entries))['scenarios'] \
+            if context.project.configured else {}
         with context.store.records() as db:
-            emit(dict(ok=True, attention=ledger.open_attention(db, context.store, local=True)))
+            emit(dict(ok=True, attention=ledger.open_attention(db, context.store, local=True,
+                                                               checkout=context.checkout.name, scenes=scenes)))
     elif args.action == 'add':
         emit(ledger.attention_add(context.store, context.checkout.name, args.kind, args.text, by=signer(args),
                                   scenarios=args.scenario or [], work=args.run))
     else:
-        emit(ledger.attention_resolve(context.store, args.id, by=signer(args), note=args.note))
+        emit(ledger.attention_resolve(context.store, args.id, by=signer(args), note=args.note, checkout=context.checkout))
     return 0
 
 
@@ -919,20 +1005,24 @@ def parser():
         p.set_defaults(handler=handler)
 
     p = common(sub.add_parser('env'))
-    p.add_argument('action', choices=('up', 'down', 'restart', 'status', 'stop', 'start'),
-                   help='stop|start <服务>：运行中停启 adapter.services 中可停的服务（模拟依赖故障），停启记进运行，提交或放弃时自动恢复')
-    p.add_argument('service', nargs='?', help='stop|start：服务名')
+    p.add_argument('action', choices=('up', 'down', 'restart', 'status', 'stop', 'start', 'probe'),
+                   help='probe：即时核对入口；stop|start：运行中停启可停的服务，提交或放弃时自动恢复')
+    p.add_argument('entries', nargs='*', metavar='入口或服务', help='probe：入口名称（缺省全部）；stop|start：一个服务名')
     p.add_argument('--all', action='store_true', help='status：列出全部检出')
-    p.add_argument('--run', type=int, help='stop|start：停启记进哪个运行（缺省取 SOP_BOARD_RUN；本检出只有一个 prepared 运行时可省）')
+    p.add_argument('--run', type=int, help='关联运行编号并报告该场景的超时提醒（缺省取 SOP_BOARD_RUN）')
     p.set_defaults(handler=cmd_env)
+
+    p = common(sub.add_parser('activity'))
+    p.set_defaults(handler=cmd_activity)
 
     p = common(sub.add_parser('check'))
     p.set_defaults(handler=cmd_check)
 
     p = common(sub.add_parser('run'))
-    p.add_argument('action', choices=('prepare', 'submit', 'abandon', 'launch', 'wait'))
+    p.add_argument('action', choices=('prepare', 'begin', 'verdict', 'submit', 'abandon', 'launch', 'wait'))
+    p.add_argument('scenario', nargs='?', help='begin / verdict：本轮场景键')
     p.add_argument('--scope', nargs='+', help='prepare：pending（缺省）、all，或场景（<文件>#<编号>，编号唯一时可省文件）')
-    p.add_argument('--session', help='prepare：执行者会话编号（缺省取 SOP_BOARD_SESSION、CODEX_THREAD_ID 或 CLAUDE_CODE_SESSION_ID）')
+    p.add_argument('--session', help='prepare / begin / verdict：执行者会话编号（缺省取 SOP_BOARD_SESSION、CODEX_THREAD_ID 或 CLAUDE_CODE_SESSION_ID）')
     p.add_argument('--fix', type=int, help='prepare / launch：修复的独立复验，范围为该修复的问题场景')
     p.add_argument('--identity', action='append', metavar='身份',
                    help='prepare：只为这些身份取得浏览器（可重复）；同一环境上的多个运行按身份分开。缺省取本轮 Web 入口的全部身份')
@@ -940,10 +1030,10 @@ def parser():
                    help='prepare：环境或身份被占着时在本机排队，最多等这么久（缺省 0：立即返回 env-busy / browser-busy）')
     p.add_argument('--allow-open-fix', action='store_true',
                    help='prepare / launch：确认当前代码可以运行时越过 fix-in-progress，并记录进行中的修复编号')
-    p.add_argument('--run', type=int, help='submit / abandon / wait：运行编号')
-    p.add_argument('--implementer', help='submit / launch：实现者会话编号；不填记为独立性未声明')
+    p.add_argument('--run', type=int, help='begin / verdict / submit / abandon / wait：运行编号')
+    p.add_argument('--implementer', help='verdict / submit / launch：实现者会话编号')
     p.add_argument('--implemented-by', dest='implemented_by', metavar='操作者',
-                   help='submit / launch：实现者是别的操作者（跨机器验收），与 --implementer 二选一；记独立验收')
+                   help='verdict / submit / launch：实现者是别的操作者（跨机器验收），与 --implementer 二选一；记独立验收')
     p.add_argument('--launch', type=int, help='wait：启动编号（缺省为本检出最近一次启动）')
     p.add_argument('--timeout', type=int, default=1800, help='wait：最长等待秒数，0 不限时（缺省 1800）')
     p.add_argument('--runner', help='launch：本次使用 codex 或 claude')
@@ -952,8 +1042,9 @@ def parser():
     p.set_defaults(handler=cmd_run)
 
     p = common(sub.add_parser('launch'))
-    p.add_argument('action', choices=('status', 'stop'))
-    p.add_argument('--launch', type=int)
+    p.add_argument('action', choices=('status', 'stop', 'stats'))
+    p.add_argument('--launch', type=int, action='append')
+    p.add_argument('--since', help='stats：启动日期下限（YYYY-MM-DD）')
     p.set_defaults(handler=cmd_launch)
 
     p = common(sub.add_parser('mark'))

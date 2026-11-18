@@ -254,8 +254,8 @@ class Environment:
                    SOP_PORTS=json.dumps(self.actual_ports()), SOP_ENV_LOG_DIR=str(log_dir))
         return env
 
-    def command(self):
-        argv = list(self.project.adapter['env'])
+    def command(self, args):
+        argv = list(args)
         executable = self.project.data / argv[0]
         if executable.is_file():
             argv[0] = str(executable)
@@ -279,7 +279,7 @@ class Environment:
             self.ports, self.values, self.digest, self.error = ports, {}, digest, ''
             self.manager.record(checkout, 'starting', pid=None, ports=ports, log=self.log, digest=digest)
             clear_services(directory / 'services')
-            process = subprocess.Popen(self.command(), cwd=project.data, env=self.inputs(directory),
+            process = subprocess.Popen(self.command(project.adapter['env']), cwd=project.data, env=self.inputs(directory),
                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        start_new_session=True)
             self.process = process

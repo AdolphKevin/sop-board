@@ -20,7 +20,7 @@
 | `evidence` | `evidence/` 下的相对路径数组，单个文件不超过 64 MiB |
 | `finding`、`note` | blocked、skip、not-executed 须写 `finding` |
 
-实际执行的 pass、fail 至少一份真实证据；`not-executed` 不附证据，留在待执行范围。`convert` 生成上述字段，其他入口的行由对应驱动写入后合并。
+实际执行的 pass、fail 至少一份真实证据。`not-executed` 不附证据。`convert` 生成表中字段，其他入口的行由对应驱动写入后合并。转换后给 blocked 和 not-executed 行按运行目录 prompt.md 补 cause，有疑似缺陷时给 blocked 行添 `"suspect_defect": true`。
 
 ## 场景标签
 

@@ -30,7 +30,7 @@
 | --- | --- | --- | --- |
 | <已知提示或覆盖层> | <源码或实际页面文字> | <忽略或已获授权的处理> | <未知遮挡、登录失效、验证码、连接或授权异常> |
 
-未知遮挡不自动关闭；"browser may not be secure" 时停止并记 blocked；人机验证与真实账号登录过期时停止，记 not-executed（`notExecuted()`）并登记待人处理；声明的测试账号登录过期时用凭据变量重新登录。
+未知遮挡不自动关闭；"browser may not be secure" 时停止并记 blocked、cause: environment；人机验证与真实账号登录过期时停止，记 not-executed（`notExecuted()`），结果行补 cause: human；声明的测试账号登录过期时用凭据变量重新登录。
 
 ## 多语言与数据状态
 
@@ -38,4 +38,4 @@
 
 ## 运行范围
 
-保留模板的 workers: 1、retries: 0、maxFailures: 1。业务失败只记该场景并继续；首个意外失败（受阻、连接断开、浏览器崩溃）后保留已取得的证据并停止，列清实际执行和未执行编号；未执行的场景写 not-executed，不批量记成受阻或跳过。
+保留模板的 workers: 1、retries: 0、maxFailures: 1。业务失败只记该场景并继续；首个意外失败（受阻、连接断开、浏览器崩溃）后保留已取得的证据并停止当次 Playwright 命令。按运行目录 prompt.md 判断后续范围，为确实未执行的场景写 not-executed 和 cause，不批量记成受阻或跳过。

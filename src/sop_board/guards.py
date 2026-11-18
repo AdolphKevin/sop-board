@@ -509,8 +509,9 @@ def retest(app, checkout, *, scenarios_=None, dry_run=False, operator):
                   not_guarded=skipped, cannot_run=cannot)
     if dry_run or not runnable:
         return result
-    verdicts, digest = run_guards(app, checkout, index, runnable, holder=f'retest:{checkout.name}')
-    record_runs(app.store, checkout, scenes, index, verdicts, digest, operator, branch=branch_of(app.project, checkout))
+    with app.activity.track(checkout, 'retest'):
+        verdicts, digest = run_guards(app, checkout, index, runnable, holder=f'retest:{checkout.name}')
+        record_runs(app.store, checkout, scenes, index, verdicts, digest, operator, branch=branch_of(app.project, checkout))
     result['results'] = {k: dict(status='pass' if ok else 'fail', label='守护运行通过' if ok else '守护运行未通过，转为待复测',
                                  reason=reason) for k, (ok, reason, _) in verdicts.items()}
     passed = sum(1 for ok, _, _ in verdicts.values() if ok)
@@ -650,6 +651,11 @@ def browser_fidelity(store, db, checkout, test, acceptance, ledger, scenario):
 
 
 def distill_submit(app, checkout, report_path, *, operator, work_id=None):
+    with app.activity.track(checkout, 'distill'):
+        return _distill_submit(app, checkout, report_path, operator=operator, work_id=work_id)
+
+
+def _distill_submit(app, checkout, report_path, *, operator, work_id=None):
     """核对沉淀报告，按 retest 规则实际运行一次，全部合格后合并进 regression.yaml（不提交）。"""
     import yaml
     from .cli import Context, scene_board

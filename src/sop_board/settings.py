@@ -20,7 +20,7 @@ from .time_format import local_time
 
 SECTIONS = {
     'repositories': ('repos', 'identities', 'scenarios', 'snapshot_exclude'),
-    'verification': ('entries', 'skill'), 'environment': ('adapter',),
+    'verification': ('entries', 'skill'), 'environment': ('adapter', 'scenario_timeout'),
     'fixtures': ('fixtures',), 'agents': ('agents',),
     'shared': ('shared_database',), 'local': (),
 }

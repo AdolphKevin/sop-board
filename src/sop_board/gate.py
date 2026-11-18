@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import threading
 import time
 
+from . import probes, workdirs
 from .errors import APIError
 
 GRACE = 60
@@ -91,7 +92,7 @@ class Gate:
         moment = time.monotonic()
         self.queue = [w for w in self.queue if w.active or moment - w.ended < GRACE]
 
-    def check(self, checkout, run, identities, digest, waiter):
+    def check(self, checkout, run, identities, digest, waiter, *, reserved=False):
         """能分配就返回 None；否则返回 (错误码, 说明, 占用者)。调用方持有 self.cond。"""
         holders, names = self.holders(exclude=run), self.names()
         shared = self.shared_environment()
@@ -119,6 +120,8 @@ class Gate:
             if other.session == (waiter.session if waiter else None):
                 continue
             if shared and other.checkout.id != checkout.id:
+                if reserved:
+                    continue  # 别的检出要等本轮释放环境，不能在此反过来让它先拿身份。
                 return ('env-busy', f'前面有检出 {other.checkout.name} 的会话 {other.session} 在等环境',
                         dict(kind='queue', checkout=other.checkout.name, session=other.session))
             common = other.identities & set(identities)
@@ -151,10 +154,9 @@ class Gate:
             f"修复 #{fix['id']}（会话 {fix['session']}，登记于 {fix['created_at']}）已改动 {fix['changed_files']} 个产品文件，"
             '本次准备需要启动或重启环境；等它 fix submit 后再准备；确认当前代码可以运行时加 --allow-open-fix')])
 
-    def acquire(self, checkout, run, identities, *, session, pid, wait, digest, url=None, allow_open_fix=False):
-        """为运行 run 取得环境与身份；返回 dict(environment, browsers, switched_from)。"""
+    def wait_for(self, checkout, run, identities, *, session, pid, wait, deadline, digest,
+                 allow_open_fix, reserved=False):
         from .daemon import alive
-        deadline = time.monotonic() + max(0, wait)
         with self.cond:
             self.expire()
             waiter = next((w for w in self.queue if w.session == session), None)
@@ -166,12 +168,12 @@ class Gate:
                         self.queue.remove(waiter)
                     self.cond.notify_all()
                     raise
-                verdict = self.check(checkout, run, identities, digest, waiter)
+                verdict = self.check(checkout, run, identities, digest, waiter, reserved=reserved)
                 if verdict is None:
                     if waiter in self.queue:
                         self.queue.remove(waiter)
                     self.granted[run] = checkout.id
-                    break
+                    return allowed
                 if wait > 0 and waiter is None:
                     waiter = Waiter(session, checkout, run, identities, pid)
                     self.queue.append(waiter)
@@ -188,16 +190,39 @@ class Gate:
                         waiter.active, waiter.ended = False, time.monotonic()
                     raise self.busy_error(verdict, waiter)
                 self.cond.wait(timeout=min(1.0, remaining))
+
+    def acquire(self, checkout, run, identities, *, session, pid, wait, digest, candidates, fixing,
+                url=None, allow_open_fix=False):
+        """先取得环境，再按探测后留下的入口分配浏览器身份。"""
+        from . import runs
+        entries = {item['entry']: self.app.project.entries[item['entry']] for item in candidates}
+        has_probes = any('probe' in entry for entry in entries.values())
+        deadline = time.monotonic() + max(0, wait)
+        options = dict(session=session, pid=pid, wait=wait, deadline=deadline, digest=digest, allow_open_fix=allow_open_fix)
+        allowed = self.wait_for(checkout, run, [] if has_probes else identities, **options)
         try:
             switched = self.switch_to(checkout)
-            environment = self.app.envs.up(checkout)
+            with self.app.envs.lock(checkout):
+                environment = self.app.envs.up(checkout)
+                reports = probes.batch(self.app.envs, checkout, entries)
+            skipped = probes.excluded(candidates, reports, fixing=fixing)
+            if has_probes:
+                failed = {p['entry'] for p in reports if p['status'] == 'unhealthy'}
+                remaining = runs.web_identities(entry for name, entry in entries.items() if name not in failed)
+                identities = set(identities) & remaining
+                if identities:
+                    allowed = self.wait_for(checkout, run, identities, reserved=True, **options) or allowed
             browsers = self.app.browsers.lease(checkout, sorted(identities), f'run:{run}', url=url) if identities else {}
+            directory = workdirs.create(self.app.project.data / 'runs', run)
+            probes.append(directory, 'prepare', reports)
         except BaseException:
             with self.cond:
                 self.granted.pop(run, None)
                 self.cond.notify_all()
             raise
-        return dict(environment=environment, browsers=browsers, switched_from=switched, allowed_open_fix=allowed)
+        return dict(environment=environment, browsers=browsers, directory=str(directory),
+                    switched_from=switched, allowed_open_fix=allowed,
+                    probes=reports, probe_skipped=skipped)
 
     def switch_to(self, checkout):
         """port_step 为 0 时：别的检出的环境没有运行在用，就停掉它，把环境换给 checkout。返回原来的检出名。"""
@@ -279,6 +304,7 @@ def _register():
         result = app.gate.acquire(checkout, run, identities, session=request.json_field('session') or f'run:{run}',
                                   pid=request.json_field('pid'), wait=int(request.json_field('wait') or 0),
                                   digest=request.json_field('digest'), url=request.json_field('url'),
+                                  candidates=request.json_field('candidates') or [], fixing=bool(request.json_field('fixing')),
                                   allow_open_fix=bool(request.json_field('allow_open_fix')))
         return json_response(dict(ok=True, **result))
 

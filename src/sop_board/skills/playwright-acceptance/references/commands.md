@@ -10,7 +10,10 @@ npx --no-install playwright test
 sop-board playwright convert --report playwright/report.json --out . --executor <会话> \
   --scope scope.json --scenario-file scenarios.yaml [--finding shop#W=<原因>] [--allow-partial] [--skip-large]
 
-# 登记；其他入口的结果须已合并进 results.jsonl
+# 按运行目录 prompt.md 补原因类别，合并其他入口的结果，再逐条裁决
+sop-board run verdict <key> --run <N>
+
+# 提交本轮
 sop-board run submit --run <N> [--implementer <实现者会话编号> | --implemented-by <实现者的操作者>]   # 实现者按 prompt.md 的说明填，没说明就都不填
 
 # 查看
@@ -18,7 +21,7 @@ npx --no-install playwright show-report playwright/html
 ```
 
 - `convert` 把测试标题第一个词当场景 key，逐项核对报告里的 `sop-scope` 注解与 scope.json。`--out .` 使证据路径成为 `evidence/…` 相对路径。
-- 中途退出时用 `playwright/report.partial.json` 加 `--allow-partial`；未执行的场景写成 `not-executed` 行，登记时留在待执行范围。
-- 在 report 搜索框输入 `@shop#W` 可筛选该场景；标签只标识场景，通过与否以 `run submit` 登记的结果为准。
-- 只用 `convert` 与 `run submit` 登记结果，不另行提交第二份。
+- 中途退出时用 `playwright/report.partial.json` 加 `--allow-partial`；按运行目录 prompt.md 核对已执行范围。仅因时间不足而未做的场景不写结果行。
+- 在 report 搜索框输入 `@shop#W` 可筛选该场景；标签只标识场景，通过与否以 `run verdict` 与 `run submit` 的登记为准。
+- 转换后的结果经 `run verdict` 裁决，`run submit` 完成本轮。
 - `sop-board playwright` 的子命令只有 `guide`、`convert`。

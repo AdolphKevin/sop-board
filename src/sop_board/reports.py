@@ -28,6 +28,12 @@ def _undecided(counts):
     return f"；未决：阻塞 {counts.get('blocked', 0)}，需求变更 {counts.get('changed', 0)}"
 
 
+def _cause(item):
+    if not item.get('cause'):
+        return ''
+    return f"，原因类别 {item['cause']}" + ('，疑似缺陷' if item.get('suspect_defect') else '')
+
+
 def build(context, *, file=None, local=True, fetch=False):
     """返回 (markdown, 证据列表[(zip 内路径, sha256, 产出机器)], 缺少的证据[(zip 内路径, sha256, 机器显示名)], 取回的证据{sha: bytes})。
 
@@ -74,7 +80,7 @@ def build(context, *, file=None, local=True, fetch=False):
         if not item:
             return None
         return (f"最近一次未执行：操作者 {item['by'] or '未署名'}，{local_time(item['at'])}，运行 #{item['run']}"
-                + (f"，{_cell(item['finding'])}" if item.get('finding') else '') + '（未执行不改变状态）')
+                + _cause(item) + (f"，{_cell(item['finding'])}" if item.get('finding') else '') + '（未执行不改变状态）')
     branch = book.viewer.branch
     title = f"# 验收报告：{project.name} · 检出 {checkout.name}" + (f" · 场景文件 {file}" if file else '')
     lines += [title, '', f"- 导出时间：{local_time(now())}",
@@ -112,6 +118,8 @@ def build(context, *, file=None, local=True, fetch=False):
         if item := info['disposition']:
             lines.append(f"- **{dispositions.LABELS[item['kind']]}**：{_cell(item['reason'])}；"
                          f"登记人 {item['by']}，{local_time(item['at'])}，分支 {item['branch']}")
+        for item in held_by_key.get(key, []):
+            lines.append(f"- **卡住**（待人处理 #{item['attention']}）{_cause(item)}。{_cell(item['finding'])}")
         if skipped_text(scene):
             lines.append('- ' + skipped_text(scene))
         if (info['state'] == 'pass' and info['guard'].get('unsynced')) or info['guard'].get('unrunnable'):
@@ -123,7 +131,8 @@ def build(context, *, file=None, local=True, fetch=False):
                          + (f"；{_cell(guard['reason'])}" if guard['reason'] else '') + "（守护测试，不是真实入口执行）")
         for item in book.elsewhere(scene):
             lines.append(f"- 其他机器上的情况：{item['machine']}（检出 {item['checkout']}）{item['label']}，{item['by'] or '未署名'}，"
-                         f"{local_time(item['at']) if item['at'] else '时间未记录'}" + (f"，{_cell(item['reason'])}" if item['reason'] else '')
+                         f"{local_time(item['at']) if item['at'] else '时间未记录'}" + _cause(item)
+                         + (f"，{_cell(item['reason'])}" if item['reason'] else '')
                          + '（不改变本检出的状态）')
         for result in history[:5]:
             if result['kind'] == 'manual':
@@ -144,7 +153,7 @@ def build(context, *, file=None, local=True, fetch=False):
                          f"{origin(result)}，快照 {_version(result['product_digest'])}"
                          + (f"（执行期间变化：{_cell('、'.join(changed[:5]))}）" if changed else '')
                          + (f"；{'；'.join(s['text'] for s in stopped_labels(project, down))}" if down else '')
-                         + (f"；{_cell(result['finding'])}" if result['finding'] else ''))
+                         + _cause(result) + (f"；{_cell(result['finding'])}" if result['finding'] else ''))
             for item in files_of.get(result['id'], []):
                 path = f"evidence/{item['sha256'][:12]}-{item['name']}"
                 if item['sha256'] in available:
@@ -158,6 +167,10 @@ def build(context, *, file=None, local=True, fetch=False):
 
     regular = sorted(k for k in scenes if not derived['items'][k]['disposition'])
     disposed = sorted(k for k in scenes if derived['items'][k]['disposition'])
+    held_by_key = {}
+    for item in derived['held']:
+        if item['key'] in scenes:
+            held_by_key.setdefault(item['key'], []).append(item)
     for heading, keys in [('场景', regular), ('处置', disposed)]:
         lines.extend([f'## {heading}', ''])
         for key in keys:

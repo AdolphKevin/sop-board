@@ -28,7 +28,9 @@ def history(book, scene):
                     independence=row['independence'] if kind == 'agent' else None,
                     executor=executor or None, branch=row['branch'], machine=book.machine_name(row['machine']),
                     commits=commits, product_digest=row['product_digest'], fingerprint=row['fingerprint'],
-                    current=row['fingerprint'] == scene['fingerprint'], finding=finding, note=row.get('note'))
+                    current=row['fingerprint'] == scene['fingerprint'], finding=finding, note=row.get('note'),
+                    cause=row.get('cause') if kind == 'agent' else None,
+                    suspect_defect=bool(row.get('suspect_defect')) if kind == 'agent' else False)
         entries.append((status.instant(at), row['seq'], item))
     entries.sort(key=lambda entry: entry[:2], reverse=True)
     return [entry[2] for entry in entries]
@@ -47,7 +49,8 @@ def show(context, key, found, derived):
     item.update(reason=info['reason'], badges=dict(distill=info['distill'], review=info['review'],
                                                   draft_review=info.get('draft_review', {}).get('state')),
                 guard={field: info['guard'].get(field) for field in ('valid', 'reason')},
-                other_dispositions=book.other_dispositions(key))
+                other_dispositions=book.other_dispositions(key),
+                held=[item for item in derived['held'] if item['key'] == key])
     return dict(ok=True, checkout=context.checkout.name, branch=book.viewer.branch, scenario=item, history=history(book, scene))
 
 
