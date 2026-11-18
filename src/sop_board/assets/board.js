@@ -618,6 +618,7 @@
     'not-run': '未执行', 'pass': '通过', 'skip': '跳过', 'draft': '草稿'};
   const VERDICTS = [['pass', '通过'], ['fail', '不通过'], ['blocked', '阻塞'], ['changed', '需求变更']];
   const BADGES = ['review', 'distill'];
+  const DISPOSITIONS = {human: '由人验收', shelved: '已搁置'};
   // selected：右栏打开的场景键；panel：右栏打开的草稿文件面板（node 为空）或节点面板。
   const board = {data: null, signature: '', filter: null, search: '', selected: null, panel: null};
 
@@ -645,7 +646,7 @@
         config.local ? el('a', {href: `/p/${encodeURIComponent(config.project)}/settings`}, '去设置页补全配置') : null]));
     }
     const signature = JSON.stringify([data.counts, data.files.map(f => [f.name, f.invalid, f.nodes]),
-      Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.review, v.title, v.draft_review]), data.stats]);
+      Object.entries(data.items).map(([k, v]) => [k, v.state, v.distill, v.review, v.title, v.draft_review, v.disposition]), data.stats]);
     board.data = data;
     if (signature === board.signature) return;
     const first = !board.signature;
@@ -726,8 +727,11 @@
   }
 
   function matches(key, item) {
-    const badge = BADGES.includes(board.filter);
-    if (badge ? !item[board.filter] : board.filter && item.state !== board.filter) return false;
+    if (BADGES.includes(board.filter)) {
+      if (!item[board.filter]) return false;
+    } else if (board.filter in DISPOSITIONS) {
+      if (item.disposition?.kind !== board.filter) return false;
+    } else if (board.filter && (item.disposition || item.state !== board.filter)) return false;
     const text = board.search.trim().toLowerCase();
     return !text || key.toLowerCase().includes(text) || item.title.toLowerCase().includes(text);
   }
@@ -740,7 +744,8 @@
     const always = ['retest', 'fail', 'review', 'not-run', 'pass'];
     $('#filters').replaceChildren(chip(null, '全部', board.data.total),
       ...config.states.concat(BADGES).filter(name => counts[name] || always.includes(name) || board.filter === name)
-        .map(name => chip(name, LABELS[name] || name, counts[name] || 0)));
+        .map(name => chip(name, LABELS[name] || name, counts[name] || 0)),
+      chip('human', '由人验收', counts.disposed.human), chip('shelved', '搁置', counts.disposed.shelved));
   }
 
   // 草稿场景的状态点按审阅状态（待审、有批注、已同意）显示；标题、编号悬停显示全文，状态点悬停显示状态与原因。
@@ -755,6 +760,8 @@
       }},
       el('span', {class: `dot ${dot}`, title: hint}), el('span', {class: 'sid', title: key}, item.id),
       el('span', {class: 'stitle', title: item.title}, item.title),
+      item.disposition ? el('span', {class: `tag ${item.disposition.kind}`, title: item.disposition.reason},
+        DISPOSITIONS[item.disposition.kind]) : null,
       item.review ? el('span', {class: 'tag review', title: '待人工复核'}, '核') : null,
       item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null,
       item.source_branch ? el('span', {class: 'tag branch', title: item.merged ? `来自 ${item.source_branch}（已并入）` : '来源分支 ' + item.source_branch},
@@ -956,6 +963,51 @@
       } catch (error) { message.textContent = '提交失败：' + error.message; submit.disabled = false; }
     }}, el('div', {class: 'verdicts', role: 'radiogroup', 'aria-label': '复测结论'}, choices), defectField, noteField, signer, submit, message);
     return el('div', {class: 'card mark'}, el('h3', {}, '复测'), el('p', {class: 'muted small'}, '按上面的四要素操作后登记结论；缺陷链接与姓名都可不填。'), form);
+  }
+
+  function dispositionCard(data) {
+    const current = data.disposition;
+    const editable = config.local && data.branch && !data.scene.draft;
+    if (!current && !data.other_dispositions.length && !editable) return null;
+    const row = (item, other = false) => el('li', {},
+      pill(item.kind, (other ? `${item.branch} 上` : '') + DISPOSITIONS[item.kind]),
+      el('p', {}, item.reason),
+      el('p', {class: 'muted small'}, `${item.by} · ${new Date(item.at).toLocaleString()}`));
+    const records = [...(current ? [row(current)] : []), ...data.other_dispositions.map(item => row(item, true))];
+    const card = el('section', {class: 'card'}, el('h3', {}, '处置'), records.length ? el('ul', {class: 'todo'}, records) : null);
+    if (!editable) return card;
+    const kind = el('select', {name: 'kind'}, Object.entries(DISPOSITIONS)
+      .map(([value, label]) => el('option', {value, selected: current?.kind === value}, label)));
+    const reason = el('textarea', {name: 'reason', rows: 2, required: true}, current?.reason || '');
+    const message = el('p', {class: 'message', role: 'status'});
+    const submit = el('button', {type: 'submit', class: 'primary'}, current ? '替换处置' : '设置处置');
+    const clear = current ? el('button', {type: 'button', onclick: () => save('clear')}, '撤销处置') : null;
+    const save = async (action, fields = {}) => {
+      submit.disabled = true;
+      if (clear) clear.disabled = true;
+      message.textContent = '提交中…';
+      try {
+        const search = new URLSearchParams({checkout: data.checkout});
+        await post(`/api/disposition/${action}?${search}`, {keys: [data.key], ...fields});
+        await loadBoard();
+        await loadDetail(data.key, {keep: true});
+      } catch (error) {
+        message.textContent = '提交失败：' + error.message;
+        submit.disabled = false;
+        if (clear) clear.disabled = false;
+      }
+    };
+    card.append(el('form', {class: 'stack', onsubmit: event => {
+      event.preventDefault();
+      if (!reason.value.trim()) {
+        message.textContent = '请填写处置原因';
+        return;
+      }
+      save('set', {kind: kind.value, reason: reason.value});
+    }},
+    el('label', {class: 'field'}, '处置种类', kind), el('label', {class: 'field'}, '处置原因', reason),
+    el('div', {class: 'actions'}, submit, clear), message));
+    return card;
   }
 
   // ---- 草稿审阅：场景详情、批注、同意 ----
@@ -1223,6 +1275,8 @@
     const top = pane.scrollTop;
     if (scene.draft) {
       pane.replaceChildren(draftDetail(data, notice));
+      const disposition = dispositionCard(data);
+      if (disposition) pane.append(disposition);
       pane.scrollTop = keep ? top : 0;
       return;
     }
@@ -1238,9 +1292,11 @@
           ? el('span', {class: 'tag branch', title: '这条结论取证时的提交已并入本分支'}, `来自 ${data.state.source_branch}（已并入）`)
           : el('span', {class: 'tag branch', title: '本分支还没有结论，状态取自其他分支的结论'}, '来源分支 ' + data.state.source_branch)) : null,
         el('span', {class: 'reason'}, data.state.reason || ''), data.state.review ? el('span', {class: 'tag review'}, '待人工复核') : null,
+        data.disposition ? pill(data.disposition.kind, DISPOSITIONS[data.disposition.kind]) : null,
         data.state.distill ? el('span', {class: 'tag distill'}, '待沉淀') : null,
         (data.state.state === 'pass' && data.state.guard?.unsynced) || data.state.guard?.unrunnable ? el('span', {class: 'tag guard'}, data.state.guard.reason) : null),
       notExecutedNote(data.not_executed),
+      dispositionCard(data),
       fixesNote(data.fixes),
       elsewhereBlock(data.elsewhere),
       ...contentSections(scene, data.coverage),
@@ -1299,15 +1355,17 @@
     const pane = $('#detail');
     const {counts, total, items} = board.data;
     const tile = (state, label) => el('button', {type: 'button', class: `tile ${state}`,
-      onclick: () => { board.filter = state; renderFilters(); renderTree(); }}, el('strong', {}, counts[state] || 0), el('span', {}, label));
-    const urgent = Object.entries(items).filter(([, item]) => ['retest', 'fail', 'blocked', 'changed'].includes(item.state));
+      onclick: () => { board.filter = state; renderFilters(); renderTree(); }},
+      el('strong', {}, counts.disposed[state] ?? counts[state] ?? 0), el('span', {}, label));
+    const urgent = Object.entries(items).filter(([, item]) => !item.disposition && ['retest', 'fail', 'blocked', 'changed'].includes(item.state));
     pane.replaceChildren(el('div', {class: 'overview'},
       el('div', {}, el('h1', {}, `检出 ${board.data.checkout} · ${total} 条场景`),
         el('p', {class: 'muted'}, `产品 ${board.data.product.name}` + (board.data.product.shared ? '（共享库' + (board.data.product.database ? ' ' + board.data.product.database : '') + '）' : '（本机）')
           + ` · 分支 ${board.data.branch || '（无分支）'} · 本机 ${board.data.machine}`),
         el('p', {class: 'muted'}, '从左侧选择场景查看四要素、证据并复测。代码改动不改变场景状态，结果记下取证时的快照。')),
       el('div', {class: 'tiles'}, [['retest', '待复测'], ['fail', '失败'], ['blocked', '受阻'], ['changed', '需求变更'],
-        ['not-run', '未执行'], ['pass', '通过'], ['review', '待人工复核'], ['distill', '待沉淀']].map(([s, l]) => tile(s, l))),
+        ['not-run', '未执行'], ['pass', '通过'], ['review', '待人工复核'], ['distill', '待沉淀'],
+        ['human', '由人验收'], ['shelved', '搁置']].map(([s, l]) => tile(s, l))),
       el('p', {class: 'muted metrics'}, `Agent 独立通过的人工确认率 ${ratio(board.data.stats.agent_confirm_rate)} · 复核覆盖 ${ratio(board.data.stats.agent_review_coverage)}`),
       servicesBlock(board.data.environment),
       occupancyBlock(board.data.environment),

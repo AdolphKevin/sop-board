@@ -94,7 +94,7 @@ def init(project, *, join=None, new=False, name=None, persist=None, prepared=Non
     connection, version = prepared if prepared is not None else connect(shared)
     try:
         if version is not None and version != records.VERSION:
-            raise records.version_error(version)
+            raise records.version_error(version, project, shared=True)
         db = records.DB(connection, 'postgres', shared)
         current = project.binding()
         if new:
@@ -105,9 +105,12 @@ def init(project, *, join=None, new=False, name=None, persist=None, prepared=Non
             with connection.transaction():
                 if version is None:
                     # 空库：按当前版本建表。并发的另一台机器先建好时，再核对一次版本。
-                    connection.execute('SELECT pg_advisory_xact_lock(7210021)')
-                    if records.pg_version(connection) is None:
+                    connection.execute(f'SELECT pg_advisory_xact_lock({records.RECORDS_LOCK})')
+                    found = records.pg_version(connection)
+                    if found is None:
                         records.create_records(db, created_by=config.operator())
+                    elif found != records.VERSION:
+                        raise records.version_error(found, project, shared=True)
                 db.execute('INSERT INTO machines(id, name, addresses, peer_token, updated_at) VALUES (?,?,NULL,NULL,?) ON CONFLICT DO NOTHING',
                            (machine['id'], machine['name'], records.now()))
                 db.execute('INSERT INTO products(id, name, created_by, machine, created_at) VALUES (?,?,?,?,?)',

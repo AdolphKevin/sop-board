@@ -213,7 +213,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == 'GET' and path.startswith('/p/'):
                 self.send(html_response(error_page(error.code, problems), error.status), request)
             else:
-                self.send(json_response(dict(ok=False, error_code=error.code, problems=problems, **error.details), error.status), request)
+                details = error.details if request.local else {k: v for k, v in error.details.items() if k != 'upgrade_command'}
+                self.send(json_response(dict(ok=False, error_code=error.code, problems=problems, **details), error.status), request)
         except (ValueError, OSError) as error:
             request = request or Request(self, None)
             code = 'env-busy' if type(error).__name__ == 'EnvBusy' else 'invalid'

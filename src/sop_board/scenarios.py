@@ -253,8 +253,8 @@ def load_cases(raw):
                            {'description', 'preconditions', 'auto'}):
             continue
         identifier = item.get('id')
-        if not isinstance(identifier, str) or not re.fullmatch(r'TC_[A-Z0-9_]{3,}_[0-9]{3}', identifier):
-            check.add(p + ('id',), '编号应匹配 ^TC_[A-Z0-9_]{3,}_[0-9]{3}$')
+        if not isinstance(identifier, str) or not re.fullmatch(r'TC_[A-Z0-9_]{3,}_[0-9]{3,}', identifier):
+            check.add(p + ('id',), '编号应匹配 ^TC_[A-Z0-9_]{3,}_[0-9]{3,}$')
         elif identifier in seen:
             check.add(p + ('id',), '重复用例编号：' + identifier)
         seen.add(identifier)
@@ -333,6 +333,13 @@ def scan(directory, entries=None):
                                           entry=node['entry'], scenarios=ids))
         files[stem] = info
     return dict(files=files, scenarios=scenes)
+
+
+def require_files(found, names):
+    problems = [dict(p, file=str(info['path'])) for name, info in found['files'].items()
+                if name in names for p in info['problems']]
+    if problems:
+        raise APIError(422, 'scenario-file-invalid', problems)
 
 
 def resolve(scope, scenes):

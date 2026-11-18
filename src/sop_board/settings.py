@@ -367,8 +367,7 @@ def test_shared(app, request):
     shared = connection(app, request)
     conn, version = products.connect(shared)
     try:
-        if version is not None and version != VERSION:
-            raise version_error(version)
+        check_target_version(app.project, shared, version)
         items = products.listing(DB(conn, 'postgres', shared), products.local_scenes(app.project)) if version is not None else []
         for item in items:
             for field in ('created_at', 'latest_write'):
@@ -378,6 +377,15 @@ def test_shared(app, request):
                                   products=items, **products.bind_notes(app.project, app.store)))
     finally:
         conn.close()
+
+
+def check_target_version(project, shared, version):
+    if version is None or version == VERSION:
+        return
+    current = project.shared or {}
+    # 未保存的候选连接可能指向另一座库。升级命令必须由选中了目标库的项目发起。
+    matches = all(current.get(field) == shared[field] for field in ('host', 'port', 'dbname'))
+    raise version_error(version, project if matches else None, shared=True)
 
 
 @route('POST', '/api/settings/shared/connect', 'local')
@@ -408,6 +416,7 @@ def _connect_shared(app, request, fix_db):
         shared = connection(app, request)
     prepared = products.connect(shared)
     try:
+        check_target_version(app.project, shared, prepared[1])
         with app.store.lock:
             raw, before = current(app, request)
             app.reload()

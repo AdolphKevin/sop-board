@@ -370,7 +370,7 @@ def resolve_data(project=None, data_root=None, cwd=None):
 class Project:
     """项目配置。problems 为空表示配置合格；不合格时仍可读取已能确定的部分。"""
 
-    def __init__(self, data):
+    def __init__(self, data, *, database_only=False):
         self.data = Path(data).expanduser().resolve()
         marker = self.data / 'project.json'
         try:
@@ -387,7 +387,11 @@ class Project:
         self.marker = marker
         self.config_path = self.data / 'config.yaml'
         self._publish = threading.Lock()
-        self.reload()
+        if database_only:
+            self.__dict__.update(self.read(database_only=True))
+            self.update_saved_password()
+        else:
+            self.reload()
 
     def binding(self):
         """project.json 里绑定的产品 {id, name}；没有绑定时返回 None。每次现读，看板进程也能看到 init 写入的绑定。"""
@@ -436,7 +440,7 @@ class Project:
                 result.append(dict(field=path.name, problem='发现未完成替换的临时文件；核对 config.yaml、project.json 与产品绑定，使用设置接口或 init --join/--new 修正；确认后可自行删除此临时文件，不要直接覆盖现有配置'))
         return result
 
-    def read(self, candidate=None):
+    def read(self, candidate=None, *, database_only=False):
         """读取并校验 config.yaml，返回全部配置字段；不修改本对象。"""
         repos, identities, entries, adapter = {}, {}, {}, {}
         snapshot_exclude, fixtures, agents = {}, None, {}
@@ -457,7 +461,7 @@ class Project:
             config = strict_yaml(self.config_path.read_text(encoding='utf-8')) if candidate is None else candidate
             if isinstance(config, dict) and isinstance(config.get('shared_database'), dict) and 'password' in config['shared_database']:
                 saved_password_value = config['shared_database']['password']
-                if candidate is None:
+                if candidate is None and not database_only:
                     self.config_path.chmod(0o600)
             if not isinstance(config, dict):
                 raise ValueError('配置应为对象')
@@ -465,6 +469,10 @@ class Project:
             problem('config.yaml', '尚未搭建：配置文件不存在')
             return values()
         except (OSError, ValueError, TypeError, yaml.YAMLError, RecursionError) as error:
+            if database_only:
+                shared_invalid = True
+                problem('shared_database', '无法从 config.yaml 确定业务库，请先修正文件格式')
+                return values()
             problem('config.yaml', '配置无法读取或格式不合格：' + str(error))
             return values()
         for field in config.keys() - TOP_FIELDS:
@@ -472,7 +480,9 @@ class Project:
         if 'shared_database' in config:
             shared = validate_shared(config['shared_database'], problem)
             shared_invalid = shared is None
-        elif self.binding():
+        if database_only:
+            return values()
+        if 'shared_database' not in config and self.binding():
             problem('project.product', 'project.json 有产品绑定，但 config.yaml 没有 shared_database；要继续共享请在设置接口重新接入或直接补回连接，再用 init --join/--new 选择产品；要回到本机库请用设置接口断开，或直接删除 project.json 的 product')
         declared = config.get('repos')
         if not isinstance(declared, dict) or not declared:

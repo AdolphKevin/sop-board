@@ -354,51 +354,59 @@ def review_files(context, file=None):
 
 
 def approve(context, file, ids, *, by, fingerprints=None, node=None):
-    """同意草稿场景。单条（node 为空）有未处理批注或内容已变化时拒绝；按节点同意时只同意组内待审场景，
-    有未处理批注或内容已变化的跳过并写明原因。同一人在同一指纹上重复同意不重复登记。"""
+    """点名场景时整批校验；按节点或整份草稿同意时只登记待审场景。"""
     by = signer_name(by)
     found = draft_scan(context)
+    scenarios.require_files(found, {file})
     info = draft_info(found, file)
+    pending_only = node is not None or ids is None
     if node is not None:
         group = next((n for n in info['nodes'] if n['id'] == node), None)
         if group is None:
             reject(404, 'draft-node-not-found', 'node', f'{file} 中没有节点 {node}')
         ids = group['scenarios']
-    elif not ids:
-        reject(422, 'approval-invalid', 'scenario', '须给出要同意的场景')
+    else:
+        ordered = [sid for group in info['nodes'] for sid in group['scenarios']]
+        if ids is None:
+            ids = ordered
+        else:
+            requested = set(ids)
+            missing = requested - set(ordered)
+            if missing:
+                reject(404, 'scenario-not-found', 'scenario', f"{file} 中没有场景 {'、'.join(sorted(missing))}")
+            ids = [sid for sid in ordered if sid in requested]
     fingerprints = fingerprints if isinstance(fingerprints, dict) else {}
     approved, skipped, already = [], [], []
     store = context.store
     with store.records_tx() as db:
-        reviews = status.draft_reviews(db, store.product, {scenarios.key(file, sid): found['scenarios'].get(scenarios.key(file, sid))
-                                            for sid in ids if scenarios.key(file, sid) in found['scenarios']})
-        for sid in ids:
-            scene = found['scenarios'].get(scenarios.key(file, sid))
-            if scene is None:
-                reject(404, 'scenario-not-found', 'scenario', f'{file} 中没有场景 {sid}')
+        selected = {sid: found['scenarios'][scenarios.key(file, sid)] for sid in ids}
+        reviews = status.draft_reviews(db, store.product, {scenarios.key(file, sid): scene for sid, scene in selected.items()})
+        for sid, scene in selected.items():
             review = reviews[scenarios.key(file, sid)]
             seen = fingerprints.get(sid)
             if seen is not None and seen != scene['fingerprint']:
                 reason = '场景内容已变化，刷新后重新审阅'
-                if node is None:
+                if not pending_only:
                     reject(409, 'draft-changed', 'fingerprint', f'{sid}：{reason}')
                 skipped.append(dict(scenario=sid, reason=reason))
                 continue
             if review['state'] == 'annotated':
                 reason = '有未处理的批注，处理后才能同意'
-                if node is None:
+                if not pending_only:
                     reject(409, 'draft-annotations-open', 'scenario', f'{sid}：{reason}')
                 skipped.append(dict(scenario=sid, reason=reason))
                 continue
-            if node is not None and review['state'] == 'approved':
+            if pending_only and review['state'] == 'approved':
                 continue
             if by in review['approvers']:
-                already.append(sid)
+                if not pending_only:
+                    already.append(sid)
                 continue
             # 唯一约束兜底：别的机器上同一人同时同意同一条，只登记一次。
             if db.insert('INSERT INTO draft_approvals(product,file,scenario,fingerprint,approved_by,approved_at) VALUES (?,?,?,?,?,?) '
                          'ON CONFLICT DO NOTHING', (store.product, file, sid, scene['fingerprint'], by, now())) is None:
-                already.append(sid)
+                if not pending_only:
+                    already.append(sid)
                 continue
             approved.append(sid)
     return dict(ok=True, file=file, node=node, approved=approved, already=already, skipped=skipped, approved_by=by)

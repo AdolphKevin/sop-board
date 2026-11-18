@@ -4,6 +4,7 @@
 """
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 from importlib import metadata
 from importlib.resources import files
 import json
@@ -12,7 +13,7 @@ import re
 import subprocess
 import sys
 
-from . import checkouts, config, gitops, scenarios, status
+from . import checkouts, config, dispositions, gitops, scenarios, status
 from .errors import APIError
 from .store import Store
 
@@ -30,14 +31,15 @@ GROUPS = {
              'serve': '在终端启动看板守护进程（网页、环境、浏览器、无头会话）',
              'stop': '停止看板守护进程（保留有界面的浏览器窗口）',
              'restart': '换一个看板守护进程，浏览器、会话与进行中的运行不受影响',
-             'status': '查看场景状态与待处理事项'},
+             'status': '查看场景状态与待处理事项', 'database': '升级业务记录库'},
     '检出': {'checkout': '列出、查看、建立或移除 main 与 worktree 检出'},
     '执行': {'env': '按检出启停产品环境，查看各服务状态，运行中停启单个服务', 'browser': '安装与管理 Chrome for Testing',
              'run': '准备、提交、启动执行会话', 'retest': '运行守护测试发现代码回归', 'mark': '登记人工复测结论',
-             'launch': '查看或停止本机无头会话'},
+             'launch': '查看或停止本机无头会话', 'disposition': '设置、撤销或查看本分支的场景处置',
+             'scenario': '按场景查询当前状态与取证历史'},
     '修复与沉淀': {'fix': '修复、独立复验与关闭', 'distill': '把独立通过的场景沉淀为守护测试'},
     '编写': {'inbox': '处理测试同学上传的用例与 SOP', 'merge': '合并用例到场景文件', 'ask': '向测试同学提问',
-             'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '读取草稿的批注与审阅状态、处理批注、确认'},
+             'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '查看草稿、处理批注、同意与确认'},
     '其他': {'atlas': '交互地图', 'specs': 'Web spec 保真检查', 'fixtures': '前置数据配方', 'identity': '身份使用计数',
              'attention': '待人处理', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
 }
@@ -188,15 +190,14 @@ def cmd_status(args):
     result = dict(ok=True, project=project.name, operator=config.operator(), checkout=context.checkout.public(local=True),
                   configured=project.configured, problems=project.problems, notices=project.recovery_notices(),
                   daemon=dict(daemon.describe(project), command=project.serve_command()))
-    if project.shared or project.shared_invalid:
-        try:
-            context.store.product
-            with context.store.records():
-                pass
-        except APIError as error:
-            result.update(ok=False, error_code=error.code, problems=project.problems + error.problems)
-            emit(result)
-            return 1
+    try:
+        with context.store.records():
+            pass
+    except APIError as error:
+        result.update(ok=False, error_code=error.code, problems=project.problems + error.problems, **error.details)
+        emit(result)
+        return 1
+    result.update(counts=dict(disposed=dict.fromkeys(dispositions.LABELS, 0)), disposed=[])
     if project.configured:
         found, snapshot, derived = scene_board(context)
         store = context.store
@@ -205,8 +206,9 @@ def cmd_status(args):
                       snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
                                     changed=snapshot['changed'][:50]),
                       counts=derived['counts'], distill=derived['distill'], review=derived['review'], total=derived['total'],
+                      disposed=dispositions.listed(derived['items']),
                       draft_review=derived['draft_review'],
-                      queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state)
+                      queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state and not v['disposition'])
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
                       review_queue=sorted(k for k, v in derived['items'].items() if v['review']),
@@ -235,8 +237,14 @@ def cmd_status(args):
         return 0
     counts = result['counts']
     parts = [f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s]] + [
+        f"由人验收 {counts['disposed']['human']}", f"搁置 {counts['disposed']['shelved']}",
         f"待沉淀 {result['distill']}", f"待人工复核 {result['review']}"]
     print(f"场景 {result['total']} 条：" + '；'.join(parts))
+    if result['disposed']:
+        from .time_format import local_time
+        for item in result['disposed']:
+            print(f"  {item['key']}（{dispositions.LABELS[item['kind']]}，{status.LABELS[item['status']]}）"
+                  f"：{item['reason']}，{item['by']}，{local_time(item['at'])}")
     if counts['draft']:
         print('草稿审阅：' + '；'.join(f"{status.DRAFT_REVIEW[s]} {n}" for s, n in result['draft_review'].items()))
     if result['from_other_branch']:
@@ -251,6 +259,62 @@ def cmd_status(args):
     print('看板守护进程：' + (f"运行中 {daemon_state['url']}" if daemon_state['running'] else f'未运行（运行 {project.serve_command()}）'))
     for item in result['attention']:
         print(f"待人处理 #{item['id']} {item['kind']}：{item['text']}")
+    return 0
+
+
+def cmd_database(args):
+    from .store import upgrade_records
+    from .redaction import redact
+    root = config.resolve_data(project_name(args), args.data)
+    project = config.Project(root, database_only=True)
+    try:
+        emit(upgrade_records(project, dry_run=args.dry_run))
+    except database_errors() as error:
+        problem = redact(f'{type(error).__name__}: {error}'.encode(), ()).decode()
+        return fail('database-error', [dict(field='database', problem=problem)])
+    return 0
+
+
+def cmd_disposition(args):
+    context = load(args)
+    if args.action == 'list':
+        _, _, derived = scene_board(context)
+        emit(dict(ok=True, branch=derived['book'].viewer.branch, dispositions=dispositions.listed(derived['items'])))
+    elif args.action == 'clear':
+        emit(dispositions.change(context, args.keys, clear=True))
+    else:
+        emit(dispositions.change(context, args.keys, kind=args.kind, reason=args.reason))
+    return 0
+
+
+def cmd_scenario(args):
+    from . import scene_query
+    filters = {}
+    if args.action == 'list':
+        for name in ('status', 'file', 'since', 'ref', 'text'):
+            values = getattr(args, name)
+            if values and len(values) > 1:
+                return fail('invalid-arguments', [dict(field=name, problem=f'--{name} 至多给出一次')], 2)
+            filters['state' if name == 'status' else name] = values[0] if values else None
+        if filters['state'] is not None and filters['state'] not in status.LABELS:
+            return fail('invalid-arguments', [dict(field='status', problem='未知状态：' + filters['state'])], 2)
+        if filters['since'] is not None:
+            try:
+                if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', filters['since']):
+                    raise ValueError
+                filters['since'] = datetime.strptime(filters['since'], '%Y-%m-%d').astimezone()
+            except (ValueError, OverflowError, OSError):
+                return fail('invalid-arguments', [dict(field='since', problem='日期须为有效的 YYYY-MM-DD')], 2)
+        if filters['text'] is not None:
+            if not filters['text'].strip():
+                return fail('invalid-arguments', [dict(field='text', problem='搜索文字不能为空白')], 2)
+            filters['text'] = filters['text'].casefold()
+    context = load(args)
+    found, _, derived = scene_board(context)
+    if args.action == 'show':
+        emit(scene_query.show(context, args.key, found, derived))
+    else:
+        emit(scene_query.listing(context, found, derived, **filters))
     return 0
 
 
@@ -423,6 +487,10 @@ CHECKS = [check_browser]
 
 def cmd_run(args):
     from . import runs
+    from .launcher import runner_problem
+    problem = runner_problem(args.runner, args.model, args.effort, kind=args.action)
+    if problem:
+        return fail('invalid-arguments', [problem], 2)
     context = load(args)
     if args.action == 'prepare':
         scope = args.scope or ['pending']
@@ -451,7 +519,8 @@ def cmd_run(args):
         emit(daemon.call(context.project, 'POST', '/local/launch', dict(
             checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
             implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机',
-            allow_open_fix=args.allow_open_fix)))
+            allow_open_fix=args.allow_open_fix, runner=args.runner,
+            model=args.model.strip() if args.model is not None else None, effort=args.effort)))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
     return 0
@@ -689,6 +758,8 @@ def cmd_sop(args):
 
 def cmd_draft(args):
     from . import authoring
+    if args.scenarios and args.action != 'approve':
+        return fail('invalid-arguments', [dict(field='scenarios', problem='只有 draft approve 接受场景编号')], 2)
     context = load(args)
     if args.action == 'annotations':
         emit(dict(ok=True, annotations=authoring.annotations(context.store, file=args.target, include_resolved=args.all),
@@ -698,7 +769,12 @@ def cmd_draft(args):
     else:
         if not args.target:
             return fail('file-required', [dict(field='file', problem='请给出草稿文件名')], 2)
-        emit(authoring.draft_confirm(context, args.target))
+        if args.action == 'approve':
+            result = authoring.approve(context, args.target, args.scenarios or None, by=config.require_operator())
+            result.pop('node')
+            emit(result)
+        else:
+            emit(authoring.draft_confirm(context, args.target))
     return 0
 
 
@@ -794,6 +870,36 @@ def parser():
     p.add_argument('name_or_project', nargs='?', metavar='项目')
     p.set_defaults(handler=cmd_status)
 
+    p = common(sub.add_parser('database'))
+    p.add_argument('action', choices=('upgrade',))
+    p.add_argument('--dry-run', action='store_true', help='只查看业务记录库版本与升级步骤')
+    p.set_defaults(handler=cmd_database)
+
+    def actions(name, handler):
+        command = common(sub.add_parser(name))
+        command.set_defaults(handler=handler)
+        return command.add_subparsers(dest='action', required=True)
+
+    def action(group, name, help):
+        return common(group.add_parser(name, help=help, argument_default=argparse.SUPPRESS))
+
+    disposition = actions('disposition', cmd_disposition)
+    p = action(disposition, 'set', '设置由人验收或搁置')
+    p.add_argument('keys', nargs='+', metavar='场景键')
+    p.add_argument('--kind', required=True, help='human 或 shelved')
+    p.add_argument('--reason', required=True)
+    action(disposition, 'clear', '撤销本分支处置').add_argument('keys', nargs='+', metavar='场景键')
+    action(disposition, 'list', '列出本分支处置')
+
+    scenario = actions('scenario', cmd_scenario)
+    action(scenario, 'show', '显示场景状态与取证历史').add_argument('key', metavar='场景键')
+    p = action(scenario, 'list', '按条件查找场景')
+    p.add_argument('--status', action='append', default=None, help='场景状态：' + '、'.join(status.ORDER))
+    p.add_argument('--file', action='append', default=None, help='不带 .yaml 的场景文件名')
+    p.add_argument('--since', action='append', default=None, metavar='YYYY-MM-DD', help='本机日期零点起有过结果或标注')
+    p.add_argument('--ref', action='append', default=None, help='匹配完整引用')
+    p.add_argument('--text', action='append', default=None, help='在标题、步骤或预期中查找文字')
+
     p = sub.add_parser('serve')
     p.add_argument('--json', action='store_true')
     p.add_argument('name_or_project', nargs='?', metavar='项目')
@@ -840,6 +946,9 @@ def parser():
                    help='submit / launch：实现者是别的操作者（跨机器验收），与 --implementer 二选一；记独立验收')
     p.add_argument('--launch', type=int, help='wait：启动编号（缺省为本检出最近一次启动）')
     p.add_argument('--timeout', type=int, default=1800, help='wait：最长等待秒数，0 不限时（缺省 1800）')
+    p.add_argument('--runner', help='launch：本次使用 codex 或 claude')
+    p.add_argument('--model', help='launch：本次使用的模型，须与 --runner 同用')
+    p.add_argument('--effort', help='launch：本次使用的推理强度，须与 --runner 同用')
     p.set_defaults(handler=cmd_run)
 
     p = common(sub.add_parser('launch'))
@@ -934,9 +1043,9 @@ def parser():
     p.set_defaults(handler=cmd_sop)
 
     p = common(sub.add_parser('draft'))
-    p.add_argument('action', choices=('annotations', 'resolve', 'confirm'))
-    p.add_argument('target', nargs='?', help='annotations：场景文件名（可省）；resolve：批注编号；confirm：草稿文件名'
-                                              '（确认人是在看板上同意的人）')
+    p.add_argument('action', choices=('annotations', 'resolve', 'approve', 'confirm'))
+    p.add_argument('target', nargs='?', help='annotations：场景文件名（可省）；resolve：批注编号；approve / confirm：草稿文件名')
+    p.add_argument('scenarios', nargs='*', metavar='场景编号', help='approve：以操作者署名同意指定场景，缺省为文件内待审场景')
     p.add_argument('--all', action='store_true', help='annotations：包含已处理的批注')
     p.add_argument('--reject', action='store_true', help='resolve：不采纳')
     p.add_argument('--note')

@@ -24,6 +24,8 @@ import functools
 import json
 import subprocess
 
+from . import dispositions
+
 LABELS = {'not-run': '未执行', 'pass': '通过', 'retest': '待复测',
           'fail': '失败', 'blocked': '受阻', 'changed': '需求变更', 'skip': '跳过', 'draft': '草稿'}
 ORDER = ('retest', 'fail', 'blocked', 'changed', 'not-run', 'pass', 'skip', 'draft')
@@ -111,6 +113,7 @@ class Book:
     def __init__(self, db, view):
         self.viewer = view
         self.current = None
+        self.dispositions = dispositions.load(db, view.product)
         self.names = {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
         self.groups = {}
         for row in db.execute('SELECT * FROM results WHERE product=? ORDER BY seq DESC', (view.product,)):
@@ -205,6 +208,13 @@ class Book:
     def own_guard_runs(self, key, limit=10):
         return [run for run in self.guards.get(key, []) if self.own(run)][:limit]
 
+    def guard_history(self, scene):
+        return [row for key, rows in self.guards.items() if key[:2] == (scene['file'], scene['id'])
+                for row in rows if self.own(row)]
+
+    def other_dispositions(self, key):
+        return [item for branch, item in sorted(self.dispositions.get(key, {}).items()) if branch != self.viewer.branch]
+
     def not_executed(self, scene):
         """本检出在当前指纹上最近一次未执行；没有记指纹的早先条目作为后备。"""
         for key in ((scene['file'], scene['id'], scene['fingerprint']), (scene['file'], scene['id'], None)):
@@ -214,7 +224,7 @@ class Book:
         return None
 
     def machine_name(self, machine):
-        return self.names.get(machine, machine)
+        return self.names.get(machine) or machine
 
     def elsewhere(self, scene):
         """其他机器（及本机其他检出）上的情况：各自最近一次的受阻、跳过、未执行与守护未通过（已被那里更晚的结果取代的不列）。"""
@@ -352,6 +362,7 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
     guard_validity = guard_validity or {}
     book.current = {(scene['file'], scene['id']): scene['fingerprint'] for scene in scenes.values()}
     items, counts = {}, {state: 0 for state in ORDER}
+    counts['disposed'] = dict.fromkeys(dispositions.LABELS, 0)
     draft_counts = {state: 0 for state in DRAFT_REVIEW}
     distill = review = 0
     for scene_key, scene in scenes.items():
@@ -361,6 +372,8 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
         guard = guard_validity.get(scene_key) or dict(valid=False, reason='没有守护')
         run = book.own_guard(identity)
         info = derive(scene, selection, guard_run=run)
+        disposition = book.dispositions.get(scene_key, {}).get(book.viewer.branch) if info['state'] != 'draft' else None
+        info['disposition'] = disposition
         info['label'] = LABELS[info['state']]
         info['distill'] = bool(info['state'] == 'pass' and independent_pass(results) and not guard['valid']
                                and not guard.get('unsynced') and not guard.get('unrunnable'))
@@ -370,7 +383,10 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
         if scene_key in reviews:
             info['draft_review'] = reviews[scene_key]
             draft_counts[reviews[scene_key]['state']] += 1
-        counts[info['state']] += 1
+        if disposition:
+            counts['disposed'][disposition['kind']] += 1
+        else:
+            counts[info['state']] += 1
         distill += info['distill']
         review += info['review']
         items[scene_key] = info

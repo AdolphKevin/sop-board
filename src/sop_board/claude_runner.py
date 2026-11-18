@@ -88,16 +88,15 @@ def main(argv=None):
     parser.add_argument('prompt')
     args = parser.parse_args(argv)
     session = args.session or str(uuid.uuid4())
-    base = ['claude', '-p', '--output-format', 'stream-json', '--verbose']
-    if args.model:
-        base += ['--model', args.model]
-    if args.effort:
+    base = ['claude', '-p', '--output-format', 'stream-json', '--verbose', *extra]
+    if args.model is not None:
+        base += ['--model=' + args.model]
+    if args.effort is not None:
         base += ['--effort', args.effort]
     for path in args.add_dir:
         base += ['--add-dir', path]
     if args.schema:
         base += ['--json-schema', Path(args.schema).read_text(encoding='utf-8')]
-    base += extra
     # runner 与 cwd 供看板给出正确的续接命令（claude --resume 须在原工作目录运行）；只在本机任务材料中。
     emit(dict(type='thread.started', thread_id=session, runner='claude', cwd=str(Path(args.work_directory or args.directory).resolve())))
     prompt, resume, attempt = args.prompt, args.resume, 0

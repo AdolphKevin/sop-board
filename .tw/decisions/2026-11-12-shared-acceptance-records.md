@@ -4,7 +4,7 @@ scope: ["self:src/sop_board/store.py", "self:src/sop_board/status.py", "self:src
 source: ["self:docs/design.md", "用户 blur.yin 2026-11-12 已定决策 21", "协调会话转达的实现约束（2026-11-12，决策 21 的实现任务）"]
 status: "accepted"
 tags: ["共享库", "PostgreSQL", "产品", "加入", "机器", "machine.json", "格式 7", "统一序号", "本分支优先", "来源分支", "非结论", "其他机器上的情况", "run submit", "可重试", "证据", "对等读取", "implemented-by", "fix-not-local", "沉淀登记", "database-unreachable", "database-version", "product-unbound"]
-related: ["decisions/2026-11-12-format-6-add-tables-only.md", "rules/guard-validity.md", "rules/human-review-confirmation.md"]
+related: ["decisions/2026-11-12-format-6-add-tables-only.md", "rules/guard-validity.md", "rules/human-review-confirmation.md", "decisions/2026-11-18-decision-30-stage-one.md"]
 ---
 # 业务记录可放在共享 PostgreSQL，按产品共享；结论按分支归属、本分支优先，非结论只影响产出它的检出
 
@@ -12,7 +12,7 @@ related: ["decisions/2026-11-12-format-6-add-tables-only.md", "rules/guard-valid
 
 决定（已定决策 21 的实现，2026-11-12）：
 
-- **两组表**：业务记录（产品、机器、运行记录的业务部分、结果与标注、证据索引、守护运行、漏检、沉淀登记、修复、收件箱、问答、批注、同意、待人处理）在业务记录库；本机状态（检出、`local_work`、`local_fixes`、启动、环境、浏览器、服务停启、身份计数、配方留痕）始终在本机 `board.sqlite3`。配了 `shared_database` 时业务记录库是 PostgreSQL，否则就是同一个 `board.sqlite3`（产品 ID `local`）。本机库升到格式 7，旧目录拒读，不迁移。
+- **两组表**：产品、机器、运行记录的业务部分、结果与标注、处置、证据索引、守护运行、漏检、沉淀登记、修复、收件箱、问答、批注、同意、待人处理在业务记录库。本机状态始终在项目的 `board.sqlite3`。配了 `shared_database` 时业务记录库是 PostgreSQL，否则就是同一个 `board.sqlite3`（产品 ID `local`）。两组表各核对自己的版本，现行升级规则见 decisions/2026-11-18-decision-30-stage-one.md。
 - **一套 SQL**：`store.DB` 统一 `?` 占位（PostgreSQL 时转 `%s`）、`RETURNING id`、`ON CONFLICT DO NOTHING`；只有自增主键的 DDL 写法分库。统一序号用 `counters` 表 `UPDATE … RETURNING`（行锁让序号顺序与提交顺序一致）。SQLite 写入靠本机文件锁；PostgreSQL 写入靠事务、唯一约束与条件更新（`… WHERE status='pending'`）。共享库连接放在小连接池里复用，新连接或闲置超过 5 秒的连接先核对表结构版本与产品（也起探活作用）。
 - **跨库没有事务**：`run submit` 三步——证据文件进本机证据目录（幂等）、一个业务事务登记运行记录与结果（`work` 以 机器 + 本机库标识 + 本机运行编号 唯一，已登记就跳过）、本机状态与服务恢复。第二步失败时运行保持 prepared；第三步失败时重新提交只补第三步。本机库标识（`meta.instance`）防止重建的项目目录复用旧运行编号。
 - **状态**：结论（Agent 通过与失败、人工标注、修复关闭）按记录的分支归属，本分支上有结论时只用本分支的，没有（或游离 HEAD）时用全部分支的并标来源分支。本分支有结论时，已并入本检出、又比本分支最近一次结论更晚的 Agent 结论也算本分支的（已定决策 28，2026-11-13；用户确认只算合并进来的，从别的分支分出来时带着的旧结论不算）：所在运行准备时的快照（`work.snapshot`）各仓库 `dirty` 为 0、结果的 `product_changed` 为空、各仓库提交都是本检出 HEAD 的祖先（`git merge-base --is-ancestor`，按 目录 + 提交 + HEAD 缓存）；显示“来自 <分支>（已并入）”；非结论（受阻、跳过、守护未通过）只取本机本检出的。先后只比较序号。历史与人工确认率样本都只用参与本看板推导的记录：当前内容上按上面的规则选出；旧内容（场景改过之前的指纹）上只取本分支的结论和本检出的非结论，不回落到全部分支，别的分支上内容不同的结果不列入（统一验收 2026-11-12 发现 wt1 改了 shop#A 的 expected 后，两边的历史互相出现对方的结果，标“旧内容”；审核方据此写明 docs/design.md“看板”一节第 7 项）。实现在 `status.Book.involved`，历史与 `participating` 共用，`board()` 填入各场景的当前指纹。
@@ -28,4 +28,10 @@ related: ["decisions/2026-11-12-format-6-add-tables-only.md", "rules/guard-valid
 ## 后果
 - 同一数据根目录（同一台机器）上绑定同一产品、检出名相同的两个项目被当成同一个检出（非结论与漏检会互相影响）。
 - 守护的 `distill submit` 实际运行一次也是一条守护运行；在 A 上沉淀的守护，A 之后真实入口的失败按规则会记漏检（与 GRD-05-N02 的前置“ A 没有运行过 retest”不一致，已报告审核方）。
-- 共享库的表结构有变化时须同时提供升级命令（这次没有）。
+
+## 放弃过的做法
+
+- 业务记录格式不符时只提供换版或移走旧本机库重建
+  放弃原因：在用项目升级时须原样保留业务记录
+  来源：用户决定（2026-11-18，已定决策 30 第一段）
+  关键词：升级业务库、格式 7、格式 8、移库重建

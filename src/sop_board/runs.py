@@ -13,7 +13,7 @@ import shutil
 
 import yaml
 
-from . import config, daemon, gitops, guards, scenarios, status, workdirs
+from . import config, daemon, dispositions, gitops, guards, scenarios, status, workdirs
 from .defect_links import normalize as normalize_defect
 from .entries import identities as entry_identities, web_evidence
 from .errors import APIError, reject
@@ -50,7 +50,7 @@ def scope_for(context, scenes, derived, requested, fix=None):
         result = []
         for key in sorted(scenes):
             info = items[key]
-            if info['state'] == 'draft':
+            if info['state'] == 'draft' or info['disposition']:
                 continue
             if requested == ['all']:
                 result.append(dict(scenario=key, reason='rerun'))
@@ -74,7 +74,15 @@ def pending_reason(info):
     return PENDING_STATES.get(info['state'], 'rerun')
 
 
-def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared, environment=None, invalid_files=()):
+def recorded_item(key, state, result_id, note):
+    item = dict(scenario=key, status=state, result=result_id)
+    if note:
+        item['note'] = note
+    return item
+
+
+def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_declared, environment=None,
+                invalid_files=(), selected_dispositions=()):
     environment = environment or {}
     counts = {}
     for item in scope:
@@ -90,6 +98,10 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
     if invalid_files:
         lines += ['', '## 未纳入的不合格文件', '', '在报告中转述以下未纳入范围的文件及问题：', '']
         lines += [f"- {p['file']}：{p['field']}（行 {p.get('line')}）：{p['problem']}" for p in invalid_files]
+    if selected_dispositions:
+        lines += ['', '## 点名执行的处置场景', '']
+        lines += [f"- {item['key']}（{dispositions.LABELS[item['kind']]}）：{item['reason']}"
+                  for item in selected_dispositions]
     missing = {name: var for name, var in (environment.get('missing_address_env') or {}).items() if name in entries}
     if missing:
         lines += ['', '## 入口地址缺失', '']
@@ -142,11 +154,7 @@ def validate_scope(context, requested, fix=None, *, session=None, launch=None):
     """准备与启动共用的只读前置检查。"""
     from .cli import scene_board
     found, snapshot, derived = scene_board(context)
-    names = {value.split('#', 1)[0] for value in requested if '#' in value}
-    problems = [dict(p, file=str(info['path'])) for name, info in found['files'].items()
-                if name in names for p in info['problems']]
-    if problems:
-        raise APIError(422, 'scenario-file-invalid', problems)
+    scenarios.require_files(found, {value.split('#', 1)[0] for value in requested if '#' in value})
     scope = scope_for(context, found['scenarios'], derived, requested, fix)
     if not scope:
         raise APIError(409, 'nothing-to-run', [dict(field='scope', problem='没有需要执行的场景')] + invalid_files(found))
@@ -255,6 +263,7 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
                              dumps(scope), branch_of(project, checkout), now()))
         work_id = cursor.lastrowid
     selected = [scenes[item['scenario']] for item in scope]
+    selected_dispositions = dispositions.listed(derived['items'], {item['scenario'] for item in scope})
     entries = {name: project.entries[name] for name in sorted({scene['verify'] for scene in selected})}
     directory = None
     holder = f'run:{work_id}'
@@ -273,12 +282,14 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
         browsers = {k: v['endpoint'] for k, v in leased.items() if 'endpoint' in v}
         browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
         directory = workdirs.create(project.data / 'runs', work_id)
-        materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix, invalid_files(found))
+        materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems,
+                    fix, invalid_files(found), selected_dispositions=selected_dispositions)
         # 部分就绪：adapter 输出就绪即可执行；各场景再按实际服务状态判断。
         output = dict(ok=True, run=work_id, checkout=checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
                       outputs=dict(results=str(directory / 'results.jsonl')), identities=sorted(leased),
                       switched_from=acquired.get('switched_from'),
                       session=executor, scope=scope, browser_problems=browser_problems, invalid_files=invalid_files(found),
+                      dispositions=selected_dispositions,
                       environment=dict(state=environment['state'], address_env=environment.get('address_env', {})),
                       services=public_services(environment.get('services', [])), not_running=environment.get('not_running', []),
                       missing_address_env=environment.get('missing_address_env', {}))
@@ -305,7 +316,8 @@ def public_services(services):
     return [{k: v for k, v in item.items() if k in ('name', 'about', 'stoppable', 'state', 'label', 'log')} for item in services]
 
 
-def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix, invalid_files=()):
+def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix,
+                invalid_files=(), *, selected_dispositions=()):
     project, checkout = context.project, context.checkout
     reasons = {item['scenario']: item['reason'] for item in scope}
     selected = [dict(scenes[key], key=key, reason=reasons[key]) for key in reasons]
@@ -354,7 +366,8 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
             (directory / 'node_modules').symlink_to(runtime['node_modules'], target_is_directory=True)
     env_lines.update(SOP_BOARD_RUN=str(work_id), SOP_BOARD_CHECKOUT=checkout.name)
     (directory / 'run.env').write_text(''.join(f"{name}={value}\n" for name, value in sorted(env_lines.items())), encoding='utf-8')
-    write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None, environment, invalid_files)
+    write_brief(directory, work_id, scope, entries, browser_problems, project.fixtures is not None, environment, invalid_files,
+                selected_dispositions)
     if (directory / 'atlas.json').exists():
         with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
             brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'
@@ -530,9 +543,12 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
         if key in voided:
             continue
         row = rows.get(key)
+        note = row.get('note') if row else None
+        if note is not None and not isinstance(note, str):
+            raise ValueError(f'{key} 的 note 须为文字或 null')
         if key in crashed and (row is None or row.get('status') != 'pass'):
             rows[key] = row = dict(scenario=key, status='blocked', actual=crashed[key], finding=crashed[key],
-                                   executed_at=now(), evidence=[e for e in (row or {}).get('evidence', [])
+                                   note=note, executed_at=now(), evidence=[e for e in (row or {}).get('evidence', [])
                                                                 if isinstance(e, str)])
             continue
         if row is None:
@@ -605,15 +621,15 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
                 for ordinal, (name, sha, size) in enumerate(files_of.get(key, [])):
                     store.index_evidence(db, sha, size, name)
                     db.execute('INSERT INTO result_evidence(result, ordinal, name, sha256) VALUES (?,?,?,?)', (result_id, ordinal, name, sha))
-                summary['recorded'].append(dict(scenario=key, status=row['status'], result=result_id))
+                summary['recorded'].append(recorded_item(key, row['status'], result_id, row.get('note')))
                 guards.after_result(db, store, checkout.name, scene, row['status'], result_id)
             db.execute('UPDATE work SET result=? WHERE id=?', (dumps(summary), record))
             if fixing:
                 from . import fixes
                 fixes.after_verify(db, store, work, summary['recorded'])
         else:
-            summary['recorded'] = [dict(scenario=scenarios.key(r['file'], r['scenario']), status=r['status'], result=r['id'])
-                                   for r in db.all('SELECT id, file, scenario, status FROM results WHERE work=? ORDER BY id', (record,))]
+            summary['recorded'] = [recorded_item(scenarios.key(r['file'], r['scenario']), r['status'], r['id'], r['note'])
+                                   for r in db.all('SELECT id, file, scenario, status, note FROM results WHERE work=? ORDER BY id', (record,))]
             summary['resubmitted'] = True
     # 第三步：本机运行状态、租约与停着的服务。
     with store.local_tx() as db:

@@ -4,7 +4,7 @@
 import json
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from . import status
+from . import dispositions, status
 from .redaction import names, redact
 from .store import now
 from .time_format import local_time
@@ -85,27 +85,23 @@ def build(context, *, file=None, local=True, fetch=False):
                                   for alias, info in snapshot['repos'].items()),
               '- 状态推导：本分支上有结论的场景只用本分支的结论；没有的用全部分支的结论并标出来源分支；受阻、跳过与守护未通过只取本检出的。',
               '__EVIDENCE_LINE__', '']
-    counts = {}
-    for key in scenes:
-        state = derived['items'][key]['state']
-        counts[state] = counts.get(state, 0) + 1
+    counts = derived['counts']
     lines += ['## 概况', '', '| 状态 | 场景数 |', '| --- | --- |']
     lines += [f"| {status.LABELS[state]} | {counts[state]} |" for state in status.ORDER if counts.get(state)]
     lines += ['', f"- Agent 通过率：{_ratio(stats['agent_pass_rate'])}；一次通过率：{_ratio(stats['first_pass_rate'])}",
+              f"- 处置：由人验收 {counts['disposed']['human']}；搁置 {counts['disposed']['shelved']}",
               f"- 人工复测覆盖：{_ratio(stats['manual_coverage'])}；人工复测通过率：{_ratio(stats['manual_pass_rate'])}",
               f"- Agent 独立通过的人工确认率：{_ratio(stats['agent_confirm_rate'])}；复核覆盖：{_ratio(stats['agent_review_coverage'])}"
               + _undecided(stats['review_undecided']) + "（人工复核过的经真实入口 Agent 独立通过）",
               '- 独立性（各场景最新 Agent 结果）：' + ('，'.join(f"{status.INDEPENDENCE.get(k, k)} {v}"
                                                        for k, v in sorted(stats['independence'].items())) or '—'), '']
-    lines += ['## 场景', '']
-
     def origin(result):
         text = f"产出机器 {book.machine_name(result['machine'])}，分支 {status.branch_label(result['branch'])}"
         if branch != result['branch'] and status.conclusion(result):
             text += (f"（来自 {status.branch_label(result['branch'])}，已并入）" if result.get('merged')
                      else f"（来源分支 {status.branch_label(result['branch'])}）")
         return text
-    for key in sorted(scenes):
+    def describe_scene(key):
         scene, info = scenes[key], derived['items'][key]
         history = histories[key]
         lines += [f"### {key} {scene['title']}", '',
@@ -113,6 +109,9 @@ def build(context, *, file=None, local=True, fetch=False):
                   + ((f"；结论来自 {info['source_branch']}（已并入）" if info.get('merged')
                       else f"；结论来自其他分支，来源分支 {info['source_branch']}") if info.get('source_branch') else ''),
                   f"- 入口 {scene['verify']} · {scene['priority']} · {'正向' if scene['polarity'] == 'positive' else '反向'}"]
+        if item := info['disposition']:
+            lines.append(f"- **{dispositions.LABELS[item['kind']]}**：{_cell(item['reason'])}；"
+                         f"登记人 {item['by']}，{local_time(item['at'])}，分支 {item['branch']}")
         if skipped_text(scene):
             lines.append('- ' + skipped_text(scene))
         if (info['state'] == 'pass' and info['guard'].get('unsynced')) or info['guard'].get('unrunnable'):
@@ -156,6 +155,15 @@ def build(context, *, file=None, local=True, fetch=False):
                     missing.append((path, item['sha256'], where))
                     lines.append(f"  - 证据 {item['name']}（sha256 {item['sha256']}）：证据在 {where} 的机器上，未包含")
         lines.append('')
+
+    regular = sorted(k for k in scenes if not derived['items'][k]['disposition'])
+    disposed = sorted(k for k in scenes if derived['items'][k]['disposition'])
+    for heading, keys in [('场景', regular), ('处置', disposed)]:
+        lines.extend([f'## {heading}', ''])
+        for key in keys:
+            describe_scene(key)
+        if not keys:
+            lines.extend(['- 无', ''])
     lines += ['## 误判明细（Agent 独立通过、人工复测不通过）', '']
     for item in stats['misjudgments'] or []:
         executor = f"，执行者 {item['executor']}" if local else ''
@@ -171,7 +179,7 @@ def build(context, *, file=None, local=True, fetch=False):
     lines += ['', '## 待沉淀', '', *([f"- {k} {scenes[k]['title']}" for k in distill] or ['- 无']), '']
     review = sorted(k for k in scenes if derived['items'][k]['review'])
     lines += ['', '## 待人工复核', '', *([f"- {k} {scenes[k]['title']}" for k in review] or ['- 无']), '']
-    unexecuted = sorted(k for k in scenes if derived['items'][k]['state'] in ('not-run', 'retest', 'draft'))
+    unexecuted = [k for k in regular if derived['items'][k]['state'] in ('not-run', 'retest', 'draft')]
     lines += ['## 未执行范围', '', *([f"- {k}：{derived['items'][k]['label']}"
                                      + (f"；{skipped_text(scenes[k])}" if skipped_text(scenes[k]) else '')
                                      for k in unexecuted] or ['- 无']), '']

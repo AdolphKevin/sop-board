@@ -11,7 +11,7 @@ sop-board browser install         # 固定版本的 Playwright 与 Chrome for Te
 sop-board init <项目> <仓库目录>... [--data <根目录>]
 ```
 
-询问开发者项目名称和全部 Git 仓库目录（可分散在任何位置）。init 逐个核对工作树根目录与 origin，全部合格才建立 `<根目录>/<项目>/`（缺省根目录 `~/.sop-board`），其中有 `project.json`、`config.yaml`、`board.sqlite3`。旧版数据目录直接拒绝，不迁移。本机操作者缺省取 `git config user.name`，需要时用 `sop-board operator set <姓名>` 设置一次，之后所有登记自动以它署名。
+询问开发者项目名称和全部 Git 仓库目录（可分散在任何位置）。init 逐个核对工作树根目录与 origin，全部合格才建立 `<根目录>/<项目>/`（缺省根目录 `~/.sop-board`），其中有 `project.json`、`config.yaml`、`board.sqlite3`。旧版数据目录直接拒绝，不迁移。本机状态格式为 8、业务记录仍为格式 7 时，按第 7 节原地升级业务记录库。本机操作者缺省取 `git config user.name`，需要时用 `sop-board operator set <姓名>` 设置一次，之后所有登记自动以它署名。
 
 当前会话不能写数据目录时，Codex 用 `--add-dir <数据目录>`，Claude Code 用 `/add-dir <数据目录>`。
 
@@ -112,6 +112,8 @@ sop-board status
 
 `--lan` 让测试同学从内网访问工作台：他们能查看、复测标注、答复问题、批注草稿、同意草稿场景或撤销自己的同意、上传用例或 SOP；发起执行、守护与沉淀只在本机。草稿在工作台“草稿”筛选中审阅，每条场景都在当前内容上被同意、批注都处理后，会话运行 `sop-board draft confirm <文件>`，确认人是同意人。
 
+本机工作台可以设置或撤销处置，内网可以查看。使用者选择本人同意草稿时，可以用 `sop-board draft approve <文件>` 以操作者署名登记同意，再按上述规则确认。
+
 向开发者报告：已验证的事实、推断及依据、待回答的问题、适配依赖的外部工具、验证技能摘要。开发者确认后开始使用。
 
 ## 7. 多人共享验收记录（可选）
@@ -134,8 +136,10 @@ docker run -d --name sopboard-pg --restart unless-stopped -p 5432:5432 \
 4. 绑定提示的两件事照实告诉使用者：本机已有的结果不带入共享库（已登记的守护要在共享库里重新验收后再沉淀）；`regression.yaml` 引用、但本机没有登记的仓库别名。
 5. 看板以 `sop-board serve <项目> --lan` 启动，别的机器才能读取本机产出的证据。断开和重新接入也在本机设置页操作。
 
-认证失败返回 `database-authentication`，请使用者在设置页改密码。连不上共享库时业务命令与页面返回 `database-unreachable`，`env`、`browser` 照常；表结构版本不符时返回 `database-version`，换用匹配的 sop-board 版本。
+认证失败返回 `database-authentication`，请使用者在设置页改密码。连不上共享库时业务命令与页面返回 `database-unreachable`，`env`、`browser` 照常；表结构版本不符时返回 `database-version`。
+
+业务记录库为格式 7 时，用 `sop-board database upgrade --dry-run` 查看升级计划，确认后去掉 `--dry-run` 升级。共享库由维护者核对各机器的看板和未提交运行后统一升级一次，各机器用新版 sop-board。库比程序新时先更新 sop-board。
 
 ## 产品仓库约定（写进产品仓库的 AGENTS.md）
 
-> 新需求写 SOP 或场景前，先核对已有 SOP 与场景的业务交叉，预期随之改变的已有场景一并修改。分几步实现时，开工前按事实定下每一步做完就验还是并到后面一起验，告诉使用者并由其确认；推迟验收的步骤报告为未经独立验收；先前通过、但被后续步骤重做了实现的场景，交付时要么守护有效且最近一次运行通过，要么在统一验收时列入范围重新执行。宣布可以验收之前，运行 `sop-board status`，说明待复测、失败与未执行的场景数，由独立会话经真实入口执行（`sop-board run launch`）；有沉淀的守护时先运行 `sop-board retest` 检查代码回归。场景文件在 `docs/sop/`，改场景要经使用者确认；登记由本机操作者自动署名，不必询问确认人。
+> 新需求写 SOP 或场景前，先核对已有 SOP 与场景的业务交叉，预期随之改变的已有场景一并修改。分几步实现时，开工前按事实定下每一步做完就验还是并到后面一起验，告诉使用者并由其确认；推迟验收的步骤报告为未经独立验收；先前通过、但被后续步骤重做了实现的场景，交付时要么守护有效且最近一次运行通过，要么在统一验收时列入范围重新执行。宣布可以验收之前，运行 `sop-board status`，说明待复测、失败与未执行的场景数，由独立会话经真实入口执行（`sop-board run launch`）；有沉淀的守护时先运行 `sop-board retest` 检查代码回归。另报由人验收和搁置的数量与清单，JSON 中对应 `counts.disposed` 与 `disposed`。场景文件在 `docs/sop/`，改场景要经使用者确认；登记由本机操作者自动署名，不必询问确认人。

@@ -114,6 +114,8 @@ body.wide .workbench { flex: 1; min-height: 0; height: auto; }
 .not-run { --c: var(--notrun); --b: var(--notrun-bg); } .draft { --c: var(--draft); --b: var(--draft-bg); }
 .skip { --c: var(--skip); --b: var(--skip-bg); } .distill { --c: var(--draft); --b: var(--draft-bg); }
 .review { --c: var(--accent); --b: var(--accent-soft); }
+.human { --c: #0e7490; --b: #ecfeff; }
+.shelved { --c: #52525b; --b: #f4f4f5; }
 .guard { --c: var(--guarded); --b: var(--guarded-bg); } .old { --c: var(--retest); --b: var(--retest-bg); }
 /* 草稿审阅状态：待审（空心）、有批注、已同意 */
 .draft-pending { --c: var(--draft); --b: var(--draft-bg); } .draft-annotated { --c: var(--retest); --b: var(--retest-bg); }

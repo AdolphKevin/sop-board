@@ -19,6 +19,7 @@ import time
 import uuid
 from string import Template
 
+from .config import EFFORTS
 from .errors import APIError
 from .redaction import hide_local_paths, redact
 from .store import dumps, now
@@ -69,8 +70,71 @@ def state(db, row, *, local):
     return public(row, runs, local=local, attempts=attempts), runs
 
 
-def agent_for(project, kind):
-    return project.agents.get(kind) or project.agents.get('default') or dict(runner='codex')
+def runner_problem(runner, model, effort, *, kind):
+    if runner is None and model is None and effort is None:
+        return None
+    if kind != 'launch':
+        return dict(field='runner', problem='--runner、--model 和 --effort 只用于 run launch')
+    if runner not in ('codex', 'claude'):
+        return dict(field='runner', problem='须用 --runner codex 或 --runner claude')
+    if model is not None and (not isinstance(model, str) or len(model.strip().splitlines()) != 1 or '\x00' in model):
+        return dict(field='model', problem='--model 须为非空单行文字')
+    if effort is not None and effort not in EFFORTS:
+        return dict(field='effort', problem='--effort 应为 ' + '、'.join(EFFORTS))
+    return None
+
+
+def agent_args(runner, args):
+    """提取客户端的模型与强度参数，用各客户端的专用选项统一传递。"""
+    remaining, preferences = [], {}
+    fields = {'--model': 'model', '--effort': 'effort'} if runner == 'claude' else {'--model': 'model', '-m': 'model'}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        option, equals, value = arg.partition('=')
+        if runner == 'codex' and option.startswith(('-m', '-c')) and len(option) > 2:
+            option, equals, value = arg[:2], '=', arg[2:].removeprefix('=')
+        size = 1
+        if not equals and i + 1 < len(args):
+            value, size = args[i + 1], 2
+        field = fields.get(option)
+        if runner == 'codex' and option in ('-c', '--config'):
+            name, _, raw = value.partition('=')
+            field = {'model': 'model', 'model_reasoning_effort': 'effort'}.get(name.strip())
+            if field:
+                value = raw.strip()
+                if value.startswith('"') and value.endswith('"'):
+                    try:
+                        value = json.loads(value)
+                    except ValueError:
+                        pass
+                elif value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+        if field and (equals or size == 2):
+            preferences[field] = value
+            i += size
+        else:
+            remaining.append(arg)
+            i += 1
+    return remaining, preferences
+
+
+def agent_for(project, kind, *, runner=None, model=None, effort=None):
+    configured = project.agents.get(kind) or project.agents.get('default') or dict(runner='codex')
+    runner = runner or configured['runner']
+    if runner != configured['runner']:
+        configured = {}
+    args, preferences = agent_args(runner, configured.get('args') or [])
+    if runner == 'claude' and not configured.get('args'):
+        args = ['--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']
+    return dict(runner=runner, args=args,
+                model=model.strip() if model is not None else configured.get('model', preferences.get('model')),
+                effort=effort if effort is not None else configured.get('effort', preferences.get('effort')))
+
+
+def new_attempt(number, agent, session, log):
+    return dict(attempt=number, session=session, pid=None, log=str(log), started_at=now(), ended_at=None, exit_code=None,
+                runner=agent['runner'], model=agent.get('model'), effort=agent.get('effort'))
 
 
 def work_directory(project, checkout):
@@ -116,11 +180,14 @@ class Launcher:
             raise ValueError('SOP_BOARD_RETRY_DELAY 须为非负有限秒数')
 
     def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None, implemented_by=None,
-              allow_open_fix=False):
+              allow_open_fix=False, runner=None, model=None, effort=None):
         if kind not in KINDS:
             raise ValueError('启动类型应为 run 或 distill')
         if not scope:
             raise ValueError('须给出场景')
+        problem = runner_problem(runner, model, effort, kind='launch' if kind == 'run' else kind)
+        if problem:
+            raise APIError(422, 'invalid-arguments', [problem])
         self.project.require()
         # 已有运行中的启动时先报 launch-running：它可能已准备了运行，范围检查会把那些场景当成别的运行占着的。
         with self.store.local() as db:
@@ -128,17 +195,20 @@ class Launcher:
         from .cli import Context
         context = Context(self.project, self.store, checkout)
         excluded = []
+        selected_dispositions = []
         if kind == 'run':
             from .runs import validate_scope, invalid_files
-            found, _, _, selected = validate_scope(context, scope)
+            from . import dispositions
+            found, _, derived, selected = validate_scope(context, scope)
             excluded = invalid_files(found)
             scope = [item['scenario'] for item in selected]
+            selected_dispositions = dispositions.listed(derived['items'], scope)
             # 即将启动的是新的执行会话，不把发起者当作这轮的执行者。
             self.gate.check_open_fix(checkout, None, allow_open_fix=allow_open_fix)
         else:
             from .guards import validate_distill_scope
             validate_distill_scope(context, scope)
-        agent = agent_for(self.project, kind)
+        agent = agent_for(self.project, kind, runner=runner, model=model, effort=effort)
         directory = self.project.data / 'launches'
         directory.mkdir(exist_ok=True)
         with self.guard:
@@ -157,11 +227,12 @@ class Launcher:
                                 allow_open_fix=allow_open_fix)
             session = str(uuid.uuid4()) if agent['runner'] == 'claude' else None
             settings = dict(agent=agent, implementer=implementer, implemented_by=implemented_by)
-            attempts = [dict(attempt=1, session=session, pid=None, log=str(log), started_at=now(), ended_at=None,
-                             exit_code=None, settings=settings)] if kind == 'run' else []
+            attempts = [dict(new_attempt(1, agent, session, log), settings=settings)] if kind == 'run' else []
             self.spawn_attempt(launch_id, checkout, settings, prompt, log, session, attempts)
         result = self.read(launch_id)
         result['invalid_files'] = excluded
+        if kind == 'run':
+            result['dispositions'] = selected_dispositions
         return result
 
     def spawn_attempt(self, launch_id, checkout, settings, prompt, log, session, attempts):
@@ -231,20 +302,24 @@ class Launcher:
         if agent['runner'] == 'claude':
             argv = [sys.executable, '-m', 'sop_board.claude_runner', '--directory', str((self.project.data / 'launches').resolve()),
                     '--session', session, '--work-directory', str(work)]
-            if agent.get('model'):
-                argv += ['--model', agent['model']]
-            if agent.get('effort'):
-                argv += ['--effort', agent['effort']]
+            if agent.get('model') is not None:
+                argv += ['--model=' + agent['model']]
+            if agent.get('effort') is not None:
+                argv += ['--effort=' + agent['effort']]
             for path in writable:
                 argv += ['--add-dir', path]
-            argv += [prompt, '--'] + (agent.get('args') or ['--permission-mode', 'acceptEdits', '--allowedTools',
-                                                             'Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep'])
+            argv += [prompt, '--', *agent.get('args', ())]
             return argv
         argv = ['codex', 'exec', '--json', '-s', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true',
                 '--skip-git-repo-check', '-C', str(work)]
         for path in writable:
             argv += ['--add-dir', path]
-        return argv + [prompt]
+        argv += agent.get('args', ())
+        if agent.get('model') is not None:
+            argv.append('--model=' + agent['model'])
+        if agent.get('effort') is not None:
+            argv += ['-c', 'model_reasoning_effort=' + json.dumps(agent['effort'])]
+        return argv + ['--', prompt]
 
     def watch(self, launch_id, process, log):
         session = None
@@ -351,7 +426,7 @@ class Launcher:
             log = Path(first['log']).parent / 'output.2.jsonl'
             settings = first['settings']
             session = str(uuid.uuid4()) if settings['agent']['runner'] == 'claude' else None
-            attempts.append(dict(attempt=2, session=session, pid=None, log=str(log), started_at=now(), ended_at=None, exit_code=None))
+            attempts.append(new_attempt(2, settings['agent'], session, log))
             write_attempts(log, attempts)
             with self.store.local_tx() as db:
                 db.execute('UPDATE launches SET log=?, pid=NULL, session=? WHERE id=?', (str(log), session, launch_id))
@@ -619,7 +694,8 @@ def public(row, runs, *, local, attempts=None):
                 exit_code=row['exit_code'], requested_by=row['requested_by'], started_at=row['started_at'],
                 ended_at=row['ended_at'], checkout=row['checkout'], runs=[dict(id=r['id'], kind=r['kind'], status=r['status']) for r in runs])
     if row['kind'] == 'run':
-        fields = ('attempt', 'session', 'pid', 'log', 'started_at', 'ended_at', 'exit_code', 'retry_at', 'error') if local else (
+        fields = ('attempt', 'session', 'pid', 'log', 'started_at', 'ended_at', 'exit_code', 'retry_at', 'error',
+                  'runner', 'model', 'effort') if local else (
             'attempt', 'started_at', 'ended_at', 'exit_code', 'retry_at')
         item['attempts'] = [{key: attempt[key] for key in fields if key in attempt} for attempt in attempts]
         if finishing(attempts) and not attempts[-1]['cleanup'].get('problem'):
@@ -690,7 +766,8 @@ def _register():
             checkout, request.json_field('kind') or 'run', request.json_field('scope') or [],
             requested_by=request.json_field('requested_by') or '本机', implementer=request.json_field('implementer'),
             implemented_by=request.json_field('implemented_by'), fix=request.json_field('fix'),
-            allow_open_fix=bool(request.json_field('allow_open_fix')))))
+            allow_open_fix=bool(request.json_field('allow_open_fix')), runner=request.json_field('runner'),
+            model=request.json_field('model'), effort=request.json_field('effort'))))
 
     @route('POST', '/local/launch/stop', 'token')
     def stop(app, request):

@@ -6,7 +6,7 @@ import json
 import re
 from urllib.parse import quote
 
-from . import checkouts as checkout_store, guards, scenarios, status
+from . import checkouts as checkout_store, dispositions, guards, scenarios, status
 from .cli import Context, scene_board
 from .errors import reject
 from .evidence_types import content_type, video_response
@@ -44,7 +44,8 @@ def board(app, request):
     for key, scene in found['scenarios'].items():
         info = derived['items'][key]
         items[key] = dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                          review=info['review'], id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
+                          review=info['review'], disposition=info['disposition'],
+                          id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
         if info.get('source_branch'):
             items[key]['source_branch'] = info['source_branch']
@@ -169,6 +170,7 @@ def detail(app, request):
     latest = next((h for h in history if h['current'] and h['kind'] == 'agent'), None)
     fields = {name: scene.get(name, []) for name in (*scenarios.CONTENT_FIELDS, 'refs', 'evidence_hints')}
     result = dict(ok=True, key=key, local=request.local, checkout=context.checkout.name, branch=book.viewer.branch,
+                  disposition=info['disposition'], other_dispositions=book.other_dispositions(key),
                   scene=dict(id=scene['id'], file=scene['file'], node=scene['node'], node_title=scene['node_title'],
                              title=scene['title'], actor=scene['actor'], priority=scene['priority'], verify=scene['verify'],
                              polarity=scene['polarity'], negative_type=scene.get('negative_type'), draft=scene.get('status') == 'draft',
@@ -282,6 +284,19 @@ def launch_api(app, request):
     from . import config
     return json_response(dict(ok=True, launch=app.launcher.start(
         context.checkout, 'run', [key], requested_by=(config.operator() or '本机') + '（工作台）')))
+
+
+@route('POST', '/api/disposition/set', 'local')
+def disposition_set_api(app, request):
+    context = context_for(app, request.query.get('checkout'))
+    return json_response(dispositions.change(context, request.json_field('keys'), kind=request.json_field('kind'),
+                                             reason=request.json_field('reason')))
+
+
+@route('POST', '/api/disposition/clear', 'local')
+def disposition_clear_api(app, request):
+    context = context_for(app, request.query.get('checkout'))
+    return json_response(dispositions.change(context, request.json_field('keys'), clear=True))
 
 
 @route('GET', '/api/runs', 'lan')
