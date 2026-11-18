@@ -21,10 +21,11 @@
 #   与 RUN-08（修复中途不开始新的一轮）；RUN-01-N01 的报错写明准备运行的会话；RUN-04-N04 由“看板不替它放弃”改为看板自动放弃并登记待人处理，仍不自动提交。
 #   版本 10 按决策 29 独立验收（2026-11-14）的发现修订：RUN-08-P02 的起点原来是环境在运行，第 1 步不需要启动环境，“修复没改文件时不拦”不论实现对错都会通过；
 #   改为起点环境没有运行，第 1 步必须启动环境。
+#   版本 11 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：RUN-01-P04 覆盖自动范围排除处置与点名执行；RUN-04 核对单次代理选择；RUN-06-P01 核对提交和等待的保留意见。
 
 metadata:
   requirement: "sop-board v10：会话经 CLI 准备并提交运行，结果按指纹登记，记录取证时的快照、产出机器、检出与分支；代码改动不改变场景状态，执行期间的改动只作版本记录；独立性分独立验收、实现者自检、未声明三类；run launch 由守护进程启动新会话作为独立执行；本机暂时不具备条件的场景记未执行、不改变状态，意外故障记受阻；需要依赖故障的场景用 env stop 模拟，提交时自动恢复；跨机器验收用 --implemented-by 声明实现者；共享库中断后重新提交只登记一次；分几步实现时，会话按情况决定每一步何时验收并如实标注，统一验收时把被后续步骤重做的已通过场景明确列入；同一检出可以有多个 prepared 的运行，按身份分开，pending 不重复取别的运行里的场景；同一会话重复准备返回同一个运行；执行会话异常退出时由看板接续一次，最终失败或留下未提交的运行时看板放弃运行并登记待人处理，不自动提交；另一会话的修复已改动代码而未提交时不开始新的一轮；入口整体不可用连续挡住两条场景时执行会话中止本轮"
-  version: 10
+  version: 11
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -52,6 +53,12 @@ metadata:
     - ref: "docs/design.md 已定决策 29：无人值守加固（重复准备、启动接续与收尾、修复中途不开始新的一轮、入口不可用时中止本轮）"
       version: "2026-11-14"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
+      version: "2026-11-18"
+      confirmed_by: "使用者"
+    - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["run", "snapshot", "independence", "launcher", "not-executed", "fault", "parallel", "unattended"]
 
 sops:
@@ -153,7 +160,7 @@ sops:
           - "R1 仍为 prepared，范围与快照不变；main 没有新建运行"
           - "wt1 的 run prepare 成功"
         forbidden_effects: ["覆盖或作废 R1", "同一个场景同时出现在 main 的两个运行里", "wt1 被 main 的运行阻挡"]
-        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#数据库（格式 7）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#数据库表", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
       - id: RUN-01-N02
         polarity: negative
         negative_type: concurrency
@@ -170,6 +177,26 @@ sops:
           - "R1 仍为 prepared，范围不变；没有新建运行"
         forbidden_effects: ["把 R1 的范围扩大到 shop#B", "为 shop#B 另建一个运行", "作废或放弃 R1"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#5. 运行"]
+
+      - id: RUN-01-P04
+        polarity: positive
+        title: 自动范围跳过本分支有处置的场景，点名场景仍可执行
+        actor: 执行会话
+        priority: P0
+        verify: cli
+        initial_state:
+          - "main 的 shop#A、shop#B、shop#W 和 shop#X 均未执行，没有其他已确认场景、处置或 prepared 运行"
+        steps:
+          - "在 main 为 shop#B 设置 human、原因为“测试同学核对退款流水”，为 shop#X 设置 shelved、原因为“等待退款期限确认”"
+          - "分别用 run prepare --scope pending --session S1 和 run prepare --scope all --session S2 准备，查看清单后逐次用 run abandon --run <编号> 放弃"
+          - "点名 run prepare --scope shop#B --session S3，查看输出和 brief.md，经演示退款入口执行 shop#B 并提交；再查 status --json 和 disposition list"
+        expected:
+          - "两次自动准备的范围都恰为 shop#A、shop#W，dispositions 为空"
+          - "点名准备的范围只有 shop#B，输出和 brief.md 标出由人验收及“测试同学核对退款流水”"
+          - "shop#B 登记为通过，disposed 仍有 shop#B（human/pass）和 shop#X（shelved/not-run），两项计数各为 1，total 为准备前的总场景数"
+        forbidden_effects: ["自动范围包含 shop#B 或 shop#X", "点名执行取消处置，或把已通过的 shop#B 并入普通通过计数"]
+        refs: ["docs/design.md 已定决策 30 第一段：处置", "docs/reference.md#处置", "docs/reference.md#准备"]
+        evidence_hints: ["两次自动和一次点名准备的输出、范围文件与 brief.md", "退款接口响应", "提交和状态输出"]
 
   - id: RUN-02
     title: 代码改动不改变场景状态
@@ -348,7 +375,7 @@ sops:
     actor: 协调会话
     entry: "sop-board run launch --scope …、run wait、launch status|stop"
     must:
-      - "守护进程按 agents 配置启动无头 claude -p 或 codex exec，会话只拿到 prompt 文件"
+      - "守护进程按 agents 配置或本次指定的代理参数启动无头 claude -p 或 codex exec，会话只拿到 prompt 文件；本次参数及其接续用值留在尝试记录"
       - "会话编号由启动器取得，启动记录就是独立性的证据"
       - "同一检出同时只运行一个启动"
       - "启动前按 run prepare 的同一套规则核对范围，不合格直接拒绝、不启动会话；会话退出时没有产生运行或留下未提交的运行，launch status 标出、run wait 以失败返回"
@@ -361,17 +388,19 @@ sops:
         actor: 协调会话
         priority: P0
         verify: agent
-        initial_state: ["config.yaml 的 agents 先设为 claude", "main 没有运行中的启动", "shop#X、shop#A 有待执行内容"]
+        initial_state: ["agents.run 配置为 claude、effort 为 medium，已记录 config.yaml 摘要；被测 Codex 可用并已确认本次使用的具体模型名 M 与 high 强度", "main 没有运行中的启动或 prepared 运行", "shop#X、shop#A、shop#B、shop#W 均未执行，没有其他已确认场景；shop#B 由人验收，shop#W 已搁置"]
         steps:
-          - "在 app 目录新开 Claude Code 会话（协调会话），请求“启动一个独立会话验收 shop#X 和 shop#A”"
-          - "协调会话运行 sop-board run launch --scope shop#X shop#A，再运行 run wait"
-          - "查看 launch status、launches 表与运行目录中的 prompt 文件，在工作台查看两条场景的历史"
-          - "把 agents 改为 codex 后重复一次"
+          - "在 app 目录新开 Claude Code 会话作为协调会话；请求“用 Codex（模型 M、强度 high）启动独立会话验收本分支待执行场景”"
+          - "协调会话运行 sop-board run launch --scope pending --runner codex --model M --effort high，再运行 run wait；启动期间记录客户端进程的代理、模型和强度参数"
+          - "请求再启动一个会话点名验收 shop#X 和 shop#A，这次不指定代理参数，并运行 run wait"
+          - "查看 launch status、两次 attempts.json、真实会话记录和运行提示词，核对 config.yaml 摘要与工作台历史"
         expected:
           - "Claude 启动记录有进程号、日志、退出码，会话编号与 --session-id 一致；Codex 启动记录的会话编号来自 thread.started"
           - "新会话的输入只有 prompt 文件，结果的执行者为启动器取得的会话编号，与协调会话不同"
           - "两条场景的历史显示该运行与启动记录，以及独立性"
-        forbidden_effects: ["协调会话自己写结果或修改执行会话的结果", "生成 handoff 交接文件", "执行会话沿用协调会话的会话编号"]
+          - "第一次自动展开的启动范围与执行范围恰为 shop#X、shop#A；尝试参数为 codex/M/high，真实启动参数与记录一致"
+          - "第二次仍用配置的 claude 与 medium，两个命令的 attempts 和对应文件一致，配置摘要与启动前相同"
+        forbidden_effects: ["协调会话自己写结果或修改执行会话的结果", "生成 handoff 交接文件", "执行会话沿用协调会话的会话编号", "把 shop#B 或 shop#W 纳入自动启动，或把一次指定的代理配置写回项目"]
         refs: ["docs/design.md#独立性（取代交接仪式）", "docs/design.md#进程与入口", "docs/design.md#验证"]
         evidence_hints: ["协调会话记录", "启动日志", "launches 表只读查询", "工作台历史截图"]
       - id: RUN-04-N01
@@ -387,7 +416,7 @@ sops:
           - "main 的两次请求都被拒绝，error_code 为 launch-running，写明运行中的 L1；launch status 只显示 L1"
           - "wt1 的启动成功"
         forbidden_effects: ["main 同时运行两个无头会话", "结束或替换 L1"]
-        refs: ["docs/design.md#进程与入口", "docs/design.md#数据库（格式 7）", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
+        refs: ["docs/design.md#进程与入口", "docs/reference.md#数据库表", "使用者 2026-11-10 对场景集待确认问题的答复 第 6 条"]
       - id: RUN-04-N02
         polarity: negative
         negative_type: invalid-input
@@ -401,15 +430,17 @@ sops:
           - "记录 launches 表的行数与当前的 claude、codex 进程"
         steps:
           - "在 main 运行 sop-board run launch --scope shop#NOPE-1 --json"
+          - "在 main 对合法的 shop#A 分别用 --runner other、单独 --model M、以及 --runner codex --effort other 发起启动"
           - "运行 sop-board run launch --scope draft-a#DRAFT-A-1-P01 --json"
           - "运行 sop-board run launch --scope broken#BROKEN-1-P01 --json，再运行 sop-board run prepare --scope broken#BROKEN-1-P01 --session S1 --json"
           - "运行 sop-board launch status，查询 launches 表行数，用 ps 查看 claude、codex 进程"
           - "broken.yaml 仍在时运行 sop-board run prepare --scope pending --session S2 --json，查看运行目录的说明，然后 sop-board run abandon"
         expected:
           - "第一条以业务失败退出（退出码 1），error_code 为 scenario-not-found，写明 shop#NOPE-1"
-          - "第二条以业务失败退出，error_code 为 draft-not-runnable"
-          - "第三步的 run launch 与 run prepare 都以业务失败退出，error_code 为 scenario-file-invalid，列出 broken.yaml、缺少的字段与行号"
-          - "三次 run launch 都没有启动会话：launches 表行数不变，launch status 没有新记录，没有新的 claude 或 codex 进程"
+          - "代理参数不合格的三次调用均返回 invalid-arguments、退出码 2"
+          - "指定草稿以业务失败退出，error_code 为 draft-not-runnable"
+          - "指定不合格文件的 run launch 与 run prepare 都以业务失败退出，error_code 为 scenario-file-invalid，列出 broken.yaml、缺少的字段与行号"
+          - "被拒绝的 run launch 都没有启动会话：launches 表行数不变，launch status 没有新记录，没有新的 claude 或 codex 进程"
           - "--scope pending 的 run prepare 成功，范围是合格文件中的待执行场景；输出与运行目录说明列出未纳入的 broken.yaml 及其问题"
         forbidden_effects: ["先启动无头会话、到会话里才发现范围不合格", "把不合格文件中的场景报成 scenario-not-found"]
         refs: ["docs/design.md#独立性（取代交接仪式）"]
@@ -684,16 +715,18 @@ sops:
         initial_state:
           - "双机项目：shop#B 在共享库中没有结果；B 没有 prepared 运行"
         steps:
-          - "在 B 运行 sop-board run prepare --scope shop#B --session TB，执行者经演示项目入口执行 shop#B 并写出通过结果与一份证据"
+          - "在 B 运行 sop-board run prepare --scope shop#B --session TB，执行者经演示项目入口执行 shop#B 并写出通过结果与一份证据，note 填“已核对本订单；批量退款不在本次范围”"
           - "在 B 运行 sop-board run submit --run <编号> --json"
+          - "在 B 运行 sop-board run wait --run <同一编号> --json"
           - "在 A 运行 sop-board status --json；只读查询共享库中这次运行的记录；列出 A、B 两个数据根目录的 evidence 目录"
         expected:
           - "submit 成功，运行状态为 submitted"
+          - "submit 的 recorded 与 wait 的 result.recorded 是同一条通过，场景键和结果编号相同，note 均为原文"
           - "A 的 status 中 shop#B 为通过"
           - "共享库中这次运行的记录带 B 的机器标识与 B 的本机运行编号，证据索引写明产出机器为 B 的机器"
           - "证据文件在 B 的 evidence 目录里，A 的 evidence 目录里没有"
         forbidden_effects: ["证据文件写进共享库或 A 的机器", "运行记录缺少机器标识"]
-        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#数据库（格式 7）"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#数据库表"]
         evidence_hints: ["submit 输出", "A 的 status --json", "共享库的只读查询", "两边 evidence 目录清单"]
       - id: RUN-06-N01
         polarity: negative

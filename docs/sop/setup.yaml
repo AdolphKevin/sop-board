@@ -23,10 +23,11 @@
 # 设置页接入前的双机（SET-09 使用）：共享库同双机项目，开始时是空库；密码记为 PW，由测试者随机生成，只存在一个临时文件里，证据中遮蔽。
 #   机器 A（项目 demo，操作者 林甲）与机器 B（项目 shop-b，操作者 周乙）都已登记、配置合格，config.yaml 都没有 shared_database；
 #   两边的看板与命令都把 PGPASSFILE 指向一个空文件（连接只能用 config.yaml 里的密码）；两边的看板以 --lan 启动。
+#   版本 7 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：SET-01 区分本机状态和业务记录版本，SET-07 核对连接失败和版本拒绝，新增 SET-10（共享库与本机库升级）。
 
 metadata:
   requirement: "sop-board v10：一次安装登记即可使用；本机操作者自动署名；按 git common dir 自动识别 worktree 检出；check 只做配置、环境、浏览器运行时三项核对；多人协作时各机器直连同一个共享库，由 Agent 问使用者后新建或加入产品，一边的验收记录在另一边可见"
-  version: 6
+  version: 7
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -45,6 +46,12 @@ metadata:
     - ref: "docs/design.md 已定决策 27：看板设置页（全部配置在页面上查看与修改、共享库在设置页接入与断开、密码可写在本机 config.yaml）"
       version: "2026-11-13"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
+      version: "2026-11-18"
+      confirmed_by: "使用者"
+    - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["setup", "operator", "checkout", "check", "shared-database", "product", "settings"]
 
 sops:
@@ -53,7 +60,7 @@ sops:
     actor: 开发者
     entry: "安装后的 sop-board 命令：skills install、init、status"
     must:
-      - "init 生成项目目录：config.yaml、格式 7 的 board.sqlite3 与项目标记 sop-board-project-6"
+      - "init 生成项目目录：config.yaml、board.sqlite3（本机状态格式 8、业务记录格式 8）与项目标记 sop-board-project-6"
       - "旧版数据目录直接拒读，不迁移，也不改动"
     scenarios:
       - id: SET-01-P01
@@ -68,13 +75,13 @@ sops:
           - "按 sop-board guide 的指引运行 sop-board init demo --data $D，登记 app、lib 两个仓库，并按 guide 补全 config.yaml（scenarios、skill、entries 与 adapter）"
           - "运行 sop-board status demo --data $D 与 sop-board status demo --data $D --json"
         expected:
-          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；board.sqlite3 的 meta 记录格式 7"
+          - "$D/demo/ 下有 config.yaml、board.sqlite3 和内容为 sop-board-project-6 的项目标记；SQLite user_version 为 8，meta 的 format 值为 8"
           - "config.yaml 中两个仓库的身份是规范化后的 origin 地址"
           - "status 列出 shop 文件中的全部场景，状态都是未执行；并显示守护进程未运行及启动命令"
           - "除 status 的文字输出外，各命令输出 JSON 且退出码为 0"
         forbidden_effects: ["产品仓库中出现 sop-board 生成或改写的文件", "status 把任何场景显示为通过或待复测"]
         refs: ["docs/design.md#核心概念（只有这些）", "docs/design.md#CLI 一览"]
-        evidence_hints: ["命令原文与完整输出", "$D 目录清单", "board.sqlite3 meta 表只读查询"]
+        evidence_hints: ["命令原文与完整输出", "$D 目录清单", "board.sqlite3 user_version 与 meta 表只读查询"]
       - id: SET-01-N01
         polarity: negative
         negative_type: archived
@@ -391,7 +398,7 @@ sops:
     must:
       - "连不上共享库时，凡是读写业务记录的命令和看板页面都返回 database-unreachable，本机输出写明连的是哪台主机；不做离线队列，也不做本地缓存"
       - "主机、端口、库名只出现在本机命令输出与本机页面，不进报告、证据和内网页面"
-      - "表结构版本不符时，新旧两个方向都返回 database-version，并说明要换用与共享库匹配的 sop-board 版本；不降级，这次不提供升级命令"
+      - "业务记录格式不符时，新旧两个方向都返回 database-version，写明版本与升级命令；库比本机新时先换新版程序，普通读写不自行升级"
       - "只用本机状态的命令（env、browser）不受共享库影响"
     scenarios:
       - id: SET-07-P01
@@ -412,7 +419,7 @@ sops:
           - "browser status 照常返回，内容与共享库开着时相同（没有浏览器在运行时为空列表）"
           - "env down 成功，环境停止"
         forbidden_effects: ["这些命令因为连不上共享库而失败", "命令尝试把本机状态写进共享库"]
-        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#数据库（格式 7）"]
+        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#数据库表"]
         evidence_hints: ["各条命令的输出", "curl 响应", "容器状态"]
       - id: SET-07-N01
         polarity: negative
@@ -426,12 +433,12 @@ sops:
           - "B 的环境在运行"
         steps:
           - "停掉共享库的 docker 容器"
-          - "在 B 运行 sop-board status --json 与 sop-board mark shop#B pass --json"
+          - "在 B 运行 sop-board status --json、sop-board mark shop#B pass --json 与 sop-board database upgrade --dry-run"
           - "在 B 运行 sop-board env status --json"
           - "本机浏览器与内网设备分别打开 B 的看板工作台"
           - "重新启动共享库容器，在 B 运行 sop-board status --json，并刷新两个页面"
         expected:
-          - "status 与 mark 都以业务失败退出（退出码 1），error_code 为 database-unreachable，输出写明共享库的主机"
+          - "status、mark 和 upgrade 预演都以业务失败退出（退出码 1），error_code 为 database-unreachable，输出写明共享库的主机"
           - "env status 照常返回 B 的环境状态"
           - "本机页面说明连不上共享库并写明主机；内网页面只说明连不上共享库，不出现主机、端口与库名"
           - "恢复后 status 正常：shop#A 为通过，shop#B 仍为未执行、没有标注；两个页面恢复显示"
@@ -452,17 +459,18 @@ sops:
           - "双机项目；记录共享库中的表结构版本 V 与各表的行数"
         steps:
           - "直接把共享库中记录的表结构版本改为 V+1，在 A 运行 sop-board status --json 与 sop-board mark shop#B pass --json"
+          - "共享库仍为 V+1 时运行 sop-board database upgrade --dry-run 与 sop-board database upgrade，核对版本"
           - "把版本改为 V-1，在 A 再运行同样两条命令"
           - "把版本改回 V，在 A 运行 sop-board status --json；核对共享库各表的行数"
         expected:
-          - "版本为 V+1 与 V-1 时，两条命令都以业务失败退出（退出码 1），error_code 为 database-version，写明共享库的版本与本机支持的版本，并说明要换用与共享库匹配的 sop-board 版本"
+          - "版本为 V+1 与 V-1 时，两条命令都以业务失败退出（退出码 1），error_code 为 database-version，写明共享库的版本与本机支持的版本，并给出 database upgrade；V+1 时提示先更新 sop-board"
+          - "两条升级命令都以 database-version 拒绝较新的库，退出码为 1，库仍为 V+1"
           - "改回 V 后 status 正常"
           - "整个过程中共享库各表的行数不变，表结构没有被改动"
         forbidden_effects:
           - "版本不符时照常读写业务记录"
           - "sop-board 自行修改共享库的表结构或版本记录"
-          - "提示运行这次并不提供的升级命令"
-        refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
+        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级"]
         evidence_hints: ["版本记录的修改语句", "各条命令的输出", "共享库各表行数的前后对照"]
 
   - id: SET-08
@@ -777,3 +785,52 @@ sops:
         forbidden_effects: ["保存后项目连着新库却没有产品", "在目标库里自动新建同名产品"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）"]
         evidence_hints: ["保存时的页面截图与响应", "config.yaml 的 sha256", "status 输出"]
+
+  - id: SET-10
+    title: 有验收记录的业务库显式升级到格式 8
+    actor: 共享库维护者
+    entry: "sop-board database upgrade [--dry-run]；status --json、工作台和 disposition list"
+    negative_exempt: "升级遇到断连与新于本机的库见 SET-07-N01 与 SET-07-N02"
+    scenarios:
+      - id: SET-10-P01
+        polarity: positive
+        title: 双机共享库只升级一次，新看板读回全部验收记录，旧看板提示换版
+        actor: 共享库维护者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "用格式 7 程序搭建的双机项目（见 docs/verification.md）；共享库已有 A 经演示产品真实入口提交的 shop#A 独立通过、证据索引，以及签名为 林甲 的 shop#A 人工通过标注"
+          - "A 仍运行格式 7 看板，B 已换格式 8 程序并启动看板；维护者核对两个看板和未提交运行，两个看板都没有未提交运行"
+          - "记录共享库业务记录及证据索引、A 与 B 的产品绑定，并记录未被选作升级目标的 B 本机业务库格式"
+        steps:
+          - "在 B 用新版运行 status --json、打开工作台，再运行 database upgrade --dry-run，查询共享库版本和表"
+          - "在 B 执行 database upgrade；用 B 工作台及 scenario show 检查 shop#A 原结果、标注与证据，在 A 的旧看板请求工作台数据直到完成下一次版本核对"
+          - "在 B 再运行一次 database upgrade；A 重启为新版，B 为 shop#B 设置 human，由 A 运行 disposition list 核对"
+        expected:
+          - "升级前 B 的 status 和工作台业务数据返回 database-version，显示 7 与 8；预演输出 database 为 postgresql、current_version 为 7、target_version 为 8、dry_run 为 true，列出 7→8 步骤；共享库仍为 7，未新增处置表"
+          - "实际升级退出 0，前后版本为 7、8，dry_run 为 false；共享库有空的 dispositions 表，原结果、标注及证据索引仍可查，产品绑定和 B 的本机业务库格式未被改动"
+          - "旧版 A 重新核对时返回 database-version；其余机器无需再升级库；重复升级退出 0、前后版本均为 8、steps 为空"
+          - "A 换新版后读到原记录与 B 刚登记的本分支处置"
+        forbidden_effects: ["打开数据库或预演时自动改表", "丢失已有记录、证据索引或产品绑定", "新版页面展示半升级状态或旧版看板在核对以后仍读写新版业务库"]
+        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级", "docs/verification.md#格式-7-的升级材料"]
+        evidence_hints: ["两版程序来源、两边看板进程和版本核对响应", "升级及预演输出", "共享库表与原记录的只读前后对照", "产品绑定与本机库版本", "处置查询输出"]
+      - id: SET-10-P02
+        polarity: positive
+        title: 未配共享库时原地升级本机业务记录，保留本机状态
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "用格式 7 程序单独登记的演示项目，未配共享库；shop#A 已经人工标注通过，存在已登记的检出 wt1；看板已停止"
+          - "只读记录 SQLite user_version、meta 的 format 与 instance、人工结果行及 wt1 的登记"
+        steps:
+          - "用新版执行 status --json 与 database upgrade --dry-run，查询 SQLite 版本和表"
+          - "用新版执行 database upgrade、status --json、scenario show shop#A、checkout list，查看保存的标注及本机状态"
+          - "用 disposition set 为 shop#A 登记 shelved，再用 disposition list 查看"
+        expected:
+          - "第一次 status 返回 database-version、退出码 1；预演输出 sqlite、7→8，数据库仍为业务格式 7、无处置表"
+          - "升级退出 0，业务格式变为 8 且有空的处置表；user_version 仍为 8，instance、wt1 登记和原有人工通过记录不变，status 恢复正常"
+          - "新处置可从当前分支读取，场景当前状态仍为通过"
+        forbidden_effects: ["把未配共享库当成错误", "移走重建 board.sqlite3，或丢失本机状态和已登记标注"]
+        refs: ["docs/design.md 已定决策 30 第一段：业务记录库升级", "docs/reference.md#业务记录库升级", "docs/verification.md#格式-7-的升级材料"]
+        evidence_hints: ["两版程序来源、命令输出与退出码", "SQLite 只读查询前后对照"]

@@ -54,7 +54,14 @@ SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
 - 两边的环境同时运行时用 `--ports` 错开 `adapter.ports`。机器显示名在第一次需要时生成为“操作者@主机名”，所以先设操作者再登记。
 - 两个数据根目录都没有浏览器运行时：需要浏览器时在各自的数据根目录放一个指向本机 `~/.sop-board/runtime` 的符号链接，只读使用。两个看板的 main 检出（以及本机正在用的看板）的缺省调试端口相同，后启动的浏览器自动顺延到下一个空闲端口（已定决策 24），不用再把 Web 步骤挪到别的检出；实际端口看 `browser status` 与 `run.env`。
 - “内网设备”在同一台机器上用 `--lan` 打印的实际非回环地址访问代替，记录里写明是替代做法。
-- 共享库的只读查询：`psql -h 127.0.0.1 -p 55432 -U sopboard -d sopboard -c "…"`；停启共享库：`docker stop|start sbv-pg`；改表结构版本（SET-07-N02）：`UPDATE meta SET value='8' WHERE key='format'`。
+- 共享库的只读查询：`psql -h 127.0.0.1 -p 55432 -U sopboard -d sopboard -c "…"`；停启共享库：`docker stop|start sbv-pg`；SET-07-N02 在隔离的演示库暂改 `meta` 中 `key='format'` 的值（格式 8 的被测版本依次用 9、7、8），用来验证版本不符时拒绝业务读写和降级。
+
+### 格式 7 的升级材料
+
+SET-10 从格式 7 程序实际创建的库开始。把本仓提交 `1bb388f063d4b7529bd5c7c6cf668608aea9ac86` 的源码解包到临时目录 `$V7`（例如 `git archive <该提交> | tar -x -C "$V7"`）。旧版命令用 `uv run --project "$V7" sop-board`，新版用本次被测安装；用 `sop-board --version` 记录各自代码位置。
+
+- 共享库用双机项目的现有步骤，项目生成器用 `--sop-board "uv run --project $V7 sop-board"`，两台机器的产品绑定和初始记录也通过旧版命令建立。完成初始登记后，A 仍用旧版守护进程，B 换新版看板与命令行。只核对本轮的隔离 PostgreSQL。确认 A 的旧连接经历下一次版本检查，可暂停 A 的浏览器轮询与其他业务访问超过 5 秒，再重新打开工作台。
+- 本机库用另一个临时数据根目录，通过相同的旧版命令生成演示项目，不配置共享库；用旧版 `mark` 和 `checkout create` 留下标注和检出。记录 `PRAGMA user_version`、`meta` 的 `format` 和 `instance` 以及原始记录。两种库都用只读 SQL 核对 `dispositions` 表出现的时机；SET-10 的旧版数据由旧版程序生成。
 
 场景集中的简写与演示项目的对应：
 
@@ -68,7 +75,7 @@ SOP_BOARD_HOME=$HB sop-board serve shop-b --port <端口B> --lan
 | `draft-a`、`draft-b` | app `docs/sop/` 下 `metadata.status: draft` 的两份场景文件，各一个节点（`DRAFT-A-1`、`DRAFT-B-1`）、两条场景（P01 正向、N01 反向），每条场景的 `refs` 为 `refund.md#R2` |
 | 演示 PRD | `examples/demo-shop/materials/prd-partial-refund.md`（部分退款需求） |
 | 业务 SOP 与待确认问题（AUT-03） | app `docs/sop/refund.md`（含段落内换行与 Mermaid 流程图）与 `docs/sop/refund-待确认问题.md`（Q1 已答复，Q2、Q3 待答复） |
-| 演示用例文件 | `materials/cases.yaml`（一条与 shop 对应的细节用例、一条新流程用例）；`materials/cases-invalid.yaml` 缺 expected_results |
+| 演示用例文件 | `materials/cases.yaml`（一条与 shop 对应的细节用例、一条新流程用例）；`materials/cases-invalid.yaml` 缺 expected_results。CAS-01 用仓库外副本替换单个编号 |
 | 数据配方 | `seed-order`：参数 `order_id`、`paid`、`days`，写入本检出的 `$D/demo/env/<检出>/shop.sqlite3`；输出含凭据取值，用来核对留痕遮蔽 |
 | 守护命令 | app `docs/sop/regression.yaml` 的 `unit`：`python3 tests/junit_runner.py --junit {junit}`（unittest，测试放 `tests/test_*.py`） |
 | 端口 | 基础端口 28080，`port_step` 100：main 用 28080，槽位 1 的检出用 28180；`APP_URL` 与 `WEB_URL` 取自 ready 行 |

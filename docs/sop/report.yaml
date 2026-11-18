@@ -18,10 +18,11 @@
 #   版本 5 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：报告与看板使用同一套状态推导（结论按分支归属、本分支优先），
 #   “混合结果”中 wt1 的那条结果由 shop#B 改为 shop#A，RPT-01-N01 随之改写；新增 RPT-01-P04、RPT-01-N02（别人机器上的证据）。
 #   “双机项目”见 setup.yaml 文件头，“双机结果”见 workbench.yaml 文件头。
+#   版本 6 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：RPT-01-P03 覆盖有处置场景单列、计数和人工结果留存。
 
 metadata:
   requirement: "sop-board v10：report [--file F] [--zip] 导出某个检出的 Markdown 报告（场景状态、每条结果取证时的代码版本、证据、独立性、标注、最近一次守护运行、Agent 独立通过的人工确认率与复核覆盖、未决计数、误判明细、待人工复核、未执行范围及最近一次未执行的人、时间与原因）和证据 zip；报告与看板使用同一套状态推导，本分支有结论的场景只用本分支的，没有的用其他分支的并标出来源，逐条写明结果的产出机器与分支；别人机器上的证据取得到就核对后放入，取不到就写明在哪台机器上；内网报告页不显示执行者"
-  version: 5
+  version: 6
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -40,6 +41,12 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（本分支优先、产出机器与分支、别人机器上的证据）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
+      version: "2026-11-18"
+      confirmed_by: "使用者"
+    - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["report", "review"]
 
 sops:
@@ -94,26 +101,31 @@ sops:
         evidence_hints: ["两份报告全文", "本机与内网报告页的页面文本与下载文件", "results 表只读查询（时间、复测人、缺陷链接、of_result、产品快照）"]
       - id: RPT-01-P03
         polarity: positive
-        title: 报告的未执行范围写明最近一次未执行的人、时间与原因，通过的场景不因未执行改变
+        title: 报告保留未执行缘由并单列有处置的场景，人工结论可查
         actor: 开发者
         priority: P1
         verify: cli
         initial_state:
-          - "库存演示项目处于“只搭商城”：shop#A 与 shop#W 各有一条 Agent 独立验收通过；stock#K 没有结果"
+          - "库存演示项目处于“只搭商城”：shop#A 与 shop#W 各有一条 Agent 独立验收通过；除此之外没有通过或处置，stock#K 和 shop#B 没有结果"
           - "最近一次运行由操作者 N 提交，其中 stock#K 写为未执行，原因为“库存服务本机未搭建”；shop#W 写为未执行，原因为“缺少凭据变量 DEMO_MERCHANT_PASSWORD”"
         steps:
           - "在 app 目录运行 sop-board report --zip，阅读 report.md"
           - "另一台设备从内网地址打开 /p/demo/report 并下载 Markdown"
+          - "本机用 disposition set 搁置 stock#K，原因为“本轮不验库存”，将 shop#B 设为由人验收，原因为“人查退款流水”；经演示项目真实入口核对 shop#B 后，用工作台以 张测 署名标注通过"
+          - "重新从本机 CLI 和内网报告页各导出一份报告，核对概况、处置节及未执行范围"
         expected:
           - "报告中 stock#K 的状态为未执行，列在未执行范围里，并写明最近一次未执行：操作者 N、时间与“库存服务本机未搭建”"
           - "shop#W 的状态为通过，不在未执行范围里；它的条目下另注最近一次未执行的人、时间与原因"
           - "shop#A 为通过，没有未执行的记载"
           - "内网下载的报告内容相同，但不出现变量名 DEMO_MERCHANT_PASSWORD"
+          - "第二轮导出在「处置」恰列 stock#K（搁置、未执行、原因“本轮不验库存”）和 shop#B（由人验收、通过、原因“人查退款流水”），均附署名、时间与分支"
+          - "stock#K 不重复出现在未执行范围，处置节仍写明它最近一次未执行的人、时间与原因为“库存服务本机未搭建”；shop#B 的人工通过及复测人 张测 在处置节可见，普通通过数仍为 2"
         forbidden_effects:
           - "未执行被写成受阻、跳过或经真实入口执行的结果"
           - "shop#W 因最近一次未执行被列为未执行或受阻"
           - "内网报告出现凭据变量名"
-        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#已定决策（2026-11-10 用户答复）"]
+          - "有处置的场景在第二轮报告中消失，或因人工通过被并入普通通过计数"
+        refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#已定决策（2026-11-10 用户答复）", "docs/reference.md#10. 报告与看板页面"]
         evidence_hints: ["本机报告全文", "内网下载的报告全文"]
       - id: RPT-01-P04
         polarity: positive

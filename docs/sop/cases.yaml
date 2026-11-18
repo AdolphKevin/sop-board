@@ -6,10 +6,11 @@
 #   版本 2 由未参与实现的审核方按 docs/design.md 已定决策 21（使用者 2026-11-12 决定）修订：新增 CAS-04（收件箱与问答在同一产品的各台机器上可见）。
 #   “双机项目”见 setup.yaml 文件头。
 #   版本 3 由未参与实现的审核方按2026-11-13 真实会话独立验收的发现修订（docs/design.md#保留能力的简化形态）：新增 CAS-02-N02（只加了引用的场景单独列出）。
+#   版本 4 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：CAS-01-P01 与 CAS-01-N01 核对四位编号上传、原样保存与两位编号拒绝。
 
 metadata:
   requirement: "sop-board v10：测试同学从内网上传用例进收件箱；会话 merge prepare 后直接编辑仓库中的用例与场景文件，merge submit 校验并输出场景差异；疑问用 ask 挂到看板待答复，答复在下次合并读取；多人协作时收件箱与问答在同一产品的各台机器上可见"
-  version: 3
+  version: 4
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -22,6 +23,12 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（收件箱、提问与答复共享）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
+      version: "2026-11-18"
+      confirmed_by: "使用者"
+    - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["cases", "inbox", "merge", "questions"]
 
 sops:
@@ -33,18 +40,19 @@ sops:
     scenarios:
       - id: CAS-01-P01
         polarity: positive
-        title: 内网上传演示用例文件，收件箱出现待合并条目
+        title: 内网与命令行上传四位编号的用例，收件箱原样保留编号
         actor: 测试同学
         priority: P1
         verify: web
-        initial_state: ["收件箱为空", "内网浏览器已存有姓名 张测", "记录 app 的 git status"]
-        steps: ["在内网收件箱页上传演示用例文件", "本机运行 sop-board inbox add <另一份合格用例文件> --kind cases", "运行 sop-board inbox list 与 inbox show <编号>", "查看 app 的 git status"]
+        initial_state: ["收件箱为空", "内网浏览器已存有姓名 张测", "将演示用例文件复制到仓库外，把其中一条用例编号换成 TC_CACB_1266，保留另一条三位编号和其他字段", "记录 app 的 git status"]
+        steps: ["在内网收件箱页上传该副本", "本机运行 sop-board inbox add <该副本> --kind cases", "运行 sop-board inbox list，并用 inbox show 分别读取两条收件箱记录", "查看 app 的 git status"]
         expected:
           - "上传成功，收件箱出现一条未合并条目，上传人为 张测"
           - "inbox add 成功，收件箱再出现一条待合并条目，上传人为操作者 N"
           - "inbox list 与 inbox show 显示该条目及其用例内容"
+          - "两条收件箱记录的原文都含 TC_CACB_1266 与保留的三位编号"
           - "app 的 git status 与上传前相同"
-        forbidden_effects: ["上传直接改动场景或用例文件", "上传自动启动合并会话"]
+        forbidden_effects: ["四位编号被截断或改写", "上传直接改动场景或用例文件", "上传自动启动合并会话"]
         refs: ["docs/design.md#保留能力的简化形态", "docs/design.md#看板：三栏场景工作台（问题 2）", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
       - id: CAS-01-N01
         polarity: negative
@@ -54,8 +62,8 @@ sops:
         priority: P2
         verify: web
         initial_state: ["收件箱为空"]
-        steps: ["在内网上传一份缺少 expected_results 字段的用例文件", "本机对同一文件运行 sop-board inbox add <文件> --kind cases --json"]
-        expected: ["内网上传被拒绝，页面列出缺少的字段与位置", "inbox add 以业务失败退出，列出相同的字段问题", "收件箱仍为空"]
+        steps: ["在内网上传一份缺少 expected_results 字段的用例文件", "本机对同一文件运行 sop-board inbox add <文件> --kind cases --json", "另复制一份完整演示用例文件到仓库外，仅将一条编号改为 TC_CACB_12，从内网和命令行分别上传"]
+        expected: ["内网上传被拒绝，页面列出缺少的字段与位置", "inbox add 以业务失败退出，列出相同的字段问题", "两位编号在两处均被拒绝，指出该条 id，命令行返回 cases-invalid、退出码 1", "收件箱仍为空"]
         forbidden_effects: ["不合格文件进入收件箱"]
         refs: ["docs/design.md#保留能力的简化形态", "使用者 2026-11-10 对场景集待确认问题的答复 第 1 条"]
 

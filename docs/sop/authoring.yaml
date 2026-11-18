@@ -12,10 +12,11 @@
 #   “refund.md”指 app 场景目录下已登记的退款 SOP（R1 申请期限、R2 退款金额与次数）；“部分退款 SOP”指由演示 PRD 写成并登记的 SOP。
 #   “退款口径答复”指使用者对 refund.md R2 口径变化的答复：不填金额时按实付金额全额退款，退款记录的类型为“全额”；
 #   填写金额时按所填金额退款，不能超过实付金额，类型为“部分”；每单只能成功退款一次；商家订单页的显示不变。
+#   版本 6 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：AUT-02 增加操作者本人同意、确认及有批注时的处理。
 
 metadata:
-  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，先核对已有 SOP 的业务交叉，口径改变的已有规则经使用者确认后一并改正，sop submit 校验结构并写入确认人；从 SOP 生成场景时修改预期随之改变的已有场景（指纹变化回到未执行），预期不变的不改并写明理由，不新增影响面字段或登记文件；草稿是 status: draft 的场景文件，不进入执行；测试同学在工作台对照检查清单与 SOP 规则原文审阅草稿，批注或逐条、按节点同意，会话按批注修订后 draft resolve；每条场景在当前指纹上都已同意且没有未处理批注时，draft confirm 改为 confirmed 并以同意人为确认人"
-  version: 5
+  requirement: "sop-board v10：会话按 sop prepare 给出的资料写 SOP，先核对已有 SOP 的业务交叉，口径改变的已有规则经使用者确认后一并改正，sop submit 校验结构并写入确认人；从 SOP 生成场景时修改预期随之改变的已有场景（指纹变化回到未执行），预期不变的不改并写明理由，不新增影响面字段或登记文件；草稿是 status: draft 的场景文件，不进入执行；测试同学在工作台对照检查清单与 SOP 规则原文审阅草稿，批注或逐条、按节点同意，会话按批注修订后 draft resolve，操作者可用 draft approve 本人同意；每条场景在当前指纹上都已同意且没有未处理批注时，draft confirm 改为 confirmed 并以同意人为确认人"
+  version: 6
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -37,6 +38,12 @@ metadata:
     - ref: "docs/design.md 已定决策 21：多人共享验收记录（草稿批注与同意共享）"
       version: "2026-11-12"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
+      version: "2026-11-18"
+      confirmed_by: "使用者"
+    - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["authoring", "sop", "draft", "crossing", "review"]
 
 sops:
@@ -97,9 +104,9 @@ sops:
   - id: AUT-02
     title: 测试同学在工作台审阅草稿（批注、同意、本组同意、文件面板），全部同意后会话确认
     actor: 测试同学
-    entry: "内网与本机工作台“草稿”筛选：草稿场景详情、草稿文件与节点行的「审阅」按钮打开的面板；sop-board draft annotations|resolve|confirm <文件>；sop-board status --json"
+    entry: "内网与本机工作台“草稿”筛选；sop-board draft annotations|resolve|approve|confirm；sop-board status --json"
     must:
-      - "草稿不进入执行；“草稿批注”页与导航项不再提供，/p/<项目>/drafts 不可访问；草稿只在工作台“草稿”筛选中审阅"
+      - "草稿不进入执行；“草稿批注”页与导航项不再提供，/p/<项目>/drafts 不可访问；草稿的网页审阅入口为工作台“草稿”筛选"
       - "草稿场景详情依次为：“文件 › 节点”路径、四要素、refs 指向的 SOP 规则原文、检查清单、批注表单、「同意」按钮；不显示复测表单"
       - "检查清单五项：场景是否忠实于 SOP 规则；预期能否直接观察并带具体值；禁止副作用是否写全；起点数据是否具体；是否漏了反向、边界或与已有业务交叉的场景（核对含义，不限措辞）"
       - "审阅状态只有 待审、有批注、已同意 三种：已同意 = 当前指纹上有同意且该场景没有未处理的批注；有未处理批注时不能同意；指纹变化后原有同意失效"
@@ -107,6 +114,7 @@ sops:
       - "同意后自动打开同一文件中下一条待审场景，没有时停留并提示"
       - "节点面板完整列出组内场景四要素，“同意本组 N 条待审场景”跳过有未处理批注的场景并列出原因；文件面板显示需求、来源、审阅进度与文件级批注，不提供整份同意"
       - "draft confirm 要求每条场景在当前指纹上已同意且文件没有未处理批注；confirmed_by 写同意人（去重，按首次同意时间排序，用“、”连接）；没有 --as"
+      - "draft approve 以操作者本人登记当前内容的同意，命令行与看板共用记录；不给编号时只同意待审场景"
     scenarios:
       - id: AUT-02-P01
         polarity: positive
@@ -202,6 +210,25 @@ sops:
           - "A 的 draft confirm 把确认人写成操作者 林甲"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#保留能力的简化形态"]
         evidence_hints: ["B 的看板内网各步骤截图", "A 的 draft annotations 输出与看板截图", "draft-a 的 git diff 与文件头"]
+      - id: AUT-02-P04
+        polarity: positive
+        title: 操作者亲自同意草稿，工作台同步显示，确认后场景可执行
+        actor: 开发者
+        priority: P0
+        verify: cli
+        initial_state:
+          - "操作者为 王测；draft-a 和 draft-b 的场景都待审，无批注；记录两份草稿的文件摘要"
+        steps:
+          - "运行 sop-board draft approve draft-a DRAFT-A-1-P01 两次，再运行 sop-board draft approve draft-a"
+          - "查看 draft annotations draft-a、本机与内网工作台的 draft-a 文件面板，以及两份草稿的文件摘要"
+          - "运行 sop-board draft confirm draft-a，查看文件头，再运行 sop-board run prepare --scope draft-a#DRAFT-A-1-P01 --session S1，核对范围后放弃运行"
+        expected:
+          - "首次 approved 只有 DRAFT-A-1-P01，approved_by 为 王测；重复时 approved 为空，already 只有 DRAFT-A-1-P01；不指定编号时 approved 只有 DRAFT-A-1-N01"
+          - "两个页面与查询显示 draft-a 两条均由 王测 同意，未出现重复记录，文件面板可确认；两份草稿的摘要与同意前一致"
+          - "confirm 后 draft-a 的 status 为 confirmed，sources 首项的 confirmed_by 为 王测；点名准备成功，范围只有该场景"
+        forbidden_effects: ["approve 提前确认草稿或改写场景文件", "另一份草稿的同意记录或文件被改动"]
+        refs: ["docs/design.md 已定决策 30 第一段：草稿由操作者本人同意", "docs/reference.md#草稿"]
+        evidence_hints: ["命令输出与退出码", "工作台截图", "文件摘要与 git diff"]
       - id: AUT-02-N01
         polarity: negative
         negative_type: invalid-input
@@ -291,6 +318,28 @@ sops:
         forbidden_effects: ["未署名的内网同意被记录", "撤销了别人的同意", "跨源或非 JSON 的请求写入同意记录"]
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#看板：三栏场景工作台（问题 2）"]
         evidence_hints: ["三台设备各步骤截图", "curl 请求与响应原文", "同意记录的只读查询"]
+
+      - id: AUT-02-N05
+        polarity: negative
+        negative_type: invalid-input
+        title: 有批注时只处理待审场景，点名错误时整批拒绝
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "draft-b 的 DRAFT-B-1-N01 有一条未处理场景批注，DRAFT-B-1-P01 待审，另有一条未处理文件级批注"
+          - "shop 是已确认场景文件；记录 draft-b 的文件摘要"
+        steps:
+          - "点名 DRAFT-B-1-P01 连同一个不存在的编号运行 draft approve draft-b；再点名 DRAFT-B-1-P01 与 DRAFT-B-1-N01 运行同一命令"
+          - "查看 draft annotations draft-b；运行 draft approve shop，再运行 draft approve draft-b（不指定编号）"
+          - "尝试 draft confirm draft-b；处理场景级批注后用 draft approve draft-b 同意余下场景，再次尝试确认"
+        expected:
+          - "点名不存在的编号返回 scenario-not-found，点名有批注的场景返回 draft-annotations-open，退出码均为 1；DRAFT-B-1-P01 仍待审"
+          - "对 shop 返回 draft-not-found、退出码 1；批量调用成功，仅同意 DRAFT-B-1-P01，skipped 写明 DRAFT-B-1-N01 有待处理批注"
+          - "第一次 confirm 返回 draft-not-approved；处理场景批注后，同意第二条成功，但第二次 confirm 返回 draft-annotations-open 并列出文件级批注；draft-b 文件摘要不变"
+        forbidden_effects: ["点名失败前先登记部分同意", "自动解决批注或绕过批注确认草稿"]
+        refs: ["docs/design.md 已定决策 30 第一段：草稿由操作者本人同意", "docs/reference.md#草稿"]
+        evidence_hints: ["命令输出与退出码", "批注和同意清单", "文件摘要"]
 
   - id: AUT-03
     title: 看板展示业务 SOP 与待确认问题

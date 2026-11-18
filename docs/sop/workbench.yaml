@@ -32,10 +32,11 @@
 #   末尾加一行注释并提交（快照变为 S2，R1 中 shop#A 的结果记有该路径的 product_changed）；运行 R2（执行者 T2，--implementer T2）执行 shop#B 并通过（实现者自检）。
 #   shop#X 未执行；没有守护，也没有任何人工标注。由此 main 的确认率样本恰为 R0 的 shop#W 与 R1 的 shop#A 两条。
 #   比率写作“分子/分母（百分比）”，只核对分子与分母的数值，不限定排版。
+#   版本 14 由未参与实现的审核方按 docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）修订：WB-01-P01 更新筛选预期，新增 WB-09（处置）与 WB-10（按场景查询）。
 
 metadata:
   requirement: "sop-board v10：测试同学在三栏场景工作台按场景找到、查看四要素与证据、复测标注并查看历史，按“待人工复核”找到待复核的 Agent 独立通过并看到人工确认率与复核覆盖，内网全程可用；工作台与业务 SOP 页的左栏树可一键全部展开或收起，左栏可隐藏与恢复、可拖拽调宽，标题悬停显示全文，状态记在浏览器中；内网只显示业务字段，不能发起 AI 重跑"
-  version: 13
+  version: 14
   owner: "blur.yin"
   status: confirmed
   sources:
@@ -66,6 +67,12 @@ metadata:
     - ref: "docs/design.md 已定决策 28：一台机器一套环境，多个 Agent 轮流和并行使用（结论随合并带回）"
       version: "2026-11-13"
       confirmed_by: "blur.yin"
+    - ref: "docs/design.md 已定决策 30 第一段（使用者 2026-11-18 决定）"
+      version: "2026-11-18"
+      confirmed_by: "使用者"
+    - ref: "docs/reference.md 已定决策 30 第一段的命令与文件契约"
+      version: "2026-11-18"
+      confirmed_by: "审核方"
   tags: ["workbench", "web", "lan", "annotation", "review", "sidebar", "resize"]
 
 sops:
@@ -91,7 +98,7 @@ sops:
           - "复制 shop#W 详情页的地址，在新标签页打开"
         expected:
           - "/ 直接进入 /p/demo 工作台"
-          - "树按 文件→节点→场景 排列，每条场景带状态点；筛选项为 待复测、失败、待人工复核、待沉淀、通过、未执行、草稿，各带计数，与命令行一致（shop#A 与 shop#W 计入通过，待复测计数为 0，draft-a 的场景计入草稿）"
+          - "树按 文件→节点→场景 排列，每条场景带状态点；原有筛选项与命令行计数一致（shop#A 与 shop#W 计入通过，待复测计数为 0，draft-a 的场景计入草稿）；「由人验收」「搁置」均为 0"
           - "“失败”筛选只列 shop#X；“待人工复核”筛选计数为 2、只列 shop#A 与 shop#W；搜索结果包含 shop#W"
           - "树中 shop#W 与 shop#A 都显示通过并带“待人工复核”标记；shop#A 的状态原因中没有“产品已变化”一类表述"
           - "status 文字输出含“待人工复核 2”；status --json 的 review 为 2，review_queue 只含 shop#A 与 shop#W"
@@ -662,3 +669,79 @@ sops:
           - "页面显示损坏的图片或播放器而不说明证据在哪台机器上"
         refs: ["docs/design.md#已定决策（2026-11-10 用户答复）", "docs/design.md#看板：三栏场景工作台（问题 2）"]
         evidence_hints: ["三种情况下 B 的看板 shop#W 详情截图", "A 的看板启停记录"]
+
+  - id: WB-09
+    title: 按分支安排人工验收或搁置
+    actor: 测试同学
+    entry: "本机工作台场景详情与处置筛选；内网同一页面；sop-board disposition set|clear|list、status --json"
+    scenarios:
+      - id: WB-09-P01
+        polarity: positive
+        title: 本机设置、替换与撤销处置，分支隔离且人工标注照常
+        actor: 测试同学
+        priority: P0
+        verify: web
+        initial_state:
+          - "演示项目处于“已有结果”；main 与 wt1 的 shop 场景内容相同，两分支均无处置"
+          - "本机操作者为 王测；内网顶栏为 张测；记下 main 的各状态计数与 total"
+        steps:
+          - "本机打开 main 的 shop#B，设置「由人验收」，原因为“核对重复退款流水”；命令行用 disposition set 将 shop#X 设为 human 后再替换为 shelved，原因为“下个迭代评审”"
+          - "在本机和内网查看两个处置筛选、常规状态筛选及详情，核对 main 的 disposition list 与 status --json"
+          - "在内网从演示退款入口人工核对拒绝重复退款，随后在 main 的 shop#B 工作台提交「通过」标注；再次查看处置和状态"
+          - "切到 wt1，查看两条详情与处置筛选；回 main 修改 shop#X 的一条预期使其指纹变化，保留编号，再查看详情"
+          - "在本机页面撤销 shop#B 的处置，用 disposition clear 撤销 shop#X，再对同一场景重复 clear；核对筛选、状态与命令输出"
+        expected:
+          - "main 的「由人验收」恰含 shop#B，「搁置」恰含 shop#X，处置各为 1；两条状态仍分别为未执行和失败。counts.not-run 与 counts.fail 各减少 1，queues 中移除对应场景，total 不变"
+          - "两个入口显示的原因与命令相同，署名均为 王测；shop#X 只保留一次现行处置，种类、原因与登记时间对应第二次 set"
+          - "shop#B 的人工标注写 张测，状态变为通过；仍计入 human，普通通过计数不变，status 的 disposed 中 shop#B 为 human/pass"
+          - "wt1 的本分支处置计数均为 0，详情标出 main 上两条处置；main 的 shop#X 改动后按新指纹显示未执行，仍显示「已搁置」与原原因"
+          - "撤销后两条均回到常规筛选，shop#B 仍为通过，shop#X 仍为未执行；重复 clear 成功，cleared 为空，unchanged 只有 shop#X"
+        forbidden_effects: ["设置或撤销时生成结果或删除已有结果", "其他分支的处置使 wt1 的常规筛选少场景", "更改场景内容后处置被清掉"]
+        refs: ["docs/design.md 已定决策 30 第一段：处置", "docs/reference.md#处置", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["本机与内网截图", "命令输出", "退款入口证据", "标注与处置记录"]
+      - id: WB-09-N01
+        polarity: negative
+        negative_type: permission
+        title: 内网能看处置但不能写入，无效场景键不会造成部分写入
+        actor: 测试同学
+        priority: P0
+        verify: web
+        initial_state: ["本机已将 main 的 shop#X 搁置，原因为“下个迭代评审”；shop#A 未设置处置"]
+        steps:
+          - "从实际非回环地址打开工作台，查看 shop#X 的处置徽标与原因"
+          - "从内网直接向 set 和 clear 的处置接口提交符合格式的请求，分别尝试把 shop#A 设置为 human、撤销 shop#X"
+          - "在本机用 disposition set 同时指定 shop#A 与不存在的 shop#MISSING，随后运行 disposition list"
+        expected:
+          - "内网可查看徽标和原因，没有设置或撤销入口，两次写入均返回 HTTP 403、local-only"
+          - "本机命令以 scenario-not-found、退出码 1 返回，处置列表仍只有 shop#X，种类与原因不变"
+        forbidden_effects: ["内网请求更改或撤销处置", "无效场景键导致 shop#A 先被设置"]
+        refs: ["docs/design.md 已定决策 30 第一段：处置", "docs/reference.md#10. 报告与看板页面"]
+        evidence_hints: ["内网页面截图、请求和响应", "本机命令输出"]
+
+  - id: WB-10
+    title: 从命令行查找场景并追溯取证历史
+    actor: 开发者
+    entry: "sop-board scenario list 与 scenario show"
+    negative_exempt: "只读查询；筛选无匹配与点名不存在的场景在 WB-10-P01 同轮核对"
+    scenarios:
+      - id: WB-10-P01
+        polarity: positive
+        title: 从引用和时间找到有处置的场景，追溯结果、人工标注和守护运行
+        actor: 开发者
+        priority: P1
+        verify: cli
+        initial_state:
+          - "report.yaml 文件头的“混合结果”；记录 shop#A 原 Agent 运行的时间、独立性及准备时 app、lib 的完整提交哈希，并用只读查询记录最后一次 retest 那条守护运行的产品快照摘要"
+          - "为 shop#A 补上唯一引用 refund.md#R2（四要素不变），在 main 为它设置 human，原因为“人工核对退款流水”"
+          - "用工作台给 shop#A 登记人工通过，署名 张测、说明“流水为 99.00”；人工标注晚于现有守护运行，记录标注时本机时区的日期 D，并用只读查询记录这条标注的产品快照摘要"
+        steps:
+          - "运行 scenario list --file shop --status pass --since D --ref 'refund.md#R2' --text '99.00'；分别仅将日期换成 D 的下一天、仅将状态换成 fail，重跑两次"
+          - "运行 scenario show shop#A，核对场景、处置、徽标、有效守护与历史；另查不存在的 shop#MISSING"
+        expected:
+          - "首条命令的结果恰为 shop#A，带标题、pass、原 Agent 结果时间和 independent、human 及原因，以及 refund.md#R2；只换日期或状态都返回空数组，退出码为 0"
+          - "详情与清单同为通过，显示同一处置和有效守护；当前内容的历史按时间倒序，人工标注在首，最近的守护运行在它之后、原 Agent 结果之前"
+          - "人工条目写 张测 和 note“流水为 99.00”；最近的守护条目写实际执行人及通过；人工标注和最新守护的 commits 为 null，product_digest 分别等于起点记录的两个摘要；Agent 条目为 independent，带执行会话、分支与产出机器，并列出准备时 app、lib 的完整提交哈希"
+          - "不存在的键返回 scenario-not-found、退出码 1"
+        forbidden_effects: ["处置使状态查询漏掉本条", "用当前 app 提交替换早先取证时的提交", "守护运行被登记成 Agent 结果"]
+        refs: ["docs/design.md 已定决策 30 第一段：按场景查询", "docs/reference.md#按场景查询"]
+        evidence_hints: ["命令原文、JSON 和退出码", "原运行的 snapshot.json", "守护输出与人工标注"]
