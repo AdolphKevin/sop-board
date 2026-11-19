@@ -456,8 +456,8 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
         from .playwright import write_scope
         runtime = broker.runtime_info()
         write_scope(directory / 'scope.json', project.name, checkout.name, web, entries, directory / 'scenarios.yaml')
-        held = set(browsers) | set(browser_problems)
-        identities = {name: [dict(item, endpoint=browsers.get(item['id'])) for item in entry.get('identities', []) if item['id'] in held]
+        leased = set(browsers) | set(browser_problems)
+        identities = {name: [dict(item, endpoint=browsers.get(item['id'])) for item in entry.get('identities', []) if item['id'] in leased]
                       or ([dict(id='default', label='default', endpoint=browsers.get('default'))] if not entry.get('identities') else [])
                       for name, entry in entries.items() if web_entry(entry)}
         (directory / 'identities.json').write_text(dumps(dict(entries=identities)), encoding='utf-8')
