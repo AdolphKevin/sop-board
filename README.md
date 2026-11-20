@@ -1,10 +1,43 @@
 # Flow Board
 
-> 以业务 SOP 场景为中心的验收工具：AI 会话经真实入口执行场景、留证；测试同学在看板上按场景复测；修复由独立会话复验；哪些场景要验收由业务变化（场景内容）决定，代码改动不让已有通过失效；通过的场景沉淀成低成本守护测试，用来发现代码回归。
+**让另一个 AI 像真实用户一样，把整个产品验收一遍。**
+
+用 AI 做产品，功能几个小时就能写完；可整个产品还能不能用，总得有人像用户一样走一遍。Flow Board 让另一个 AI 来走：它按你确认过的业务场景，打开真实页面、发消息、调接口、查数据，把每一步留成证据，最后由人看证据拍板。
+
+- **平时怎么用**：在 Claude Code 或 Codex 里说一句“开始验收”，看板就另起一个 AI 会话去执行。写业务规则和场景、修复、复验、把通过的场景变成回归测试，也都是在会话里说一句话。你在看板上要做的，是审阅场景、看证据、点通过。
+- **结果凭什么可信**：
+  - 每条结论都附着录像、截图、请求与响应、数据查询，以及执行它的 AI 写下的原话；
+  - 验收的不是写代码的那个 AI；修好的问题要换一个 AI 再验一遍；
+  - AI 判的通过只算“待人工复核”，最后由人点通过。
+- **省掉什么**：
+  - 验收在后台跑，不用人守着点；
+  - 验过的场景可以沉淀成自动测试，以后改了代码，跑一条命令就能检查，不需要 AI。
 
 命令名为 `sop-board`，运行在开发者本机。
 
-## 核心闭环
+## 安装
+
+把仓库地址交给你平时用的 Agent（Claude Code 或 Codex），说一句：
+
+> 按 https://github.com/AdolphKevin/sop-board 帮我装上 Flow Board，接入当前项目。
+
+它会按下面的步骤安装，再按 `sop-board guide` 带你接入项目；接入时需要你提供环境和测试账号。
+
+自己安装：
+
+```sh
+uv tool install git+https://github.com/AdolphKevin/sop-board.git   # 或本仓检出路径
+sop-board skills install                    # 安装随包技能到 Codex 与 Claude Code
+sop-board browser install                   # Playwright 1.64.1 + Chrome for Testing
+sop-board init demo /path/to/app /path/to/lib
+sop-board guide                             # 按指引写 config.yaml、adapter 与项目验证技能
+sop-board serve demo --lan                  # 看板守护进程：工作台、环境、浏览器、无头会话
+sop-board check
+```
+
+装好以后，在产品仓库的 Codex / Claude Code 会话中直接说“执行 SOP 验收”“这几步改动怎么安排验收”“修复这个失败场景”“把通过的场景沉淀成回归测试”“合并收件箱里的用例”即可，随包 `sop-board` 技能会调用对应命令。
+
+## 它怎么做到的
 
 ```mermaid
 flowchart LR
@@ -19,6 +52,7 @@ flowchart LR
     G -->|未通过，转待复测| R
 ```
 
+- **业务变了才重验**：哪些场景要验收由场景内容决定，代码改动不让已有的通过失效；代码回归交给沉淀出来的守护测试去发现。
 - **场景文件是唯一真相**：场景 YAML 放在产品仓库，随分支与 worktree 走；会话直接编辑，开发者审核提交。看板按场景内容指纹记录结果，产品快照只记下取证时的代码版本。
 - **一条路径**：所有 AI 工作都经 `sop-board` 命令完成。看板上的“AI 重跑”只是用同一份技能启动一个无头会话。
 - **多 worktree**：同一项目的 main 与各个 git worktree 自动识别为不同检出，结果、快照、环境端口和浏览器各自隔离。
@@ -26,19 +60,9 @@ flowchart LR
 - **自带浏览器**：看板守护进程启动固定版本的 Google Chrome for Testing（每个身份一份持久 profile、各检出共用，缺省无头），不接管你日常用的 Chrome。
 - **自动署名**：登记以本机操作者（缺省 `git config user.name`）署名，会话不再反复询问确认人；草稿的确认人是在看板上同意它的测试同学。
 
-## 快速开始
+## 多人共享验收记录
 
-```sh
-uv tool install <本仓检出路径>
-sop-board skills install                    # 安装随包技能到 Codex 与 Claude Code
-sop-board browser install                   # Playwright 1.64.1 + Chrome for Testing
-sop-board init demo /path/to/app /path/to/lib
-sop-board guide                             # 按指引写 config.yaml、adapter 与项目验证技能
-sop-board serve demo --lan                  # 看板守护进程：工作台、环境、浏览器、无头会话
-sop-board check
-```
-
-多人共享验收记录（一个研发验证过的场景，另一个研发启动同一个产品后也能看到）：在一台常驻机器上起 PostgreSQL（部署与备份见 [参考手册](docs/reference.md#12-多人共享共享库产品与机器)）。每台机器在本机看板“设置 → 共享库”填写连接与密码、测试连接，再选择加入或新建产品。密码保存到本机数据目录的 config.yaml（权限 600），页面只显示“已保存”；也可照旧省略密码配置，用 `~/.pgpass` 提供。会话会给出设置页链接，由使用者操作，不经手密码。已写好连接、尚未绑定的项目仍可用：
+一个研发验证过的场景，另一个研发启动同一个产品后也能看到。做法：在一台常驻机器上起 PostgreSQL（部署与备份见 [参考手册](docs/reference.md#12-多人共享共享库产品与机器)）。每台机器在本机看板“设置 → 共享库”填写连接与密码、测试连接，再选择加入或新建产品。密码保存到本机数据目录的 config.yaml（权限 600），页面只显示“已保存”；也可照旧省略密码配置，用 `~/.pgpass` 提供。会话会给出设置页链接，由使用者操作，不经手密码。已写好连接、尚未绑定的项目仍可用：
 
 ```sh
 sop-board init demo                         # 列出共享库里的产品（不自动绑定）
@@ -46,8 +70,6 @@ sop-board init demo --new                   # 第一个人新建产品；其他�
 ```
 
 结论（Agent 通过与失败、人工标注、修复关闭）在产品内共享并按分支归属；受阻、跳过与守护未通过只影响产出它的机器和检出；证据文件留在产出机器上，别的看板经产出机器的看板（`--lan`）读取。没配共享库时一切照旧在本机 SQLite。
-
-之后在产品仓库的 Codex / Claude Code 会话中直接说“执行 SOP 验收”“这几步改动怎么安排验收”“修复这个失败场景”“把通过的场景沉淀成回归测试”“合并收件箱里的用例”即可，随包 `sop-board` 技能会调用对应命令。
 
 ## 角色与入口
 
