@@ -428,7 +428,8 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 `run launch` 与工作台“AI 重跑”“沉淀”按钮都由守护进程启动无头会话：
 
-- 同一检出同时只有一个 running 的启动（`launch-running`）。类型 `run` 或 `distill`，须有具体场景。`run launch` 缺省范围为 `pending`。
+- 同一检出同时只有一个 running 的启动（`launch-running`）。
+- **本轮说明**（已定决策 31 第五段）：`run launch --note <文字>` 只用于执行启动，去掉首尾空白后非空、不超过 4000 字，否则 `invalid-arguments`；其他命令带 `--note` 同样拒绝（退出 2）。说明存在启动目录的 `note.md`，这次启动准备的运行在 `brief.md` 的「本轮说明（启动 #N）」一节列出，写明只对本轮有效、与产品备注冲突时以它为准。接续的会话取回同一个运行，沿用这份 brief。只对某一次启动有效的安排（例如本轮临时挪开了哪个账号的邮箱）写在这里，不写成产品备注。类型 `run` 或 `distill`，须有具体场景。`run launch` 缺省范围为 `pending`。
 - `run launch` 的 `--runner` 只接受小写 `codex`、`claude`；`--model` 须是去掉首尾空白后非空的单行文字，`--effort` 取配置允许的 `low|medium|high|xhigh|max`。两项都只可与 `--runner` 同用。参数不合格以 `invalid-arguments`、退出码 2 返回，不启动会话。模型名及该客户端支持的强度由被启动的客户端核对；启动后的错误走现有启动失败路径。
 - 启动配置先整段取 `agents.run`，没有再取 `agents.default`，仍无配置则用 Codex。省略新参数时沿用该配置；显式代理相同则继承该段省略的模型、强度及原有附加参数；切换代理时只用所选代理的内置缺省及本次明确给出的值，旧代理的模型、强度和附加参数不带过去。明确给出的模型、强度优先于配置并实际传给所选客户端，包括优先于附加参数里的同一选项。`attempts.json` 的每次新尝试及本机 `launch status`、`run wait` 的 `attempts[]` 均给出 `runner, model, effort`（未传给客户端的模型和强度为 null；旧尝试可缺字段）；同一次启动接续沿用首次生效的设置，即使配置已改。只影响本次 `run launch`，不写回 `agents`。
 - 工作目录是该检出的场景仓库；提示词 `<数据目录>/launches/<编号>/output.prompt.md`（目录被占用时顺延后缀）。执行提示词先运行 `run prepare`，逐条开始、裁决，再提交；所需真人操作以类别 `human` 的裁决交回。沉淀提示词使用 `distill prepare` 及其后续流程。日志为同目录 `output.jsonl`（实际位置取启动记录的 `log`）。
@@ -614,7 +615,9 @@ fixtures:
 - 挂在哪里：整个产品（缺省）、一个入口（`--entry <入口>`，须已声明，否则 `entry-not-found`）或一个场景文件（`--file <文件>`，须在当前检出，否则 `scenario-file-not-found`），二者只写一个。
 - `note add --text T [--entry E | --file F] [--run N]`：一条不超过 2000 字。运行编号取 `--run`，其次环境变量 `SOP_BOARD_RUN`：没有运行编号时是人写的，署名取操作者，当即算已确认；带运行编号时记为该运行提出、未经人确认，当即生效。
 - `note list [--entry E | --file F] [--all]`：不带范围列出全部，`--all` 含已删除的。每项 `{id, scope, target, text, created_by, created_at, run, machine, confirmed_by, confirmed_at, disputes}`；`scope` 取 `product|entry|file`，`run`、`machine` 只有运行提出的才有值，`disputes` 为 `[{by, at, text, run, machine}]`。
+- `note move <编号> [--entry E | --file F]`：改挂到入口、场景文件，都不写时挂到整个产品；内容、来源与确认不变。
 - `note edit <编号> --text T`、`note confirm <编号>`：由人改写或确认，记确认人与时间，并清掉不符报告。`note dispute <编号> --text T [--run N]`：报告与实际不符，追加一条不符报告，备注原文不变。`note remove <编号>`：删除。编号不存在或已删除返回 `note-not-found`。署名规则同其他登记（`--as` 只在使用者明确说是别人时用）。
+- 全产品备注每一轮都带给执行会话，合计以 3000 字为上限：`note add`、`note edit`、`note move` 涉及全产品备注且合计超过上限时，输出 `warnings: [{code: "product-notes-large", total_chars, limit, problem}]`，提示把只和部分场景有关的改挂、把只对某次启动有效的安排改用本轮说明；`status --json` 带 `product_notes: {chars, limit}`，超过时 `notices` 有一条同样的提醒。不超过时 `warnings` 为 `[]`。超过上限不拒绝写入。
 - 准备运行时，`brief.md` 的「产品备注」列出整个产品的备注，加上本轮用到的入口与场景文件的备注，逐条带编号、来源（确认人与日期，或“运行 #N 提出，未经人确认”）和不符报告，并写明提出与报告不符的命令。备注只说明怎样操作与观察，不提供预期。
 
 ### 产品定义的共享副本
