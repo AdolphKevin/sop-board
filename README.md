@@ -32,7 +32,7 @@ uv tool install git+https://github.com/AdolphKevin/sop-board.git   # 或本仓�
 sop-board skills install                    # 安装随包技能到 Codex 与 Claude Code
 sop-board browser install                   # Playwright 1.64.1 + Chrome for Testing
 sop-board init demo /path/to/app /path/to/lib
-sop-board guide                             # 按指引写 config.yaml、adapter 与项目验证技能
+sop-board guide                             # 按指引写 config.yaml、adapter 与产品备注
 sop-board serve demo --lan                  # 看板守护进程：工作台、环境、浏览器、无头会话
 sop-board check
 ```
@@ -90,7 +90,7 @@ sop-board init demo --new                   # 第一个人新建产品；其他�
 
 | 文档 | 内容 |
 | --- | --- |
-| [`sop-board guide`](src/sop_board/guide.md) | 搭建项目：config.yaml、适配契约、验证技能 |
+| [`sop-board guide`](src/sop_board/guide.md) | 搭建项目：config.yaml、适配契约、产品备注 |
 | [docs/standard.md](docs/standard.md) | 业务验收与质量改进标准（唯一正文） |
 | [docs/sop-guide.md](docs/sop-guide.md) | SOP 业务场景怎样写 |
 | [docs/reference.md](docs/reference.md) | 命令、文件契约、状态、错误码 |

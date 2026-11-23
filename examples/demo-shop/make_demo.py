@@ -76,10 +76,6 @@ def install_templates(data, with_stock=False, *, ports=None, shared=None, regist
         (data / 'config.yaml').write_text(registered.rstrip('\n') + '\n' + body + '\n', encoding='utf-8')
     for name in ('env.py', 'worktree.py', 'seed.py', 'probe.py'):
         shutil.copy2(source / name, data / name)
-    shutil.copytree(source / 'skills', data / 'skills', dirs_exist_ok=True)
-    if with_stock:
-        skill = data / 'skills' / 'demo-verification' / 'SKILL.md'
-        skill.write_text(skill.read_text(encoding='utf-8') + (STOCK / 'skill-stock.md').read_text(encoding='utf-8'), encoding='utf-8')
 
 
 def shared_block(value):
@@ -100,7 +96,7 @@ def main():
     parser.add_argument('--sop-board', default='sop-board', help='调用 sop-board 的命令（缺省为 PATH 上的 sop-board）')
     parser.add_argument('--with-stock', action='store_true', help='库存演示项目：另生成 stock 仓库，配置声明 shop、stock 两个服务')
     parser.add_argument('--shop-only', action='store_true', help='与 --with-stock、--data 同用：只登记 app、lib（只搭商城），stock 为本机未搭建')
-    parser.add_argument('--registered-only', action='store_true', help='只登记仓库并复制适配脚本和验证技能，保留 init 的最小配置（须带 --data）')
+    parser.add_argument('--registered-only', action='store_true', help='只登记仓库并复制适配脚本，保留 init 的最小配置（须带 --data）')
     parser.add_argument('--reuse', action='store_true', help='目标目录已由本脚本生成：不再生成仓库，只登记并装模板')
     parser.add_argument('--clone-of', help='双机项目的机器 B：从这个目录下已生成的仓库 clone，而不是新生成')
     parser.add_argument('--project', default='demo', help='登记的项目名（缺省 demo；双机项目的机器 B 用 shop-b）')

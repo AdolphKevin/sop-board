@@ -1,6 +1,6 @@
 # 修复 #$fix：在检出 $checkout 修复不通过的场景
 
-工作目录：$directory。先读项目验证技能 $skill 与它引用的手册。
+工作目录：$directory。先读运行或修复目录里的入口说明与产品备注（`sop-board note list`）。
 
 材料：problems.json（问题场景、最近结果、finding、缺陷链接与证据文件路径）、scenarios.yaml（场景原文，预期只来自这里）、repos.json（本检出各仓库的目录）。
 

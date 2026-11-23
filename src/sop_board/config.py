@@ -13,11 +13,11 @@ from urllib.parse import urlsplit
 import yaml
 
 from . import gitops
-from .entries import argv_ok, validate_entries, verification_skills, skill_files
+from .entries import argv_ok, validate_entries
 
 FORMAT = 'sop-board-project-6'
 HOME = Path(os.environ.get('SOP_BOARD_HOME', str(Path.home() / '.sop-board'))).expanduser()
-TOP_FIELDS = {'repos', 'identities', 'scenarios', 'skill', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents',
+TOP_FIELDS = {'repos', 'identities', 'scenarios', 'entries', 'adapter', 'snapshot_exclude', 'fixtures', 'agents',
               'shared_database', 'scenario_timeout'}
 SHARED_FIELDS = {'host', 'port', 'dbname', 'user', 'password'}
 ADAPTER_FIELDS = {'env', 'worktree', 'cleanup', 'ports', 'port_step', 'ready_timeout', 'services', 'service_timeout'}
@@ -446,10 +446,10 @@ class Project:
         scenario_timeout = 900
         problems = []
 
-        def values(skill=None, driver_paths=None):
+        def values():
             return dict(repos=repos, identities=identities, entries=entries, adapter=adapter, snapshot_exclude=snapshot_exclude,
                         fixtures=fixtures, agents=agents, shared=shared, shared_invalid=shared_invalid, _saved_password=saved_password_value,
-                        scenario_repo=scenario_repo, scenario_path=scenario_path, skill=skill, driver_paths=driver_paths or {},
+                        scenario_repo=scenario_repo, scenario_path=scenario_path,
                         scenario_timeout=scenario_timeout, problems=problems)
 
         def problem(field, message):
@@ -473,7 +473,8 @@ class Project:
             problem('config.yaml', '配置无法读取或格式不合格：' + str(error))
             return values()
         for field in config.keys() - TOP_FIELDS:
-            problem(field, '格式外字段')
+            problem(field, '项目验证技能已取消（已定决策 31）：删除这一行，写给执行者的内容改记为产品备注（sop-board note add）'
+                    if field == 'skill' else '格式外字段')
         if 'shared_database' in config:
             shared = validate_shared(config['shared_database'], problem)
             shared_invalid = shared is None
@@ -542,9 +543,7 @@ class Project:
         adapter = validate_adapter(config.get('adapter', {}), problem) if 'adapter' in config else {}
         if 'adapter' not in config:
             problem('adapter', '须声明 adapter.env：看板守护进程用它按检出启动环境')
-        skill, drivers, skill_problems = verification_skills(self.data, config.get('skill'), entries)
-        problems.extend(skill_problems)
-        return values(skill=skill, driver_paths=drivers)
+        return values()
 
     @property
     def configured(self):
@@ -554,11 +553,6 @@ class Project:
         if self.problems:
             raise ValueError('项目配置不合格：' + '；'.join(f"{p['field']}：{p['problem']}" for p in self.problems))
         return self
-
-    def skill_digest(self):
-        if self.skill is None:
-            raise ValueError('验证技能不存在')
-        return gitops.digest(skill_files(self.skill.parent))
 
     def exclusions(self, extra=None):
         """快照排除：声明的排除项与场景目录；extra 为额外的 别名 → 路径。"""

@@ -4,7 +4,7 @@
 
 $verify_note
 
-先读 brief.md，再读项目验证技能 $skill 及它引用的产品真实验证手册。预期只来自 scenarios.yaml；手册与技能说明怎样操作、观察和留证。
+先读 brief.md：各入口的操作、观察与留证说明在 entries.json，团队写给执行者的产品备注在 brief 的「产品备注」一节。预期只来自 scenarios.yaml；入口说明与备注只说明怎样操作、观察和留证。
 
 ## 材料
 
@@ -75,6 +75,8 @@ pass、fail 和 skip 沿用原字段。疑似缺陷只在 blocked 行标记，�
 ## 凭据
 
 入口 credential_env 只列变量名，取值在本会话环境中。声明的测试账号声明即授权：未登录时用这些变量直接登录、申请并从声明的测试邮箱读取验证码，不另向使用者要授权。取值只用于声明它的入口；不打印、不写入脚本、截图、结果或日志；证据先脱敏。缺少入口声明的凭据变量时，涉及该入口的场景写 not-executed、cause: environment，finding 只写变量名（“缺少凭据变量 <变量名>”）。
+
+用 Web 身份登录或请求验证码之前，先运行 `sop-board identity record --identity <身份> --kind login|code`；返回 `identity-limit` 时不登录，该场景写 not-executed、cause: human。登录用的口令经 `fill` 填写后，不对含口令的页面加 `--shot`。
 
 ## Web 场景
 

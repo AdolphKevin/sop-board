@@ -85,7 +85,7 @@
     operate: textField('操作说明', {multiline: true, required: true}),
     observe: linesField('观察位置', {required: true}), evidence: linesField('证据要求', {required: true}),
     isolation: textField('数据隔离说明', {multiline: true, required: true}),
-    address_env: textField('入口地址的环境变量名'), driver: textField('辅助验证技能目录名'),
+    address_env: textField('入口地址的环境变量名'),
     probe: {...commandField('探测命令'), omitEmpty: true}, probe_timeout: numberField('探测超时（秒，缺省 10）'),
     credential_env: linesField('凭据环境变量名'),
     identities: listField('浏览器身份', identityField),
@@ -94,8 +94,7 @@
     spec_library: textField('浏览器场景脚本目录（仓库别名:仓内目录）'),
   });
   const settingsSchemas = {
-    verification: objectField('验证入口', {entries: {...mapField('入口列表', entryField, '入口名称'), required: true},
-      skill: {label: '项目验证技能', type: 'skill', required: true}}),
+    verification: objectField('验证入口', {entries: {...mapField('入口列表', entryField, '入口名称'), required: true}}),
     environment: objectField('环境适配', {scenario_timeout: numberField('停滞提醒（秒，缺省 900）'), adapter: objectField('环境适配配置', {
       env: {...commandField('环境启动命令'), required: true}, worktree: commandField('建立工作树命令'), cleanup: commandField('清理工作树命令'),
       ports: linesField('基础端口', {numbers: true}), port_step: numberField('检出端口步长'), ready_timeout: numberField('就绪时限（秒）'),
@@ -178,9 +177,8 @@
       };
     } else {
       let input;
-      if (schema.type === 'choice' || schema.type === 'skill') {
-        let choices = schema.type === 'skill' ? settingsState.data.skills.map(s => [s.name, s.name])
-          : schema.choices.map(c => Array.isArray(c) ? c : [c, c]);
+      if (schema.type === 'choice') {
+        let choices = schema.choices.map(c => Array.isArray(c) ? c : [c, c]);
         if (value !== undefined && !choices.some(([v]) => v === String(value))) choices = [[String(value), String(value)], ...choices];
         input = el('select', {}, el('option', {value: ''}, schema.required ? '请选择' : '未声明（沿用缺省）'),
           choices.map(([v, label]) => el('option', {value: v, selected: String(value) === v}, label)));
@@ -200,14 +198,6 @@
       input.setAttribute('aria-label', schema.label);
       host.append(el('label', {class: 'field'}, el('span', {}, schema.label), input));
       if (schema.hint) host.append(el('p', {class: 'muted'}, schema.hint));
-      if (schema.type === 'skill') {
-        const problems = el('div', {class: 'problems'});
-        const show = () => {
-          const skill = settingsState.data.skills.find(s => s.name === input.value);
-          problems.replaceChildren(...(skill?.problems || []).map(p => el('p', {}, problemText(p))));
-        };
-        input.addEventListener('change', show); show(); host.append(problems);
-      }
     }
     host.append(errors);
     return {host, read};

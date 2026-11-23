@@ -39,7 +39,7 @@ def session_id(explicit):
 
 
 def web_entry(entry):
-    return isinstance(entry, dict) and entry.get('surface') == 'web' and entry.get('driver') in (None, 'playwright-acceptance')
+    return isinstance(entry, dict) and entry.get('surface') == 'web'
 
 
 def web_identities(entries):
@@ -484,9 +484,12 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
         with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
             brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'
                         'stale 列出的页面已过期，以实际页面为准。地图不提供预期。找不到时只读探测，并在结果 note 写明地图缺口。\n')
-    from .entries import web_skill
+    from . import notes
+    with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
+        related = notes.relevant(context.store, entries, {scene['file'] for scene in selected})
+        brief.write('\n'.join(notes.brief_lines(related, work_id)) + '\n')
     prompt = Template(files('sop_board').joinpath('prompts', 'run.md').read_text(encoding='utf-8')).substitute(
-        run=work_id, directory=directory, skill=project.skill, web_skill=web_skill() / 'SKILL.md',
+        run=work_id, directory=directory,
         checkout=checkout.name, verify_note=('这是修复 #%d 的独立复验：逐条完整执行，不能保留旧通过，也不接受 not-executed；'
                                  '本机缺少条件时停下报告缺什么。' % fix['id']) if fix else '')
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')

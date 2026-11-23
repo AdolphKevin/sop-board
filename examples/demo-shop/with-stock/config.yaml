@@ -1,7 +1,6 @@
 # 库存演示项目（make_demo.py --with-stock）config.yaml 的其余部分；repos 与 identities 由 sop-board init 写入，make_demo.py 合并本文件。
 # 与基础演示项目的差别只在 adapter：多一个库存服务端口，并声明 services（服务名 → 业务说明与是否可停）。
 scenarios: {repo: app, path: docs/sop}
-skill: demo-verification
 entries:
   api:
     surface: http

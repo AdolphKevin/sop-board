@@ -111,7 +111,6 @@ sop-board check
 | `repos` | 是 | 别名 → 绝对路径（可 `~/`）。别名 `[a-z][a-z0-9-]*`；路径须是 Git 根目录、有 origin，数据目录不能在其中 |
 | `identities` | 是 | 别名 → 登记时规范化的 origin 身份（`init` 写入）。仓库的 origin 与登记不一致时配置不合格，防止路径指向了别的仓库 |
 | `scenarios` | 是 | `{repo: <别名>, path: <仓内相对目录>}`，不含 `..`，不能是仓库根 |
-| `skill` | 是 | 项目验证技能目录名，位于 `<数据目录>/skills/<名称>/SKILL.md`；须有含非空 `name`、`description` 的 YAML 文件头，每个入口名须出现在某个 `## ` 二级标题中；技能目录内不能有符号链接 |
 | `entries` | 是 | 入口名 → 入口声明，至少一个（见下表） |
 | `adapter` | 是 | 见下文；至少要有 `env` |
 | `scenario_timeout` | 否 | 1～86400 的整数秒，缺省 900，见 §5“执行进度” |
@@ -130,7 +129,6 @@ sop-board check
 | `credential_env` | 凭据变量名数组。只写名称，取值从守护进程/会话环境读，输出与日志按取值脱敏 |
 | `probe` | 可选的非空 argv 数组，每个元素为非空字符串；相对数据目录执行，见下文 |
 | `probe_timeout` | 可选，须同时声明 `probe`；1～3600 的整数秒，缺省 10 |
-| `driver` | 辅助技能目录名。Web 入口缺省为随包 `playwright-acceptance`（`SOP_BOARD_SKILLS_DIR` 下同名技能可覆盖）；其他技能在 `<数据目录>/skills/` 或 `SOP_BOARD_SKILLS_DIR`（缺省 `~/.agents/skills`）中查找 |
 | `web_evidence` | 仅 Web，`{video: bool, trace: bool}`，缺省都开 |
 | `identities` | 仅 Web，身份数组：`id`（小写编号，不能是 `default`）、`label`（对应场景 actor）、`account_env?`、`code?`（`mailbox/backend/manual`，缺省 manual）、`limits?`（`logins_per_day`、`codes_per_hour`、`codes_per_day` 正整数）、`real?`（真实账号，只由人登录）。未声明时只有 `default` |
 | `spec_library` | 仅 Web，`<别名>:<仓内目录>`，不能是仓库根或符号链接；交互地图放在其下 `atlas/` |
@@ -255,6 +253,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | 环境 | `env up\|down\|restart\|status [--all]` | 经守护进程启停或重启当前检出环境；`status --all` 列出全部检出。输出 `state`、`address_env`、`variables`（ready 行的全部变量）、`services`（名称、业务说明、可停、状态、`stop_requested`，异常退出附 `log` 与 `log_tail`）、`not_running`、`missing_address_env` |
 | | `env probe [入口…] [--run N]` | 即时核对入口并按指定运行留痕；见 §2 |
 | | `env stop\|start <服务> [--run N]` | 运行取 `--run`，其次 `SOP_BOARD_RUN`；本检出有多个 prepared 运行又没指明时返回 `run-ambiguous`。只在本检出有 prepared 运行时可用（`run-required`），且这套环境上只有这一个 prepared 运行（`env-shared`，列出其他运行）；有服务被停着时别的运行要用这套环境就排队。只对 `stoppable` 的服务；等状态变为已停止或运行中才返回（`service-timeout`），停启记进该运行（`service_events`），提交或放弃时自动恢复。已在目标状态时返回 `changed: false`，不记录。运行之外恢复环境用 `env restart` |
+| 备注 | `note add\|list\|edit\|confirm\|dispute\|remove` | 产品备注，见 §9 |
 | 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
 | | `browser status [--identity]` | 各身份浏览器：`port` 为实际调试端口（运行中的，或最近一次启动所用的）、`default_port` 为缺省端口、`alive`、`endpoint`（运行中时）、持有者、最近一次交给的检出（`last_checkout`）与崩溃记录；守护进程未运行时只给运行时信息 |
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
@@ -422,7 +421,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - **启动预检**：完成范围、启动占用与修复准入检查后，当前检出环境已经就绪时对冻结候选范围的入口探测一次，不拉起或切换环境。全部不健康（或需排除任一修复复验场景）时返回 `entry-unhealthy`，不建启动记录、不起会话；部分不健康时在启动输出的 `launch.probes`、`launch.probe_skipped` 与提示词列出预检情况，保留原候选范围交给 prepare，后者以新探测结果决定排除与登记。当前环境未就绪时跳过启动预检（两数组为空），等待 prepare 按常规拉起后探测。启动目录的 `preflight.json` 保存这两数组。
 - **续跑**（仅 `run`）：一个会话结束后，只要它在同一次启动关联的 prepared 运行中新裁决了至少一条，且仍有未裁决的可执行场景，守护进程就在同次启动下续跑。退出码为 0、非零或重启后无法取得均使用这项判定。新登记的结论和新写入的本机暂记都算进展；同一会话对同一场景至多计一次。重复提交同一裁决、只改写结果行、准备时探测自动排除及仅作废场景均不算进展。按实际进行新裁决的会话归属。另有一种情况也接续：首个会话以非零退出码结束、没有任何新裁决，且这次启动没有已提交的运行（例如模型接口被拒、会话刚起来就中断）时，接续一次；接续的会话再次运行准备命令，已有 prepared 运行时取回它，没有时准备新的运行。第二个会话起仍只按有无进展判断。
 - 一次启动最多三个成功起动的会话。续跑间隔为 60 秒，测试可在启动守护进程前用环境变量 `SOP_BOARD_RETRY_DELAY`（非负整数秒）缩短。启动编号、检出、代理有效配置及实现者参数保持，换新的会话编号；第 2、3 个会话在同目录使用 `output.<序号>.prompt.md` 与 `output.<序号>.jsonl`，启动的 `log, session, pid` 指向最近尝试。`attempts.json` 继续以数组保存每次尝试的公开字段 `{attempt, session, pid, log, started_at, ended_at, exit_code, runner, model, effort}`，首项仍留生效设置供接续，最后一项可含未完成的收尾记录，结束后加 `new_verdicts`（非负整数），计划续跑的尝试加 `retry_at`。有待续跑时启动保持 running；`restart` 或守护进程异常退出后按最后一项的 `retry_at` 恢复等待，逾时则发起一次。确认旧会话退出且它进程组的残留已结束后，才开始新会话。收到 `launch stop --launch N` 时取消等待的续跑；如已有会话则向进程组发 SIGTERM。缺少 `--launch` 时返回 `invalid-arguments`、退出码 2，问题指向该参数。
-- **续跑提示**写明上个会话结束时间、退出码（未知时注明）、日志，以及每个 prepared 运行的编号、目录、已登记的结论、本机暂记的场景与阻点、尚未裁决的场景及开始但未完成的操作。再次准备得到同一个运行（`resumed: true`）。已登记结论的场景保留原执行者与证据。接续会话按验证技能核对并还原未完成场景留下的数据，再执行尚未裁决的场景；也可以重新开始并裁决已暂记的场景。交接前将尚未裁决的完整行及末尾残行留档并从活动结果文件移走，保留已经成功裁决的行和暂记记录。不能完成还原时记录阻点并停止本会话。
+- **续跑提示**写明上个会话结束时间、退出码（未知时注明）、日志，以及每个 prepared 运行的编号、目录、已登记的结论、本机暂记的场景与阻点、尚未裁决的场景及开始但未完成的操作。再次准备得到同一个运行（`resumed: true`）。已登记结论的场景保留原执行者与证据。接续会话按入口的隔离说明与产品备注核对并还原未完成场景留下的数据，再执行尚未裁决的场景；也可以重新开始并裁决已暂记的场景。交接前将尚未裁决的完整行及末尾残行留档并从活动结果文件移走，保留已经成功裁决的行和暂记记录。不能完成还原时记录阻点并停止本会话。
 - **收尾**：没有进展、该启动的所有关联运行都已裁决完却仍有未提交、续跑用满或发起失败时，采用现行结束分类（正常退出为 `exited`，非零或发起失败为 `failed`）。有关联 prepared 运行则按放弃处理：释放身份、恢复服务，保留已登记结论和准备时的探测登记；暂记裁决及其证据保留在运行目录，见“提交规则”。本机 `local_work.result` 记 `abandoned_by: "sop-board"`、`launch`。为失败的启动或有未提交运行的正常退出按启动登记一条环境问题，署名 `sop-board`；`work` 取第一条关联运行编号，文字列出启动号、结束原因、各次退出码、全部相关运行与涉及场景、日志末尾一行（最多 300 字）；对本机暂记项逐条列场景键、裁决状态、类别（跳过时为空）与原因。没有运行时写明。遮蔽本机路径与凭据，完整日志经产出机器的 `launch status` 查看。已提交或由别人放弃的运行不参与收尾。先写退出信息与本机放弃，再登记待人处理；业务库失败不妨碍释放资源，失败原因写入看板日志与启动 problem，下次启动补做尚未完成的收尾。同一启动的收尾可重试，已成功的待人处理不重复登记。收尾进行中 `launch status` 带 `finishing: true`，`run wait` 等本次收尾尝试完成再返回。被 `launch stop` 停止的启动不自动放弃，运行仍由操作者决定如何收尾。
 - 会话输出由随会话存活的转写进程遮蔽后写进日志，不经守护进程；遮蔽范围不变（已保存的共享库密码）。看板 `restart` 时会话继续运行，新守护进程按进程号与命令行认回，用零信号检查存活；取不到退出码时仍判定有无进展；不续跑时，产出了运行或沉淀记 `exited`，否则按 `no-work` 处理。`stop` 与 SIGTERM 照旧结束会话。
 - 会话准备运行时按提示词带 `--wait`，环境或身份被占着时排队（§5）。
@@ -592,6 +591,16 @@ fixtures:
 
 `fixtures run <配方> --param 名=值` 以数据目录为工作目录执行 `run`（参数名转大写注入环境，另注入 `SOP_CHECKOUT`、`SOP_REPO_<别名>`，超时 600 秒），成功后执行 `check`。`fixtures exec --reason … -- <命令>` 只在 `adhoc: true` 时可用。输出按凭据取值脱敏，留痕写 `fixture_runs`，带 `--run` 时同时写 `runs/<编号>/fixtures/<n>.json`；非零退出返回 `fixture-failed`。`real_only` 对象不得写库代替。
 
+### 产品备注
+
+团队写给执行会话的事放在产品备注里（已定决策 31 第五段）：怎样登录、数据在哪里看、哪些现象是已知噪声、哪些测试对象可以临时改。备注是自由文本，按产品存在业务记录库，同一产品的各台机器共用；看板不预设类别。项目验证技能已取消，`config.yaml` 出现 `skill` 时配置不合格，问题写明改记为备注。
+
+- 挂在哪里：整个产品（缺省）、一个入口（`--entry <入口>`，须已声明，否则 `entry-not-found`）或一个场景文件（`--file <文件>`，须在当前检出，否则 `scenario-file-not-found`），二者只写一个。
+- `note add --text T [--entry E | --file F] [--run N]`：一条不超过 2000 字。运行编号取 `--run`，其次环境变量 `SOP_BOARD_RUN`：没有运行编号时是人写的，署名取操作者，当即算已确认；带运行编号时记为该运行提出、未经人确认，当即生效。
+- `note list [--entry E | --file F] [--all]`：不带范围列出全部，`--all` 含已删除的。每项 `{id, scope, target, text, created_by, created_at, run, machine, confirmed_by, confirmed_at, disputes}`；`scope` 取 `product|entry|file`，`run`、`machine` 只有运行提出的才有值，`disputes` 为 `[{by, at, text, run, machine}]`。
+- `note edit <编号> --text T`、`note confirm <编号>`：由人改写或确认，记确认人与时间，并清掉不符报告。`note dispute <编号> --text T [--run N]`：报告与实际不符，追加一条不符报告，备注原文不变。`note remove <编号>`：删除。编号不存在或已删除返回 `note-not-found`。署名规则同其他登记（`--as` 只在使用者明确说是别人时用）。
+- 准备运行时，`brief.md` 的「产品备注」列出整个产品的备注，加上本轮用到的入口与场景文件的备注，逐条带编号、来源（确认人与日期，或“运行 #N 提出，未经人确认”）和不符报告，并写明提出与报告不符的命令。备注只说明怎样操作与观察，不提供预期。
+
 ### 待人处理
 
 `attention add --kind K --text …` 种类为人机验证、OAuth 授权、账号登录、第三方后台设置、权限放行、邮箱验证、环境问题、前置数据、浏览器崩溃、外部依赖、场景本身、入口能力、等人处理、其他。看板“待人处理”页只读，解决用 `attention resolve <编号> [--note 说明]`。普通条目以及浏览器崩溃、身份计数超限、非产品问题修复等运维条目照常登记，本身不拦场景选择。
@@ -691,6 +700,9 @@ fixtures:
 | `browser-not-running` | `browser do` 时该身份的浏览器没有在运行 |
 | `browser-attach-failed` | 看板接入身份浏览器失败 |
 | `step-not-allowed` | `browser do` 的步骤用了由看板管理的子命令 |
+| `note-not-found` | 备注编号不存在或已删除 |
+| `entry-not-found` | 备注要挂的入口没有声明 |
+| `scenario-file-not-found` | 备注要挂的场景文件不在当前检出 |
 | `run-required` | `run begin/verdict` 未指出运行，或 `env stop\|start` 时本检出没有 prepared 的运行 |
 | `entry-unknown` | `env probe` 的指定入口不在配置中（HTTP 422） |
 | `env-not-ready` | 即时探测需要当前检出 ready 的环境（HTTP 409） |
@@ -760,13 +772,14 @@ fixtures:
 | `products` | 产品：ID、名称、创建人、创建机器 |
 | `machines` | 机器标识、显示名、带 `--lan` 的看板登记的内网地址与对等令牌（别的看板凭它读取本机证据） |
 | `work` | 运行记录的业务部分：kind run/fix/distill/merge/author/draft/atlas、机器标识 + 本机库标识 + 本机编号（唯一）、序号、检出名与分支、会话、操作者、实现者（会话或操作者）、独立性、修复、范围、快照、运行摘要（已登记的裁决、未执行类别与原因、未裁决、提交人）、服务停启记录。运行期间首次登记时 `ended_at` 为 null，运行结束时填写；运行是否已完成用 `result.finalized`（`submitted|abandoned`，进行中为 null）；旧有已登记运行按原摘要处理；旧版已经完成业务事务但尚未更新本机状态的，走提交收尾，无需重裁决 |
-| `results` | agent 与 manual 结果：序号、运行、产出机器、检出名与分支、文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人；格式 9 新增 `cause TEXT`（可空）、`suspect_defect INTEGER NOT NULL DEFAULT 0`（0 或 1）。同一运行 + 文件 + 场景唯一，即 `UNIQUE(work, file, scenario)` |
+| `results` | agent 与 manual 结果：序号、运行、产出机器、检出名与分支、文件、场景、指纹、快照、product_changed、状态、actual/finding/defect/note、reused_from、of_result、执行者、实现者、独立性、复测人；格式 9 新增 `cause TEXT`（可空）、`suspect_defect INTEGER NOT NULL DEFAULT 0`（0 或 1）；格式 10 新增可空的 `reservation TEXT`、`gap TEXT`（§5）。同一运行 + 文件 + 场景唯一，即 `UNIQUE(work, file, scenario)` |
 | `evidence`、`result_evidence` | 证据索引（sha256、大小、名称、产出机器）与结果引用；文件在产出机器的 `<数据根目录>/evidence/<前两位>/<sha256>` |
 | `guard_runs`、`guard_misses` | 守护运行（序号、产出机器、检出名与分支、快照、测试摘要、pass/fail、原因、输出证据）与漏检（文件 + 场景 + 指纹 + 测试摘要唯一，各看板共用） |
 | `distillations` | 沉淀登记：场景、指纹、测试摘要、沉淀人、机器、检出与分支、时间 |
 | `fixes` | 修复的业务部分：问题场景（含指纹，最近 5 条结果，证据只记名称与 sha256，不带任何机器的本机路径）、修复会话与操作者、状态、fix.json、关闭序号与关闭人、产出机器与检出名；同一机器同一检出只能有一个 open |
 | `inbox`、`questions`、`annotations`、`draft_approvals` | 上传、提问与答复（带提问机器）、草稿批注、草稿场景的同意（同一人在同一指纹上只有一条未撤销的同意） |
 | `attention` | 待人处理（附产出机器与检出名）；新增可空的 `hold TEXT`，见 §9 |
+| `notes` | 产品备注（格式 10）：自增编号、`product`、`scope`（product/entry/file）、`target`、`text`、提出它的 `machine` 与 `run`（人写的为空）、`created_by`、`created_at`、`confirmed_by`、`confirmed_at`、`disputes`（JSON 数组）、`removed_by`、`removed_at`；见 §9 |
 | `dispositions` | 主键 `(product, file, scenario, branch)`，`product` 引用 `products.id`。各列均为非空文字；其余字段为 `kind`（仅 human/shelved）、`reason`、`by`、`at`（带时区的 ISO 8601 时间）。替换更新同一行，撤销删除该行 |
 
 `work.result.adjudications` 按场景键索引，只存已经登记的裁决。每项含 §5 的 `adjudication`、`source`（`probe|verdict|submit`）、登记时分配的 `seq`、原始行的 `row_sha256`（解析 JSON 后按键排序、紧凑 UTF-8 序列化取摘要，探测为 null）与 `independence`；未执行记录另带 `by`。开始时刻、耗时、进行中的场景、暂记裁决和活动时刻只留本机目录。登记时串行读取运行和卡住计数，避免丢更新。绑定或切换业务记录库的现有配置锁须覆盖仍为 prepared 的运行。
@@ -818,11 +831,13 @@ ALTER TABLE results ADD COLUMN suspect_defect INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE attention ADD COLUMN hold TEXT;
 ```
 
-旧记录的 `cause`、`hold` 为 NULL，`suspect_defect` 为 0。原有表、唯一约束、索引、外键及业务记录保持原样。本机状态与本机配置原样保留。实际升级在一个事务中依次执行全部步骤，提交前不对其他连接可见；失败回滚全部步骤。两个升级命令撞在一起时按库串行，后到者在取得锁后重读版本。预演只读版本与升级计划，不执行步骤或改写数据；已是当前版本时两种调用均退出 0，前后版本相等、`steps: []`。
+格式 9 → 10（已定决策 31）创建空的 `notes` 表，并给 `results` 增加两个可空的文字列 `reservation`、`gap`，再将 `meta.format` 更新为 10。
+
+旧记录的 `cause`、`hold`、`reservation`、`gap` 为 NULL，`suspect_defect` 为 0。原有表、唯一约束、索引、外键及业务记录保持原样。本机状态与本机配置原样保留。实际升级在一个事务中依次执行全部步骤，提交前不对其他连接可见；失败回滚全部步骤。两个升级命令撞在一起时按库串行，后到者在取得锁后重读版本。预演只读版本与升级计划，不执行步骤或改写数据；已是当前版本时两种调用均退出 0，前后版本相等、`steps: []`。
 
 库比本机新、空库、版本记录缺失或没有完整升级路径时，以 `database-version` 拒绝（退出码 1），空共享库用 `init --new` 建表。凭据不符返回 `database-authentication`，连不上返回 `database-unreachable`，共享库配置不合格返回 `shared-database-invalid`，升级 SQL 出错返回 `database-error`，均退出 1。未成功升级时没有任何已完成的步骤。旧本机状态格式仍按 §2 拒绝。所有输出沿用共享库连接信息与凭据的遮蔽规则。
 
-共享库由维护者统一核对各机器正在运行的看板和未提交运行，等运行提交或明确安排后，使用新版命令升级一次，其余机器换上同一版本的 sop-board。升级事务提交前，格式 9 的看板读取到格式 7 或 8 时显示 `database-version`；提交后，新版看板下次业务请求可用，仍运行旧版的看板下一次核对库版本时显示 `database-version`，须换新版重启进程。页面没有半升级的数据；业务请求失败不产生离线记录，已准备但无法裁决或提交的运行保留本机材料。升级命令本身不停止看板、不放弃运行。
+共享库由维护者统一核对各机器正在运行的看板和未提交运行，等运行提交或明确安排后，使用新版命令升级一次，其余机器换上同一版本的 sop-board。升级事务提交前，当前版本的看板读取到更旧格式的库时显示 `database-version`；提交后，新版看板下次业务请求可用，仍运行旧版的看板下一次核对库版本时显示 `database-version`，须换新版重启进程。页面没有半升级的数据；业务请求失败不产生离线记录，已准备但无法裁决或提交的运行保留本机材料。升级命令本身不停止看板、不放弃运行。
 
 **证据在别的机器上**：证据文件只在产出它的机器上。带 `--lan` 启动的看板把机器标识、显示名、内网地址与对等令牌登记到 `machines`（不带 `--lan` 或退出时撤下本端口的登记）。别的看板的证据地址仍是本看板的 `/evidence/<sha256>/<名称>`：本机没有文件时，看板凭登记的令牌从产出机器看板的 `/peer/evidence/<sha256>` 读取，核对 sha256 后转给页面，不在本机保存；读不到时场景详情写“证据在 <机器显示名> 的机器上”。`report --zip` 同样取回并核对；取不到的逐条写“证据在 <机器显示名> 的机器上，未包含”，输出 `missing_evidence` 为缺少的条数。
 
@@ -831,11 +846,11 @@ ALTER TABLE attention ADD COLUMN hold TEXT;
 ## 13. 设置接口（已定决策 27）
 
 全部路径仅允许实际回环连接，内网返回 403 `local-only`。写入使用 JSON，沿用同源校验（403 `cross-origin`）。不返回密码及凭据取值。
-每节 content 使用 config.yaml 原字段名：repositories 为 repos、scenarios、snapshot_exclude（identities 由服务登记）；verification 为 entries、skill；environment 为 adapter、可选 scenario_timeout；fixtures 为 fixtures；agents 为 agents。验证入口节的 entries 对象原样含 probe 与 probe_timeout，字段问题沿用 entries 路径。环境适配节可设单场景超时秒数，清空即回到缺省。省略字段表示删除该字段。
+每节 content 使用 config.yaml 原字段名：repositories 为 repos、scenarios、snapshot_exclude（identities 由服务登记）；verification 为 entries；environment 为 adapter、可选 scenario_timeout；fixtures 为 fixtures；agents 为 agents。验证入口节的 entries 对象原样含 probe 与 probe_timeout，字段问题沿用 entries 路径。环境适配节可设单场景超时秒数，清空即回到缺省。省略字段表示删除该字段。
 
 | 方法与路径 | 请求 | 成功响应 |
 | --- | --- | --- |
-| GET `/api/settings` | 无 | ok、digest（config.yaml 字节的 SHA-256）、sections、other_problems、notices、references、skills、credentials |
+| GET `/api/settings` | 无 | ok、digest（config.yaml 字节的 SHA-256）、sections、other_problems、notices、references、credentials |
 | POST `/api/settings/sections/{section}` | digest、content（上述五节之一） | 与读取相同的新状态 |
 | POST `/api/settings/repositories/reregister` | digest、alias | 按当前 origin 登记身份，返回新状态 |
 | POST `/api/settings/local` | operator、machine（均为非空单行文字，最长 64 字） | 新状态 |
@@ -847,7 +862,7 @@ connection 为 host、port、dbname、user 对象。password 省略表示保留�
 repositories.content.repos 可为别名到路径的对象，也可为 `{path, alias?}` 列表；缺省别名按 init 规则生成。服务读取 origin，已登记仓库不能改名。重新登记身份也受仓库占用限制。
 
 sections 每节含 content、problems（field、problem）、occupants（占用者列表）。local 的 content 含 operator、operator_source、machine、runtime、install_command、local_address、lan_addresses、data、machine_name_sync_pending（业务库中的机器名尚未同步）。shared 的 content 只含无密码连接，另含 password_saved 和 product。
-references 为入口名到 `{count, scenarios}` 的对象（列前五条场景，遍历本机所有检出、按场景键去重）。skills 为数据目录 skills/ 下的技能目录 name 与校验 problems。credentials 每条为 `{name, present, source}`，同名变量按声明来源分别列出，仅表示启动看板的环境里是否有非空值。source 含 kind、field；入口声明的 kind 为 entry，另含 entry；身份声明的 kind 为 identity，另含 entry、identity（account_env）；前置数据声明的 kind 为 fixtures，另含 recipes（使用这组凭据的配方名称列表，凭据统一声明在 fixtures.credential_env）。不返回取值。
+references 为入口名到 `{count, scenarios}` 的对象（列前五条场景，遍历本机所有检出、按场景键去重）。credentials 每条为 `{name, present, source}`，同名变量按声明来源分别列出，仅表示启动看板的环境里是否有非空值。source 含 kind、field；入口声明的 kind 为 entry，另含 entry；身份声明的 kind 为 identity，另含 entry、identity（account_env）；前置数据声明的 kind 为 fixtures，另含 recipes（使用这组凭据的配方名称列表，凭据统一声明在 fixtures.credential_env）。不返回取值。
 other_problems 为无法归入七节的 `{field, problem}` 列表，包括顶层格式外字段和只有产品绑定却没有连接的问题。notices 列出 config.yaml.prev 与残留临时文件的说明及人工修法；上一份副本本身是正常产物，不计为配置不合格。
 occupants 含 kind、checkout；kind 为 environment、work、launch、fix、browser。工作与启动另含 id、work_kind；修复含 id、state（只列确认为 open 的修复）；环境含 state；浏览器含 identity，仅禁止删除正在用的身份。prepared 的运行、沉淀、合并、编写、草稿与交互地图，以及 open 修复和运行中的启动，均占用仓库与共享库。共享库连不上、无法确认本机已知修复是否结束时不占用、不返回 settings-locked；读取结果的 notices 逐条提示“共享库连不上，无法确认修复 #N 是否结束”，允许使用者修正连接或密码。其他已确认的占用仍照常生效。
 products 的字段与 CLI init 的清单相同：id、name、created_by、created_at、scenarios_with_results、latest_write、local_overlap、hint。设置接口的 created_at、latest_write 使用与看板其他页面相同的本机时间格式 YYYY-MM-DD HH:mm:ss ±HH:mm（latest_write 没有记录时为 null），CLI init 的原始时间格式不变。页面将 ID 等于已绑定产品 ID 的条目标为“当前产品”，不提供加入按钮；其他产品仍可加入以切换产品。

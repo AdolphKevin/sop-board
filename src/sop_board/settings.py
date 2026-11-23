@@ -20,7 +20,7 @@ from .time_format import local_time
 
 SECTIONS = {
     'repositories': ('repos', 'identities', 'scenarios', 'snapshot_exclude'),
-    'verification': ('entries', 'skill'), 'environment': ('adapter', 'scenario_timeout'),
+    'verification': ('entries',), 'environment': ('adapter', 'scenario_timeout'),
     'fixtures': ('fixtures',), 'agents': ('agents',),
     'shared': ('shared_database',), 'local': (),
 }
@@ -164,9 +164,7 @@ def read(app, *, query_fixes=True):
     sections['local']['content']['machine_name_sync_pending'] = pending
     if pending:
         sections['local']['problems'].append(dict(field='machine', problem='业务库中的机器名尚未同步；下次工作台请求或看板重启后成功连库时同步'))
-    skills = [dict(name=path.name, problems=section_problems(app.project.read(dict(value, skill=path.name)), 'verification'))
-              for path in sorted((app.project.data / 'skills').glob('*')) if path.is_dir()]
-    return dict(ok=True, digest=digest(raw), sections=sections, references=references(app), skills=skills,
+    return dict(ok=True, digest=digest(raw), sections=sections, references=references(app),
                 other_problems=[p for p in values['problems'] if not any(p in section['problems'] for section in sections.values())],
                 notices=notices, credentials=credential_declarations(value))
 

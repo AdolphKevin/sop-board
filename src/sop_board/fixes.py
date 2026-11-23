@@ -117,7 +117,7 @@ def _prepare(context, scope, *, session):
     (directory / 'repos.json').write_text(dumps({a: str(p) for a, p in context.checkout.paths.items()}), encoding='utf-8')
     (directory / 'scenario-files.json').write_text(dumps(scenario_digests(context, context.checkout)), encoding='utf-8')
     prompt = Template(files('sop_board').joinpath('prompts', 'fix.md').read_text(encoding='utf-8')).substitute(
-        fix=fix_id, directory=directory, checkout=context.checkout.name, skill=context.project.skill)
+        fix=fix_id, directory=directory, checkout=context.checkout.name)
     (directory / 'prompt.md').write_text(prompt, encoding='utf-8')
     return dict(ok=True, fix=fix_id, checkout=context.checkout.name, directory=str(directory), prompt=str(directory / 'prompt.md'),
                 answer=str(directory / 'fix.json'), problems=keys, session=executor)

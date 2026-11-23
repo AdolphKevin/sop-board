@@ -41,7 +41,7 @@ GROUPS = {
     '编写': {'inbox': '处理测试同学上传的用例与 SOP', 'merge': '合并用例到场景文件', 'ask': '向测试同学提问',
              'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '查看草稿、处理批注、同意与确认'},
     '其他': {'atlas': '交互地图', 'specs': 'Web spec 保真检查', 'fixtures': '前置数据配方', 'identity': '身份使用计数',
-             'attention': '待人处理', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
+             'attention': '待人处理', 'note': '产品备注', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
 }
 
 
@@ -121,7 +121,7 @@ def cmd_init(args):
         data, identities = config.initialize(args.name, args.repos, args.data)
         Store(config.Project(data))
         emit(dict(ok=True, project=args.name, data=str(data), repositories=identities,
-                  next=f'在 {data}/config.yaml 写好 scenarios、skill、entries 与 adapter，启动 sop-board serve 后运行 sop-board check；'
+                  next=f'在 {data}/config.yaml 写好 scenarios、entries 与 adapter，启动 sop-board serve 后运行 sop-board check；'
                        '多人共享验收记录时再写 shared_database 并运行 sop-board init <项目> 选择产品'))
         return 0
     from . import products
@@ -942,6 +942,42 @@ def cmd_attention(args):
     return 0
 
 
+def cmd_note(args):
+    """产品备注：按产品共享的自由文本，挂在产品、入口或场景文件上（已定决策 31 第五段）。"""
+    from . import notes, progress
+    context = load(args, require=False)
+    store, by = context.store, signer(args)
+    needs_id = args.action in ('edit', 'confirm', 'dispute', 'remove')
+    if needs_id != (args.id is not None):
+        return fail('invalid-arguments', [dict(field='id', problem='edit、confirm、dispute、remove 需要备注编号，其他操作不接受')], 2)
+    if (args.action in ('add', 'edit', 'dispute')) != (args.text is not None):
+        return fail('invalid-arguments', [dict(field='text', problem='add、edit、dispute 需要 --text，其他操作不接受')], 2)
+
+    def target():
+        files = scenarios.scan(context.checkout.scenarios_dir(context.project), set(context.project.entries))['files'] \
+            if context.project.configured else {}
+        return notes.target_of(args.entry, args.file, entries=context.project.entries,
+                               files=set(files))
+
+    # 执行会话在运行里提出或报告不符时带运行编号：显式 --run，其次运行环境里的 SOP_BOARD_RUN。
+    run = progress.run_number(args.run) if args.action in ('add', 'dispute') else None
+    if args.action == 'list':
+        scope, name = target() if (args.entry or args.file) else (None, None)
+        emit(dict(ok=True, notes=notes.listing(store, scope=scope, target=name, removed=args.all)))
+    elif args.action == 'add':
+        scope, name = target()
+        emit(notes.add(store, args.text, by=by, scope=scope, target=name, run=run))
+    elif args.action == 'edit':
+        emit(notes.change(store, args.id, by=by, text=args.text))
+    elif args.action == 'confirm':
+        emit(notes.change(store, args.id, by=by))
+    elif args.action == 'dispute':
+        emit(notes.change(store, args.id, by=by, dispute=args.text, run=run))
+    else:
+        emit(notes.change(store, args.id, by=by, remove=True))
+    return 0
+
+
 def cmd_skills(args):
     from .skill_install import install
     return install()
@@ -1201,6 +1237,18 @@ def parser():
     p.add_argument('--run', type=int)
     p.add_argument('--as', dest='as_name', metavar='姓名')
     p.set_defaults(handler=cmd_identity)
+
+    p = common(sub.add_parser('note'))
+    p.add_argument('action', choices=('list', 'add', 'edit', 'confirm', 'dispute', 'remove'),
+                   help='add：写一条备注；edit / confirm：由人改写或确认；dispute：报告与实际不符；remove：删除')
+    p.add_argument('id', nargs='?', type=int, help='edit / confirm / dispute / remove：备注编号')
+    p.add_argument('--text', help='add / edit：备注内容；dispute：看到的现象')
+    p.add_argument('--entry', help='add / list：挂在这个入口上')
+    p.add_argument('--file', help='add / list：挂在这个场景文件上')
+    p.add_argument('--run', type=int, help='add / dispute：提出它的运行（缺省取 SOP_BOARD_RUN；带运行的备注标为未经人确认）')
+    p.add_argument('--all', action='store_true', help='list：包括已删除的')
+    p.add_argument('--as', dest='as_name', metavar='姓名')
+    p.set_defaults(handler=cmd_note)
 
     p = common(sub.add_parser('attention'))
     p.add_argument('action', choices=('list', 'add', 'resolve'))

@@ -15,11 +15,11 @@ sop-board init <项目> <仓库目录>... [--data <根目录>]
 
 当前会话不能写数据目录时，Codex 用 `--add-dir <数据目录>`，Claude Code 用 `/add-dir <数据目录>`。
 
-登记后即可运行 `sop-board serve <项目>`，在本机工作台点“设置”逐节补全；也可由会话按下文直接编写 config.yaml、适配脚本与验证技能。配置尚不完整不妨碍启动看板。
+登记后即可运行 `sop-board serve <项目>`，在本机工作台点“设置”逐节补全；也可由会话按下文直接编写 config.yaml 与适配脚本。配置尚不完整不妨碍启动看板。
 
-## 2. 查清实际环境并写真实验证手册
+## 2. 查清实际环境
 
-从仓库、启动配置、文档和开发者说明查清服务、依赖、启动顺序、端口与入口地址，用实际监听端口和服务响应交叉核对。按标准第 2、3 节把事实写进产品仓库的真实验证手册（如 `docs/operations/verification.md`）：环境与依赖、可重复数据、执行与观察、证据、清理、账号类别。每个服务记一句业务说明（测试同学和执行会话靠它把“库存查询不可用”这类场景起点对应到服务）以及能否在运行中单独停启，写 `adapter.services` 时照抄。手册在有产品仓库写权限的会话中编写。
+从仓库、启动配置、文档和开发者说明查清服务、依赖、启动顺序、端口与入口地址，用实际监听端口和服务响应交叉核对。按标准第 2、3 节查清环境与依赖、可重复数据、执行与观察、证据、清理、账号类别：每次都要照做的写进入口说明（第 3 节），其余事实写成产品备注（第 5 节）。产品仓库已有验证手册时，入口说明可以引用它的章节。每个服务记一句业务说明（测试同学和执行会话靠它把“库存查询不可用”这类场景起点对应到服务）以及能否在运行中单独停启，写 `adapter.services` 时照抄。
 
 ## 3. 写 config.yaml
 
@@ -31,7 +31,6 @@ identities:                 # 别名 → 规范化的 origin 身份（init 已�
   app: github.com/acme/app
   lib: github.com/acme/lib
 scenarios: {repo: app, path: docs/sop}     # 场景文件、业务 SOP 与 regression.yaml 所在目录
-skill: project-verification                 # 数据目录 skills/<名称>/SKILL.md，每个入口一个二级标题
 entries:
   api:
     surface: http
@@ -102,9 +101,16 @@ fixtures:                                   # 可选：前置数据配方
 
 `adapter.worktree` / `cleanup`（可选，须同时声明）沿用既有契约：输入 `SOP_TASK_DIR`、`SOP_FIX_BRANCH`、`SOP_REPOS`（逗号分隔）、`SOP_BASE_<别名>`，可选 `SOP_BASE_COMMITS`，清理时另有 `SOP_WORKTREES`。worktree 最后一行输出 `{"repos": {别名: 路径}, "env": {变量: 值}}`。不声明时用 `git worktree add`。开发者自己建的 worktree 不需要适配，在其中运行命令即自动识别为检出。
 
-## 5. 写项目验证技能
+## 5. 写产品备注
 
-数据目录 `skills/<skill>/SKILL.md`：文件头有 name、description；每个入口一个含入口名的二级标题，写明执行前读哪份手册的哪几节、本机参数怎样取得、声明了哪些测试账号与凭据变量。Web 入口缺省使用随包 playwright-acceptance。
+执行会话只读 Flow Board 给的材料：场景、入口说明（`operate`、`observe`、`evidence`、`isolation`）与产品备注。入口说明写每次都要照做的操作与留证方法；其余要告诉执行者的事实写成产品备注，例如怎样登录、数据在哪里看、哪些现象是已知噪声、哪些测试对象可以临时改：
+
+```sh
+sop-board note add --text "<一条事实>" [--entry <入口> | --file <场景文件>]
+sop-board note list
+```
+
+备注按产品存在业务记录库，同一产品的各台机器共用，新成员加入产品后直接可用。执行会话会在运行中补充备注（标为未经人确认）或报告某条与实际不符，由人用 `note confirm|edit|remove` 处理。
 
 ## 6. 启动与核对
 
@@ -119,7 +125,7 @@ sop-board status
 
 本机工作台可以设置或撤销处置，内网可以查看。使用者选择本人同意草稿时，可以用 `sop-board draft approve <文件>` 以操作者署名登记同意，再按上述规则确认。
 
-向开发者报告：已验证的事实、推断及依据、待回答的问题、适配依赖的外部工具、验证技能摘要。开发者确认后开始使用。
+向开发者报告：已验证的事实、推断及依据、待回答的问题、适配依赖的外部工具、已写的产品备注。开发者确认后开始使用。
 
 ## 7. 多人共享验收记录（可选）
 

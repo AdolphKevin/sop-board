@@ -1,6 +1,5 @@
 # 演示项目 config.yaml 的其余部分；repos 与 identities 由 sop-board init 写入，make_demo.py 合并本文件。
 scenarios: {repo: app, path: docs/sop}
-skill: demo-verification
 entries:
   api:
     surface: http
