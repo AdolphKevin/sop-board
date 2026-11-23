@@ -21,11 +21,21 @@ $verify_note
 
 本轮每条场景都经真实入口实际执行，并保存新证据。
 
+## 分组走一趟
+
+场景用业务语言写，你像真实用户一样体验产品：进到一个页面，就把本组与这个页面有关的预期一起核对。
+
+1. **分组**：先通读 scenarios.yaml，把起点相同、身份相同、经过同一页面的场景分成一组。组内只看不改的排前，会改变状态的（指派、转交、关闭、改设置、删除）排后；一条场景的操作会破坏另一条的起点时，把它排到后面或分到别的组。
+2. **开始**：`sop-board run begin <场景键> <场景键> …` 一次开始这一组。
+3. **核对**：准备起点，经真实入口操作。到达每个页面时，把组内与这个页面有关的预期一起核对，按场景分别留证：证据放在 `evidence/<场景键，# 换成 __>/`，同一张截图可以复制给多条场景。先做的操作改变了组内后面场景的起点时，后面的场景重新满足起点再核对。
+4. **裁决**：一条场景的预期全部核对完，或已确定判不了，就为它写结果行并 `run verdict`，不等整组结束。一条失败，组内其他场景照常核对。
+5. **业务等待**：起点或预期要等真实时间（定时任务、等待若干分钟）的场景，先完成触发操作并记下时刻，等待期间做别的组，到点再回来核对。
+
 ## 结果
 
-每条场景先运行 `sop-board run begin <场景键>`，再执行并留证。完成后在 results.jsonl 为该场景写一行，立即运行 `sop-board run verdict <场景键>`。通过或失败当场登记，本轮保留原行、结果和证据。受阻、跳过、未执行先暂记，条件补齐后重新 begin、更新这条的唯一一行并重新裁决。
+每条场景执行前已经 `run begin`（见上节）。得到结果后在 results.jsonl 为该场景写一行，立即运行 `sop-board run verdict <场景键>`。通过或失败当场登记，本轮保留原行、结果和证据。受阻、跳过、未执行先暂记，条件补齐后重新 begin、更新这条的唯一一行并重新裁决。
 
-命令输出出现 `scenario-timeout` 时记录已取得的证据，转向下一条。已有真实可判定的结果就先裁决。因预算用完而未做或未裁决的场景保持未裁决，启动器会按本次实际新裁决与剩余范围决定是否接续。若当前场景仍在计时且无法裁决，保留现场并结束会话，供接续者还原。
+命令输出出现 `scenario-timeout`，说明已开始的场景连续超过上限没有新的裁决：已有真实可判定结果的先裁决；其余记下已取得的证据，判断不了的记 blocked，转向下一组。因预算用完而未做或未裁决的场景保持未裁决，启动器会按本次实际新裁决与剩余范围决定是否接续。仍有场景在进行而无法裁决时，保留现场并结束会话，供接续者还原。
 
 - 字段：scenario（场景 key）、status（pass/fail/blocked/skip/not-executed）、actual、executed_at（带时区的 ISO 8601，实际执行的时刻）、evidence（evidence/ 下的相对路径数组），可选 finding、note，原因字段见下文；其他字段会被拒绝。
 - 实际执行的 pass、fail 至少有一份真实证据，放在 evidence/。blocked、skip、not-executed 必须写 finding。
@@ -68,7 +78,7 @@ pass、fail 和 skip 沿用原字段。疑似缺陷只在 blocked 行标记，�
 
 ## Web 场景
 
-按 $web_skill 执行：在运行目录用模板经 PW_CDP_ENDPOINT 连接看板启动的 Chrome for Testing（不自己启动浏览器、不运行 playwright install），workers: 1、retries: 0。录屏与 trace 开关已在 scope.json 按场景固定。报告用 `sop-board playwright convert` 转换后合并进 results.jsonl。给转换所得的 blocked 和 not-executed 行按上表补齐 cause，然后按场景逐条裁决。现有脚本一次执行多条时，未能单独计时的结果仍可裁决，耗时留空。
+按 $web_skill 执行：在运行目录用模板经 PW_CDP_ENDPOINT 连接看板启动的 Chrome for Testing（不自己启动浏览器、不运行 playwright install），workers: 1、retries: 0。录屏与 trace 开关已在 scope.json 按场景固定。报告用 `sop-board playwright convert` 转换后合并进 results.jsonl。给转换所得的 blocked 和 not-executed 行按上表补齐 cause，然后按场景逐条裁决。用一次 spec 执行一组时，运行前先 `run begin` 整组。
 
 ## 完成
 

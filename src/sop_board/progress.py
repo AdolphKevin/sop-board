@@ -46,8 +46,26 @@ def item(key, fingerprint, state, at, *, session=None, registration='local', **f
 
 
 def initial(limit, at, adjudications=()):
-    return dict(version=1, limit_seconds=limit, last_activity_at=at, active=None,
+    return dict(version=1, limit_seconds=limit, last_activity_at=at, active={},
                 adjudications={row['scenario']: row for row in adjudications})
+
+
+def running(data):
+    """进行中的场景，按场景键索引：{键: {scenario, started_at, session}}。"""
+    return data.get('active') or {}
+
+
+def in_progress(data):
+    """进行中的场景，按开始时刻、再按场景键排序。"""
+    return sorted(running(data).values(), key=lambda item: (datetime.fromisoformat(item['started_at']), item['scenario']))
+
+
+def finish(data, ended):
+    """运行结束：清空进行中的场景，结束时仍在进行的留在 unfinished 供本机统计。"""
+    if active := in_progress(data):
+        overdue = bool(warning(data, ended))
+        data['unfinished'] = [dict(item, timed_out=overdue) for item in active]
+    data.update(active={}, last_activity_at=ended, ended_at=ended)
 
 
 def save(directory, data):
@@ -116,10 +134,7 @@ def recover(store, work):
         if record and matches and (ended_at is None or record['ended_at'] == ended_at):
             recovered = pending['progress']
             if work['status'] == 'abandoned':
-                active = recovered['active']
-                if active:
-                    recovered['last_active'] = dict(active, timed_out=bool(warning(recovered, active, work['ended_at'])))
-                recovered.update(active=None, ended_at=work['ended_at'], last_activity_at=work['ended_at'])
+                finish(recovered, work['ended_at'])
             publish(directory, recovered)
             return recovered
         (directory / PENDING).unlink(missing_ok=True)
@@ -163,13 +178,21 @@ def elapsed(started, at):
     return max(0, int((datetime.fromisoformat(at) - datetime.fromisoformat(started)).total_seconds() * 1000))
 
 
-def warning(data, active, at):
-    if not active:
+def last_verdict_at(data):
+    times = [entry['at'] for entry in data['adjudications'].values() if entry.get('source') == 'verdict' and entry.get('at')]
+    return max(times, key=datetime.fromisoformat) if times else None
+
+
+def warning(data, at):
+    """停滞提醒：有场景在进行，且从最近一次裁决与最早开始两者中较晚的时刻起超过上限仍没有新的裁决。"""
+    active = in_progress(data)
+    if not active or not at:
         return []
-    duration = elapsed(active['started_at'], at)
+    since = max(filter(None, (active[0]['started_at'], last_verdict_at(data))), key=datetime.fromisoformat)
+    duration = elapsed(since, at)
     if duration is None or duration <= data['limit_seconds'] * 1000:
         return []
-    return [dict(code='scenario-timeout', scenario=active['scenario'], started_at=active['started_at'],
+    return [dict(code='scenario-timeout', scenarios=[item['scenario'] for item in active], since=since,
                  limit_seconds=data['limit_seconds'], elapsed_seconds=duration / 1000)]
 
 
@@ -179,11 +202,12 @@ def summary(work, data=None):
     counts = dict.fromkeys(STATES, 0)
     for row in entries.values():
         counts[row['status']] += 1
-    active = (data['active'] or {}) if work['status'] == 'prepared' else {}
+    active = in_progress(data) if work['status'] == 'prepared' else []
     return dict(total=len(scope(work) | entries.keys()), adjudicated=len(entries), counts=counts,
                 registered=sum(r['registration'] == 'registered' for r in entries.values()),
                 local=sum(r['registration'] == 'local' for r in entries.values()),
-                current=active.get('scenario'), started_at=active.get('started_at'), last_activity_at=data['last_activity_at'])
+                in_progress=[dict(scenario=item['scenario'], started_at=item['started_at']) for item in active],
+                last_activity_at=data['last_activity_at'])
 
 
 def view(work, *, local=True, data=None):

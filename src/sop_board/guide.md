@@ -54,7 +54,7 @@ entries:
     spec_library: app:acceptance            # 可选：浏览器层守护 spec 与交互地图的仓内目录
     atlas: {repos: [app], languages: [zh]}  # 可选：交互地图
     web_evidence: {video: true, trace: true}
-scenario_timeout: 900                     # 可选：单场景计时提醒，1～86400 秒
+scenario_timeout: 900                     # 可选：停滞提醒（进行中的场景多久没有新裁决），1～86400 秒
 adapter:
   env: [python3, env.py]                    # 必填：按检出启动环境（相对数据目录的脚本）
   ports: [8000, 3000]                       # 环境监听的基础端口

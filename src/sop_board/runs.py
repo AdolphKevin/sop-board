@@ -164,8 +164,9 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
     else:
         lines.append('- 项目没有声明前置数据配方：前置不满足时记 blocked、cause: precondition，finding 写明缺什么，不自行写库。')
     lines += ['', '## 时间上限与停止', '',
-              f'- 本轮单场景裁决提醒上限为 {limit_seconds} 秒。',
-              '- 单场景 4 分钟、定位或操作 15 秒、导航 30 秒（模板缺省）。单个场景累计 15 分钟或 4 次仍无结论时记下证据转下一个。',
+              f'- 本轮停滞提醒上限为 {limit_seconds} 秒：有场景已开始、连续这么久没有新的裁决时，相关命令输出 scenario-timeout 并列出进行中的场景。',
+              '- 模板缺省：单条 spec 4 分钟、定位或操作 15 秒、导航 30 秒。',
+              '- 收到停滞提醒，或同一步试了 4 次仍不成时，记下现象与证据：能判定的先裁决，判断不了的记 blocked，转向下一组。',
               '- 业务断言失败只记该场景失败并继续。',
               '- 等人处理的事（真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码、身份使用次数到上限），不论出现在开始前还是执行中：'
               '该场景写 not-executed、cause: human，finding 写需要人做什么，提交时自动生成待人处理；'
@@ -726,7 +727,7 @@ def locked_run(context, run_id, *, allow_ended=False):
         except APIError as error:
             if work['status'] == 'prepared':
                 data = progress.read(work)
-                error.details.setdefault('warnings', progress.warning(data, data['active'], now()))
+                error.details.setdefault('warnings', progress.warning(data, now()))
             raise
 
 
@@ -745,24 +746,28 @@ def is_concluded(entry):
     return entry and entry['registration'] == 'registered' and entry['status'] in ('pass', 'fail')
 
 
-def begin(context, run_id, scenario, *, session=None):
+def begin(context, run_id, scenarios, *, session=None):
+    """一次开始一组场景（已定决策 31）。全部键先核对，有一条不合格就整条拒绝，不开始任何一条。"""
     with locked_run(context, run_id) as (work, directory):
-        key, executor = run_key(work, scenario), active_session(work, session)
+        executor = active_session(work, session)
+        keys = list(dict.fromkeys(run_key(work, value) for value in scenarios))
         data = progress.recover(context.store, work)
         if data.get('ended_at'):
             reject(409, 'run-not-prepared', 'run', f'运行 #{run_id} 已完成业务提交')
-        if is_concluded(data['adjudications'].get(key)):
-            concluded(key)
-        active, at = data['active'], now()
-        if active and active['scenario'] != key:
-            reject(409, 'scenario-active', 'scenario', f"{active['scenario']} 正在计时，先裁决该场景")
-        duplicate = bool(active and active['session'] == executor)
-        if not duplicate:
-            data.update(active=dict(scenario=key, started_at=at, session=executor), last_activity_at=at)
+        for key in keys:
+            if is_concluded(data['adjudications'].get(key)):
+                concluded(key)
+        active, at, begun = dict(progress.running(data)), now(), []
+        for key in keys:
+            duplicate = bool(active.get(key) and active[key]['session'] == executor)
+            if not duplicate:
+                active[key] = dict(scenario=key, started_at=at, session=executor)
+            begun.append(dict(scenario=key, started_at=active[key]['started_at'], duplicate=duplicate))
+        if not all(item['duplicate'] for item in begun):
+            data.update(active=active, last_activity_at=at)
             progress.save(directory, data)
-        return dict(ok=True, run=run_id, scenario=key, started_at=data['active']['started_at'],
-                    duplicate=duplicate, progress=progress.summary(work, data),
-                    warnings=progress.warning(data, data['active'], at))
+        return dict(ok=True, run=run_id, begun=begun, progress=progress.summary(work, data),
+                    warnings=progress.warning(data, at))
 
 
 def declaration(work, data, implementer, implemented_by):
@@ -826,8 +831,8 @@ def evidence_of(directory, row, key, *, expected=None, save_to=None):
 def create_adjudication(directory, scene, row, line, state, executor, implementation, changed, *, source, crash=None, save_evidence_to=None):
     key = scene['key']
     original = row_hash(row)
-    active = state['active']
-    started = active['started_at'] if active and active['scenario'] == key and active['session'] == executor else None
+    active = progress.running(state).get(key)
+    started = active['started_at'] if active and active['session'] == executor else None
     validate_row(directory, key, row, line=line, fixing=False)
     if crash and row['status'] != 'pass':
         row = dict(row, status='blocked', cause='environment', actual=crash, finding=crash, executed_at=now())
@@ -844,7 +849,7 @@ def create_adjudication(directory, scene, row, line, state, executor, implementa
     at = now()
     duration = progress.elapsed(started, at)
     metadata = dict(source=source, started_at=started, duration_ms=duration,
-                    timed_out=duration is not None and duration > state['limit_seconds'] * 1000, row_sha256=original)
+                    timed_out=started is not None and bool(progress.warning(state, at)), row_sha256=original)
     independence = 'independent' if implementation['implemented_by'] else status.independence(executor, implementation['implementer'])
     entry = progress.item(key, scene['fingerprint'], row['status'], at, session=executor, cause=row.get('cause'),
                           suspect_defect=bool(row.get('suspect_defect')), finding=row.get('finding'),
@@ -857,8 +862,8 @@ def create_adjudication(directory, scene, row, line, state, executor, implementa
 
 def void_entry(scene, *, source, executor, data):
     at = now()
-    active = data['active']
-    started = active['started_at'] if active and active['scenario'] == scene['key'] else None
+    active = progress.running(data).get(scene['key'])
+    started = active['started_at'] if active else None
     return progress.item(scene['key'], scene['fingerprint'], 'voided', at, session=executor, registration='voided',
                          source=source, started_at=started, duration_ms=progress.elapsed(started, at), timed_out=False)
 
@@ -866,8 +871,7 @@ def void_entry(scene, *, source, executor, data):
 def set_adjudication(data, entry):
     key = entry['scenario']
     data['adjudications'][key] = entry
-    if data['active'] and data['active']['scenario'] == key:
-        data['active'] = None
+    data['active'] = {other: item for other, item in progress.running(data).items() if other != key}
     data['last_activity_at'] = entry['at']
     if entry['source'] == 'verdict' and entry['status'] != 'voided':
         keys = data.setdefault('sessions', {}).setdefault(entry['session'], [])
@@ -963,7 +967,8 @@ def verdict(context, run_id, scenario, *, implementer=None, implemented_by=None,
         if data.get('ended_at'):
             reject(409, 'run-not-prepared', 'run', f'运行 #{run_id} 已完成业务提交')
         previous = data['adjudications'].get(key)
-        active, at = data['active'], now()
+        at = now()
+        active, warnings = progress.running(data).get(key), progress.warning(data, at)
         if is_concluded(previous):
             try:
                 rows, _, _ = read_results(directory, progress.scope(work), target=key)
@@ -985,8 +990,9 @@ def verdict(context, run_id, scenario, *, implementer=None, implemented_by=None,
                     set_adjudication(data, entry)
                     data['implementation'] = implementation
                     progress.save(directory, data)
-                elif active and active['scenario'] == key:
-                    data.update(active=None, last_activity_at=at)
+                elif active:
+                    data['active'] = {other: item for other, item in progress.running(data).items() if other != key}
+                    data['last_activity_at'] = at
                     progress.save(directory, data)
             else:
                 rows, lines, _ = read_results(directory, progress.scope(work), target=key)
@@ -1028,7 +1034,7 @@ def verdict(context, run_id, scenario, *, implementer=None, implemented_by=None,
                     set_adjudication(data, entry)
                     progress.save(directory, data)
         return dict(ok=True, run=run_id, scenario=key, adjudication=progress.public_item(entry), duplicate=duplicate,
-                    progress=progress.summary(work, data), warnings=progress.warning(data, active, now()))
+                    progress=progress.summary(work, data), warnings=warnings)
 
 
 def submit(context, run_id, *, implementer=None, implemented_by=None):
@@ -1097,7 +1103,7 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
                 if candidates:
                     data['implementation'] = implementation
                 ended = now()
-                end_progress(data, ended)
+                progress.finish(data, ended)
                 independence = independence_summary(data)
                 events = work_events(context, work, data)
                 for entry in data['adjudications'].values():
@@ -1116,12 +1122,6 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
                 progress.stage(directory, data, staged, ended_at=ended)
         progress.publish(directory, data)
         return finish_submission(context, work, data, record, summary, events, ended, operator)
-
-
-def end_progress(data, ended):
-    if data['active']:
-        data['last_active'] = dict(data['active'], timed_out=bool(progress.warning(data, data['active'], ended)))
-    data.update(active=None, last_activity_at=ended, ended_at=ended)
 
 
 def finish_submission(context, work, data, record, summary, events, ended, operator):
@@ -1157,11 +1157,11 @@ def touch(context, run_id):
         with locked_run(context, run_id) as (work, directory):
             data = progress.read(work)
             if data.get('ended_at') or (directory / progress.PENDING).exists():
-                return progress.warning(data, data['active'], now())
+                return progress.warning(data, now())
             at = now()
             data['last_activity_at'] = at
             progress.save(directory, data)
-            return progress.warning(data, data['active'], at)
+            return progress.warning(data, at)
     except APIError:
         return []
 
@@ -1301,7 +1301,7 @@ def abandon(context, run_id, *, by=None, launch=None):
             result['recorded'] = [recorded_item(item['scenario'], item['status'], item['result'], item.get('note'),
                                                 item['cause'], item['suspect_defect'], item['finding'])
                                   for item in data['adjudications'].values() if item['result'] is not None]
-        end_progress(data, ended)
+        progress.finish(data, ended)
         progress.save(directory, data)
         result.update(unregistered=progress.local_verdicts(data), unadjudicated=progress.unadjudicated(work, data),
                       progress=progress.summary(dict(work, status='abandoned'), data))

@@ -541,8 +541,9 @@ def cmd_run(args):
     problem = runner_problem(args.runner, args.model, args.effort, kind=args.action)
     if problem:
         return fail('invalid-arguments', [problem], 2)
-    if (args.action in ('begin', 'verdict')) != bool(args.scenario):
-        return fail('invalid-arguments', [dict(field='scenario', problem='begin 与 verdict 各需一个场景键')], 2)
+    valid = {'begin': len(args.scenario) >= 1, 'verdict': len(args.scenario) == 1}
+    if not valid.get(args.action, not args.scenario):
+        return fail('invalid-arguments', [dict(field='scenario', problem='begin 需要至少一个场景键，verdict 恰好一个，其他操作不接受场景键')], 2)
     context = load(args)
     if args.action == 'prepare':
         scope = args.scope or ['pending']
@@ -558,7 +559,7 @@ def cmd_run(args):
             problem = implementer_problem(args)
             if problem:
                 return fail('invalid-arguments', [problem], 2)
-            emit(runs.verdict(context, run, args.scenario, implementer=args.implementer, implemented_by=args.implemented_by,
+            emit(runs.verdict(context, run, args.scenario[0], implementer=args.implementer, implemented_by=args.implemented_by,
                               session=args.session))
     elif args.action == 'submit':
         problem = implementer_problem(args)
@@ -1020,7 +1021,7 @@ def parser():
 
     p = common(sub.add_parser('run'))
     p.add_argument('action', choices=('prepare', 'begin', 'verdict', 'submit', 'abandon', 'launch', 'wait'))
-    p.add_argument('scenario', nargs='?', help='begin / verdict：本轮场景键')
+    p.add_argument('scenario', nargs='*', help='begin：本轮一组场景键（一个或多个）；verdict：一个场景键')
     p.add_argument('--scope', nargs='+', help='prepare：pending（缺省）、all，或场景（<文件>#<编号>，编号唯一时可省文件）')
     p.add_argument('--session', help='prepare / begin / verdict：执行者会话编号（缺省取 SOP_BOARD_SESSION、CODEX_THREAD_ID 或 CLAUDE_CODE_SESSION_ID）')
     p.add_argument('--fix', type=int, help='prepare / launch：修复的独立复验，范围为该修复的问题场景')

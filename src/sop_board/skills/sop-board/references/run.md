@@ -22,6 +22,7 @@
 ## 独立执行（首选）
 
 1. `sop-board run launch --scope <范围> [--implementer <会话编号> | --implemented-by <操作者>]`：守护进程按项目 `agents` 配置启动一个新的无头会话。它只拿到 prompt 文件，会话编号由启动器取得，启动记录就是独立性的证据。实现者参数按下文「实现者与独立性」填。启动前按 `run prepare` 的规则核对范围，被拒绝时不启动会话，处理见「准备时的拒绝」。
+   - 范围按功能区域成批给：同一区域、起点相近的场景放进同一次启动，由执行会话分组、走一趟核对多条。把一个区域拆成几次小启动，每次都要重新连接和找路。
    - 使用者指定本轮代理时，加 `--runner codex` 或 `--runner claude`。同时指定模型或强度时加 `--model` 或 `--effort`。这些参数只对这次启动及接续生效，沿用现有的 `config.yaml`。
 2. `sop-board run wait [--timeout <秒>]` 等它结束（缺省 1800 秒；退出码 3 表示超时、启动仍在运行，可再次 wait）。`sop-board launch status` 查看启动记录与日志；使用者要求停止时 `sop-board launch stop --launch <编号>`。
 3. 把 wait 输出中的已登记、作废、未执行和未裁决场景及原因、服务停启与恢复如实转述。已登记结论在提交或放弃前后都可核对。wait 返回 `launch-no-work`（会话退出了却没有产生运行）或 `launch-failed`（会话没能启动或异常退出）时，这一轮未完成验收（已有登记仍如实转述）：把 `problems` 与 `log_tail`（启动日志末尾）里的原因转告使用者，原因排除后重新 launch。`launch-unsubmitted` 表示会话已退出，但有关联运行或沉淀未提交或已放弃：转述工作编号、状态和日志。
@@ -39,7 +40,7 @@
 使用者要求当前会话执行时：
 
 1. `sop-board run prepare --scope <范围>`。
-2. 读输出的 prompt.md 与 brief.md。逐条 `run begin <键>`、执行留证、写结果，再 `run verdict <键>`。通过与失败立即登记，受阻、跳过和未执行等提交。首次裁决声明实现者，同一轮后续沿用。
+2. 读输出的 prompt.md 与 brief.md，按其中「分组走一趟」分组：`run begin <键>…` 一次开始一组，执行留证，每条得到结果就写一行并 `run verdict <键>`。通过与失败立即登记，受阻、跳过和未执行等提交。首次裁决声明实现者，同一轮后续沿用。
 3. `sop-board run submit --run <编号> [--implementer <会话编号> | --implemented-by <操作者>]`，如实转述提交输出。
 
 `--scope pending|all` 只从合格的场景文件里选场景。`run launch` 输出的 `launch.invalid_files`、`run prepare` 输出的 `invalid_files` 非空时，这些文件里的场景没有纳入本轮：把文件与问题转告使用者，报告范围时写明。
@@ -50,8 +51,8 @@
 
 ## 进度与统计
 
-- 用 `sop-board run wait --launch <启动编号> --timeout 1` 或 `sop-board launch status` 看 `progress`。转述总数、已裁决、已登记和本机暂记、当前场景与开始时间。重复等待会读同一次启动。接续等待时 `attempts` 中最近一次有 `retry_at`。
-- 用 `sop-board launch stats --launch <启动编号>` 回答耗时和有结论比例。轮次用时含接续等待。有结论数是 `pass + fail`，要报整轮比例时除以 `total`，同时列分子、分母。逐条耗时取 `scenarios`，缺开始或裁决时间时报告无法计算。
+- 用 `sop-board run wait --launch <启动编号> --timeout 1` 或 `sop-board launch status` 看 `progress`。转述总数、已裁决、已登记和本机暂记、进行中的场景与各自的开始时间。重复等待会读同一次启动。接续等待时 `attempts` 中最近一次有 `retry_at`。
+- 用 `sop-board launch stats --launch <启动编号>` 回答耗时和有结论比例。轮次用时含接续等待。有结论数是 `pass + fail`，要报整轮比例时除以 `total`，同时列分子、分母。逐条耗时取 `scenarios`，缺开始或裁决时间时报告无法计算；同一趟开始的场景耗时彼此重叠，不要相加当作轮次用时。
 - 要改会热更新的代码，先用 `sop-board activity` 查看整个项目。退出 0 表示当时空闲，退出 1 有活动，退出 2 无法确认。空闲时还要协调不要在修改期间开始新运行。
 
 ## 执行期间代码在变

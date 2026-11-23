@@ -96,7 +96,7 @@
   const settingsSchemas = {
     verification: objectField('验证入口', {entries: {...mapField('入口列表', entryField, '入口名称'), required: true},
       skill: {label: '项目验证技能', type: 'skill', required: true}}),
-    environment: objectField('环境适配', {scenario_timeout: numberField('单场景超时提醒（秒，缺省 900）'), adapter: objectField('环境适配配置', {
+    environment: objectField('环境适配', {scenario_timeout: numberField('停滞提醒（秒，缺省 900）'), adapter: objectField('环境适配配置', {
       env: {...commandField('环境启动命令'), required: true}, worktree: commandField('建立工作树命令'), cleanup: commandField('清理工作树命令'),
       ports: linesField('基础端口', {numbers: true}), port_step: numberField('检出端口步长'), ready_timeout: numberField('就绪时限（秒）'),
       service_timeout: numberField('服务停启时限（秒）'), services: mapField('服务列表', objectField('服务', {
@@ -1620,7 +1620,7 @@
     if (!p) return null;
     return el('div', {},
       el('div', {}, `已裁决 ${p.adjudicated}/${p.total} · 已登记 ${p.registered} · 本机暂记 ${p.local}`),
-      p.current ? el('div', {}, `正在执行 ${p.current} · ${p.started_at}`) : null,
+      p.in_progress?.length ? el('div', {}, '进行中：' + p.in_progress.map(x => `${x.scenario} · ${x.started_at}`).join('；')) : null,
       item.unadjudicated?.length ? el('div', {}, '尚未裁决：' + item.unadjudicated.join('、')) : null);
   }
 

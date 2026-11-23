@@ -31,16 +31,18 @@ def scenario_items(runs, initial_scope, at, *, store=None):
     for work in runs:
         data = progress.observe(store, work)
         entries = data['adjudications']
-        active = data['active'] if work['status'] == 'prepared' else None
-        last = active or data.get('last_active')
-        overdue = bool(progress.warning(data, active, at))
-        timeout_keys = {active['scenario']} if overdue else set()
+        prepared = work['status'] == 'prepared'
+        overdue = prepared and bool(progress.warning(data, at))
+        # 进行中的场景按当前停滞判断是否超时；运行结束时仍在进行的取 unfinished 记下的判断。
+        started = ({item['scenario']: dict(item, timed_out=overdue) for item in progress.in_progress(data)} if prepared
+                   else {item['scenario']: item for item in data.get('unfinished', [])})
+        timeout_keys = set(started) if overdue else set()
         for key in sorted(progress.scope(work) | entries.keys()):
             entry = entries.get(key)
-            current = last if last and last['scenario'] == key and not entry else None
+            current = started.get(key) if not entry else None
             row = dict(run=work['id'], scenario=key, status='unadjudicated', cause=None, registration=None,
                        started_at=current['started_at'] if current else None, adjudicated_at=None,
-                       duration_ms=None, timed_out=bool(current and (overdue or current.get('timed_out'))))
+                       duration_ms=None, timed_out=bool(current and current.get('timed_out')))
             if entry:
                 row.update(status=entry['status'], cause=entry['cause'], registration=entry['registration'],
                            started_at=entry.get('started_at'), adjudicated_at=entry['at'],

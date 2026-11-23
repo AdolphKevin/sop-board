@@ -154,8 +154,8 @@ def continuation_notes(runs):
         lines.append('  - 本机暂记：' + ('、'.join(
             f"{row['scenario']}（{row['status']} / {row['cause'] or '无类别'}，{row['finding'] or ''}）" for row in local) or '无'))
         lines.append('  - 未裁决：' + ('、'.join(progress.unadjudicated(work, data)) or '无'))
-        if active := data['active']:
-            lines.append(f"  - 已开始尚未结束：{active['scenario']}，开始于 {active['started_at']}。先核对并还原数据。")
+        for item in progress.in_progress(data):
+            lines.append(f"  - 已开始尚未结束：{item['scenario']}，开始于 {item['started_at']}。先核对并还原数据。")
     return '\n'.join(lines) or '- 上一个会话没有准备运行。'
 
 
@@ -240,7 +240,7 @@ def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemente
         command = 'sop-board distill prepare ' + ' '.join(scope)
     if kind == 'run' and allow_open_fix:
         command += ' --allow-open-fix'
-    run_workflow = '按运行目录逐条开始、留证并裁决。' if kind == 'run' else ''
+    run_workflow = '按 prompt.md 把场景分组，一次开始一组，留证后逐条裁决。' if kind == 'run' else ''
     text = Template(files('sop_board').joinpath('prompts', 'launch.md').read_text(encoding='utf-8')).substitute(
         project=project.name, checkout=checkout.name, directory=work_directory(project, checkout),
         kind='场景执行' if kind == 'run' else '回归沉淀', scope='、'.join(scope), command=command, run_workflow=run_workflow,

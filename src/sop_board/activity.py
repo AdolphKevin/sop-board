@@ -30,7 +30,7 @@ def _valid_progress(value):
     if not isinstance(value, dict):
         return False
     fields = ('total', 'adjudicated', 'registered', 'local')
-    if set(value) != {*fields, 'counts', 'current', 'started_at', 'last_activity_at'}:
+    if set(value) != {*fields, 'counts', 'in_progress', 'last_activity_at'}:
         return False
     counts = value['counts']
     if not isinstance(counts, dict) or set(counts) != set(progress.STATES):
@@ -39,11 +39,15 @@ def _valid_progress(value):
         return False
     if not (sum(counts.values()) == value['adjudicated'] == value['registered'] + value['local'] + counts['voided'] <= value['total']):
         return False
-    if value['current'] is not None and not isinstance(value['current'], str):
+    running = value['in_progress']
+    if not isinstance(running, list) or not all(
+            isinstance(item, dict) and set(item) == {'scenario', 'started_at'} and isinstance(item['scenario'], str)
+            for item in running):
         return False
-    for field in ('started_at', 'last_activity_at'):
-        if value[field] is not None:
-            _stamp(value[field])
+    for item in running:
+        _stamp(item['started_at'])
+    if value['last_activity_at'] is not None:
+        _stamp(value['last_activity_at'])
     return True
 
 
