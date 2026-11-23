@@ -260,6 +260,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
 | | `browser release [--identity]` | 真人完成后交还：只释放真人租约，窗口保持打开，之后的运行沿用；见 §6 |
 | | `browser close [--identity]` | 结束浏览器并释放真人租约 |
+| | `browser do --identity <身份> [--steps <文件\|->] [--region R] [--depth N] [--shot] [--no-snapshot] [--timeout 秒] [-- <子命令> …]` | 在运行持有的身份浏览器上执行步骤，返回页面结构并留记录；见 §6 |
 | 执行 | `run prepare [--scope pending\|all\|键…] [--fix N] [--session S] [--identity I…] [--wait 秒] [--allow-open-fix]` | 见 §5；`--fix` 不能与 `--scope` 同用 |
 | | `run begin <键>… [--run N]` / `run verdict <键> [--run N] [--implementer X \| --implemented-by 操作者]` | 开始一组场景的计时 / 逐条裁决；见 §5 |
 | | `run submit --run N [--implementer X \| --implemented-by 操作者]` | 见 §5 |
@@ -437,6 +438,12 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - **租约**（`browser_instances.holder`）：持有者 `run:<编号>`、`retest:<检出>`、`distill:<检出>` 或 `human`。身份租约整机独占，同一身份同一时刻只有一个持有者（已定决策 28）。别的持有者占用时返回 `browser-busy`（`run prepare` 带 `--wait` 时排队，§5）。交给与上一次不同检出的持有者之前，经 CDP 的 `Network.clearBrowserCache` 清空 HTTP 缓存，cookie、本地存储与登录保留；`browser_instances` 记下最近一次交给的检出（`browser status` 的 `last_checkout`）。状态 crashed 时返回 `browser-crashed`；启动即退出不抛错，问题写进 brief.md，相关场景应记受阻。运行提交或放弃时释放。
 - **真人登录与交还**：`browser open --identity X --headed` 以有界面窗口打开（缺省地址为该检出第一个 Web 入口的地址），并持有 `human` 租约。不带 `--url` 时先确保有环境提供这个地址：该检出的环境没在运行就先拉起并等就绪（同 `env up`）；各检出共用端口（`port_step` 为 0）而环境正由别的检出运行时直接用它的地址、不切换，窗口记在那个检出名下；共用端口、没有环境在运行、别的检出有 prepared 运行时返回 `env-busy`。先核对身份，`browser-busy`、`browser-crashed` 在拉起环境之前返回；拉起失败返回环境的错误，不开窗口。输出另有 `url`（打开的地址）与 `environment`（`checkout`、`started` 是否刚拉起）；带 `--url`、不带 `--headed`，或项目没有 `adapter.env` 或带地址变量的 Web 入口时不碰环境，`environment` 为 null，没有地址时打开空白页。窗口已在运行时只取得租约，不重启，正在运行的无头浏览器则重启为有界面窗口（profile 不变）。用户在窗口里登录、完成人机验证或二次验证后，`browser release --identity X` 交还：只释放 `human` 租约，进程、窗口与页面保持运行，下一次取得租约的运行直接沿用这个窗口，不重启；身份被运行持有时返回 `browser-busy`。不带 `--headed` 的 `browser open` 遇到运行中的有界面窗口时沿用它，不取得租约。`browser close` 结束浏览器并释放租约，之后的运行重新以无头启动。出现 “browser may not be secure” 时停止，该身份的场景记受阻；不回退到日常 Chrome，不改 UA 或参数绕过。
 - **崩溃**：监视线程等待进程退出。非主动停止的退出记录退出码、信号名、日志路径与启动后写出的 `~/Library/Logs/DiagnosticReports/Google Chrome for Testing*.ips`，并登记一条“浏览器崩溃”待人处理。租约期间不自动重启，下次取得租约时再启动。30 分钟内异常退出两次进入 `crashed`，须人运行 `browser open --identity X --reset-crash`。
+- **经看板操作**（已定决策 31 第二段）：`browser do --identity <身份> [--run N] [--steps <文件|->] [--region <选择器或引用>] [--depth N] [--shot] [--no-snapshot] [--timeout 秒] [-- <子命令> [参数…]]` 在运行持有的身份浏览器上执行步骤。运行编号取 `--run`，其次 `SOP_BOARD_RUN`；运行须为 prepared 且持有该身份的租约，否则返回 `browser-not-held`；浏览器没在运行返回 `browser-not-running`。
+  - 步骤：一步是随包 Playwright 的 `playwright-cli` 子命令与参数。一步写在 `--` 之后；多步用 `--steps` 给 JSON 数组（每步是字符串数组，至多 50 步），二者取一。会话与浏览器的生命周期、清空存储由看板管理，`open, attach, close, detach, delete-data, list, close-all, kill-all, install, install-browser, state-load, cookie-clear, localstorage-clear, sessionstorage-clear, show` 与以 `-` 开头的子命令返回 `step-not-allowed`。各步按顺序执行，某步失败（驱动报错或超过 `--timeout`，缺省 30、上限 3600 秒）即停，其后不执行。
+  - 会话：守护进程为每个身份持有一个驱动会话，首次使用、浏览器重启或持有者变化时重新接入（接入失败返回 `browser-attach-failed`），其余调用沿用当前标签页。执行会话不接入、不保管连接。
+  - 输出：`{ok, run, identity, attached, tabs, steps, failed, skipped, page, snapshot, screenshot, in_progress, warnings}`。`steps` 每项 `{n, command, ok, duration_ms, output}`，`n` 在本运行内从 1 递增；`output` 是该步的结果或错误原文，`snapshot` 步为页面结构，超过 20000 字符时截断并另存 `output_file`。`failed` 为失败的步号或 null，`skipped` 为没执行的步数。`attached` 为真时 `tabs` 列出标签页。最后一步之后取页面结构：`snapshot` 为 `{text, file, truncated}`，可用 `--region`、`--depth` 裁剪，`--no-snapshot` 时为 null；`page` 含 `url`。`--shot` 另存截图。`in_progress` 是调用时进行中的场景，`warnings` 同 §5 的停滞提醒。
+  - 记录：每一步追加到运行目录 `steps.jsonl`：`{n, at, identity, command, ok, duration_ms, url, scenarios}`，失败时带 `error`；这次调用的页面结构与截图存为 `steps/<n>.yml`、`steps/<n>.png`（n 为最后一步），并记在该步的 `snapshot`、`screenshot`。命令与错误文字中的凭据取值先遮蔽。
+  - 运行阶段不再生成 spec、录屏与 trace；`web_evidence` 的两个开关只用于沉淀出的浏览器层守护。
 - **身份计数**：真实登录或请求验证码前，执行者运行 `identity record --identity X --kind login|code`；达到 `limits` 上限时拒绝（`identity-limit`）并登记待人处理。
 
 ## 7. 守护与沉淀
@@ -680,6 +687,10 @@ fixtures:
 | `browser-crashed` | 30 分钟内两次异常退出；`browser open --reset-crash` |
 | `browser-runtime-missing` | 未安装运行时；`browser install` |
 | `session-required` | 取不到执行者会话编号；加 `--session` |
+| `browser-not-held` | `browser do` 的运行没有持有该身份的浏览器租约（HTTP 409） |
+| `browser-not-running` | `browser do` 时该身份的浏览器没有在运行 |
+| `browser-attach-failed` | 看板接入身份浏览器失败 |
+| `step-not-allowed` | `browser do` 的步骤用了由看板管理的子命令 |
 | `run-required` | `run begin/verdict` 未指出运行，或 `env stop\|start` 时本检出没有 prepared 的运行 |
 | `entry-unknown` | `env probe` 的指定入口不在配置中（HTTP 422） |
 | `env-not-ready` | 即时探测需要当前检出 ready 的环境（HTTP 409） |

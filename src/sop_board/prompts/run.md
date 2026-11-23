@@ -78,7 +78,14 @@ pass、fail 和 skip 沿用原字段。疑似缺陷只在 blocked 行标记，�
 
 ## Web 场景
 
-按 $web_skill 执行：在运行目录用模板经 PW_CDP_ENDPOINT 连接看板启动的 Chrome for Testing（不自己启动浏览器、不运行 playwright install），workers: 1、retries: 0。录屏与 trace 开关已在 scope.json 按场景固定。报告用 `sop-board playwright convert` 转换后合并进 results.jsonl。给转换所得的 blocked 和 not-executed 行按上表补齐 cause，然后按场景逐条裁决。用一次 spec 执行一组时，运行前先 `run begin` 整组。
+用 `sop-board browser do --identity <身份>` 操作本轮持有的身份浏览器（identities.json 列出身份）。连接、标签页与登录态由看板保管：不自己连接浏览器，不启动浏览器。
+
+- **一次带多步**：把看完一次页面就能确定的动作放进同一次调用，`--steps -` 从标准输入读 JSON 数组，每步是 playwright-cli 的子命令与参数，例 `[["goto","<地址>"],["fill","e12","<文字>"],["click","e15"]]`；只有一步时写 `-- <子命令> [参数…]`。常用子命令：`goto`、`click`、`fill`、`select`、`check`、`press`、`upload`、`find`、`requests`、`request`、`tab-list`、`tab-select`、`tab-new`、`tab-close`、`run-code`。各步按顺序执行，某一步失败就停在那里，`failed` 给出步号，那一步的 `output` 是错误原文。
+- **看返回的页面结构**：`snapshot.text` 是最后一步之后的页面结构，元素后的 `[ref=…]` 直接用作 `click`、`fill` 的目标，下一步据此决定。页面大时用 `--region <选择器或引用>` 只取要看的区域，或 `--depth <层数>`；只要某个值时用 `run-code` 返回它，并加 `--no-snapshot`。
+- **等待**：等某个结果出现用 `run-code`，例 `async page => page.getByText('<文字>').waitFor({timeout: 15000})`。每步上限 `--timeout <秒>`（缺省 30）；更久的业务等待按「分组走一趟」第 5 步安排。
+- **标签页**：一个身份在本轮首次使用时返回 `tabs`。先 `tab-select` 到已登录的标签页再操作；自己用 `tab-new` 打开的标签页用完即 `tab-close`。
+- **留证**：要核对的内容出现在页面上时加 `--shot`。每次调用的页面结构保存为 `steps/<n>.yml`，截图为 `steps/<n>.png`，n 是这次调用最后一步的 `n`；把用作证据的文件复制到 `evidence/<场景键，# 换成 __>/`，写进结果行。
+- **脚本**：只有多个身份须同时动作、卡时间或统计请求次数的断言才写脚本，经 identities.json 里各身份的 endpoint 连接；脚本带超时，运行完即退出。
 
 ## 完成
 

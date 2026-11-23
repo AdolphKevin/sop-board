@@ -697,7 +697,11 @@ def cmd_browser(args):
         info = browsers.install(log=lambda text: print(text, file=sys.stderr))
         emit(dict(ok=True, runtime=info))
         return 0
+    if args.action != 'do' and (args.step or args.steps):
+        return fail('invalid-arguments', [dict(field='steps', problem='只有 browser do 接受步骤')], 2)
     context = load(args)
+    if args.action == 'do':
+        return browser_do(context, args)
     body = dict(checkout=context.checkout.name, identity=args.identity if args.action == 'status' else (args.identity or 'default'))
     if args.action == 'status':
         result = daemon.call(context.project, 'POST', '/local/browser/status', body) if daemon.describe(context.project)['running'] \
@@ -709,6 +713,27 @@ def cmd_browser(args):
     # 有界面的 open 可能要先拉起环境（等就绪），给足时间。
     emit(daemon.call(context.project, 'POST', f'/local/browser/{args.action}', body,
                      timeout=900 if args.action == 'open' else 120))
+    return 0
+
+
+def browser_do(context, args):
+    """经看板操作身份浏览器：一步写在 `--` 之后，多步用 --steps 给 JSON 数组（每步是子命令与参数的字符串数组）。"""
+    from . import daemon, progress
+    step = args.step[1:] if args.step[:1] == ['--'] else args.step
+    if bool(step) == bool(args.steps):
+        return fail('invalid-arguments', [dict(field='steps', problem='用 `-- <子命令> [参数…]` 给一步，或用 --steps <文件|-> 给多步，二者取一')], 2)
+    steps = [step]
+    if args.steps:
+        try:
+            raw = sys.stdin.read() if args.steps == '-' else Path(args.steps).read_text(encoding='utf-8')
+            steps = json.loads(raw)
+        except (OSError, ValueError) as error:
+            return fail('invalid-arguments', [dict(field='steps', problem=f'步骤须为 JSON 数组：{error}')], 2)
+    timeout = args.timeout or 30
+    body = dict(run=progress.run_number(args.run), identity=args.identity or 'default', steps=steps, region=args.region,
+                depth=args.depth, shot=args.shot, snapshot=not args.no_snapshot, timeout=timeout)
+    count = len(steps) if isinstance(steps, list) else 1
+    emit(daemon.call(context.project, 'POST', '/local/browser/do', body, timeout=timeout * (count + 3) + 60))
     return 0
 
 
@@ -1058,12 +1083,21 @@ def parser():
     p.set_defaults(handler=cmd_mark)
 
     p = common(sub.add_parser('browser'))
-    p.add_argument('action', choices=('install', 'status', 'open', 'release', 'close'),
-                   help='release：真人完成后交还，窗口保持打开、之后的运行直接沿用；close：结束浏览器')
+    p.add_argument('action', choices=('install', 'status', 'open', 'release', 'close', 'do'),
+                   help='release：真人完成后交还，窗口保持打开、之后的运行直接沿用；close：结束浏览器；'
+                        'do：在本轮持有的身份浏览器上执行步骤，返回页面结构')
     p.add_argument('--identity', help='身份编号（open/release/close 缺省 default；status 缺省列出全部）')
     p.add_argument('--headed', action='store_true', help='open：打开有界面的窗口并持有真人租约（真人登录、人机验证、二次验证）')
     p.add_argument('--reset-crash', action='store_true', help='open：清除 crashed 状态并重新启动')
     p.add_argument('--url', help='open：打开的地址（缺省为该检出的 Web 入口地址）')
+    p.add_argument('--run', type=int, help='do：运行编号（缺省取 SOP_BOARD_RUN）')
+    p.add_argument('--steps', help='do：多步，JSON 数组的文件，- 表示标准输入；例 [["goto","https://…"],["click","e12"]]')
+    p.add_argument('--region', help='do：只返回这个区域的页面结构（选择器或页面结构里的引用）')
+    p.add_argument('--depth', type=int, help='do：页面结构只展开这么多层')
+    p.add_argument('--shot', action='store_true', help='do：最后一步之后保存截图，供结果行引用')
+    p.add_argument('--no-snapshot', action='store_true', help='do：不返回页面结构')
+    p.add_argument('--timeout', type=int, help='do：每一步的超时秒数（缺省 30）')
+    p.add_argument('step', nargs='*', help='do：`--` 之后写一步的子命令与参数')
     p.set_defaults(handler=cmd_browser)
 
     p = common(sub.add_parser('report'))
