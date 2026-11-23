@@ -755,6 +755,7 @@
       item.disposition ? el('span', {class: `tag ${item.disposition.kind}`, title: item.disposition.reason},
         DISPOSITIONS[item.disposition.kind]) : null,
       item.review ? el('span', {class: 'tag review', title: '待人工复核'}, '核') : null,
+      item.reservation ? el('span', {class: 'tag review', title: '带保留的通过：' + item.reservation}, '留') : null,
       item.distill ? el('span', {class: 'tag distill', title: '待沉淀'}, '沉') : null,
       item.source_branch ? el('span', {class: 'tag branch', title: item.merged ? `来自 ${item.source_branch}（已并入）` : '来源分支 ' + item.source_branch},
         item.merged ? `${item.source_branch}（已并入）` : item.source_branch) : null,

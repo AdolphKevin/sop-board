@@ -41,7 +41,7 @@ GROUPS = {
     '编写': {'inbox': '处理测试同学上传的用例与 SOP', 'merge': '合并用例到场景文件', 'ask': '向测试同学提问',
              'answers': '读取答复', 'sop': '编写业务 SOP', 'draft': '查看草稿、处理批注、同意与确认'},
     '其他': {'atlas': '交互地图', 'specs': 'Web spec 保真检查', 'fixtures': '前置数据配方', 'identity': '身份使用计数',
-             'attention': '待人处理', 'note': '产品备注', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
+             'attention': '待人处理', 'note': '产品备注', 'change': '运行中的临时改动', 'report': '导出报告与证据', 'playwright': 'Web 驱动指引与结果转换'},
 }
 
 
@@ -205,13 +205,17 @@ def cmd_status(args):
                       machine=store.machine['name'], branch=checkouts.branch_of(project, context.checkout),
                       snapshot=dict(product_digest=snapshot['product_digest'], dirty=snapshot['dirty'],
                                     changed=snapshot['changed'][:50]),
-                      counts=derived['counts'], distill=derived['distill'], review=derived['review'], total=derived['total'],
+                      counts=derived['counts'], distill=derived['distill'], review=derived['review'],
+                      reserved=derived['reserved'], gaps=derived['gaps'], total=derived['total'],
                       disposed=dispositions.listed(derived['items']), held=derived['held'],
                       draft_review=derived['draft_review'],
                       queues={state: sorted(k for k, v in derived['items'].items() if v['state'] == state and not v['disposition'])
                               for state in ('retest', 'fail', 'blocked', 'not-run')},
                       distill_queue=sorted(k for k, v in derived['items'].items() if v['distill']),
-                      review_queue=sorted(k for k, v in derived['items'].items() if v['review']),
+                      # 待人工复核里带保留的排前：它们最需要人看。
+                      review_queue=sorted((k for k, v in derived['items'].items() if v['review']),
+                                          key=lambda k: (not derived['items'][k]['reservation'], k)),
+                      reserved_queue=sorted(k for k, v in derived['items'].items() if v['reservation']),
                       from_other_branch={k: v['source_branch'] + ('（已并入）' if v.get('merged') else '')
                                          for k, v in sorted(derived['items'].items()) if v.get('source_branch')},
                       distilled_elsewhere={k: v['guard']['reason'] for k, v in sorted(derived['items'].items())
@@ -239,7 +243,7 @@ def cmd_status(args):
     counts = result['counts']
     parts = [f"{status.LABELS[s]} {counts[s]}" for s in status.ORDER if counts[s]] + [
         f"由人验收 {counts['disposed']['human']}", f"搁置 {counts['disposed']['shelved']}",
-        f"待沉淀 {result['distill']}", f"待人工复核 {result['review']}"]
+        f"待沉淀 {result['distill']}", f"待人工复核 {result['review']}", f"带保留的通过 {result['reserved']}"]
     print(f"场景 {result['total']} 条：" + '；'.join(parts))
     if result['disposed']:
         from .time_format import local_time
@@ -978,6 +982,34 @@ def cmd_note(args):
     return 0
 
 
+def cmd_change(args):
+    """运行中的临时改动：登记改了什么、怎样恢复，恢复后销账（已定决策 31 第三段）。"""
+    from . import changes, progress, runs
+    context = load(args)
+    run = progress.run_number(args.run)
+    if run is None:
+        return fail('run-required', [dict(field='run', problem='请指定 --run 或载入运行目录的 run.env')], 1)
+    work = runs.load_work(context, run)
+    if not work['dir']:
+        return fail('run-not-prepared', [dict(field='run', problem=f'运行 #{run} 尚未准备完成')], 1)
+    if args.action == 'list':
+        emit(dict(ok=True, run=run, changes=changes.read(work['dir']), unrestored=len(changes.pending(work['dir']))))
+        return 0
+    if work['status'] != 'prepared':
+        return fail('run-not-prepared', [dict(field='run', problem=f"运行 #{run} 的状态是 {work['status']}")], 1)
+    if args.action == 'add':
+        if args.id is not None or args.text is None or args.restore is None:
+            return fail('invalid-arguments', [dict(field='text', problem='add 需要 --text（改了什么）与 --restore（怎样恢复）')], 2)
+        data = progress.read(work)
+        item = changes.add(work, args.text, args.restore, scenarios=[entry['scenario'] for entry in progress.in_progress(data)])
+    else:
+        if args.id is None:
+            return fail('invalid-arguments', [dict(field='id', problem='restore 需要临时改动的编号')], 2)
+        item = changes.restored(work, args.id)
+    emit(dict(ok=True, run=run, change=item, unrestored=len(changes.pending(work['dir'])), warnings=runs.touch(context, run)))
+    return 0
+
+
 def cmd_skills(args):
     from .skill_install import install
     return install()
@@ -1237,6 +1269,15 @@ def parser():
     p.add_argument('--run', type=int)
     p.add_argument('--as', dest='as_name', metavar='姓名')
     p.set_defaults(handler=cmd_identity)
+
+    p = common(sub.add_parser('change'))
+    p.add_argument('action', choices=('add', 'restore', 'list'),
+                   help='add：登记一项临时改动；restore：恢复后销账；list：本轮的临时改动')
+    p.add_argument('id', nargs='?', type=int, help='restore：临时改动编号')
+    p.add_argument('--text', help='add：改了什么（哪个测试对象，从什么改成什么）')
+    p.add_argument('--restore', help='add：怎样恢复')
+    p.add_argument('--run', type=int, help='运行编号（缺省取 SOP_BOARD_RUN）')
+    p.set_defaults(handler=cmd_change)
 
     p = common(sub.add_parser('note'))
     p.add_argument('action', choices=('list', 'add', 'edit', 'confirm', 'dispute', 'remove'),

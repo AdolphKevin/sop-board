@@ -50,6 +50,8 @@ Flow Board（命令 `sop-board`）是在开发者本机运行的业务流程验�
 
 **待人工复核**也是徽标，可与待沉淀并存：状态为通过，且当前指纹最新一条结果是经真实入口的 Agent 独立通过。之后有任一人工标注即消失。
 
+**带保留的通过**（已定决策 31 第四段）也是徽标：状态为通过，且最新一条结果写了 `reservation`。状态与通过计数不变；`status --json` 另给顶层 `reserved`（条数）与 `reserved_queue`（场景键），`review_queue` 把带保留的排在前面，其余按场景键。`scenario show` 的 `badges.reservation` 与工作台场景项的 `reservation` 给出保留意见原文，没有时为 null。人工确认率在 `agent_confirm_rate` 之外分别给出 `agent_confirm_rate_reserved`（样本带保留）与 `agent_confirm_rate_clean`（样本不带保留），口径同 §10。
+
 **草稿审阅状态**只用于草稿场景，状态仍是草稿：**有批注**（该场景有未处理的批注）、**已同意**（当前指纹上有未撤销的同意，且该场景没有未处理的批注）、**待审**（其余）。同意按“文件 + 场景 + 指纹”记录，不区分检出；场景四要素一改，原有同意失效；批注不采纳、场景未改时原有同意仍有效。文件级批注不影响单条场景的审阅状态，但阻止确认。
 
 待复测的原因写在状态旁，例如“守护测试未通过：<原因>”“修复已关闭，等待复测”“修复已关闭，等待测试同学复测”。
@@ -254,6 +256,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | | `env probe [入口…] [--run N]` | 即时核对入口并按指定运行留痕；见 §2 |
 | | `env stop\|start <服务> [--run N]` | 运行取 `--run`，其次 `SOP_BOARD_RUN`；本检出有多个 prepared 运行又没指明时返回 `run-ambiguous`。只在本检出有 prepared 运行时可用（`run-required`），且这套环境上只有这一个 prepared 运行（`env-shared`，列出其他运行）；有服务被停着时别的运行要用这套环境就排队。只对 `stoppable` 的服务；等状态变为已停止或运行中才返回（`service-timeout`），停启记进该运行（`service_events`），提交或放弃时自动恢复。已在目标状态时返回 `changed: false`，不记录。运行之外恢复环境用 `env restart` |
 | 备注 | `note add\|list\|edit\|confirm\|dispute\|remove` | 产品备注，见 §9 |
+| 临时改动 | `change add\|restore\|list [--run N]` | 运行中对测试对象的临时改动与恢复，见 §5 |
 | 浏览器 | `browser install` | 安装运行时与 CfT（不需要守护进程） |
 | | `browser status [--identity]` | 各身份浏览器：`port` 为实际调试端口（运行中的，或最近一次启动所用的）、`default_port` 为缺省端口、`alive`、`endpoint`（运行中时）、持有者、最近一次交给的检出（`last_checkout`）与崩溃记录；守护进程未运行时只给运行时信息 |
 | | `browser open [--identity] [--headed] [--reset-crash] [--url]` | 缺省身份 `default`；见 §6 |
@@ -345,11 +348,13 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 | `status` | `pass`、`fail`、`blocked`、`skip`、`not-executed` |
 | `actual` | 非空文字，`not-executed` 可省略 |
 | `executed_at` | 带时区的 ISO 8601，不能晚于现在 5 分钟，`not-executed` 可省略，缺省为登记时间 |
-| `evidence` | `evidence/` 下的相对路径数组，普通文件，单个不超过 64 MiB；实际执行的 pass/fail 至少一份，未执行只能省略或为空 |
+| `evidence` | `evidence/` 或 `steps/`（经看板操作留下的页面结构与截图，§6）下的相对路径数组，普通文件，单个不超过 64 MiB；同一个文件可以写进多条场景；实际执行的 pass/fail 至少一份，未执行只能省略或为空 |
 | `finding` | blocked、skip、not-executed 必填，去掉首尾空白后非空 |
 | `cause` | blocked、not-executed 必填，见下表；其他状态不接受此字段 |
 | `suspect_defect` | 仅 blocked 可写，只接受 JSON 的 `true`；拿不准是前置条件还是产品缺陷时使用 |
 | `note` | 可选文字或 null |
+| `reservation` | 仅 pass 可写，不超过 300 字的非空文字：预期都核对到了，但过程与场景写的不完全一样（换了入口或地址、有一项只能间接核对、重试后才成）。登记到 `results.reservation`，场景状态仍为通过 |
+| `gap` | 仅 blocked 且 `cause: precondition` 可写，不超过 300 字的非空文字：缺的对象或数据，用名词短语。登记到 `results.gap`，看板按原文归并 |
 | `executor`、`session` | `playwright convert` 写入的执行者信息，只作留痕；登记以当前负责执行的会话为准 |
 
 按已定决策 22 的性质区分状态，再选类别。同一类别可能对应两种状态。历史未分类记录与人工标注不要求类别。
@@ -377,6 +382,17 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - **快照与停服记录**：业务运行按机器标识、本机库标识、本机运行编号唯一，使用准备快照。逐文件比较准备时与裁决时的快照，将改动路径记为该条的 `product_changed`。根据实际执行时间与停启区间判断执行时哪些服务已停；登记结论时把已发生的事件一并写入 `work.services`，提交时汇总全部事件。
 - **响应**：`{ok, run, scenario, adjudication, duplicate, progress, warnings}`。`adjudication` 为 `{scenario, fingerprint, status, cause, suspect_defect, finding, at, session, result, registration, note?}`。`status` 同结果行并可为 `voided`；`registration` 取 `registered`（已登记）、`local`（本机暂记）、`voided`（作废）。无结果编号、类别、原因或会话时对应字段为 null，未标疑似缺陷为 false。登记的未执行存入 `work.result.not_executed`（另含 `by, source`，来源为 `probe|verdict|submit`）；未执行无 `results` 行，场景状态不变。`voided` 计作本轮已处理，无业务结论。
 
+### 起点、前置缺口与临时改动
+
+已定决策 31 第三段。执行会话在一组场景开始后先只读核对起点，准备不了的当场裁决 blocked、`cause: precondition` 并写 `gap`。`brief.md` 的「已登记过的前置缺口」列出本产品最近登记过的 20 种 `gap` 原文，同一缺口照抄。`status --json` 的 `gaps` 为 `[{gap, scenarios}]`：当前状态为受阻、最新结果是带 `gap` 的前置数据受阻且本分支没有处置的场景，按 `gap` 原文归并，场景多的在前；团队照这份清单补数据配方。
+
+为准备起点经真实入口改动测试对象时，改之前登记，核对完恢复。哪些对象可以临时改由团队写在产品备注里（§9），看板不理解对象，只保管清单：
+
+- `change add --text <改了什么> --restore <怎样恢复> [--run N]`：各不超过 500 字。返回 `{ok, run, change, unrestored, warnings}`，`change` 为 `{id, text, restore, at, scenarios, restored_at}`，`id` 在本运行内从 1 递增，`scenarios` 是登记时进行中的场景。运行须为 prepared。
+- `change restore <编号> [--run N]`：记下恢复时刻；重复调用保留首次时刻；编号不存在返回 `change-not-found`。
+- `change list [--run N]`：`{ok, run, changes, unrestored}`，已结束的运行也可查看。
+- 清单存在运行目录 `changes.json`。`run submit` 的输出与运行摘要带 `changes` 与 `unrestored_changes`；有没恢复的改动时，在同一个业务事务里登记一条类别为“前置数据”的待人处理（`unrestored_attention` 为它的编号），写明每项改了什么与恢复办法。`run abandon` 的输出同样带这两个字段，不登记待人处理。
+
 ### 提交规则
 
 `run submit --run N [--implementer X | --implemented-by 操作者]` 可在任意目录执行，按登记的检出定位 prepared 运行。
@@ -386,7 +402,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 3. 更新本机状态、释放浏览器租约、恢复尚停着的服务并记 `restore`（守护进程未运行时只撤回停止请求）。输出与运行摘要含 `recorded, voided, not_executed, unadjudicated, product_changed, browser_crashes, independence, submitted_by, sessions, progress`。`product_changed` 汇总裁决时已记录的路径及准备到提交时检测到的变化，去重排序。原有 `restored, crashed_services, service_events, services_problem, interruptions` 按实际情况输出：服务事件含服务、操作、成否、操作者、时间、说明及事件期间执行的场景；`during_run` 表明准备时服务还未异常退出。
 4. 业务事务失败时保持 prepared，结论可查、暂记仍在本机；恢复后原样重试。若业务结束已提交、本机收尾未完成，重试只补做本机收尾（`resubmitted: true`）。
 
-`recorded` 每项 `{scenario, status, result, cause, suspect_defect, finding?, note?}`：`cause` 只有受阻有值，其余为 null；`suspect_defect` 为布尔；有原因时带 `finding`；非空 note 原文随清单返回。 `run wait --run N` 的 `result.recorded` 与 `run wait --launch N` 的 `results[].result.recorded` 返回同一清单（含放弃前已登记的项）。
+`recorded` 每项 `{scenario, status, result, cause, suspect_defect, finding?, note?, reservation?, gap?}`：`cause` 只有受阻有值，其余为 null；`suspect_defect` 为布尔；有原因时带 `finding`；非空 note 原文随清单返回。 `run wait --run N` 的 `result.recorded` 与 `run wait --launch N` 的 `results[].result.recorded` 返回同一清单（含放弃前已登记的项）。
 
 `run abandon --run N` 或启动收尾放弃运行时，保留已登记的结论、准备时的探测登记、运行目录和证据。运行状态变为 abandoned，释放身份并恢复服务。本机暂记裁决留在运行目录，场景状态和自动选取资格继续按已有业务记录推导，暂记裁决不触发待人处理或计入连续次数。本机运行摘要与等待输出的 `result.unregistered` 列出这些暂记裁决（按场景键排序，各项为 `{scenario, status, cause, finding, suspect_defect}`），`result.unadjudicated` 另列尚未裁决的场景。共享库暂不可用时照常放弃本机运行；库可用时把结束标记写到已有业务运行，已有结论始终保留。
 
@@ -700,6 +716,7 @@ fixtures:
 | `browser-not-running` | `browser do` 时该身份的浏览器没有在运行 |
 | `browser-attach-failed` | 看板接入身份浏览器失败 |
 | `step-not-allowed` | `browser do` 的步骤用了由看板管理的子命令 |
+| `change-not-found` | 运行里没有这个编号的临时改动 |
 | `note-not-found` | 备注编号不存在或已删除 |
 | `entry-not-found` | 备注要挂的入口没有声明 |
 | `scenario-file-not-found` | 备注要挂的场景文件不在当前检出 |

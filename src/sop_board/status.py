@@ -384,7 +384,8 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
     items, counts = {}, {state: 0 for state in ORDER}
     counts['disposed'] = dict.fromkeys(dispositions.LABELS, 0)
     draft_counts = {state: 0 for state in DRAFT_REVIEW}
-    distill = review = 0
+    distill = review = reserved = 0
+    gaps = {}
     for scene_key, scene in scenes.items():
         identity = (scene['file'], scene['id'], scene['fingerprint'])
         selection = book.select(identity)
@@ -398,6 +399,10 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
         info['distill'] = bool(info['state'] == 'pass' and independent_pass(results) and not guard['valid']
                                and not guard.get('unsynced') and not guard.get('unrunnable'))
         info['review'] = info['state'] == 'pass' and accepted(results[0])
+        # 带保留的通过：最新结果通过但写了保留意见（替代入口、只核对一部分、重试后才成）。状态仍是通过，另给徽标与计数。
+        info['reservation'] = (results[0].get('reservation') or None) if info['state'] == 'pass' and results else None
+        if info['state'] == 'blocked' and results and results[0].get('cause') == 'precondition' and results[0].get('gap') and not disposition:
+            gaps.setdefault(results[0]['gap'].strip(), []).append(scene_key)
         info['guard'] = dict(guard, last=dict(id=run['id'], status=run['status'], reason=run['reason'], ran_at=run['ran_at'],
                                               product_digest=run['product_digest']) if run else None)
         if scene_key in reviews:
@@ -409,19 +414,21 @@ def board(book, scenes, *, guard_validity=None, reviews=None):
             counts[info['state']] += 1
         distill += info['distill']
         review += info['review']
+        reserved += bool(info['reservation'])
         items[scene_key] = info
     held = [item for key, scene in scenes.items() for item in book.hold_items(key, scene['fingerprint'])]
     held.sort(key=lambda item: (not item['suspect_defect'], item['key'], item['attention']))
-    return dict(items=items, counts=counts, distill=distill, review=review, total=len(scenes), draft_review=draft_counts, held=held,
-                book=book)
+    return dict(items=items, counts=counts, distill=distill, review=review, reserved=reserved, total=len(scenes),
+                draft_review=draft_counts, held=held, book=book,
+                gaps=[dict(gap=gap, scenarios=sorted(keys)) for gap, keys in sorted(gaps.items(), key=lambda item: (-len(item[1]), item[0]))])
 
 
-def confirmation(rows):
+def confirmation(rows, *, only=None):
     """Agent 独立通过的人工复核：样本 → of_result 指向它的最近一条人工通过或不通过，不比较快照。
 
-    只有阻塞或需求变更的样本记为未决（取最近一条），不进分母。rows 按序号旧到新。
+    只有阻塞或需求变更的样本记为未决（取最近一条），不进分母。rows 按序号旧到新。only 只统计满足条件的样本。
     """
-    samples = {row['id']: row for row in rows if accepted(row)}
+    samples = {row['id']: row for row in rows if accepted(row) and (only is None or only(row))}
     verdicts, undecided = {}, {}
     for row in rows:
         sample = samples.get(row['of_result']) if row['kind'] == 'manual' else None
@@ -466,11 +473,15 @@ def statistics(book):
     for row in latest_agent.values():
         independence_counts[row['independence'] or 'undeclared'] = independence_counts.get(row['independence'] or 'undeclared', 0) + 1
     review = confirmation(rows)
+    with_reservation = confirmation(rows, only=lambda row: bool(row.get('reservation')))
+    clean = confirmation(rows, only=lambda row: not row.get('reservation'))
     return dict(agent_pass_rate=ratio(sum(r['status'] == 'pass' for r in decided), len(decided)),
                 first_pass_rate=ratio(sum(r['status'] == 'pass' for r in first_decided), len(first_decided)),
                 manual_coverage=ratio(sum(1 for k in latest_agent if k in manual), len(latest_agent)),
                 manual_pass_rate=ratio(sum(r['status'] == 'pass' for r in manual.values()), len(manual)),
                 agent_confirm_rate=ratio(review['confirmed'], review['reviewed']),
+                agent_confirm_rate_reserved=ratio(with_reservation['confirmed'], with_reservation['reviewed']),
+                agent_confirm_rate_clean=ratio(clean['confirmed'], clean['reviewed']),
                 agent_review_coverage=ratio(review['reviewed'], review['samples']),
                 review_undecided=review['undecided'], misjudgments=review['misjudgments'],
                 independence=independence_counts)

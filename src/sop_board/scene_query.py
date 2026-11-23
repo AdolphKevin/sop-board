@@ -47,6 +47,7 @@ def show(context, key, found, derived):
     scene, info = found['scenarios'][key], derived['items'][key]
     item = summary(book, key, scene, info)
     item.update(reason=info['reason'], badges=dict(distill=info['distill'], review=info['review'],
+                                                  reservation=info['reservation'],
                                                   draft_review=info.get('draft_review', {}).get('state')),
                 guard={field: info['guard'].get(field) for field in ('valid', 'reason')},
                 other_dispositions=book.other_dispositions(key),

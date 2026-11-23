@@ -159,7 +159,8 @@ def observe(store, work):
 
 
 def public_item(row):
-    fields = ('scenario', 'fingerprint', 'status', 'cause', 'suspect_defect', 'finding', 'at', 'session', 'result', 'registration', 'note')
+    fields = ('scenario', 'fingerprint', 'status', 'cause', 'suspect_defect', 'finding', 'at', 'session', 'result', 'registration', 'note',
+              'reservation', 'gap')
     return {key: row[key] for key in fields if key in row}
 
 

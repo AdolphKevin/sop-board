@@ -44,7 +44,7 @@ def board(app, request):
     for key, scene in found['scenarios'].items():
         info = derived['items'][key]
         items[key] = dict(state=info['state'], label=info['label'], reason=info['reason'], distill=info['distill'],
-                          review=info['review'], disposition=info['disposition'],
+                          review=info['review'], reservation=info['reservation'], disposition=info['disposition'],
                           id=scene['id'], file=scene['file'], node=scene['node'], title=scene['title'],
                           priority=scene['priority'], verify=scene['verify'], polarity=scene['polarity'], actor=scene['actor'])
         if info.get('source_branch'):

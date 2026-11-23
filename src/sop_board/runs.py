@@ -26,7 +26,9 @@ from .store import dumps, loads, now
 REASONS = {'new': '未执行', 'guard-failed': '守护未通过', 'failed': '上次不通过', 'rerun': '须实际执行'}
 PENDING_STATES = {'not-run': 'new', 'retest': 'guard-failed', 'fail': 'failed', 'blocked': 'failed', 'skip': 'failed'}
 RESULT_FIELDS = {'scenario', 'status', 'actual', 'executed_at', 'evidence', 'finding', 'note', 'executor', 'session',
-                 'cause', 'suspect_defect'}
+                 'cause', 'suspect_defect', 'reservation', 'gap'}
+EVIDENCE_ROOTS = ('evidence', 'steps')   # 自己保存的证据，以及经看板操作留下的页面结构与截图
+SHORT_TEXT = 300
 
 
 def session_id(explicit):
@@ -89,12 +91,11 @@ def pending_reason(info):
     return PENDING_STATES.get(info['state'], 'rerun')
 
 
-def recorded_item(key, state, result_id, note, cause, suspect_defect, finding):
+def recorded_item(key, state, result_id, note, cause, suspect_defect, finding, reservation=None, gap=None):
     item = dict(scenario=key, status=state, result=result_id, cause=cause, suspect_defect=bool(suspect_defect))
-    if finding:
-        item['finding'] = finding
-    if note:
-        item['note'] = note
+    for field, value in (('finding', finding), ('note', note), ('reservation', reservation), ('gap', gap)):
+        if value:
+            item[field] = value
     return item
 
 
@@ -488,6 +489,13 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
         related = notes.relevant(context.store, entries, {scene['file'] for scene in selected})
         brief.write('\n'.join(notes.brief_lines(related, work_id)) + '\n')
+        with context.store.records() as db:
+            gaps = [row['gap'] for row in db.all(
+                'SELECT gap, MAX(seq) AS latest FROM results WHERE product=? AND gap IS NOT NULL GROUP BY gap ORDER BY latest DESC LIMIT 20',
+                (context.store.product,))]
+        if gaps:
+            brief.write('\n## 已登记过的前置缺口\n\n本轮遇到同一个缺口时，结果行的 gap 照抄这里的写法：\n\n'
+                        + ''.join(f'- {gap}\n' for gap in gaps))
     prompt = Template(files('sop_board').joinpath('prompts', 'run.md').read_text(encoding='utf-8')).substitute(
         run=work_id, directory=directory,
         checkout=checkout.name, verify_note=('这是修复 #%d 的独立复验：逐条完整执行，不能保留旧通过，也不接受 not-executed；'
@@ -642,6 +650,12 @@ def validate_row(directory, key, row, *, line=None, fixing=False):
         invalid('suspect_defect', 'suspect_defect 只用于 blocked，值须为 JSON true')
     if state == 'not-executed' and fixing:
         invalid('status', '独立复验须完整执行，不接受未执行标记')
+    for field, allowed, where in (('reservation', state == 'pass', 'pass'),
+                                  ('gap', state == 'blocked' and row.get('cause') == 'precondition', 'blocked、cause: precondition')):
+        if field in row:
+            value = row[field]
+            if not allowed or not isinstance(value, str) or not value.strip() or len(value) > SHORT_TEXT:
+                invalid(field, f'{field} 只用于 {where}，须为不超过 {SHORT_TEXT} 字的非空文字')
     if (state != 'not-executed' or 'actual' in row) and not (isinstance(row.get('actual'), str) and row['actual'].strip()):
         invalid('actual', 'actual 须为非空文字')
     if state != 'not-executed' or 'executed_at' in row:
@@ -664,12 +678,12 @@ def validate_row(directory, key, row, *, line=None, fixing=False):
         if evidence:
             invalid('evidence', '未执行不附证据')
         return
-    base = (directory / 'evidence').resolve()
     for name in evidence:
-        if not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts or not name.startswith('evidence/'):
-            invalid('evidence', '证据须为 evidence/ 下的相对路径')
+        if (not isinstance(name, str) or Path(name).is_absolute() or '..' in Path(name).parts
+                or Path(name).parts[:1] not in [(root,) for root in EVIDENCE_ROOTS] or len(Path(name).parts) < 2):
+            invalid('evidence', '证据须为 evidence/ 或 steps/ 下的相对路径')
         path = directory / name
-        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(base):
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to((directory / Path(name).parts[0]).resolve()):
             invalid('evidence', f'证据文件不存在或越界：{name}')
         if path.stat().st_size > 64 * 1024 * 1024:
             invalid('evidence', f'证据超过 64 MiB：{name}')
@@ -858,8 +872,9 @@ def create_adjudication(directory, scene, row, line, state, executor, implementa
                           suspect_defect=bool(row.get('suspect_defect')), finding=row.get('finding'),
                           row=row, evidence_sha256={path: sha for path, sha, _ in evidence},
                           product_changed=changed, independence=independence, **metadata)
-    if row.get('note'):
-        entry['note'] = row['note']
+    for field in ('note', 'reservation', 'gap'):
+        if row.get(field):
+            entry[field] = row[field].strip() if field != 'note' else row[field]
     return entry, evidence
 
 
@@ -896,11 +911,12 @@ def register_adjudication(db, context, work, record, scene, entry, evidence, imp
         result_id = db.insert(
             'INSERT INTO results(product,seq,work,machine,checkout,branch,file,scenario,fingerprint,product_digest,'
             'product_changed,kind,status,actual,finding,note,executor,implementer,implemented_by,independence,executed_at,'
-            'cause,suspect_defect) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'cause,suspect_defect,reservation,gap) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (store.product, seq, record, store.machine['id'], checkout.name, work['branch'], scene['file'], scene['id'],
              scene['fingerprint'], work['product_digest'], dumps(entry['product_changed']), 'agent', entry['status'], row['actual'],
              finding, row.get('note'), entry['session'], implementation['implementer'], implementation['implemented_by'],
-             entry['independence'], row['executed_at'], entry['cause'], int(entry['suspect_defect'])))
+             entry['independence'], row['executed_at'], entry['cause'], int(entry['suspect_defect']),
+             entry.get('reservation'), entry.get('gap')))
         for ordinal, (path, sha, size) in enumerate(evidence):
             name = Path(path).name
             store.index_evidence(db, sha, size, name)
@@ -920,7 +936,8 @@ def registered_summary(summary, adjudications):
     summary['adjudications'] = adjudications
     records = sorted(adjudications.values(), key=lambda item: item['seq'])
     summary['recorded'] = [recorded_item(r['scenario'], r['status'], r['result'], r.get('note'), r['cause'],
-                                         r['suspect_defect'], r['finding']) for r in records if r['result'] is not None]
+                                         r['suspect_defect'], r['finding'], r.get('reservation'), r.get('gap'))
+                           for r in records if r['result'] is not None]
     # 由探测在 A 中登记过、但还没有 adjudications 的运行也保留原来的未执行。
     summary['not_executed'] = [row for row in summary.get('not_executed', []) if row['scenario'] not in adjudications]
     summary['not_executed'] += [row for row in records if row['status'] == 'not-executed']
@@ -1115,6 +1132,14 @@ def submit(context, run_id, *, implementer=None, implemented_by=None):
                                browser_crashes=sorted(crashes), independence=independence, submitted_by=operator,
                                implementer=implementation['implemented_by'] or implementation['implementer'])
                 summary['sessions'] = loads(work['result'], {}).get('sessions', [work['session']])
+                from . import changes
+                summary['changes'] = changes.read(directory)
+                summary['unrestored_changes'] = changes.pending(directory)
+                if summary['unrestored_changes']:
+                    # 没恢复的临时改动交给人：与本轮结束在同一个业务事务里登记一条待人处理。
+                    summary['unrestored_attention'] = ledger.insert_attention(
+                        db, store, context.checkout.name, '前置数据',
+                        changes.attention_text(run_id, summary['unrestored_changes']), by=operator, work=run_id)
                 interrupted = interruptions(directory)
                 if interrupted:
                     summary['interruptions'] = interrupted
@@ -1302,10 +1327,13 @@ def abandon(context, run_id, *, by=None, launch=None):
                     result[field] = registered[field]
         else:
             result['recorded'] = [recorded_item(item['scenario'], item['status'], item['result'], item.get('note'),
-                                                item['cause'], item['suspect_defect'], item['finding'])
+                                                item['cause'], item['suspect_defect'], item['finding'],
+                                                item.get('reservation'), item.get('gap'))
                                   for item in data['adjudications'].values() if item['result'] is not None]
         progress.finish(data, ended)
         progress.save(directory, data)
+        from . import changes
+        result.update(changes=changes.read(directory), unrestored_changes=changes.pending(directory))
         result.update(unregistered=progress.local_verdicts(data), unadjudicated=progress.unadjudicated(work, data),
                       progress=progress.summary(dict(work, status='abandoned'), data))
         with store.local_tx() as db:
