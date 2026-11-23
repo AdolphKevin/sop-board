@@ -298,7 +298,13 @@ def save_section(app, request):
         candidate.update(content)
         validate(app, before, candidate, section)
         write(app, raw, candidate)
-        return json_response(read(app))
+    if section in ('verification', 'environment', 'fixtures') and app.project.shared and app.project.binding():
+        from . import definitions
+        try:
+            definitions.publish(app.store, app.project, by=config.operator() or '本机')
+        except Exception as error:  # noqa: BLE001 - 配置已保存；共享副本下次准备运行时再发布
+            print(f'产品定义发布失败：{error}', flush=True)
+    return json_response(read(app))
 
 
 @route('POST', '/api/settings/repositories/reregister', 'local')
@@ -445,7 +451,13 @@ def _connect_shared(app, request, fix_db):
             def persist(product):
                 marker = json.loads(original_marker)
                 marker['product'] = product
-                write(app, raw, candidate, marker)
+                filled = candidate
+                if action != 'new':
+                    # 加入已有产品：用产品的共享定义补上本机还没有的入口（已定决策 31 第五段）。
+                    from . import definitions, store as records
+                    filled, _ = definitions.prefill(candidate, definitions.shared(
+                        records.DB(prepared[0], 'postgres', shared), product['id']))
+                write(app, raw, filled, marker)
             try:
                 result, code = products.init(temporary, join=join if action != 'new' else None,
                                              new=action == 'new', name=name, persist=persist, prepared=prepared)

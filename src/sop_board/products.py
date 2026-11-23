@@ -137,9 +137,16 @@ def init(project, *, join=None, new=False, name=None, persist=None, prepared=Non
                            (machine['id'], machine['name'], records.now()))
                 if persist:
                     persist(product)
+            from . import definitions
+            items = definitions.shared(db, product['id'])
             if persist is None:
                 project.bind(product)
-            return dict(ok=True, action='join', product=product, previous=current, **notes), 0
+                # 用产品的共享定义补上本机还没有的入口；服务与配方的说明随输出给出，写适配与配方时照抄（已定决策 31 第五段）。
+                prefilled = definitions.write_prefill(project, items)
+            else:
+                prefilled = None
+            return dict(ok=True, action='join', product=product, previous=current, prefilled_entries=prefilled,
+                        definitions=[item for item in items if item['kind'] != 'entry'], **notes), 0
         return dict(ok=False, error_code='product-choice-required', problems=[dict(field='product', problem=(
             '还没有选择产品：问使用者这个项目要加入下面哪个已有产品，还是新建一个；得到答复后运行 '
             f'sop-board init {project.name} --join <ID> 或 sop-board init {project.name} --new [--product <名称>]。'

@@ -617,6 +617,14 @@ fixtures:
 - `note edit <编号> --text T`、`note confirm <编号>`：由人改写或确认，记确认人与时间，并清掉不符报告。`note dispute <编号> --text T [--run N]`：报告与实际不符，追加一条不符报告，备注原文不变。`note remove <编号>`：删除。编号不存在或已删除返回 `note-not-found`。署名规则同其他登记（`--as` 只在使用者明确说是别人时用）。
 - 准备运行时，`brief.md` 的「产品备注」列出整个产品的备注，加上本轮用到的入口与场景文件的备注，逐条带编号、来源（确认人与日期，或“运行 #N 提出，未经人确认”）和不符报告，并写明提出与报告不符的命令。备注只说明怎样操作与观察，不提供预期。
 
+### 产品定义的共享副本
+
+已定决策 31 第五段。本机配置中产品级的部分随产品存在业务记录库的 `definitions`，供同一产品的新成员预填本机配置；运行只读本机 `config.yaml`。
+
+- 内容：入口（`kind: entry`）取 `surface, operate, observe, evidence, isolation, credential_env` 与身份的 `id, label, real`；服务（`service`）取 `adapter.services` 的 `about, stoppable`；数据配方（`recipe`）取 `title, params, creates`。地址、命令、端口、探测、凭据取值与身份的使用上限不发布。
+- 发布：`run prepare` 在写运行材料时、设置页保存“验证入口”“环境适配”“前置数据”三节后（已绑定共享库时），把本机的这些定义写入共享副本；内容相同的不改，不同的整条覆盖并记 `updated_by, updated_at, machine`。发布失败不影响准备或保存，下次再发布。本机已删除的入口不从共享副本删除。
+- 预填：`init <项目> --join <ID>` 成功后，把共享副本里本机 `config.yaml` 还没有的入口写入配置（原文件留在 `config.yaml.prev`），输出 `prefilled_entries` 为补上的入口名，`definitions` 列出服务与配方的说明供编写适配与配方时照抄。设置页加入已有产品时同样补上缺的入口。已有的入口不覆盖。
+
 ### 待人处理
 
 `attention add --kind K --text …` 种类为人机验证、OAuth 授权、账号登录、第三方后台设置、权限放行、邮箱验证、环境问题、前置数据、浏览器崩溃、外部依赖、场景本身、入口能力、等人处理、其他。看板“待人处理”页只读，解决用 `attention resolve <编号> [--note 说明]`。普通条目以及浏览器崩溃、身份计数超限、非产品问题修复等运维条目照常登记，本身不拦场景选择。
@@ -796,6 +804,7 @@ fixtures:
 | `fixes` | 修复的业务部分：问题场景（含指纹，最近 5 条结果，证据只记名称与 sha256，不带任何机器的本机路径）、修复会话与操作者、状态、fix.json、关闭序号与关闭人、产出机器与检出名；同一机器同一检出只能有一个 open |
 | `inbox`、`questions`、`annotations`、`draft_approvals` | 上传、提问与答复（带提问机器）、草稿批注、草稿场景的同意（同一人在同一指纹上只有一条未撤销的同意） |
 | `attention` | 待人处理（附产出机器与检出名）；新增可空的 `hold TEXT`，见 §9 |
+| `definitions` | 产品定义的共享副本（格式 10）：主键 `(product, kind, name)`，`kind` 取 entry/service/recipe，`body` 为 JSON 文字，另有 `machine, updated_by, updated_at`；见 §9 |
 | `notes` | 产品备注（格式 10）：自增编号、`product`、`scope`（product/entry/file）、`target`、`text`、提出它的 `machine` 与 `run`（人写的为空）、`created_by`、`created_at`、`confirmed_by`、`confirmed_at`、`disputes`（JSON 数组）、`removed_by`、`removed_at`；见 §9 |
 | `dispositions` | 主键 `(product, file, scenario, branch)`，`product` 引用 `products.id`。各列均为非空文字；其余字段为 `kind`（仅 human/shelved）、`reason`、`by`、`at`（带时区的 ISO 8601 时间）。替换更新同一行，撤销删除该行 |
 
@@ -848,7 +857,7 @@ ALTER TABLE results ADD COLUMN suspect_defect INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE attention ADD COLUMN hold TEXT;
 ```
 
-格式 9 → 10（已定决策 31）创建空的 `notes` 表，并给 `results` 增加两个可空的文字列 `reservation`、`gap`，再将 `meta.format` 更新为 10。
+格式 9 → 10（已定决策 31）创建空的 `notes` 与 `definitions` 表，并给 `results` 增加两个可空的文字列 `reservation`、`gap`，再将 `meta.format` 更新为 10。
 
 旧记录的 `cause`、`hold`、`reservation`、`gap` 为 NULL，`suspect_defect` 为 0。原有表、唯一约束、索引、外键及业务记录保持原样。本机状态与本机配置原样保留。实际升级在一个事务中依次执行全部步骤，提交前不对其他连接可见；失败回滚全部步骤。两个升级命令撞在一起时按库串行，后到者在取得锁后重读版本。预演只读版本与升级计划，不执行步骤或改写数据；已是当前版本时两种调用均退出 0，前后版本相等、`steps: []`。
 

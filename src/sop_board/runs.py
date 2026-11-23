@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from string import Template
 import shutil
+import sys
 
 import yaml
 
@@ -484,7 +485,12 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
         with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
             brief.write('\n## 交互地图\n\n- atlas.json 是仓库中的交互地图（PW_ATLAS）：用模板 atlas.mjs 按页面与控件操作；'
                         'stale 列出的页面已过期，以实际页面为准。地图不提供预期。找不到时只读探测，并在结果 note 写明地图缺口。\n')
-    from . import notes
+    from . import definitions, notes
+    try:
+        # 本机的产品级定义随准备发布到共享副本，供新成员加入时预填；失败不影响这次准备。
+        definitions.publish(context.store, project, by=config.operator() or "sop-board")
+    except Exception as error:  # noqa: BLE001 - 发布只是同步副本
+        print(f'产品定义发布失败（不影响本轮）：{error}', file=sys.stderr)
     with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
         related = notes.relevant(context.store, entries, {scene['file'] for scene in selected})
         brief.write('\n'.join(notes.brief_lines(related, work_id)) + '\n')
