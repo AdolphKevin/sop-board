@@ -34,5 +34,6 @@ Agent 工作只有一条路径：在产品仓库的检出目录运行 `sop-board
 | 修复失败场景、复验修复、关闭修复 | [references/fix.md](references/fix.md) |
 | 梳理 Web 交互地图 | [references/atlas.md](references/atlas.md) |
 | 前置数据、身份计数、待人处理、检出与环境（服务状态）、导出报告 | [references/support.md](references/support.md) |
+| 告诉执行者怎样操作这个产品（登录方式、数据在哪看、已知噪声、可临时改的测试对象），处理执行会话提出或报告不符的备注 | [references/support.md](references/support.md#产品备注) |
 | 接入共享库（新建或加入产品），验收别人机器上实现的功能，别的机器产出的修复（`fix-not-local`）、守护（“本机未同步”“本机无法运行”）与证据，来源分支与“其他机器上的情况” | [references/shared.md](references/shared.md) |
 | 升级业务记录库 | [references/shared.md](references/shared.md#业务记录库升级) |

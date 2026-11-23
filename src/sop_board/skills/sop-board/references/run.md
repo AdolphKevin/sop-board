@@ -26,7 +26,7 @@
    - 使用者指定本轮代理时，加 `--runner codex` 或 `--runner claude`。同时指定模型或强度时加 `--model` 或 `--effort`。这些参数只对这次启动及接续生效，沿用现有的 `config.yaml`。
 2. `sop-board run wait [--timeout <秒>]` 等它结束（缺省 1800 秒；退出码 3 表示超时、启动仍在运行，可再次 wait）。`sop-board launch status` 查看启动记录与日志；使用者要求停止时 `sop-board launch stop --launch <编号>`。
 3. 把 wait 输出中的已登记、作废、未执行和未裁决场景及原因、服务停启与恢复如实转述。已登记结论在提交或放弃前后都可核对。wait 返回 `launch-no-work`（会话退出了却没有产生运行）或 `launch-failed`（会话没能启动或异常退出）时，这一轮未完成验收（已有登记仍如实转述）：把 `problems` 与 `log_tail`（启动日志末尾）里的原因转告使用者，原因排除后重新 launch。`launch-unsubmitted` 表示会话已退出，但有关联运行或沉淀未提交或已放弃：转述工作编号、状态和日志。
-   - 转述登记清单时，逐条带出 `recorded[].note` 中的保留意见。
+   - 转述登记清单时，逐条带出 `recorded[].note`，以及 `recorded[].reservation`（通过了，但过程与场景写的不完全一样）。带保留的通过在报告里单列，提示使用者优先复核。
    - 同一次启动最多三个会话。退出的会话有新裁决且还有未裁决场景时，看板会等待并接续。最终收尾时报告放弃的运行、释放的身份和待人处理编号。分别转述已登记结论、本机暂记未登记（`result.unregistered`）和未裁决（`result.unadjudicated`）。其中符合 pending 条件且未卡住的场景仍可自动选择。
    - 原因是暂时的（网络、模型接口、额度）时，隔 10 分钟按原范围重新 launch，同一范围最多再发 2 次；原因要人处理时转告使用者，接着发起不受它影响的轮次。
    - 被 `launch stop` 停止的启动和沉淀启动不收尾：运行或沉淀仍为 prepared 时，由使用者决定继续执行并提交，还是放弃。

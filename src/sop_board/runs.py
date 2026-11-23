@@ -166,7 +166,6 @@ def write_brief(directory, work_id, scope, entries, browser_problems, fixtures_d
         lines.append('- 项目没有声明前置数据配方：前置不满足时记 blocked、cause: precondition，finding 写明缺什么，不自行写库。')
     lines += ['', '## 时间上限与停止', '',
               f'- 本轮停滞提醒上限为 {limit_seconds} 秒：有场景已开始、连续这么久没有新的裁决时，相关命令输出 scenario-timeout 并列出进行中的场景。',
-              '- 模板缺省：单条 spec 4 分钟、定位或操作 15 秒、导航 30 秒。',
               '- 收到停滞提醒，或同一步试了 4 次仍不成时，记下现象与证据：能判定的先裁决，判断不了的记 blocked，转向下一组。',
               '- 业务断言失败只记该场景失败并继续。',
               '- 等人处理的事（真实账号或未声明账号的登录、人机验证、只发到使用者本人设备的验证码、身份使用次数到上限），不论出现在开始前还是执行中：'
