@@ -7,6 +7,7 @@ from .errors import reject
 from .store import dumps, loads, now
 
 LIMIT = 2000
+PRODUCT_LIMIT = 3000   # 全产品备注每轮都带；合计超过时提醒改挂到入口或场景文件上
 FIELDS = 'id, scope, target, text, machine, run, created_by, created_at, confirmed_by, confirmed_at, disputes, removed_by, removed_at'
 
 
@@ -56,6 +57,22 @@ def machines(db):
     return {row['id']: row['name'] for row in db.execute('SELECT id, name FROM machines')}
 
 
+def product_chars(db, store):
+    return sum(len(row['text']) for row in db.all(
+        "SELECT text FROM notes WHERE product=? AND scope='product' AND removed_at IS NULL", (store.product,)))
+
+
+def budget(db, store, scope):
+    """全产品备注合计超过上限时的提醒；只在这次操作涉及全产品备注时给出。"""
+    total = product_chars(db, store)
+    if scope != 'product' or total <= PRODUCT_LIMIT:
+        return []
+    return [dict(code='product-notes-large', total_chars=total, limit=PRODUCT_LIMIT,
+                 problem=f'全产品备注合计 {total} 字，超过 {PRODUCT_LIMIT}：它们每一轮都会带给执行会话。'
+                         '只和部分场景有关的，用 sop-board note move <编号> --entry <入口> 或 --file <场景文件> 改挂；'
+                         '只对某一次启动有效的安排改用 run launch --note')]
+
+
 def add(store, text, *, by, scope='product', target='', run=None):
     """人写的备注当即算已确认；执行会话带运行编号提出的标为未经人确认。"""
     text, at = clean(text), now()
@@ -65,7 +82,15 @@ def add(store, text, *, by, scope='product', target='', run=None):
             'VALUES (?,?,?,?,?,?,?,?,?,?)',
             (store.product, scope, target, text, store.machine['id'], run, by, at,
              None if run is not None else by, None if run is not None else at))
-        return dict(ok=True, note=public(fetch(db, store, note_id), machines(db)))
+        return dict(ok=True, note=public(fetch(db, store, note_id), machines(db)), warnings=budget(db, store, scope))
+
+
+def move(store, note_id, scope, target):
+    """改挂到别的范围：内容、来源与确认不变。"""
+    with store.records_tx() as db:
+        fetch(db, store, note_id)
+        db.execute('UPDATE notes SET scope=?, target=? WHERE id=?', (scope, target, note_id))
+        return dict(ok=True, note=public(fetch(db, store, note_id), machines(db)), warnings=budget(db, store, scope))
 
 
 def listing(store, *, scope=None, target=None, removed=False):
@@ -94,7 +119,8 @@ def change(store, note_id, *, by, text=None, dispute=None, run=None, remove=Fals
         else:
             db.execute("UPDATE notes SET text=?, confirmed_by=?, confirmed_at=?, disputes='[]' WHERE id=?",
                        (clean(text) if text is not None else row['text'], by, at, note_id))
-        return dict(ok=True, note=public(fetch(db, store, note_id), machines(db)))
+        return dict(ok=True, note=public(fetch(db, store, note_id), machines(db)),
+                    warnings=budget(db, store, row['scope']) if text is not None else [])
 
 
 def relevant(store, entries, files):

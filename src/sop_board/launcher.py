@@ -26,6 +26,8 @@ from .redaction import business_text, redact
 from .store import dumps, now
 
 KINDS = ('run', 'distill')
+NOTE_FILE = 'note.md'
+NOTE_LIMIT = 4000
 LAST_LINE_LIMIT = 300   # 写进待人处理的日志末尾一行的最大字数
 
 
@@ -276,9 +278,14 @@ class Launcher:
         self.retry_delay = int(delay)
 
     def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None, implemented_by=None,
-              allow_open_fix=False, runner=None, model=None, effort=None):
+              allow_open_fix=False, runner=None, model=None, effort=None, note=None):
         if kind not in KINDS:
             raise ValueError('启动类型应为 run 或 distill')
+        if note is not None:
+            # 本轮说明：只对这一次启动生效，写进它的运行的 brief（已定决策 31 第五段）。
+            if kind != 'run' or not isinstance(note, str) or not note.strip() or len(note) > NOTE_LIMIT:
+                raise APIError(422, 'invalid-arguments', [dict(field='note', problem=f'本轮说明只用于 run launch，须为不超过 {NOTE_LIMIT} 字的非空文字')])
+            note = note.strip()
         if not scope:
             raise ValueError('须给出场景')
         problem = runner_problem(runner, model, effort, kind='launch' if kind == 'run' else kind)
@@ -328,6 +335,8 @@ class Launcher:
             log = directory / 'output.jsonl'
             if preflight is not None:
                 (directory / 'preflight.json').write_text(dumps(preflight) + '\n', encoding='utf-8')
+            if note is not None:
+                (directory / NOTE_FILE).write_text(note + '\n', encoding='utf-8')
             prompt = prompt_for(self.project, checkout, kind, scope, implementer, fix, implemented_by,
                                 allow_open_fix=allow_open_fix, preflight=preflight)
             session = str(uuid.uuid4()) if agent['runner'] == 'claude' else None
@@ -1005,7 +1014,7 @@ def _register():
             requested_by=request.json_field('requested_by') or '本机', implementer=request.json_field('implementer'),
             implemented_by=request.json_field('implemented_by'), fix=request.json_field('fix'),
             allow_open_fix=bool(request.json_field('allow_open_fix')), runner=request.json_field('runner'),
-            model=request.json_field('model'), effort=request.json_field('effort'))))
+            model=request.json_field('model'), effort=request.json_field('effort'), note=request.json_field('note'))))
 
     @route('POST', '/local/launch/stop', 'token')
     def stop(app, request):

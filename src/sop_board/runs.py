@@ -348,7 +348,7 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
         browser_problems = {k: v['problem'] for k, v in leased.items() if 'problem' in v}
         materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems,
                     fix, invalid_files(found), selected_dispositions=selected_dispositions, held=held, resolved=resolved,
-                    skipped=skipped)
+                    skipped=skipped, launch=launch)
         prepared_at = now()
         by_entry = {report['entry']: report['at'] for report in reports}
         data = progress.initial(project.scenario_timeout, prepared_at, [
@@ -429,8 +429,21 @@ def public_services(services):
     return [{k: v for k, v in item.items() if k in ('name', 'about', 'stoppable', 'state', 'label', 'log')} for item in services]
 
 
+def launch_note(context, launch):
+    """run launch --note 写下的本轮说明；没有时为 None。"""
+    if launch is None:
+        return None
+    from .launcher import NOTE_FILE
+    with context.store.local() as db:
+        row = db.execute('SELECT log FROM launches WHERE id=?', (launch,)).fetchone()
+    if row is None or not row['log']:
+        return None
+    path = Path(row['log']).parent / NOTE_FILE
+    return path.read_text(encoding='utf-8').strip() if path.is_file() else None
+
+
 def materialize(context, directory, work_id, scope, scenes, entries, environment, snapshot, browsers, browser_problems, fix,
-                invalid_files=(), *, selected_dispositions=(), held=(), resolved=(), skipped=()):
+                invalid_files=(), *, selected_dispositions=(), held=(), resolved=(), skipped=(), launch=None):
     project, checkout = context.project, context.checkout
     reasons = {item['scenario']: item['reason'] for item in scope}
     selected = [dict(scenes[key], key=key, reason=reasons[key]) for key in reasons]
@@ -492,6 +505,9 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     except Exception as error:  # noqa: BLE001 - 发布只是同步副本
         print(f'产品定义发布失败（不影响本轮）：{error}', file=sys.stderr)
     with (directory / 'brief.md').open('a', encoding='utf-8') as brief:
+        round_note = launch_note(context, launch)
+        if round_note:
+            brief.write(f'\n## 本轮说明（启动 #{launch}）\n\n发起这次启动的人写给本轮的安排，只对本轮有效；与下面的产品备注冲突时以本轮说明为准。\n\n{round_note}\n')
         related = notes.relevant(context.store, entries, {scene['file'] for scene in selected})
         brief.write('\n'.join(notes.brief_lines(related, work_id)) + '\n')
         with context.store.records() as db:

@@ -223,6 +223,11 @@ def cmd_status(args):
                       invalid_files={name: info['problems'] for name, info in found['files'].items() if info['problems']})
         from . import fixes, ledger
         with context.store.records() as db:
+            from . import notes as product_notes
+            size = product_notes.product_chars(db, context.store)
+            result['product_notes'] = dict(chars=size, limit=product_notes.PRODUCT_LIMIT)
+            if size > product_notes.PRODUCT_LIMIT:
+                result['notices'].append(dict(field='notes', problem=product_notes.budget(db, context.store, 'product')[0]['problem']))
             result['attention'] = ledger.open_attention(db, context.store, local=True, checkout=context.checkout.name,
                                                         scenes=found['scenarios'])
             result['fixes'] = fixes.active(db, context.store)
@@ -545,6 +550,8 @@ def cmd_run(args):
     problem = runner_problem(args.runner, args.model, args.effort, kind=args.action)
     if problem:
         return fail('invalid-arguments', [problem], 2)
+    if args.note is not None and args.action != 'launch':
+        return fail('invalid-arguments', [dict(field='note', problem='--note 只用于 run launch')], 2)
     valid = {'begin': len(args.scenario) >= 1, 'verdict': len(args.scenario) == 1}
     if not valid.get(args.action, not args.scenario):
         return fail('invalid-arguments', [dict(field='scenario', problem='begin 需要至少一个场景键，verdict 恰好一个，其他操作不接受场景键')], 2)
@@ -587,7 +594,7 @@ def cmd_run(args):
             checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
             implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机',
             allow_open_fix=args.allow_open_fix, runner=args.runner,
-            model=args.model.strip() if args.model is not None else None, effort=args.effort),
+            model=args.model.strip() if args.model is not None else None, effort=args.effort, note=args.note),
             timeout=900 + probes.timeout(context.project.entries.values())))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
@@ -951,9 +958,9 @@ def cmd_note(args):
     from . import notes, progress
     context = load(args, require=False)
     store, by = context.store, signer(args)
-    needs_id = args.action in ('edit', 'confirm', 'dispute', 'remove')
+    needs_id = args.action in ('edit', 'confirm', 'dispute', 'remove', 'move')
     if needs_id != (args.id is not None):
-        return fail('invalid-arguments', [dict(field='id', problem='edit、confirm、dispute、remove 需要备注编号，其他操作不接受')], 2)
+        return fail('invalid-arguments', [dict(field='id', problem='edit、confirm、dispute、remove、move 需要备注编号，其他操作不接受')], 2)
     if (args.action in ('add', 'edit', 'dispute')) != (args.text is not None):
         return fail('invalid-arguments', [dict(field='text', problem='add、edit、dispute 需要 --text，其他操作不接受')], 2)
 
@@ -975,6 +982,9 @@ def cmd_note(args):
         emit(notes.change(store, args.id, by=by, text=args.text))
     elif args.action == 'confirm':
         emit(notes.change(store, args.id, by=by))
+    elif args.action == 'move':
+        scope, name = target()
+        emit(notes.move(store, args.id, scope, name))
     elif args.action == 'dispute':
         emit(notes.change(store, args.id, by=by, dispute=args.text, run=run))
     else:
@@ -1133,6 +1143,7 @@ def parser():
     p.add_argument('--runner', help='launch：本次使用 codex 或 claude')
     p.add_argument('--model', help='launch：本次使用的模型，须与 --runner 同用')
     p.add_argument('--effort', help='launch：本次使用的推理强度，须与 --runner 同用')
+    p.add_argument('--note', help='launch：本轮说明，只写进这次启动的 brief（例如本轮临时挪开了哪个账号的邮箱）')
     p.set_defaults(handler=cmd_run)
 
     p = common(sub.add_parser('launch'))
@@ -1280,12 +1291,13 @@ def parser():
     p.set_defaults(handler=cmd_change)
 
     p = common(sub.add_parser('note'))
-    p.add_argument('action', choices=('list', 'add', 'edit', 'confirm', 'dispute', 'remove'),
-                   help='add：写一条备注；edit / confirm：由人改写或确认；dispute：报告与实际不符；remove：删除')
+    p.add_argument('action', choices=('list', 'add', 'edit', 'confirm', 'dispute', 'remove', 'move'),
+                   help='add：写一条备注；edit / confirm：由人改写或确认；dispute：报告与实际不符；remove：删除；'
+                        'move：改挂到 --entry、--file，都不写时挂到整个产品')
     p.add_argument('id', nargs='?', type=int, help='edit / confirm / dispute / remove：备注编号')
     p.add_argument('--text', help='add / edit：备注内容；dispute：看到的现象')
-    p.add_argument('--entry', help='add / list：挂在这个入口上')
-    p.add_argument('--file', help='add / list：挂在这个场景文件上')
+    p.add_argument('--entry', help='add / list / move：挂在这个入口上')
+    p.add_argument('--file', help='add / list / move：挂在这个场景文件上')
     p.add_argument('--run', type=int, help='add / dispute：提出它的运行（缺省取 SOP_BOARD_RUN；带运行的备注标为未经人确认）')
     p.add_argument('--all', action='store_true', help='list：包括已删除的')
     p.add_argument('--as', dest='as_name', metavar='姓名')
