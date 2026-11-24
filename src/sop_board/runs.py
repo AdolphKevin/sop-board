@@ -344,7 +344,8 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
         excluded = {item['scenario'] for item in skipped}
         scope = [item for item in scope if item['scenario'] not in excluded]
         keys = {item['scenario'] for item in scope}
-        entries = {name: entries[name] for name in sorted({scenes[key]['verify'] for key in keys})}
+        # 探测后留下的入口，加上点名另外取得的身份所属的入口（它们不参加探测）。
+        entries = {name: entries[name] for name in sorted({scenes[key]['verify'] for key in keys} | set(extra.values()))}
         selected_dispositions = dispositions.listed(derived['items'], keys)
         held = selected_holds(derived, keys)
         resolved = [(key, cause, item) for key in sorted(keys)
