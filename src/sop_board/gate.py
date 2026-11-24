@@ -192,7 +192,7 @@ class Gate:
                 self.cond.wait(timeout=min(1.0, remaining))
 
     def acquire(self, checkout, run, identities, *, session, pid, wait, digest, candidates, fixing,
-                url=None, allow_open_fix=False):
+                url=None, allow_open_fix=False, extra=()):
         """先取得环境，再按探测后留下的入口分配浏览器身份。"""
         from . import runs
         entries = {item['entry']: self.app.project.entries[item['entry']] for item in candidates}
@@ -208,7 +208,8 @@ class Gate:
             skipped = probes.excluded(candidates, reports, fixing=fixing)
             if has_probes:
                 failed = {p['entry'] for p in reports if p['status'] == 'unhealthy'}
-                remaining = runs.web_identities(entry for name, entry in entries.items() if name not in failed)
+                # 点名另外取得的身份（--with-identity）不属于本轮入口，入口探测不通过也照常分配。
+                remaining = runs.web_identities(entry for name, entry in entries.items() if name not in failed) | set(extra)
                 identities = set(identities) & remaining
                 if identities:
                     allowed = self.wait_for(checkout, run, identities, reserved=True, **options) or allowed
@@ -305,7 +306,8 @@ def _register():
                                   pid=request.json_field('pid'), wait=int(request.json_field('wait') or 0),
                                   digest=request.json_field('digest'), url=request.json_field('url'),
                                   candidates=request.json_field('candidates') or [], fixing=bool(request.json_field('fixing')),
-                                  allow_open_fix=bool(request.json_field('allow_open_fix')))
+                                  allow_open_fix=bool(request.json_field('allow_open_fix')),
+                                  extra=request.json_field('extra') or [])
         return json_response(dict(ok=True, **result))
 
 

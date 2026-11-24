@@ -288,7 +288,8 @@ def resume_prepared(context, requested, executor, launch, fix_id):
     return None
 
 
-def prepare(context, requested, *, session=None, fix_id=None, launch=None, identities=None, wait=0, allow_open_fix=False):
+def prepare(context, requested, *, session=None, fix_id=None, launch=None, identities=None, wait=0, allow_open_fix=False,
+            with_identities=None):
     project, checkout, store = context.project, context.checkout, context.store
     launch = launch or (int(os.environ['SOP_BOARD_LAUNCH']) if os.environ.get('SOP_BOARD_LAUNCH', '').isdigit() else None)
     executor = session_id(session)
@@ -329,8 +330,12 @@ def prepare(context, requested, *, session=None, fix_id=None, launch=None, ident
                 reject(422, 'invalid', 'identity', f"{'、'.join(unknown)} 不是本轮 Web 场景的入口声明的身份；可用："
                        + ('、'.join(declared) or '（本轮没有 Web 场景）'))
         chosen = sorted(set(identities)) if identities else declared
+        # 另外取得的身份：场景经一个入口发起、却要用别的入口的身份去核对时点名（例如买家入口的场景要商家后台核对）。
+        extra = extra_identities(project, with_identities)
+        chosen = sorted(set(chosen) | set(extra))
+        entries = {**entries, **{name: project.entries[name] for name in sorted(set(extra.values())) if name not in entries}}
         acquired = daemon.call(project, 'POST', '/local/run/acquire', dict(
-            checkout=checkout.name, run=work_id, identities=chosen, session=executor, pid=os.getpid(), wait=wait,
+            checkout=checkout.name, run=work_id, identities=chosen, extra=sorted(extra), session=executor, pid=os.getpid(), wait=wait,
             candidates=candidates, fixing=fix is not None, digest=snapshot['product_digest'], allow_open_fix=allow_open_fix),
             timeout=max(0, wait) + 1800 + probes.timeout(entries.values()))
         directory = Path(acquired['directory'])
@@ -429,6 +434,15 @@ def public_services(services):
     return [{k: v for k, v in item.items() if k in ('name', 'about', 'stoppable', 'state', 'label', 'log')} for item in services]
 
 
+def extra_identities(project, names):
+    """--with-identity 点名的身份 → 声明它的 Web 入口；须是项目里某个 Web 入口声明的身份。"""
+    owners = {identity: name for name, entry in project.entries.items() if web_entry(entry) for identity in entry_identities(entry)}
+    unknown = sorted(set(names or ()) - set(owners))
+    if unknown:
+        reject(422, 'invalid', 'with-identity', f"{'、'.join(unknown)} 不是项目里 Web 入口声明的身份；可用：" + '、'.join(sorted(owners)))
+    return {identity: owners[identity] for identity in names or ()}
+
+
 def launch_note(context, launch):
     """run launch --note 写下的本轮说明；没有时为 None。"""
     if launch is None:
@@ -466,12 +480,13 @@ def materialize(context, directory, work_id, scope, scenes, entries, environment
     web = [scene for scene in selected if web_entry(entries[scene['verify']])]
     env_lines = {**addresses}
     runtime = None
-    if web:
+    leased = set(browsers) | set(browser_problems)
+    # 本轮没有 Web 场景、但点名另外取得了身份时（--with-identity），同样写出身份材料。
+    if web or leased:
         from . import browsers as broker
         from .playwright import write_scope
         runtime = broker.runtime_info()
         write_scope(directory / 'scope.json', project.name, checkout.name, web, entries, directory / 'scenarios.yaml')
-        leased = set(browsers) | set(browser_problems)
         identities = {name: [dict(item, endpoint=browsers.get(item['id'])) for item in entry.get('identities', []) if item['id'] in leased]
                       or ([dict(id='default', label='default', endpoint=browsers.get('default'))] if not entry.get('identities') else [])
                       for name, entry in entries.items() if web_entry(entry)}

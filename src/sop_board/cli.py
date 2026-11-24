@@ -561,6 +561,7 @@ def cmd_run(args):
         if args.fix is not None and args.scope:
             return fail('scope-invalid', [dict(field='scope', problem='--fix 复验的范围由修复决定，不能再写 --scope')], 2)
         emit(runs.prepare(context, scope, session=args.session, fix_id=args.fix, identities=args.identity, wait=args.wait,
+                          with_identities=args.with_identity,
                           allow_open_fix=args.allow_open_fix))
     elif args.action in ('begin', 'verdict'):
         run = progress.run_number(args.run)
@@ -594,7 +595,8 @@ def cmd_run(args):
             checkout=context.checkout.name, kind='run', scope=scope, implementer=args.implementer,
             implemented_by=args.implemented_by, fix=args.fix, requested_by=config.operator() or '本机',
             allow_open_fix=args.allow_open_fix, runner=args.runner,
-            model=args.model.strip() if args.model is not None else None, effort=args.effort, note=args.note),
+            model=args.model.strip() if args.model is not None else None, effort=args.effort, note=args.note,
+            with_identities=args.with_identity),
             timeout=900 + probes.timeout(context.project.entries.values())))
     elif args.action == 'wait':
         return wait(context, launch=args.launch, run=args.run, timeout=args.timeout)
@@ -710,9 +712,10 @@ def cmd_browser(args):
         return 0
     if args.action != 'do' and (args.step or args.steps):
         return fail('invalid-arguments', [dict(field='steps', problem='只有 browser do 接受步骤')], 2)
-    context = load(args)
     if args.action == 'do':
-        return browser_do(context, args)
+        # 每次操作都要走这条命令：只取守护进程的地址，不校验整份配置、不打开数据库、不识别检出。
+        return browser_do(config.Project(config.resolve_data(project_name(args), getattr(args, 'data', None)), database_only=True), args)
+    context = load(args)
     body = dict(checkout=context.checkout.name, identity=args.identity if args.action == 'status' else (args.identity or 'default'))
     if args.action == 'status':
         result = daemon.call(context.project, 'POST', '/local/browser/status', body) if daemon.describe(context.project)['running'] \
@@ -727,7 +730,7 @@ def cmd_browser(args):
     return 0
 
 
-def browser_do(context, args):
+def browser_do(project, args):
     """经看板操作身份浏览器：一步写在 `--` 之后，多步用 --steps 给 JSON 数组（每步是子命令与参数的字符串数组）。"""
     from . import daemon, progress
     step = args.step[1:] if args.step[:1] == ['--'] else args.step
@@ -744,7 +747,7 @@ def browser_do(context, args):
     body = dict(run=progress.run_number(args.run), identity=args.identity or 'default', steps=steps, region=args.region,
                 depth=args.depth, shot=args.shot, snapshot=not args.no_snapshot, timeout=timeout)
     count = len(steps) if isinstance(steps, list) else 1
-    emit(daemon.call(context.project, 'POST', '/local/browser/do', body, timeout=timeout * (count + 3) + 60))
+    emit(daemon.call(project, 'POST', '/local/browser/do', body, timeout=timeout * (count + 3) + 60))
     return 0
 
 
@@ -1130,6 +1133,8 @@ def parser():
     p.add_argument('--fix', type=int, help='prepare / launch：修复的独立复验，范围为该修复的问题场景')
     p.add_argument('--identity', action='append', metavar='身份',
                    help='prepare：只为这些身份取得浏览器（可重复）；同一环境上的多个运行按身份分开。缺省取本轮 Web 入口的全部身份')
+    p.add_argument('--with-identity', action='append', metavar='身份',
+                   help='prepare / launch：在本轮入口的身份之外另外取得这些身份（可重复），用于经一个入口发起、要用别的入口的身份核对的场景')
     p.add_argument('--wait', type=int, default=0, metavar='秒',
                    help='prepare：环境或身份被占着时在本机排队，最多等这么久（缺省 0：立即返回 env-busy / browser-busy）')
     p.add_argument('--allow-open-fix', action='store_true',

@@ -219,6 +219,9 @@ def identity_spec(project, identity):
             for item in entry.get('identities') or []:
                 if item['id'] == identity:
                     return name, item
+            if identity == 'default' and not entry.get('identities'):
+                # 没声明身份的 Web 入口用 default 身份，没有使用上限。
+                return name, dict(id='default', label='default')
     from .errors import reject
     reject(404, 'identity-not-found', 'identity', f'没有声明身份 {identity}')
 

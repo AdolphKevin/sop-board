@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import threading
 
+from datetime import datetime, timedelta
+
 from . import browsers, progress, redaction
 from .errors import reject
 from .store import now
@@ -24,6 +26,7 @@ MAX_STEP_TIMEOUT = 3600
 MAX_STEPS = 50
 INLINE_LIMIT = 20000
 RECORD = 'steps.jsonl'
+BATCH = Path(__file__).parent / 'assets' / 'driver-batch.cjs'
 SECTION = re.compile(r'^### (.+)$', re.M)
 
 
@@ -105,6 +108,37 @@ class Driver:
             parts = {'Result' if done.returncode == 0 else 'Error': text}
         return 'Error' not in parts and done.returncode == 0, parts
 
+    def batch(self, identity, steps, after, *, timeout):
+        """在一个驱动进程里依次执行各步与收尾命令（取页面结构、截图），省掉逐条起进程的开销。
+
+        返回 [(阶段, 是否成功, 各节, 耗时毫秒)]：steps 遇到失败即停，after 总会执行。"""
+        node = shutil.which('node')
+        core = browsers.runtime_dir() / 'node_modules' / 'playwright-core'
+        if not node or not core.exists():
+            reject(409, 'runtime-missing', 'runtime', '浏览器运行时未安装：请运行 sop-board browser install')
+        request = json.dumps(dict(session=identity, steps=steps, after=after, timeout_ms=timeout * 1000), ensure_ascii=False)
+        try:
+            done = subprocess.run([node, str(BATCH), str(core)], cwd=self.home(identity), env=self.environment(), input=request,
+                                  capture_output=True, text=True, timeout=timeout * (len(steps) + len(after)) + 15)
+        except subprocess.TimeoutExpired:
+            reject(504, 'browser-step-timeout', 'steps', '驱动进程超时没有返回，浏览器可能没有响应')
+        results = []
+        for line in done.stdout.splitlines():
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if item.get('phase') in ('session', 'batch'):
+                return [('session', False, {'Error': item.get('text', '')}, 0)]
+            if item.get('timed_out'):
+                parts = {'Error': f'这一步超过 {timeout} 秒没有结束，已中止'}
+            else:
+                parts = sections(item.get('text', '')) or {'Result' if item['ok'] else 'Error': item.get('text', '')}
+            results.append((item['phase'], bool(item['ok']) and 'Error' not in parts, parts, item.get('ms', 0)))
+        if not results:
+            reject(502, 'browser-driver-failed', 'steps', '驱动进程没有返回结果：' + (done.stderr.strip()[-300:] or '无输出'))
+        return results
+
     def ensure(self, identity, endpoint, holder):
         """身份的驱动会话接在当前浏览器上；浏览器或持有者变了就重新接入。返回 (是否刚接入, 标签页列表)。"""
         if self.sessions.get(identity) == (endpoint, holder):
@@ -142,28 +176,37 @@ class Driver:
             results, failed = [], None
             with self.lock(('record', run_id)):
                 first = sum(1 for _ in (directory / RECORD).open(encoding='utf-8')) + 1 if (directory / RECORD).exists() else 1
-            for offset, step in enumerate(steps):
-                number, started = first + offset, now()
-                ok, parts = self.cli(identity, step, timeout=timeout)
-                if not ok and 'is not open' in parts.get('Error', ''):
-                    # 浏览器重启过：重新接入后重做这一步。
-                    self.sessions.pop(identity, None)
-                    self.ensure(identity, instance.endpoint(), holder)
-                    ok, parts = self.cli(identity, step, timeout=timeout)
-                output = parts.get('Error') if not ok else (
-                    fenced(parts['Snapshot']) if step[0] == 'snapshot' and 'Snapshot' in parts else parts.get('Result', ''))
-                item = dict(n=number, at=started, command=step, ok=ok, duration_ms=progress.elapsed(started, now()), output=output or '')
-                results.append(item)
-                if not ok:
-                    failed = number
-                    break
-            last = first + len(results) - 1
-            final, page, files = None, {}, {}
             store = directory / 'steps'
             store.mkdir(exist_ok=True)
+            # 步号在执行前不知道（失败即停），截图先存到本次调用的临时名，结束后改成最后一步的步号。
+            pending_shot = store / f'.shot-{first}.png'
+            after = []
             if snapshot:
-                args = ['snapshot', *([region] if region else []), *([f'--depth={depth}'] if depth else [])]
-                ok, parts = self.cli(identity, args, timeout=timeout)
+                after.append(['snapshot', *([region] if region else []), *([f'--depth={depth}'] if depth else [])])
+            if shot:
+                after.append(['screenshot', f'--filename={pending_shot}'])
+            started = now()
+            outcome = self.batch(identity, steps, after, timeout=timeout)
+            if outcome[0][0] == 'session' or (not outcome[0][1] and 'is not open' in outcome[0][2].get('Error', '')):
+                # 浏览器重启过或驱动会话不在了：重新接入后整次重做。
+                self.sessions.pop(identity, None)
+                self.ensure(identity, instance.endpoint(), holder)
+                outcome = self.batch(identity, steps, after, timeout=timeout)
+                if outcome[0][0] == 'session':
+                    reject(409, 'browser-attach-failed', 'identity', f"身份 {identity} 的驱动会话不可用：{outcome[0][2].get('Error', '')[:300]}")
+            clock = datetime.fromisoformat(started)
+            for offset, (step, (phase, ok, parts, ms)) in enumerate(zip(steps, [item for item in outcome if item[0] == 'step'])):
+                output = parts.get('Error') if not ok else (
+                    fenced(parts['Snapshot']) if step[0] == 'snapshot' and 'Snapshot' in parts else parts.get('Result', ''))
+                results.append(dict(n=first + offset, at=clock.isoformat(), command=step, ok=ok, duration_ms=ms, output=output or ''))
+                clock += timedelta(milliseconds=ms)
+                if not ok:
+                    failed = first + offset
+            last = first + len(results) - 1
+            final, page, files = None, {}, {}
+            closing = [item for item in outcome if item[0] == 'after']
+            if snapshot and closing:
+                _, ok, parts, _ = closing.pop(0)
                 page = page_of(parts)
                 if ok and 'Snapshot' in parts:
                     text = fenced(parts['Snapshot'])
@@ -172,11 +215,9 @@ class Driver:
                     final = dict(text=text[:INLINE_LIMIT], file=files['snapshot'], truncated=len(text) > INLINE_LIMIT)
                 else:
                     final = dict(text=None, file=None, truncated=False, error=parts.get('Error', '')[:500])
-            if shot:
-                target = store / f'{last}.png'
-                ok, parts = self.cli(identity, ['screenshot', f'--filename={target}'], timeout=timeout)
-                if ok and target.exists():
-                    files['screenshot'] = f'steps/{last}.png'
+            if shot and pending_shot.exists():
+                pending_shot.replace(store / f'{last}.png')
+                files['screenshot'] = f'steps/{last}.png'
             for item in results:
                 if len(item['output']) > INLINE_LIMIT:
                     (store / f"{item['n']}.out.txt").write_text(item['output'], encoding='utf-8')

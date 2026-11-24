@@ -233,7 +233,7 @@ def work_directory(project, checkout):
 
 
 def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemented_by=None, *, allow_open_fix=False,
-               preflight=None):
+               preflight=None, with_identities=None):
     if fix is not None:
         command = f'sop-board run prepare --wait 540 --fix {fix}'
     elif kind == 'run':
@@ -242,6 +242,8 @@ def prompt_for(project, checkout, kind, scope, implementer, fix=None, implemente
         command = 'sop-board distill prepare ' + ' '.join(scope)
     if kind == 'run' and allow_open_fix:
         command += ' --allow-open-fix'
+    if kind == 'run':
+        command += ''.join(f' --with-identity {identity}' for identity in with_identities or ())
     run_workflow = '按 prompt.md 把场景分组，一次开始一组，留证后逐条裁决。' if kind == 'run' else ''
     text = Template(files('sop_board').joinpath('prompts', 'launch.md').read_text(encoding='utf-8')).substitute(
         project=project.name, checkout=checkout.name, directory=work_directory(project, checkout),
@@ -278,7 +280,7 @@ class Launcher:
         self.retry_delay = int(delay)
 
     def start(self, checkout, kind, scope, *, requested_by, implementer=None, fix=None, implemented_by=None,
-              allow_open_fix=False, runner=None, model=None, effort=None, note=None):
+              allow_open_fix=False, runner=None, model=None, effort=None, note=None, with_identities=None):
         if kind not in KINDS:
             raise ValueError('启动类型应为 run 或 distill')
         if note is not None:
@@ -292,6 +294,11 @@ class Launcher:
         if problem:
             raise APIError(422, 'invalid-arguments', [problem])
         self.project.require()
+        if with_identities:
+            from .runs import extra_identities
+            if kind != 'run' or not isinstance(with_identities, list) or any(not isinstance(item, str) for item in with_identities):
+                raise APIError(422, 'invalid-arguments', [dict(field='with-identity', problem='另外取得的身份只用于 run launch，须为身份编号')])
+            extra_identities(self.project, with_identities)
         # 已有运行中的启动时先报 launch-running：它可能已准备了运行，范围检查会把那些场景当成别的运行占着的。
         with self.store.local() as db:
             running_launch(db, checkout)
@@ -338,7 +345,7 @@ class Launcher:
             if note is not None:
                 (directory / NOTE_FILE).write_text(note + '\n', encoding='utf-8')
             prompt = prompt_for(self.project, checkout, kind, scope, implementer, fix, implemented_by,
-                                allow_open_fix=allow_open_fix, preflight=preflight)
+                                allow_open_fix=allow_open_fix, preflight=preflight, with_identities=with_identities)
             session = str(uuid.uuid4()) if agent['runner'] == 'claude' else None
             settings = dict(agent=agent, implementer=implementer, implemented_by=implemented_by)
             attempts = [dict(new_attempt(1, agent, session, log), settings=settings)] if kind == 'run' else []
@@ -1014,7 +1021,8 @@ def _register():
             requested_by=request.json_field('requested_by') or '本机', implementer=request.json_field('implementer'),
             implemented_by=request.json_field('implemented_by'), fix=request.json_field('fix'),
             allow_open_fix=bool(request.json_field('allow_open_fix')), runner=request.json_field('runner'),
-            model=request.json_field('model'), effort=request.json_field('effort'), note=request.json_field('note'))))
+            model=request.json_field('model'), effort=request.json_field('effort'), note=request.json_field('note'),
+            with_identities=request.json_field('with_identities'))))
 
     @route('POST', '/local/launch/stop', 'token')
     def stop(app, request):

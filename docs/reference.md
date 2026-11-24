@@ -306,7 +306,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 
 点名场景、`--fix N` 和工作台「AI 重跑此场景」视为明确指定，照常执行，仍须满足原有资格与占用检查。新准备的输出与 `run launch` 的 `launch` 对象都含 `dispositions`，结构同 §1 的处置列表，只列本次已选中且本分支有处置的场景（自动范围因此为 `[]`）；`brief.md` 按条写明种类与原因。准备与启动的范围输出另带 `held`（同 §1，只列这次点名命中的条目），`brief.md` 提示原因、待处理编号及疑似缺陷。自动过滤后为空返回 `nothing-to-run`，带 `held` 列出被剔除的卡住项。启动展开时冻结候选场景，准备成功时冻结可执行范围；后续处置与待人处理变动不取消已选的场景，重复准备仍返回原输出。
 
-同一检出可以有多个 prepared 的运行，按身份分开（已定决策 28）：`--identity`（可重复）只为这些身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占。`--scope pending` 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 `scenario-in-run`，写明是哪个运行。
+同一检出可以有多个 prepared 的运行，按身份分开（已定决策 28）：`--identity`（可重复）只为这些身份取得浏览器租约，不写时取本轮 Web 入口的全部身份；身份租约整机独占。`--with-identity <身份>`（可重复，已定决策 31）在此之外另外取得点名的身份，用于经一个入口发起、要用别的入口的身份核对的场景：身份须由项目里某个 Web 入口声明，否则返回 `invalid`；声明它的入口连同地址、身份与入口说明一并写进运行材料，brief 带上该入口的产品备注；这些入口不参加本轮的入口探测，点名的身份不因探测排除。本轮没有 Web 场景时同样写出 `identities.json`。`--scope pending` 展开时跳过本检出其他 prepared 运行里的场景；明确指定的场景已在别的 prepared 运行里时返回 `scenario-in-run`，写明是哪个运行。
 
 **重复准备**（已定决策 29）：同一会话对同一检出再次 `run prepare`，范围是它已准备的某个运行的候选范围（可执行范围加上探测排除项）的子集时（`pending`、`all` 视为相同；有多个时取包含全部指定场景的那个，`pending`、`all` 取最近准备的那个），返回那个运行：输出取自运行目录的 `prepare.json`，与首次相同并带 `resumed: true`。不新建运行，不重新取身份，不重启环境，`--identity`、`--wait` 与 `--allow-open-fix` 不再生效；`--fix` 须与该运行一致。“同一会话”指执行者会话编号相同，或 `SOP_BOARD_LAUNCH` 相同；按后者返回时，运行的执行者改记为这次调用的会话，提交输出的 `sessions` 列出先后执行过的会话。范围超出自己已准备的运行时返回 `scenario-in-run`：每条 problem 写明运行编号、准备它的会话与时间；是本会话自己的运行时写“本会话自己准备的运行”，并给出两条出路（继续执行并 `run submit`，或 `run abandon --run N` 后重新准备）。
 
@@ -429,6 +429,7 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 `run launch` 与工作台“AI 重跑”“沉淀”按钮都由守护进程启动无头会话：
 
 - 同一检出同时只有一个 running 的启动（`launch-running`）。
+- `run launch --with-identity <身份>`（可重复）：校验同上，写进启动会话的准备命令；只用于执行启动。
 - **本轮说明**（已定决策 31 第五段）：`run launch --note <文字>` 只用于执行启动，去掉首尾空白后非空、不超过 4000 字，否则 `invalid-arguments`；其他命令带 `--note` 同样拒绝（退出 2）。说明存在启动目录的 `note.md`，这次启动准备的运行在 `brief.md` 的「本轮说明（启动 #N）」一节列出，写明只对本轮有效、与产品备注冲突时以它为准。接续的会话取回同一个运行，沿用这份 brief。只对某一次启动有效的安排（例如本轮临时挪开了哪个账号的邮箱）写在这里，不写成产品备注。类型 `run` 或 `distill`，须有具体场景。`run launch` 缺省范围为 `pending`。
 - `run launch` 的 `--runner` 只接受小写 `codex`、`claude`；`--model` 须是去掉首尾空白后非空的单行文字，`--effort` 取配置允许的 `low|medium|high|xhigh|max`。两项都只可与 `--runner` 同用。参数不合格以 `invalid-arguments`、退出码 2 返回，不启动会话。模型名及该客户端支持的强度由被启动的客户端核对；启动后的错误走现有启动失败路径。
 - 启动配置先整段取 `agents.run`，没有再取 `agents.default`，仍无配置则用 Codex。省略新参数时沿用该配置；显式代理相同则继承该段省略的模型、强度及原有附加参数；切换代理时只用所选代理的内置缺省及本次明确给出的值，旧代理的模型、强度和附加参数不带过去。明确给出的模型、强度优先于配置并实际传给所选客户端，包括优先于附加参数里的同一选项。`attempts.json` 的每次新尝试及本机 `launch status`、`run wait` 的 `attempts[]` 均给出 `runner, model, effort`（未传给客户端的模型和强度为 null；旧尝试可缺字段）；同一次启动接续沿用首次生效的设置，即使配置已改。只影响本次 `run launch`，不写回 `agents`。
@@ -456,11 +457,12 @@ CLI 需要环境、浏览器、守护测试或启动时，以本机令牌经回�
 - **崩溃**：监视线程等待进程退出。非主动停止的退出记录退出码、信号名、日志路径与启动后写出的 `~/Library/Logs/DiagnosticReports/Google Chrome for Testing*.ips`，并登记一条“浏览器崩溃”待人处理。租约期间不自动重启，下次取得租约时再启动。30 分钟内异常退出两次进入 `crashed`，须人运行 `browser open --identity X --reset-crash`。
 - **经看板操作**（已定决策 31 第二段）：`browser do --identity <身份> [--run N] [--steps <文件|->] [--region <选择器或引用>] [--depth N] [--shot] [--no-snapshot] [--timeout 秒] [-- <子命令> [参数…]]` 在运行持有的身份浏览器上执行步骤。运行编号取 `--run`，其次 `SOP_BOARD_RUN`；运行须为 prepared 且持有该身份的租约，否则返回 `browser-not-held`；浏览器没在运行返回 `browser-not-running`。
   - 步骤：一步是随包 Playwright 的 `playwright-cli` 子命令与参数。一步写在 `--` 之后；多步用 `--steps` 给 JSON 数组（每步是字符串数组，至多 50 步），二者取一。会话与浏览器的生命周期、清空存储由看板管理，`open, attach, close, detach, delete-data, list, close-all, kill-all, install, install-browser, state-load, cookie-clear, localstorage-clear, sessionstorage-clear, show` 与以 `-` 开头的子命令返回 `step-not-allowed`。各步按顺序执行，某步失败（驱动报错或超过 `--timeout`，缺省 30、上限 3600 秒）即停，其后不执行。
+  - 执行：一次调用的全部步骤、结尾的页面结构与截图在同一个驱动进程里依次完成，不逐条另起进程；命令本身只读取守护进程地址，不校验整份配置、不打开数据库。驱动进程整体超时返回 `browser-step-timeout`，没有返回结果返回 `browser-driver-failed`。
   - 会话：守护进程为每个身份持有一个驱动会话，首次使用、浏览器重启或持有者变化时重新接入（接入失败返回 `browser-attach-failed`），其余调用沿用当前标签页。执行会话不接入、不保管连接。
   - 输出：`{ok, run, identity, attached, tabs, steps, failed, skipped, page, snapshot, screenshot, in_progress, warnings}`。`steps` 每项 `{n, command, ok, duration_ms, output}`，`n` 在本运行内从 1 递增；`output` 是该步的结果或错误原文，`snapshot` 步为页面结构，超过 20000 字符时截断并另存 `output_file`。`failed` 为失败的步号或 null，`skipped` 为没执行的步数。`attached` 为真时 `tabs` 列出标签页。最后一步之后取页面结构：`snapshot` 为 `{text, file, truncated}`，可用 `--region`、`--depth` 裁剪，`--no-snapshot` 时为 null；`page` 含 `url`。`--shot` 另存截图。`in_progress` 是调用时进行中的场景，`warnings` 同 §5 的停滞提醒。
   - 记录：每一步追加到运行目录 `steps.jsonl`：`{n, at, identity, command, ok, duration_ms, url, scenarios}`，失败时带 `error`；这次调用的页面结构与截图存为 `steps/<n>.yml`、`steps/<n>.png`（n 为最后一步），并记在该步的 `snapshot`、`screenshot`。命令与错误文字中的凭据取值先遮蔽。
   - 运行阶段不再生成 spec、录屏与 trace；`web_evidence` 的两个开关只用于沉淀出的浏览器层守护。
-- **身份计数**：真实登录或请求验证码前，执行者运行 `identity record --identity X --kind login|code`；达到 `limits` 上限时拒绝（`identity-limit`）并登记待人处理。
+- **身份计数**：真实登录或请求验证码前，执行者运行 `identity record --identity X --kind login|code`；没有声明身份的 Web 入口用 `default` 身份，可以登记、没有上限；达到 `limits` 上限时拒绝（`identity-limit`）并登记待人处理。
 
 ## 7. 守护与沉淀
 
@@ -726,6 +728,8 @@ fixtures:
 | `browser-not-held` | `browser do` 的运行没有持有该身份的浏览器租约（HTTP 409） |
 | `browser-not-running` | `browser do` 时该身份的浏览器没有在运行 |
 | `browser-attach-failed` | 看板接入身份浏览器失败 |
+| `browser-step-timeout` | `browser do` 的驱动进程整体超时，浏览器可能没有响应（HTTP 504） |
+| `browser-driver-failed` | `browser do` 的驱动进程没有返回结果（HTTP 502） |
 | `step-not-allowed` | `browser do` 的步骤用了由看板管理的子命令 |
 | `change-not-found` | 运行里没有这个编号的临时改动 |
 | `note-not-found` | 备注编号不存在或已删除 |
